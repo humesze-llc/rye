@@ -1,6 +1,9 @@
 [workspace]
 members = [
   "crates/rye-core",
+  "crates/rye-math",
+  "crates/rye-time",
+  "crates/rye-shader",
   "crates/rye-window",
   "crates/rye-render",
   "crates/rye-asset",
@@ -46,6 +49,9 @@ description = "Rye: a Rust game engine with non-Euclidean geometry as a primitiv
 
 [dependencies]
 rye-core   = { path = "crates/rye-core" }
+rye-math   = { path = "crates/rye-math" }
+rye-time   = { path = "crates/rye-time" }
+rye-shader = { path = "crates/rye-shader" }
 rye-window = { path = "crates/rye-window" }
 rye-render = { path = "crates/rye-render" }
 rye-asset  = { path = "crates/rye-asset" }
@@ -60,3 +66,6 @@ anyhow = "1"
 pollster = "0.3"
 winit = { workspace = true }
 wgpu  = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+glam = { workspace = true }

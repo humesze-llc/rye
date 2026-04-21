@@ -25,3 +25,6 @@ desktop.ini
 # Merge / backup artifacts
 *.orig
 *.rej
+
+# Personal devlog — backed up separately (Obsidian)
+docs/devlog/

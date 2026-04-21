@@ -25,9 +25,11 @@
 //! `Scalar` associated type rather than rewrite call sites.
 
 pub mod euclidean;
+pub mod hyperbolic;
 pub mod space;
 pub mod tangent;
 
 pub use euclidean::{EuclideanR3, Iso3};
+pub use hyperbolic::{HyperbolicH3, Iso3H};
 pub use space::{Space, WgslSpace};
 pub use tangent::Tangent;

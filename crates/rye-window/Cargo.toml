@@ -1,5 +1,5 @@
 [package]
-name = "mars-window"
+name = "rye-window"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

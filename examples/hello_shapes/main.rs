@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::sync::Arc;
 
-use mars_render::{device::RenderDevice, graph::{RenderGraph, RenderNode}};
+use rye_render::{device::RenderDevice, graph::{RenderGraph, RenderNode}};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,

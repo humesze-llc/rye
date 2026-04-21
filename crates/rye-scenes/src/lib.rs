@@ -1,1 +1,1 @@
-pub fn hello() { println!("Hello from mars-core!"); }
+pub fn hello() { println!("Hello from rye-scenes!"); }

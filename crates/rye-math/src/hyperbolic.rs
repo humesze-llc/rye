@@ -53,6 +53,8 @@ fn clamp_to_ball(p: Vec3) -> Vec3 {
     if r2 <= POINCARE_R2_MAX {
         p
     } else {
+        #[cfg(debug_assertions)]
+        tracing::warn!("HyperbolicH3: point outside Poincaré ball clamped (|p|²={r2:.4})");
         p * (POINCARE_R2_MAX.sqrt() / r2.sqrt())
     }
 }

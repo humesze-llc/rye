@@ -14,7 +14,7 @@ pub enum WgslValidationError {
     #[error("WGSL parse error: {0}")]
     Parse(#[from] naga::front::wgsl::ParseError),
     #[error("WGSL validation error: {0}")]
-    Validate(#[from] naga::WithSpan<naga::valid::ValidationError>),
+    Validate(Box<naga::WithSpan<naga::valid::ValidationError>>),
 }
 
 /// Opaque handle to a shader in a [`ShaderDb`].
@@ -204,7 +204,9 @@ pub fn validate_wgsl(source: &str) -> std::result::Result<(), WgslValidationErro
     let module = naga::front::wgsl::parse_str(source)?;
     let flags = naga::valid::ValidationFlags::all();
     let caps = naga::valid::Capabilities::empty();
-    naga::valid::Validator::new(flags, caps).validate(&module)?;
+    naga::valid::Validator::new(flags, caps)
+        .validate(&module)
+        .map_err(|e| WgslValidationError::Validate(Box::new(e)))?;
     Ok(())
 }
 

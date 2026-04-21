@@ -12,7 +12,11 @@ struct Uniforms {
     resolution: vec2<f32>,
     time: f32,
     tick: f32,
-    params: vec4<f32>,
+    // params layout maps to FractalParams in main.rs
+    power_offset: f32,
+    ball_scale: f32,
+    fog_scale: f32,
+    params_pad: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -28,7 +32,7 @@ fn mandelbulb_de(p: vec3<f32>) -> f32 {
     var z = p;
     var dr = 1.0;
     var r = 0.0;
-    let power = 8.0 + u.params.x; // live-tunable via params.x
+    let power = 8.0 + u.power_offset;
     let iterations = 8;
     for (var i = 0; i < iterations; i = i + 1) {
         r = length(z);
@@ -98,15 +102,15 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     // from rye_distance, so swapping the host Space for HyperbolicH3
     // changes shading without touching the SDF or ray march.
     //
-    // `ball_scale` (params.y) maps Euclidean scene coords into the
-    // unit Poincaré ball when the host Space is hyperbolic. In
-    // Euclidean mode the host sets it to 1.0, so this is a no-op and
-    // the output is byte-identical to the pre-flag version.
-    // `fog_scale` (params.z) is the distance at which fog reaches 1.0.
-    let scaled_pos = u.camera_pos * u.params.y;
-    let scaled_hit = hit * u.params.y;
+    // `ball_scale` maps Euclidean scene coords into the unit Poincaré
+    // ball when the host Space is hyperbolic. In Euclidean mode it is
+    // 1.0, so this is a no-op and the output is byte-identical to the
+    // pre-flag version. `fog_scale` is the distance at which fog goes
+    // fully opaque.
+    let scaled_pos = u.camera_pos * u.ball_scale;
+    let scaled_hit = hit * u.ball_scale;
     let cam_dist = rye_distance(scaled_pos, scaled_hit);
-    let fog = 1.0 - clamp(cam_dist / u.params.z, 0.0, 1.0);
+    let fog = 1.0 - clamp(cam_dist / u.fog_scale, 0.0, 1.0);
 
     let base = vec3<f32>(0.35 + 0.3 * n.x, 0.55 + 0.2 * n.y, 0.9);
     let shaded = base * (diffuse + ambient) * fog;

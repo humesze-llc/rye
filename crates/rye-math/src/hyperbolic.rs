@@ -53,6 +53,8 @@ fn clamp_to_ball(p: Vec3) -> Vec3 {
     if r2 <= POINCARE_R2_MAX {
         p
     } else {
+        #[cfg(debug_assertions)]
+        tracing::warn!("HyperbolicH3: point outside Poincaré ball clamped (|p|²={r2:.4})");
         p * (POINCARE_R2_MAX.sqrt() / r2.sqrt())
     }
 }
@@ -235,17 +237,29 @@ impl Space for HyperbolicH3 {
 
 impl WgslSpace for HyperbolicH3 {
     fn wgsl_impl(&self) -> Cow<'static, str> {
-        Cow::Borrowed(WGSL_PLACEHOLDER)
+        Cow::Borrowed(WGSL_IMPL)
     }
 }
 
-// TODO(rye-shader): same ABI caveat as EuclideanR3 — function names,
-// invocation conventions, and Iso3H layout are placeholders. Lorentz
-// matrices in particular need a uniform-buffer binding decision before
-// they can be passed into shaders for `iso_apply`.
-const WGSL_PLACEHOLDER: &str = r#"
-// rye-math :: HyperbolicH3 (PLACEHOLDER — see TODO(rye-shader) in hyperbolic.rs)
+// TODO(rye-shader): distance / exp / log / parallel_transport are the
+// v0 WGSL ABI. Iso3H layout is still deliberately absent; Lorentz
+// matrices need a uniform-buffer binding decision before they can be
+// passed into shaders for `iso_apply`.
+const WGSL_IMPL: &str = r#"
+// rye-math :: HyperbolicH3 (v0 Space WGSL ABI)
 const RYE_H3_R2_MAX: f32 = 0.9999999;
+
+fn rye_artanh(x: f32) -> f32 {
+    return 0.5 * log((1.0 + x) / (1.0 - x));
+}
+
+fn rye_clamp_to_ball(p: vec3<f32>) -> vec3<f32> {
+    let r2 = dot(p, p);
+    if (r2 <= RYE_H3_R2_MAX) {
+        return p;
+    }
+    return p * (sqrt(RYE_H3_R2_MAX) / sqrt(r2));
+}
 
 fn rye_mobius_add(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
     let ab = dot(a, b);
@@ -253,41 +267,57 @@ fn rye_mobius_add(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
     let bb = dot(b, b);
     let num = (1.0 + 2.0 * ab + bb) * a + (1.0 - aa) * b;
     let den = 1.0 + 2.0 * ab + aa * bb;
+    if (abs(den) < 1e-12) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
     return num / den;
+}
+
+fn rye_gyr_apply(a: vec3<f32>, b: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+    let ab = rye_mobius_add(a, b);
+    let bv = rye_mobius_add(b, v);
+    let abv = rye_mobius_add(a, bv);
+    return rye_mobius_add(-ab, abv);
 }
 
 fn rye_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {
     // Möbius (artanh) form: stable near zero distance where the
     // equivalent acosh form quantizes. Saturates near the boundary.
-    let d = rye_mobius_add(-a, b);
+    let aa = rye_clamp_to_ball(a);
+    let bb = rye_clamp_to_ball(b);
+    let d = rye_mobius_add(-aa, bb);
     let n = min(length(d), sqrt(RYE_H3_R2_MAX));
-    return 2.0 * atanh(n);
+    return 2.0 * rye_artanh(n);
 }
 
 fn rye_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
     let n = length(v);
     if (n < 1e-7) { return at; }
-    let aa = min(dot(at, at), RYE_H3_R2_MAX);
+    let p_at = rye_clamp_to_ball(at);
+    let aa = dot(p_at, p_at);
     let lambda = 2.0 / (1.0 - aa);
     let dir = v / n;
     let scale = tanh(lambda * n * 0.5);
-    return rye_mobius_add(at, scale * dir);
+    return rye_mobius_add(p_at, scale * dir);
 }
 
 fn rye_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {
-    let d = rye_mobius_add(-p_from, p_to);
+    let p_from_clamped = rye_clamp_to_ball(p_from);
+    let p_to_clamped = rye_clamp_to_ball(p_to);
+    let d = rye_mobius_add(-p_from_clamped, p_to_clamped);
     let n = length(d);
     if (n < 1e-7) { return vec3<f32>(0.0, 0.0, 0.0); }
-    let aa = min(dot(p_from, p_from), RYE_H3_R2_MAX);
+    let aa = dot(p_from_clamped, p_from_clamped);
     let lambda = 2.0 / (1.0 - aa);
-    let mag = (2.0 / lambda) * atanh(min(n, sqrt(RYE_H3_R2_MAX)));
+    let mag = (2.0 / lambda) * rye_artanh(min(n, sqrt(RYE_H3_R2_MAX)));
     return mag * d / n;
 }
 
 fn rye_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
-    // PLACEHOLDER: identity. The Möbius gyration form is correct on the
-    // CPU side; port once gyr[u, v] w has a vetted WGSL implementation.
-    return v;
+    let p_from_clamped = rye_clamp_to_ball(p_from);
+    let p_to_clamped = rye_clamp_to_ball(p_to);
+    let conformal = (1.0 - dot(p_to_clamped, p_to_clamped)) / (1.0 - dot(p_from_clamped, p_from_clamped));
+    return conformal * rye_gyr_apply(p_to_clamped, -p_from_clamped, v);
 }
 "#;
 

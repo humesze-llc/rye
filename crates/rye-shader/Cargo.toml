@@ -12,5 +12,12 @@ rye-math  = { path = "../rye-math" }
 rye-asset = { path = "../rye-asset" }
 
 anyhow.workspace = true
+naga.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 wgpu.workspace = true
+
+[dev-dependencies]
+bytemuck.workspace = true
+glam.workspace = true
+pollster = "0.3"

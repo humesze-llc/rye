@@ -103,13 +103,12 @@ impl Space for EuclideanR3 {
 
 impl WgslSpace for EuclideanR3 {
     fn wgsl_impl(&self) -> Cow<'static, str> {
-        Cow::Borrowed(WGSL_PLACEHOLDER)
+        Cow::Borrowed(WGSL_IMPL)
     }
 }
 
-// TODO(rye-shader): the WGSL ABI is not yet defined. Real function names,
-// types, and invocation conventions are pinned down when `rye-shader` +
-// `naga_oil` land. Blocking questions:
+// TODO(rye-shader): distance / exp / log / parallel_transport are the
+// v0 WGSL ABI. Remaining questions:
 //   - Struct layout for Point/Vector/Iso across shader stages.
 //     `vec3<f32>` is 16-byte-aligned in uniform buffers; packed `vec4<f32>`
 //     may be preferable for cache / alignment reasons.
@@ -120,11 +119,9 @@ impl WgslSpace for EuclideanR3 {
 //     functions, struct methods, or a uniform-buffer-bound operator
 //     pattern.
 //
-// The body below is a PLACEHOLDER, not the ABI. It exists so the trait
-// has a witness today and so `cargo test` exercises the contract.
 // `from` is a WGSL reserved keyword (WGSL spec §3.2); use `p_from`/`p_to`.
-const WGSL_PLACEHOLDER: &str = r#"
-// rye-math :: EuclideanR3 (PLACEHOLDER — see TODO(rye-shader) in euclidean.rs)
+const WGSL_IMPL: &str = r#"
+// rye-math :: EuclideanR3 (v0 Space WGSL ABI)
 fn rye_distance(a: vec3<f32>, b: vec3<f32>) -> f32 { return length(a - b); }
 fn rye_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> { return at + v; }
 fn rye_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> { return p_to - p_from; }

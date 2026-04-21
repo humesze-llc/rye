@@ -16,4 +16,4 @@
 
 mod db;
 
-pub use db::{ShaderDb, ShaderId};
+pub use db::{validate_wgsl, ShaderDb, ShaderId, WgslValidationError};

@@ -10,6 +10,7 @@ description = "Rye math primitives: the Space trait and concrete geometries (Euc
 [dependencies]
 glam.workspace = true
 serde.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 approx = "0.5"

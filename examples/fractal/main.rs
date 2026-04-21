@@ -52,6 +52,22 @@ fn shader_path() -> PathBuf {
     shader_dir().join("fractal.wgsl")
 }
 
+/// Typed layout for `RayMarchUniforms::params` in the fractal shader.
+///
+/// Must match the `power_offset / ball_scale / fog_scale / params_pad`
+/// field order in `fractal.wgsl`'s `Uniforms` struct.
+struct FractalParams {
+    power_offset: f32,
+    ball_scale: f32,
+    fog_scale: f32,
+}
+
+impl FractalParams {
+    fn as_array(&self) -> [f32; 4] {
+        [self.power_offset, self.ball_scale, self.fog_scale, 0.0]
+    }
+}
+
 /// Per-mode shader knobs the host pushes into the uniform buffer.
 ///
 /// `ball_scale` maps Euclidean scene coords into the unit Poincaré ball
@@ -164,10 +180,12 @@ impl<S: WgslSpace + 'static> App<S> {
             resolution: [config.width as f32, config.height as f32],
             time: t,
             tick: self.timestep.tick() as f32,
-            // params.x is the live-tunable Mandelbulb power offset.
-            // params.y is `ball_scale` — see fractal.wgsl.
-            // params.z is `fog_scale` — see fractal.wgsl.
-            params: [0.0, self.knobs.ball_scale, self.knobs.fog_scale, 0.0],
+            params: FractalParams {
+                power_offset: 0.0,
+                ball_scale: self.knobs.ball_scale,
+                fog_scale: self.knobs.fog_scale,
+            }
+            .as_array(),
         })
     }
 }

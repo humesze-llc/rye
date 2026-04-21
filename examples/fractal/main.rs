@@ -26,8 +26,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use glam::Vec3;
-
 use rye_asset::AssetWatcher;
 use rye_math::{EuclideanR3, HyperbolicH3, WgslSpace};
 use rye_render::{
@@ -39,10 +37,15 @@ use rye_shader::{ShaderDb, ShaderId};
 use rye_time::FixedTimestep;
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{Key, NamedKey},
     window::{Window, WindowAttributes},
 };
+
+mod camera;
+
+use camera::{CameraState, InputState};
 
 fn shader_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/fractal")
@@ -107,6 +110,8 @@ struct App<S: WgslSpace + 'static> {
     ray_march: Option<RayMarchNode>,
 
     timestep: FixedTimestep,
+    camera: CameraState,
+    input: InputState,
     start: Instant,
 }
 
@@ -124,6 +129,8 @@ impl<S: WgslSpace + 'static> App<S> {
             watcher: None,
             ray_march: None,
             timestep: FixedTimestep::new(60),
+            camera: CameraState::default(),
+            input: InputState::default(),
             start: Instant::now(),
         }
     }
@@ -157,25 +164,16 @@ impl<S: WgslSpace + 'static> App<S> {
     fn current_uniforms(&self) -> Option<RayMarchUniforms> {
         let rd = self.rd.as_ref()?;
         let t = self.start.elapsed().as_secs_f32();
-        let angle = t * 0.15;
-        let radius = 3.5;
-        let pos = Vec3::new(
-            angle.cos() * radius,
-            0.6 + 0.2 * (t * 0.3).sin(),
-            angle.sin() * radius,
-        );
-        let forward = (Vec3::ZERO - pos).normalize();
-        let right = forward.cross(Vec3::Y).normalize();
-        let up = right.cross(forward);
+        let camera = self.camera.view();
         let config = &rd.surface_bundle.config;
         Some(RayMarchUniforms {
-            camera_pos: pos.to_array(),
+            camera_pos: camera.position.to_array(),
             _pad0: 0.0,
-            camera_forward: forward.to_array(),
+            camera_forward: camera.forward.to_array(),
             _pad1: 0.0,
-            camera_right: right.to_array(),
+            camera_right: camera.right.to_array(),
             _pad2: 0.0,
-            camera_up: up.to_array(),
+            camera_up: camera.up.to_array(),
             fov_y_tan: (60.0_f32.to_radians() * 0.5).tan(),
             resolution: [config.width as f32, config.height as f32],
             time: t,
@@ -245,6 +243,34 @@ impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
         match ev {
             WindowEvent::CloseRequested => elwt.exit(),
 
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
+            {
+                elwt.exit();
+            }
+
+            WindowEvent::CursorMoved { position, .. } => {
+                self.input.cursor_moved(position.x, position.y);
+            }
+
+            WindowEvent::CursorLeft { .. } => {
+                self.input.cursor_invalidated();
+            }
+
+            WindowEvent::Focused(false) => {
+                self.input.cursor_invalidated();
+                self.input.release_buttons();
+            }
+
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.input.mouse_input(button, state);
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.input.mouse_wheel(delta);
+            }
+
             WindowEvent::Resized(size) => {
                 self.minimized = size.width == 0 || size.height == 0;
                 if !self.minimized {
@@ -259,7 +285,11 @@ impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
                     return;
                 }
 
-                let _ = self.timestep.advance(Instant::now());
+                let ticks = self.timestep.advance(Instant::now());
+                if !ticks.is_empty() {
+                    let input = self.input.take_frame();
+                    self.camera.advance(input);
+                }
                 self.handle_hot_reload();
 
                 let Some(uniforms) = self.current_uniforms() else {

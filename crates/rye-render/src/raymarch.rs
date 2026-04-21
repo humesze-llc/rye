@@ -27,10 +27,14 @@ use crate::graph::RenderNode;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct RayMarchUniforms {
-    pub camera_pos: [f32; 3],     pub _pad0: f32,
-    pub camera_forward: [f32; 3], pub _pad1: f32,
-    pub camera_right: [f32; 3],   pub _pad2: f32,
-    pub camera_up: [f32; 3],      pub fov_y_tan: f32,
+    pub camera_pos: [f32; 3],
+    pub _pad0: f32,
+    pub camera_forward: [f32; 3],
+    pub _pad1: f32,
+    pub camera_right: [f32; 3],
+    pub _pad2: f32,
+    pub camera_up: [f32; 3],
+    pub fov_y_tan: f32,
     /// Framebuffer size in pixels.
     pub resolution: [f32; 2],
     /// Seconds since app start.
@@ -72,11 +76,7 @@ pub struct RayMarchNode {
 }
 
 impl RayMarchNode {
-    pub fn new(
-        device: &Device,
-        surface_format: TextureFormat,
-        shader: &ShaderModule,
-    ) -> Self {
+    pub fn new(device: &Device, surface_format: TextureFormat, shader: &ShaderModule) -> Self {
         let uniform_buf = device.create_buffer(&BufferDescriptor {
             label: Some("raymarch uniforms"),
             size: std::mem::size_of::<RayMarchUniforms>() as u64,

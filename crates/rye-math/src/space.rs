@@ -84,12 +84,7 @@ pub trait Space {
 
     /// Apply an isometry's differential to a tangent vector at `at`. The
     /// result is a tangent vector at `iso_apply(iso, at)`.
-    fn iso_transport(
-        &self,
-        iso: Self::Iso,
-        at: Self::Point,
-        v: Self::Vector,
-    ) -> Self::Vector;
+    fn iso_transport(&self, iso: Self::Iso, at: Self::Point, v: Self::Vector) -> Self::Vector;
 }
 
 /// A [`Space`] that additionally exposes its primitives as WGSL, for

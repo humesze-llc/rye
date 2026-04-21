@@ -27,11 +27,17 @@ impl Iso3 {
     };
 
     pub fn from_rotation(rotation: Quat) -> Self {
-        Self { rotation, translation: Vec3::ZERO }
+        Self {
+            rotation,
+            translation: Vec3::ZERO,
+        }
     }
 
     pub fn from_translation(translation: Vec3) -> Self {
-        Self { rotation: Quat::IDENTITY, translation }
+        Self {
+            rotation: Quat::IDENTITY,
+            translation,
+        }
     }
 }
 
@@ -131,7 +137,9 @@ mod tests {
     use crate::tangent::Tangent;
     use approx::assert_relative_eq;
 
-    fn r3() -> EuclideanR3 { EuclideanR3 }
+    fn r3() -> EuclideanR3 {
+        EuclideanR3
+    }
 
     #[test]
     fn distance_is_symmetric_and_zero_on_diagonal() {

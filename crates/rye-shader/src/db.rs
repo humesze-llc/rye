@@ -53,11 +53,7 @@ impl ShaderDb {
     /// Returns a [`ShaderId`] that remains valid across hot reloads of
     /// the same path. Call [`ShaderDb::load`] twice with the same path
     /// and you get the same ID and a fresh compilation.
-    pub fn load<S: WgslSpace>(
-        &mut self,
-        path: impl AsRef<Path>,
-        space: &S,
-    ) -> Result<ShaderId> {
+    pub fn load<S: WgslSpace>(&mut self, path: impl AsRef<Path>, space: &S) -> Result<ShaderId> {
         let path = canonicalize(path.as_ref())?;
         let source = std::fs::read_to_string(&path)
             .with_context(|| format!("reading shader {}", path.display()))?;
@@ -79,7 +75,12 @@ impl ShaderDb {
             self.next_id += 1;
             self.entries.insert(
                 id,
-                Entry { path: path.clone(), module, generation: 1, label },
+                Entry {
+                    path: path.clone(),
+                    module,
+                    generation: 1,
+                    label,
+                },
             );
             self.path_index.insert(path, id);
             Ok(id)
@@ -121,10 +122,7 @@ impl ShaderDb {
             match event.kind {
                 AssetEventKind::Created | AssetEventKind::Modified => {
                     if let Err(e) = self.reload(id, space) {
-                        tracing::warn!(
-                            "shader reload failed for {}: {e:#}",
-                            canonical.display()
-                        );
+                        tracing::warn!("shader reload failed for {}: {e:#}", canonical.display());
                     } else {
                         tracing::info!("reloaded shader {}", canonical.display());
                     }
@@ -195,7 +193,10 @@ mod tests {
 
     #[test]
     fn assemble_includes_both_sources() {
-        let s = assemble_source("fn rye_distance(a: f32, b: f32) -> f32 { return 0.0; }", "@fragment fn main() {}");
+        let s = assemble_source(
+            "fn rye_distance(a: f32, b: f32) -> f32 { return 0.0; }",
+            "@fragment fn main() {}",
+        );
         assert!(s.contains("rye_distance"));
         assert!(s.contains("@fragment fn main"));
         assert!(s.find("rye_distance").unwrap() < s.find("@fragment fn main").unwrap());

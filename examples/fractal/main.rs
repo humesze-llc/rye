@@ -90,10 +90,7 @@ impl App {
         shaders.apply_events(&events, &self.space);
         let new_gen = shaders.generation(id);
         if new_gen != self.shader_gen {
-            tracing::info!(
-                "rebuilding RayMarchNode for shader generation {}",
-                new_gen
-            );
+            tracing::info!("rebuilding RayMarchNode for shader generation {}", new_gen);
             self.shader_gen = new_gen;
             self.ray_march = Some(RayMarchNode::new(
                 &rd.device,
@@ -145,8 +142,7 @@ impl ApplicationHandler for App {
             .expect("create window"),
         );
 
-        let rd = pollster::block_on(RenderDevice::new(win.clone()))
-            .expect("render device");
+        let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
 
         let mut shaders = ShaderDb::new(rd.device.clone());
         let id = shaders
@@ -183,7 +179,9 @@ impl ApplicationHandler for App {
         _id: winit::window::WindowId,
         ev: WindowEvent,
     ) {
-        let Some(win) = self.window.clone() else { return };
+        let Some(win) = self.window.clone() else {
+            return;
+        };
 
         match ev {
             WindowEvent::CloseRequested => elwt.exit(),
@@ -205,7 +203,9 @@ impl ApplicationHandler for App {
                 let _ = self.timestep.advance(Instant::now());
                 self.handle_hot_reload();
 
-                let Some(uniforms) = self.current_uniforms() else { return };
+                let Some(uniforms) = self.current_uniforms() else {
+                    return;
+                };
                 let Some(rd) = self.rd.as_ref() else { return };
                 if let Some(node) = self.ray_march.as_mut() {
                     node.set_uniforms(&rd.queue, uniforms);
@@ -248,8 +248,7 @@ impl ApplicationHandler for App {
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 

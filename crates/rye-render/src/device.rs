@@ -32,20 +32,23 @@ impl RenderDevice {
             .await?;
 
         let (device, queue) = adapter
-            .request_device(
-                &DeviceDescriptor {
-                    label: Some("Rye Device"),
-                    required_features: Features::empty(),
-                    required_limits: Limits::default(),
-                    memory_hints: MemoryHints::default(), // NEW in v26
-                    trace: Trace::Off,                    // NEW in v26
-                }
-            )
+            .request_device(&DeviceDescriptor {
+                label: Some("Rye Device"),
+                required_features: Features::empty(),
+                required_limits: Limits::default(),
+                memory_hints: MemoryHints::default(), // NEW in v26
+                trace: Trace::Off,                    // NEW in v26
+            })
             .await?;
 
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
-        let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
+        let format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(caps.formats[0]);
 
         let config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT,
@@ -65,21 +68,33 @@ impl RenderDevice {
             adapter,
             device,
             queue,
-            surface_bundle: SurfaceBundle { surface, config, size },
+            surface_bundle: SurfaceBundle {
+                surface,
+                config,
+                size,
+            },
         })
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if new_size.width == 0 || new_size.height == 0 { return; }
+        if new_size.width == 0 || new_size.height == 0 {
+            return;
+        }
         self.surface_bundle.size = new_size;
         self.surface_bundle.config.width = new_size.width;
         self.surface_bundle.config.height = new_size.height;
-        self.surface_bundle.surface.configure(&self.device, &self.surface_bundle.config);
+        self.surface_bundle
+            .surface
+            .configure(&self.device, &self.surface_bundle.config);
     }
 
-    pub fn begin_frame(&self) -> std::result::Result<(SurfaceTexture, TextureView), wgpu::SurfaceError> {
+    pub fn begin_frame(
+        &self,
+    ) -> std::result::Result<(SurfaceTexture, TextureView), wgpu::SurfaceError> {
         let frame = self.surface_bundle.surface.get_current_texture()?;
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         Ok((frame, view))
     }
 }

@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::device::RenderDevice;
+use anyhow::Result;
 
 pub trait RenderNode {
     fn name(&self) -> &'static str;

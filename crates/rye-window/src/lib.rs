@@ -1,1 +1,3 @@
-pub fn hello() { println!("Hello from rye-window!"); }
+pub fn hello() {
+    println!("Hello from rye-window!");
+}

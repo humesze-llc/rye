@@ -1,5 +1,5 @@
+use ab_glyph::{point, Font as _, FontArc, Glyph, PxScale};
 use std::borrow::Cow;
-use ab_glyph::{point, FontArc, Glyph, PxScale, Font as _};
 
 pub struct Hud {
     pub tex_size: (u32, u32),
@@ -17,7 +17,11 @@ impl Hud {
         let tex_size = (1024, 512);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("HUD Texture"),
-            size: wgpu::Extent3d { width: tex_size.0, height: tex_size.1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: tex_size.0,
+                height: tex_size.1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -64,8 +68,14 @@ impl Hud {
             label: Some("HUD BG"),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
             ],
         });
 
@@ -115,7 +125,16 @@ impl Hud {
         let font = FontArc::try_from_slice(include_bytes!("DejaVuSansMono.ttf"))
             .expect("place DejaVuSansMono.ttf next to hud.rs");
 
-        Self { tex_size, texture, view, sampler, bind_group, pipeline, vbuf, font }
+        Self {
+            tex_size,
+            texture,
+            view,
+            sampler,
+            bind_group,
+            pipeline,
+            vbuf,
+            font,
+        }
     }
 
     pub fn update_vertices(
@@ -132,13 +151,17 @@ impl Hud {
         let m = margin_px as f32;
 
         let x0 = -1.0 + 2.0 * (m / w);
-        let y0 =  1.0 - 2.0 * (m / h);
+        let y0 = 1.0 - 2.0 * (m / h);
         let x1 = x0 + 2.0 * (hud_w / w);
         let y1 = y0 - 2.0 * (hud_h / h);
 
         let verts: [[f32; 4]; 6] = [
-            [x0, y0, 0.0, 0.0], [x0, y1, 0.0, 1.0], [x1, y0, 1.0, 0.0],
-            [x1, y0, 1.0, 0.0], [x0, y1, 0.0, 1.0], [x1, y1, 1.0, 1.0],
+            [x0, y0, 0.0, 0.0],
+            [x0, y1, 0.0, 1.0],
+            [x1, y0, 1.0, 0.0],
+            [x1, y0, 1.0, 0.0],
+            [x0, y1, 0.0, 1.0],
+            [x1, y1, 1.0, 1.0],
         ];
 
         let mut bytes = Vec::with_capacity(verts.len() * 4 * 4);
@@ -162,7 +185,7 @@ impl Hud {
 
         let ascent_px = ab_glyph::Font::ascent_unscaled(&self.font) * sy;
         let height_px = ab_glyph::Font::height_unscaled(&self.font) * sy;
-        let line_h    = (height_px + 4.0).ceil() as i32;
+        let line_h = (height_px + 4.0).ceil() as i32;
 
         let mut y = 4i32 + ascent_px as i32;
 
@@ -170,14 +193,20 @@ impl Hud {
             let mut x = 6i32;
 
             for ch in line.chars() {
-                let gid   = ab_glyph::Font::glyph_id(&self.font, ch);
-                let glyph = Glyph { id: gid, scale, position: point(x as f32, y as f32) };
+                let gid = ab_glyph::Font::glyph_id(&self.font, ch);
+                let glyph = Glyph {
+                    id: gid,
+                    scale,
+                    position: point(x as f32, y as f32),
+                };
 
                 if let Some(outlined) = ab_glyph::Font::outline_glyph(&self.font, glyph) {
                     outlined.draw(|gx, gy, cov| {
                         let px = x + gx as i32;
                         let py = y - ascent_px as i32 + gy as i32;
-                        if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 { return; }
+                        if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
+                            return;
+                        }
                         let idx = ((py as u32 * w + px as u32) * 4) as usize;
                         let a = (cov * 255.0) as u8;
                         rgba[idx + 0] = 255;
@@ -192,7 +221,9 @@ impl Hud {
             }
 
             y += line_h;
-            if y >= h as i32 { break; }
+            if y >= h as i32 {
+                break;
+            }
         }
 
         queue.write_texture(
@@ -208,7 +239,11 @@ impl Hud {
                 bytes_per_row: Some(4 * w),
                 rows_per_image: Some(h),
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
     }
 

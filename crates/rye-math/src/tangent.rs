@@ -23,7 +23,9 @@ pub struct Tangent<S: Space> {
 
 // Hand-rolled Copy/Clone: `#[derive]` adds an unwanted `S: Clone` bound.
 impl<S: Space> Clone for Tangent<S> {
-    fn clone(&self) -> Self { *self }
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 impl<S: Space> Copy for Tangent<S> {}
 
@@ -53,6 +55,9 @@ where
 {
     /// Scale the tangent vector by `t`, keeping the base point fixed.
     pub fn scale(self, t: f32) -> Self {
-        Self { at: self.at, v: self.v * t }
+        Self {
+            at: self.at,
+            v: self.v * t,
+        }
     }
 }

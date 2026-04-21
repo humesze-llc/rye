@@ -27,9 +27,11 @@
 pub mod euclidean;
 pub mod hyperbolic;
 pub mod space;
+pub mod spherical;
 pub mod tangent;
 
 pub use euclidean::{EuclideanR3, Iso3};
 pub use hyperbolic::{HyperbolicH3, Iso3H};
 pub use space::{Space, WgslSpace};
+pub use spherical::{Iso4, SphericalS3};
 pub use tangent::Tangent;

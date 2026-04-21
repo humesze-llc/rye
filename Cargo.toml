@@ -33,7 +33,6 @@ parking_lot = "0.12"
 
 wgpu  = { version = "26", features = ["wgsl"] }
 winit = "0.30"
-ab_glyph = "0.2"
 bytemuck = { version = "1", features = ["derive"] }
 notify = "6"
 rayon = "1.10"
@@ -56,7 +55,6 @@ rye-window = { path = "crates/rye-window" }
 rye-render = { path = "crates/rye-render" }
 rye-asset  = { path = "crates/rye-asset" }
 rye-scenes = { path = "crates/rye-scenes" }
-ab_glyph.workspace = true
 
 [features]
 default = []

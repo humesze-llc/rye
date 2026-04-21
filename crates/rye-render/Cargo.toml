@@ -17,5 +17,4 @@ tracing.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 glam.workspace = true
-ab_glyph.workspace = true
 bytemuck.workspace = true

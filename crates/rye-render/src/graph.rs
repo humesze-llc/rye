@@ -6,13 +6,14 @@ pub trait RenderNode {
     fn execute(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()>;
 }
 
+#[derive(Default)]
 pub struct RenderGraph {
     nodes: Vec<Box<dyn RenderNode>>,
 }
 
 impl RenderGraph {
     pub fn new() -> Self {
-        Self { nodes: Vec::new() }
+        Self::default()
     }
 
     pub fn add_node<N: RenderNode + 'static>(mut self, node: N) -> Self {

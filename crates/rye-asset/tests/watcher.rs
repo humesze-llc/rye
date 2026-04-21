@@ -28,7 +28,7 @@ where
         }
         sleep(Duration::from_millis(25));
     }
-    panic!("timeout waiting for event; saw: {:?}", seen);
+    panic!("timeout waiting for event; saw: {seen:?}");
 }
 
 fn has_path(kind: AssetEventKind, target: &Path) -> impl Fn(&AssetEvent) -> bool + '_ {

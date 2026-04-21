@@ -9,6 +9,17 @@
 //!
 //! Edit `examples/fractal/fractal.wgsl` while the example runs and the
 //! scene recompiles on save.
+//!
+//! ## Modes
+//!
+//! Pass `--hyperbolic` to swap the WGSL prelude from `EuclideanR3` to
+//! `HyperbolicH3`. The SDF, camera, and ray march are unchanged; only
+//! `rye_distance` (used for fog) becomes geodesic-hyperbolic. Distant
+//! features dim more aggressively because hyperbolic distances grow
+//! faster than Euclidean ones far from the origin.
+//!
+//! Default (no flag) is Euclidean and produces byte-identical output to
+//! prior versions of this example.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,7 +29,7 @@ use anyhow::Result;
 use glam::Vec3;
 
 use rye_asset::AssetWatcher;
-use rye_math::EuclideanR3;
+use rye_math::{EuclideanR3, HyperbolicH3, WgslSpace};
 use rye_render::{
     device::RenderDevice,
     graph::RenderNode,
@@ -41,12 +52,38 @@ fn shader_path() -> PathBuf {
     shader_dir().join("fractal.wgsl")
 }
 
-struct App {
+/// Per-mode shader knobs the host pushes into the uniform buffer.
+///
+/// `ball_scale` maps Euclidean scene coords into the unit Poincaré ball
+/// before the H³ prelude consumes them; in Euclidean mode it stays at
+/// 1.0. `fog_scale` is the distance at which fog goes opaque; smaller
+/// for hyperbolic because geodesic distances grow faster.
+#[derive(Clone, Copy)]
+struct ShaderKnobs {
+    ball_scale: f32,
+    fog_scale: f32,
+    title: &'static str,
+}
+
+const EUCLIDEAN_KNOBS: ShaderKnobs = ShaderKnobs {
+    ball_scale: 1.0,
+    fog_scale: 12.0,
+    title: "Rye — Mandelbulb",
+};
+
+const HYPERBOLIC_KNOBS: ShaderKnobs = ShaderKnobs {
+    ball_scale: 0.2,
+    fog_scale: 4.0,
+    title: "Rye — Mandelbulb (H³ fog)",
+};
+
+struct App<S: WgslSpace + 'static> {
     window: Option<Arc<Window>>,
     rd: Option<RenderDevice>,
     minimized: bool,
 
-    space: EuclideanR3,
+    space: S,
+    knobs: ShaderKnobs,
     shaders: Option<ShaderDb>,
     shader_id: Option<ShaderId>,
     shader_gen: u64,
@@ -57,13 +94,14 @@ struct App {
     start: Instant,
 }
 
-impl App {
-    fn new() -> Self {
+impl<S: WgslSpace + 'static> App<S> {
+    fn new(space: S, knobs: ShaderKnobs) -> Self {
         Self {
             window: None,
             rd: None,
             minimized: false,
-            space: EuclideanR3,
+            space,
+            knobs,
             shaders: None,
             shader_id: None,
             shader_gen: 0,
@@ -126,17 +164,20 @@ impl App {
             resolution: [config.width as f32, config.height as f32],
             time: t,
             tick: self.timestep.tick() as f32,
-            params: [0.0, 0.0, 0.0, 0.0],
+            // params.x is the live-tunable Mandelbulb power offset.
+            // params.y is `ball_scale` — see fractal.wgsl.
+            // params.z is `fog_scale` — see fractal.wgsl.
+            params: [0.0, self.knobs.ball_scale, self.knobs.fog_scale, 0.0],
         })
     }
 }
 
-impl ApplicationHandler for App {
+impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
     fn resumed(&mut self, elwt: &ActiveEventLoop) {
         let win = Arc::new(
             elwt.create_window(
                 WindowAttributes::default()
-                    .with_title("Rye — Mandelbulb")
+                    .with_title(self.knobs.title)
                     .with_visible(false),
             )
             .expect("create window"),
@@ -252,8 +293,14 @@ fn main() -> Result<()> {
         )
         .init();
 
+    let hyperbolic = std::env::args().any(|a| a == "--hyperbolic");
     let event_loop: EventLoop<()> = EventLoop::new()?;
-    let mut app = App::new();
-    event_loop.run_app(&mut app)?;
+    if hyperbolic {
+        let mut app = App::new(HyperbolicH3, HYPERBOLIC_KNOBS);
+        event_loop.run_app(&mut app)?;
+    } else {
+        let mut app = App::new(EuclideanR3, EUCLIDEAN_KNOBS);
+        event_loop.run_app(&mut app)?;
+    }
     Ok(())
 }

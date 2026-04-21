@@ -96,9 +96,17 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
     // Exercise the rye-math Space prelude: camera-to-hit distance comes
     // from rye_distance, so swapping the host Space for HyperbolicH3
-    // later will change shading without touching this shader.
-    let cam_dist = rye_distance(u.camera_pos, hit);
-    let fog = 1.0 - clamp(cam_dist / 12.0, 0.0, 1.0);
+    // changes shading without touching the SDF or ray march.
+    //
+    // `ball_scale` (params.y) maps Euclidean scene coords into the
+    // unit Poincaré ball when the host Space is hyperbolic. In
+    // Euclidean mode the host sets it to 1.0, so this is a no-op and
+    // the output is byte-identical to the pre-flag version.
+    // `fog_scale` (params.z) is the distance at which fog reaches 1.0.
+    let scaled_pos = u.camera_pos * u.params.y;
+    let scaled_hit = hit * u.params.y;
+    let cam_dist = rye_distance(scaled_pos, scaled_hit);
+    let fog = 1.0 - clamp(cam_dist / u.params.z, 0.0, 1.0);
 
     let base = vec3<f32>(0.35 + 0.3 * n.x, 0.55 + 0.2 * n.y, 0.9);
     let shaded = base * (diffuse + ambient) * fog;

@@ -1,1 +1,0 @@
-pub fn hello() { println!("Hello from mars-core!"); }

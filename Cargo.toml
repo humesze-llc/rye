@@ -33,6 +33,7 @@ parking_lot = "0.12"
 
 wgpu  = { version = "26", features = ["wgsl"] }
 winit = "0.30"
+naga = { version = "26", features = ["wgsl-in"] }
 bytemuck = { version = "1", features = ["derive"] }
 notify = "6"
 rayon = "1.10"

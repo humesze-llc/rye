@@ -102,6 +102,19 @@ pub trait WgslSpace: Space {
     /// WGSL source providing this space's primitives, for inlining into
     /// shaders by `rye-shader`.
     ///
+    /// The v0 shader ABI is deliberately tiny and single-space:
+    ///
+    /// ```wgsl
+    /// fn rye_distance(a: vec3<f32>, b: vec3<f32>) -> f32
+    /// fn rye_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32>
+    /// fn rye_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32>
+    /// fn rye_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32>
+    /// ```
+    ///
+    /// This ABI intentionally covers only spaces whose point/vector shader
+    /// representation is `vec3<f32>`. `Iso` layout and multi-space name
+    /// mangling are left out until a render path actually needs them.
+    ///
     /// Stateless geometries return `Cow::Borrowed`; parametric ones may
     /// `format!` constants in and return `Cow::Owned`.
     fn wgsl_impl(&self) -> Cow<'static, str>;

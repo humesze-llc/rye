@@ -94,6 +94,13 @@ pub struct InputState {
     last_cursor: Option<Vec2>,
 }
 
+/// Approximate pixels-per-notch used to normalize trackpad `PixelDelta`
+/// scroll events into the same `scroll_lines` units as `LineDelta`. winit
+/// emits `PixelDelta` in logical pixels on high-precision devices (macOS
+/// trackpads, some Wayland compositors); most platforms report one
+/// traditional wheel notch as ~50 px.
+const SCROLL_PIXELS_PER_LINE: f32 = 50.0;
+
 impl InputState {
     pub fn cursor_moved(&mut self, x: f64, y: f64) {
         let pos = Vec2::new(x as f32, y as f32);
@@ -101,6 +108,19 @@ impl InputState {
             self.frame.mouse_delta += pos - last;
         }
         self.last_cursor = Some(pos);
+    }
+
+    /// Clear the last-known cursor position so the next `cursor_moved`
+    /// call re-anchors instead of producing a jump-delta. Call on
+    /// `CursorLeft` and on focus loss.
+    pub fn cursor_invalidated(&mut self) {
+        self.last_cursor = None;
+    }
+
+    /// Release any held mouse buttons. Call on focus loss so a drag that
+    /// was interrupted by an alt-tab doesn't keep orbiting the camera.
+    pub fn release_buttons(&mut self) {
+        self.frame.left_mouse_down = false;
     }
 
     pub fn mouse_input(&mut self, button: MouseButton, state: ElementState) {
@@ -112,7 +132,7 @@ impl InputState {
     pub fn mouse_wheel(&mut self, delta: MouseScrollDelta) {
         self.frame.scroll_lines += match delta {
             MouseScrollDelta::LineDelta(_, y) => y,
-            MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
+            MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / SCROLL_PIXELS_PER_LINE,
         };
     }
 
@@ -175,6 +195,35 @@ mod tests {
             ..FrameInput::default()
         });
         assert_close(camera.distance, MAX_DISTANCE);
+    }
+
+    #[test]
+    fn cursor_invalidated_prevents_jump_delta() {
+        let mut input = InputState::default();
+        input.cursor_moved(100.0, 100.0);
+        input.cursor_invalidated();
+        input.cursor_moved(500.0, 500.0);
+        let frame = input.take_frame();
+        assert_eq!(frame.mouse_delta, Vec2::ZERO);
+    }
+
+    #[test]
+    fn release_buttons_clears_left_drag() {
+        let mut input = InputState::default();
+        input.mouse_input(MouseButton::Left, ElementState::Pressed);
+        input.release_buttons();
+        let frame = input.take_frame();
+        assert!(!frame.left_mouse_down);
+    }
+
+    #[test]
+    fn pixel_delta_scroll_uses_pixels_per_line() {
+        let mut input = InputState::default();
+        input.mouse_wheel(MouseScrollDelta::PixelDelta(
+            winit::dpi::PhysicalPosition::new(0.0, SCROLL_PIXELS_PER_LINE as f64),
+        ));
+        let frame = input.take_frame();
+        assert_close(frame.scroll_lines, 1.0);
     }
 
     #[test]

@@ -254,6 +254,15 @@ impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
                 self.input.cursor_moved(position.x, position.y);
             }
 
+            WindowEvent::CursorLeft { .. } => {
+                self.input.cursor_invalidated();
+            }
+
+            WindowEvent::Focused(false) => {
+                self.input.cursor_invalidated();
+                self.input.release_buttons();
+            }
+
             WindowEvent::MouseInput { state, button, .. } => {
                 self.input.mouse_input(button, state);
             }

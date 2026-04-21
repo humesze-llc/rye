@@ -1,6 +1,6 @@
 # Rye
 
-Rye is my personal, open-source Rust game engine, for fun. The name comes from Riemann, as in Riemann spaces. And I like whiskey.
+Rye is my personal, open-source Rust game engine, for fun. The name comes from Riemann, as in Riemann manifolds. And I like whiskey.
 
 ## What I'm trying to build
 

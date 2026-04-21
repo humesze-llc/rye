@@ -1,5 +1,8 @@
 pub mod device;
 pub mod graph;
+pub mod raymarch;
+
+pub use raymarch::{RayMarchNode, RayMarchUniforms};
 
 // #[cfg(feature = "2d")]
 // pub mod two_d;

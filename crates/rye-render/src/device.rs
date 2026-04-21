@@ -34,7 +34,7 @@ impl RenderDevice {
         let (device, queue) = adapter
             .request_device(
                 &DeviceDescriptor {
-                    label: Some("Mars Device"),
+                    label: Some("Rye Device"),
                     required_features: Features::empty(),
                     required_limits: Limits::default(),
                     memory_hints: MemoryHints::default(), // NEW in v26

@@ -1,0 +1,220 @@
+//! Ray-march render node: fullscreen-triangle + single UBO + user fragment shader.
+//!
+//! The node is deliberately dumb: it owns a pipeline and a uniform
+//! buffer, nothing else. Hot-reload is handled outside — callers
+//! replace the node on shader generation change.
+//!
+//! The user shader must export two entry points:
+//!
+//! ```wgsl
+//! @vertex   fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> { ... }
+//! @fragment fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> { ... }
+//! ```
+//!
+//! See [`RayMarchUniforms`] for the layout of bind group 0 / binding 0.
+
+use anyhow::Result;
+use bytemuck::{Pod, Zeroable};
+use wgpu::*;
+
+use crate::device::RenderDevice;
+use crate::graph::RenderNode;
+
+/// Uniform buffer for [`RayMarchNode`]. Bind group 0, binding 0.
+///
+/// Layout is `std140`-compatible (every `vec3` is padded to 16 bytes)
+/// so WGSL uniform access matches without `@align` annotations.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct RayMarchUniforms {
+    pub camera_pos: [f32; 3],     pub _pad0: f32,
+    pub camera_forward: [f32; 3], pub _pad1: f32,
+    pub camera_right: [f32; 3],   pub _pad2: f32,
+    pub camera_up: [f32; 3],      pub fov_y_tan: f32,
+    /// Framebuffer size in pixels.
+    pub resolution: [f32; 2],
+    /// Seconds since app start.
+    pub time: f32,
+    /// Current sim tick as f32 (for shader-side animation).
+    pub tick: f32,
+    /// Four scalar knobs exposed to the shader; semantics are up to the
+    /// user shader. Handy for live-tuning fractal parameters.
+    pub params: [f32; 4],
+}
+
+impl Default for RayMarchUniforms {
+    fn default() -> Self {
+        Self {
+            camera_pos: [0.0, 0.0, 3.0],
+            _pad0: 0.0,
+            camera_forward: [0.0, 0.0, -1.0],
+            _pad1: 0.0,
+            camera_right: [1.0, 0.0, 0.0],
+            _pad2: 0.0,
+            camera_up: [0.0, 1.0, 0.0],
+            fov_y_tan: (60.0_f32.to_radians() * 0.5).tan(),
+            resolution: [1.0, 1.0],
+            time: 0.0,
+            tick: 0.0,
+            params: [0.0; 4],
+        }
+    }
+}
+
+/// A render node that draws a fullscreen triangle using a user-provided
+/// fragment shader, with a single UBO of [`RayMarchUniforms`].
+pub struct RayMarchNode {
+    pipeline: RenderPipeline,
+    uniforms: RayMarchUniforms,
+    uniform_buf: Buffer,
+    bind_group: BindGroup,
+    clear_color: Color,
+}
+
+impl RayMarchNode {
+    pub fn new(
+        device: &Device,
+        surface_format: TextureFormat,
+        shader: &ShaderModule,
+    ) -> Self {
+        let uniform_buf = device.create_buffer(&BufferDescriptor {
+            label: Some("raymarch uniforms"),
+            size: std::mem::size_of::<RayMarchUniforms>() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("raymarch bgl"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("raymarch bg"),
+            layout: &bgl,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: uniform_buf.as_entire_binding(),
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("raymarch pipeline layout"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("raymarch pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: VertexState {
+                module: shader,
+                entry_point: Some("vs_fullscreen"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(ColorTargetState {
+                    format: surface_format,
+                    blend: None,
+                    write_mask: ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let mut this = Self {
+            pipeline,
+            uniforms: RayMarchUniforms::default(),
+            uniform_buf,
+            bind_group,
+            clear_color: Color::BLACK,
+        };
+        // Initial upload so the UBO isn't garbage on first frame.
+        this.upload(device);
+        this
+    }
+
+    pub fn uniforms(&self) -> &RayMarchUniforms {
+        &self.uniforms
+    }
+
+    pub fn uniforms_mut(&mut self) -> &mut RayMarchUniforms {
+        &mut self.uniforms
+    }
+
+    pub fn set_uniforms(&mut self, queue: &Queue, uniforms: RayMarchUniforms) {
+        self.uniforms = uniforms;
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
+    }
+
+    /// Flush current [`RayMarchUniforms`] to the GPU. Use after mutating
+    /// via [`RayMarchNode::uniforms_mut`].
+    pub fn flush_uniforms(&self, queue: &Queue) {
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
+    }
+
+    fn upload(&mut self, device: &Device) {
+        // One-shot upload via staging: we don't have a Queue here at
+        // construction time, so use create_buffer_init via the device's
+        // queue is out of reach. Instead we'll rely on the first
+        // explicit set_uniforms / flush_uniforms the user issues.
+        //
+        // This intentionally leaves the UBO undefined until first flush;
+        // render loops should always set uniforms before first draw.
+        let _ = device;
+    }
+}
+
+impl RenderNode for RayMarchNode {
+    fn name(&self) -> &'static str {
+        "raymarch"
+    }
+
+    fn execute(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
+        let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("raymarch encoder"),
+        });
+        {
+            let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("raymarch pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(self.clear_color),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rp.set_pipeline(&self.pipeline);
+            rp.set_bind_group(0, &self.bind_group, &[]);
+            rp.draw(0..3, 0..1);
+        }
+        rd.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+}

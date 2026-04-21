@@ -1,0 +1,10 @@
+[package]
+name = "rye-time"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Rye time primitives: deterministic fixed-timestep accumulator and tick counter."
+
+[dependencies]

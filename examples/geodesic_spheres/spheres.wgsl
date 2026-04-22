@@ -43,7 +43,7 @@ fn march_geodesic(ro_scene: vec3<f32>, rd_scene: vec3<f32>) -> vec4<f32> {
     // camera-space points into that coordinate chart.
     let scale = max(u.ball_scale, 1e-5);
     var p_space = ro_scene * scale;
-    let rd_space = safe_normalize(rd_scene, vec3<f32>(0.0, 0.0, -1.0));
+    var v_space = safe_normalize(rd_scene, vec3<f32>(0.0, 0.0, -1.0));
     var t_scene = 0.0;
 
     let hit_eps = 0.001 * scale;
@@ -59,7 +59,10 @@ fn march_geodesic(ro_scene: vec3<f32>, rd_scene: vec3<f32>) -> vec4<f32> {
         }
 
         let step_space = max(d_space * 0.8, min_step);
-        p_space = rye_exp(p_space, rd_space * step_space);
+        let next_p_space = rye_exp(p_space, v_space * step_space);
+        let next_v_space = rye_parallel_transport(p_space, next_p_space, v_space);
+        p_space = next_p_space;
+        v_space = safe_normalize(next_v_space, v_space);
         t_scene = t_scene + step_space / scale;
     }
     return vec4<f32>(0.0, 0.0, 0.0, -1.0);

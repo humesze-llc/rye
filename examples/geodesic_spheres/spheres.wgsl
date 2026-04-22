@@ -43,8 +43,20 @@ fn march_geodesic(ro_scene: vec3<f32>, rd_scene: vec3<f32>) -> vec4<f32> {
     // camera-space points into that coordinate chart.
     let scale = max(u.ball_scale, 1e-5);
     var p_space = ro_scene * scale;
-    var v_space = safe_normalize(rd_scene, vec3<f32>(0.0, 0.0, -1.0));
+
+    // Initialize direction as a Riemannian-unit tangent vector at p_space.
+    // A Euclidean-unit 3D direction is only Riemannian-unit at the origin;
+    // in curved spaces the Riemannian norm of v at p differs from |v|_E.
+    // We probe it via the ABI: distance(p, exp(p, v*ε))/ε → Riemannian |v|.
+    // This is space-agnostic and needs no internal space knowledge.
+    let rd_unit = safe_normalize(rd_scene, vec3<f32>(0.0, 0.0, -1.0));
+    let probe_eps = 1e-4;
+    let probed = rye_exp(p_space, rd_unit * probe_eps);
+    let riem_norm = rye_distance(p_space, probed) / probe_eps;
+    var v_space = rd_unit / max(riem_norm, 1e-7);
+
     var t_scene = 0.0;
+    var t_arc = 0.0;
 
     let hit_eps = 0.001 * scale;
     let min_step = 0.00015 * scale;
@@ -54,7 +66,7 @@ fn march_geodesic(ro_scene: vec3<f32>, rd_scene: vec3<f32>) -> vec4<f32> {
         if (d_space < hit_eps) {
             return vec4<f32>(p_space, t_scene);
         }
-        if (t_scene > 20.0) {
+        if (t_scene > 20.0 || t_arc > RYE_MAX_ARC) {
             return vec4<f32>(0.0, 0.0, 0.0, -1.0);
         }
 
@@ -62,8 +74,14 @@ fn march_geodesic(ro_scene: vec3<f32>, rd_scene: vec3<f32>) -> vec4<f32> {
         let next_p_space = rye_exp(p_space, v_space * step_space);
         let next_v_space = rye_parallel_transport(p_space, next_p_space, v_space);
         p_space = next_p_space;
-        v_space = safe_normalize(next_v_space, v_space);
+        // Do NOT Euclidean-renormalize here. rye_parallel_transport preserves
+        // the Riemannian norm (|v4| = |(v, -dot(v,p)/w)|); renormalizing the
+        // 3D part Euclideally corrupts it. In S³, the error compounds (steps
+        // grow with positive curvature) and t_arc underestimates actual arc,
+        // letting geodesic wraparound through before RYE_MAX_ARC fires.
+        v_space = select(v_space, next_v_space, dot(next_v_space, next_v_space) > 1e-12);
         t_scene = t_scene + step_space / scale;
+        t_arc = t_arc + step_space;
     }
     return vec4<f32>(0.0, 0.0, 0.0, -1.0);
 }

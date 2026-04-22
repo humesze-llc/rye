@@ -48,16 +48,35 @@ fn mandelbulb_de(p: vec3<f32>) -> f32 {
     return 0.5 * log(max(r, 1e-4)) * r / dr;
 }
 
-fn march(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
-    var t = 0.0;
+fn march_geodesic(ro_scene: vec3<f32>, rd_scene: vec3<f32>) -> vec4<f32> {
+    // Scene geometry (Mandelbulb SDF) is authored in Euclidean scene units.
+    // The active Space prelude operates in space coordinates, so we map:
+    //   p_space = p_scene * ball_scale
+    // and scale tangent-step magnitudes accordingly.
+    let scale = max(u.ball_scale, 1e-5);
+    var p_space = ro_scene * scale;
+    var v_space = rd_scene * scale;
+    var t_scene = 0.0;
+
     for (var i = 0; i < 128; i = i + 1) {
-        let p = ro + rd * t;
-        let d = mandelbulb_de(p);
-        if (d < 0.001) { return t; }
-        if (t > 20.0) { return -1.0; }
-        t = t + d * 0.9;
+        let p_scene = p_space / scale;
+        let d_scene = mandelbulb_de(p_scene);
+        if (d_scene < 0.001) {
+            return vec4<f32>(p_scene, t_scene);
+        }
+        if (t_scene > 20.0) {
+            return vec4<f32>(0.0, 0.0, 0.0, -1.0);
+        }
+
+        let step_scene = d_scene * 0.9;
+        let step_space = step_scene * scale;
+        let next_p_space = rye_exp(p_space, v_space * step_space);
+        let next_v_space = rye_parallel_transport(p_space, next_p_space, v_space);
+        p_space = next_p_space;
+        v_space = next_v_space;
+        t_scene = t_scene + step_scene;
     }
-    return -1.0;
+    return vec4<f32>(0.0, 0.0, 0.0, -1.0);
 }
 
 fn estimate_normal(p: vec3<f32>) -> vec3<f32> {
@@ -85,22 +104,24 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         + u.camera_up * ndc.y * u.fov_y_tan
     );
 
-    let t = march(u.camera_pos, rd);
+    let march_out = march_geodesic(u.camera_pos, rd);
+    let t = march_out.w;
     if (t < 0.0) {
         let horizon = (rd.y + 1.0) * 0.5;
         let sky = mix(vec3<f32>(0.03, 0.04, 0.10), vec3<f32>(0.08, 0.10, 0.18), horizon);
         return vec4<f32>(sky, 1.0);
     }
 
-    let hit = u.camera_pos + rd * t;
+    let hit = march_out.xyz;
     let n = estimate_normal(hit);
     let sun_dir = normalize(vec3<f32>(0.4, 0.7, 0.3));
     let diffuse = max(dot(n, sun_dir), 0.0);
     let ambient = 0.15;
 
-    // Exercise the rye-math Space prelude: camera-to-hit distance comes
-    // from rye_distance, so swapping the host Space for HyperbolicH3
-    // changes shading without touching the SDF or ray march.
+    // Exercise the rye-math Space prelude: geodesic stepping is handled
+    // by rye_exp / rye_parallel_transport, and camera-to-hit fog uses
+    // rye_distance. Swapping the host Space changes both trajectory and
+    // attenuation without rewriting the Mandelbulb SDF.
     //
     // `ball_scale` maps Euclidean scene coords into the unit Poincaré
     // ball when the host Space is hyperbolic. In Euclidean mode it is

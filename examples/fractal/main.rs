@@ -13,16 +13,18 @@
 //! ## Modes
 //!
 //! Pass `--hyperbolic` to swap the WGSL prelude from `EuclideanR3` to
-//! `HyperbolicH3`. The SDF, camera, and ray march are unchanged; only
-//! `rye_distance` (used for fog) becomes geodesic-hyperbolic. Distant
+//! `HyperbolicH3`. The Mandelbulb SDF stays in scene coordinates, but
+//! ray stepping follows Space geodesics via `rye_exp` and
+//! `rye_parallel_transport`, and fog uses `rye_distance`. Distant
 //! features dim more aggressively because hyperbolic distances grow
 //! faster than Euclidean ones far from the origin.
 //!
 //! Pass `--spherical` to use `SphericalS3`. Points are interpreted as
 //! upper-hemisphere coordinates (`|p|² < 1`), so the scene is rescaled
-//! to keep the fractal inside the valid domain. Fog uses geodesic
-//! distances on the 3-sphere; wrapping effects appear when rays approach
-//! the equator (`|p|² → 1`).
+//! to keep the fractal inside the valid domain. Geodesic ray stepping
+//! and fog both run in S³, so trajectories and attenuation can diverge
+//! from Euclidean and H³ output as rays approach the equator
+//! (`|p|² → 1`).
 //!
 //! Default (no flag) is Euclidean and produces byte-identical output to
 //! prior versions of this example.

@@ -9,7 +9,7 @@ The long-term goal is an engine where **non-Euclidean geometry is a primitive**,
 Two concrete milestones I'm working toward:
 
 1. **A fractal renderer** - a shader-driven ray-march tool I can actually sit down and use.
-2. **A Super Hexagon/Infinite Pizza-style game** - you play a low-poly sphere falling through a deterministic zoom of a hyperbolic fractal. The sphere warps according to the local metric as the space around it changes.
+2. **A Super Hexagon/Infinite Pizza-style game** - you play a sphere falling through a deterministic zoom of a hyperbolic fractal. The sphere warps according to the local metric as the space around it changes.
 
 Further out: an interactive development toolkit that grows with the engine.
 

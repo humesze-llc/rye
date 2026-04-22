@@ -1,33 +1,12 @@
-//! Rye's first graphics example: a live Mandelbulb raymarcher.
+//! Geodesic spheres raymarch demo.
 //!
-//! Demonstrates the Phase 1 stack end-to-end:
-//! - rye-math's `WgslSpace` → shader prelude (`rye_distance` in WGSL)
-//! - rye-asset's file watcher → shader hot reload
-//! - rye-shader's ShaderDb → compiled modules, keyed by path
-//! - rye-render's RayMarchNode → fullscreen triangle + UBO
-//! - rye-time's FixedTimestep → deterministic tick counter
+//! This example uses the same renderer stack as `examples/fractal`, but
+//! injects a scene module from `rye-sdf`:
+//! - Space prelude from `rye-math` (`rye_distance`, `rye_exp`, ...)
+//! - scene module from `rye-sdf` (`rye_scene_sdf`)
+//! - user shader from `examples/geodesic_spheres/spheres.wgsl`
 //!
-//! Edit `examples/fractal/fractal.wgsl` while the example runs and the
-//! scene recompiles on save.
-//!
-//! ## Modes
-//!
-//! Pass `--hyperbolic` to swap the WGSL prelude from `EuclideanR3` to
-//! `HyperbolicH3`. The Mandelbulb SDF stays in scene coordinates, but
-//! ray stepping follows Space geodesics via `rye_exp` and
-//! `rye_parallel_transport`, and fog uses `rye_distance`. Distant
-//! features dim more aggressively because hyperbolic distances grow
-//! faster than Euclidean ones far from the origin.
-//!
-//! Pass `--spherical` to use `SphericalS3`. Points are interpreted as
-//! upper-hemisphere coordinates (`|p|² < 1`), so the scene is rescaled
-//! to keep the fractal inside the valid domain. Geodesic ray stepping
-//! and fog both run in S³, so trajectories and attenuation can diverge
-//! from Euclidean and H³ output as rays approach the equator
-//! (`|p|² → 1`).
-//!
-//! Default (no flag) is Euclidean and produces byte-identical output to
-//! prior versions of this example.
+//! Run with `--hyperbolic` or `--spherical` to swap the Space prelude.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,6 +20,7 @@ use rye_render::{
     graph::RenderNode,
     raymarch::{RayMarchNode, RayMarchUniforms},
 };
+use rye_sdf::geodesic_spheres_demo_wgsl;
 use rye_shader::{ShaderDb, ShaderId};
 use rye_time::FixedTimestep;
 use winit::{
@@ -51,40 +31,37 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
+#[path = "../fractal/camera.rs"]
 mod camera;
 
 use camera::{CameraState, InputState};
 
 fn shader_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/fractal")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/geodesic_spheres")
 }
 
 fn shader_path() -> PathBuf {
-    shader_dir().join("fractal.wgsl")
+    shader_dir().join("spheres.wgsl")
 }
 
-/// Typed layout for `RayMarchUniforms::params` in the fractal shader.
+/// Typed layout for `RayMarchUniforms::params`.
 ///
-/// Must match the `power_offset / ball_scale / fog_scale / params_pad`
-/// field order in `fractal.wgsl`'s `Uniforms` struct.
-struct FractalParams {
-    power_offset: f32,
+/// Layout matches:
+/// - `power_offset` (reserved slot)
+/// - `ball_scale`
+/// - `fog_scale`
+/// - `params_pad`
+struct SceneParams {
     ball_scale: f32,
     fog_scale: f32,
 }
 
-impl FractalParams {
+impl SceneParams {
     fn as_array(&self) -> [f32; 4] {
-        [self.power_offset, self.ball_scale, self.fog_scale, 0.0]
+        [0.0, self.ball_scale, self.fog_scale, 0.0]
     }
 }
 
-/// Per-mode shader knobs the host pushes into the uniform buffer.
-///
-/// `ball_scale` maps Euclidean scene coords into the unit Poincaré ball
-/// before the H³ prelude consumes them; in Euclidean mode it stays at
-/// 1.0. `fog_scale` is the distance at which fog goes opaque; smaller
-/// for hyperbolic because geodesic distances grow faster.
 #[derive(Clone, Copy)]
 struct ShaderKnobs {
     ball_scale: f32,
@@ -93,24 +70,21 @@ struct ShaderKnobs {
 }
 
 const EUCLIDEAN_KNOBS: ShaderKnobs = ShaderKnobs {
-    ball_scale: 1.0,
-    fog_scale: 12.0,
-    title: "Rye — Mandelbulb",
+    ball_scale: 0.2,
+    fog_scale: 3.2,
+    title: "Rye - Geodesic Spheres",
 };
 
 const HYPERBOLIC_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: 0.2,
-    fog_scale: 4.0,
-    title: "Rye — Mandelbulb (H³ fog)",
+    fog_scale: 3.0,
+    title: "Rye - Geodesic Spheres (H3 fog)",
 };
 
-// S³ domain is |p|² < 1 (upper hemisphere). ball_scale compresses the
-// fractal into roughly |p| < 0.6 so geodesic wrapping is visible but
-// points stay comfortably inside the valid region.
 const SPHERICAL_KNOBS: ShaderKnobs = ShaderKnobs {
-    ball_scale: 0.15,
-    fog_scale: 2.5,
-    title: "Rye — Mandelbulb (S³ fog)",
+    ball_scale: 0.2,
+    fog_scale: 2.6,
+    title: "Rye - Geodesic Spheres (S3 fog)",
 };
 
 struct App<S: WgslSpace + 'static> {
@@ -195,8 +169,7 @@ impl<S: WgslSpace + 'static> App<S> {
             resolution: [config.width as f32, config.height as f32],
             time: t,
             tick: self.timestep.tick() as f32,
-            params: FractalParams {
-                power_offset: 0.0,
+            params: SceneParams {
                 ball_scale: self.knobs.ball_scale,
                 fog_scale: self.knobs.fog_scale,
             }
@@ -219,9 +192,10 @@ impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
         let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
 
         let mut shaders = ShaderDb::new(rd.device.clone());
+        let scene_module = geodesic_spheres_demo_wgsl();
         let id = shaders
-            .load(shader_path(), &self.space)
-            .expect("load fractal.wgsl");
+            .load_with_scene(shader_path(), &scene_module, &self.space)
+            .expect("load spheres.wgsl");
         let gen = shaders.generation(id);
 
         let mut watcher = AssetWatcher::new().expect("asset watcher");

@@ -110,6 +110,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     );
 
     let sky = sky_color(rd);
+    let sky_linear = pow(max(sky, vec3<f32>(0.0, 0.0, 0.0)), vec3<f32>(2.2));
     let march_out = march_geodesic(u.camera_pos, rd);
     let t = march_out.w;
     if (t < 0.0) {
@@ -139,6 +140,6 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
     let base = vec3<f32>(0.35 + 0.3 * n.x, 0.55 + 0.2 * n.y, 0.9);
     let lit = base * (diffuse + ambient);
-    let shaded = mix(lit, sky, fog);
+    let shaded = mix(lit, sky_linear, fog);
     return vec4<f32>(pow(max(shaded, vec3<f32>(0.0, 0.0, 0.0)), vec3<f32>(1.0 / 2.2)), 1.0);
 }

@@ -48,9 +48,7 @@ fn clamp_to_hemisphere(p: Vec3) -> Vec3 {
         p
     } else {
         #[cfg(debug_assertions)]
-        tracing::warn!(
-            "SphericalS3: point outside upper hemisphere clamped (|p|²={r2:.4})"
-        );
+        tracing::warn!("SphericalS3: point outside upper hemisphere clamped (|p|²={r2:.4})");
         p * (SPHERE_R2_MAX.sqrt() / r2.sqrt())
     }
 }
@@ -165,10 +163,10 @@ impl Space for SphericalS3 {
     }
 
     fn exp(&self, at: Vec3, v: Vec3) -> Vec3 {
+        let at = clamp_to_hemisphere(at);
         if v.length_squared() < 1e-14 {
             return at;
         }
-        let at = clamp_to_hemisphere(at);
         let q = to_sphere(at);
         // Lift v to a 4D tangent perpendicular to q.
         // Constraint: dot(v4, q) = dot(v, at) + vw·q.w = 0 → vw = −dot(v,at)/q.w
@@ -275,9 +273,9 @@ fn rye_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {
 }
 
 fn rye_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
-    let n2 = dot(v, v);
-    if (n2 < 1e-14) { return at; }
     let p = rye_s3_clamp(at);
+    let n2 = dot(v, v);
+    if (n2 < 1e-14) { return p; }
     let q = rye_s3_lift(p);
     let vw = -dot(v, p) / q.w;
     let v4 = vec4<f32>(v.x, v.y, v.z, vw);
@@ -322,14 +320,6 @@ mod tests {
         SphericalS3
     }
 
-    fn assert_close(a: f32, b: f32, eps: f32) {
-        assert!(
-            (a - b).abs() <= eps,
-            "expected {a} ≈ {b} (within {eps}), diff = {}",
-            (a - b).abs()
-        );
-    }
-
     #[test]
     fn to_sphere_from_sphere_round_trip() {
         let p = Vec3::new(0.2, -0.3, 0.1);
@@ -372,6 +362,18 @@ mod tests {
         assert_relative_eq!(recovered.x, b.x, epsilon = 1e-5);
         assert_relative_eq!(recovered.y, b.y, epsilon = 1e-5);
         assert_relative_eq!(recovered.z, b.z, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn exp_tiny_vector_clamps_out_of_domain_basepoint() {
+        let s = s3();
+        let at = Vec3::new(2.0, 0.0, 0.0);
+        let tiny = Vec3::new(1e-8, 0.0, 0.0);
+        let got = s.exp(at, tiny);
+        let want = clamp_to_hemisphere(at);
+        assert_relative_eq!(got.x, want.x, epsilon = 1e-6);
+        assert_relative_eq!(got.y, want.y, epsilon = 1e-6);
+        assert_relative_eq!(got.z, want.z, epsilon = 1e-6);
     }
 
     #[test]

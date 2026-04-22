@@ -215,7 +215,7 @@ mod tests {
     use super::*;
     use bytemuck::{Pod, Zeroable};
     use glam::Vec3;
-    use rye_math::{EuclideanR3, HyperbolicH3, SphericalS3, Space, WgslSpace};
+    use rye_math::{EuclideanR3, HyperbolicH3, Space, SphericalS3, WgslSpace};
 
     const ABI_PROBE: &str = r#"
 @compute @workgroup_size(1)

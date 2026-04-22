@@ -215,7 +215,7 @@ mod tests {
     use super::*;
     use bytemuck::{Pod, Zeroable};
     use glam::Vec3;
-    use rye_math::{EuclideanR3, HyperbolicH3, Space, WgslSpace};
+    use rye_math::{EuclideanR3, HyperbolicH3, Space, SphericalS3, WgslSpace};
 
     const ABI_PROBE: &str = r#"
 @compute @workgroup_size(1)
@@ -266,6 +266,12 @@ fn main() {
     fn hyperbolic_space_prelude_validates_against_abi_probe() {
         let src = assemble_source(&HyperbolicH3.wgsl_impl(), ABI_PROBE);
         validate_wgsl(&src).expect("HyperbolicH3 WGSL prelude should validate");
+    }
+
+    #[test]
+    fn spherical_space_prelude_validates_against_abi_probe() {
+        let src = assemble_source(&SphericalS3.wgsl_impl(), ABI_PROBE);
+        validate_wgsl(&src).expect("SphericalS3 WGSL prelude should validate");
     }
 
     #[repr(C)]
@@ -334,6 +340,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ];
         let out = pollster::block_on(run_gpu_probe(&space, &cases)).expect("GPU probe");
         assert_probe_matches_cpu(&space, &cases, &out, 1e-5);
+    }
+
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
+    fn spherical_space_gpu_probe_matches_cpu() {
+        let space = SphericalS3;
+        // Points must be inside the upper hemisphere: |p|² < 1.
+        let cases = [
+            gpu_case(
+                Vec3::new(0.1, 0.2, 0.3),
+                Vec3::new(0.2, -0.1, 0.05),
+                Vec3::new(0.01, 0.02, -0.03),
+            ),
+            gpu_case(
+                Vec3::new(-0.3, 0.4, 0.1),
+                Vec3::new(0.2, 0.3, -0.2),
+                Vec3::new(0.02, -0.01, 0.015),
+            ),
+        ];
+        let out = pollster::block_on(run_gpu_probe(&space, &cases)).expect("GPU probe");
+        assert_probe_matches_cpu(&space, &cases, &out, 2e-4);
     }
 
     #[test]

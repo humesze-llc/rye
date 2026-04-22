@@ -18,6 +18,12 @@
 //! features dim more aggressively because hyperbolic distances grow
 //! faster than Euclidean ones far from the origin.
 //!
+//! Pass `--spherical` to use `SphericalS3`. Points are interpreted as
+//! upper-hemisphere coordinates (`|p|² < 1`), so the scene is rescaled
+//! to keep the fractal inside the valid domain. Fog uses geodesic
+//! distances on the 3-sphere; wrapping effects appear when rays approach
+//! the equator (`|p|² → 1`).
+//!
 //! Default (no flag) is Euclidean and produces byte-identical output to
 //! prior versions of this example.
 
@@ -27,7 +33,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use rye_asset::AssetWatcher;
-use rye_math::{EuclideanR3, HyperbolicH3, WgslSpace};
+use rye_math::{EuclideanR3, HyperbolicH3, SphericalS3, WgslSpace};
 use rye_render::{
     device::RenderDevice,
     graph::RenderNode,
@@ -94,6 +100,15 @@ const HYPERBOLIC_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: 0.2,
     fog_scale: 4.0,
     title: "Rye — Mandelbulb (H³ fog)",
+};
+
+// S³ domain is |p|² < 1 (upper hemisphere). ball_scale compresses the
+// fractal into roughly |p| < 0.6 so geodesic wrapping is visible but
+// points stay comfortably inside the valid region.
+const SPHERICAL_KNOBS: ShaderKnobs = ShaderKnobs {
+    ball_scale: 0.15,
+    fog_scale: 2.5,
+    title: "Rye — Mandelbulb (S³ fog)",
 };
 
 struct App<S: WgslSpace + 'static> {
@@ -341,10 +356,15 @@ fn main() -> Result<()> {
         )
         .init();
 
-    let hyperbolic = std::env::args().any(|a| a == "--hyperbolic");
+    let args: Vec<String> = std::env::args().collect();
+    let hyperbolic = args.iter().any(|a| a == "--hyperbolic");
+    let spherical = args.iter().any(|a| a == "--spherical");
     let event_loop: EventLoop<()> = EventLoop::new()?;
     if hyperbolic {
         let mut app = App::new(HyperbolicH3, HYPERBOLIC_KNOBS);
+        event_loop.run_app(&mut app)?;
+    } else if spherical {
+        let mut app = App::new(SphericalS3, SPHERICAL_KNOBS);
         event_loop.run_app(&mut app)?;
     } else {
         let mut app = App::new(EuclideanR3, EUCLIDEAN_KNOBS);

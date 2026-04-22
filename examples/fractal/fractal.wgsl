@@ -1,4 +1,4 @@
-// Mandelbulb raymarcher — the fractal demo for Rye.
+// Geodesic SDF raymarcher — the fractal demo for Rye.
 //
 // Edit this file while the example is running; the ShaderDb watcher
 // recompiles and RayMarchNode rebuilds on the next frame.
@@ -28,48 +28,28 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32
     return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
 }
 
-fn mandelbulb_de(p: vec3<f32>) -> f32 {
-    var z = p;
-    var dr = 1.0;
-    var r = 0.0;
-    let power = 8.0 + u.power_offset;
-    let iterations = 8;
-    for (var i = 0; i < iterations; i = i + 1) {
-        r = length(z);
-        if (r > 2.0) { break; }
-        let theta = acos(clamp(z.z / r, -1.0, 1.0));
-        let phi = atan2(z.y, z.x);
-        dr = pow(r, power - 1.0) * power * dr + 1.0;
-        let zr = pow(r, power);
-        let nt = theta * power;
-        let np = phi * power;
-        z = zr * vec3<f32>(sin(nt) * cos(np), sin(nt) * sin(np), cos(nt)) + p;
-    }
-    return 0.5 * log(max(r, 1e-4)) * r / dr;
+fn scene_de_space(p_space: vec3<f32>) -> f32 {
+    return rye_scene_sdf(p_space);
 }
 
 fn march_geodesic(ro_scene: vec3<f32>, rd_scene: vec3<f32>) -> vec4<f32> {
-    // Scene geometry (Mandelbulb SDF) is authored in Euclidean scene units.
-    // The active Space prelude operates in space coordinates, so we map:
-    //   p_space = p_scene * ball_scale
-    // and scale tangent-step magnitudes accordingly.
+    // Scene SDF is evaluated in Space coordinates.
     let scale = max(u.ball_scale, 1e-5);
     var p_space = ro_scene * scale;
-    var v_space = rd_scene * scale;
+    var v_space = rd_scene;
     var t_scene = 0.0;
 
     for (var i = 0; i < 128; i = i + 1) {
-        let p_scene = p_space / scale;
-        let d_scene = mandelbulb_de(p_scene);
-        if (d_scene < 0.001) {
-            return vec4<f32>(p_scene, t_scene);
+        let d_space = scene_de_space(p_space);
+        if (d_space < 0.001 * scale) {
+            return vec4<f32>(p_space, t_scene);
         }
         if (t_scene > 20.0) {
             return vec4<f32>(0.0, 0.0, 0.0, -1.0);
         }
 
-        let step_scene = d_scene * 0.9;
-        let step_space = step_scene * scale;
+        let step_space = d_space * 0.9;
+        let step_scene = step_space / scale;
         let next_p_space = rye_exp(p_space, v_space * step_space);
         let next_v_space = rye_parallel_transport(p_space, next_p_space, v_space);
         p_space = next_p_space;
@@ -85,9 +65,9 @@ fn estimate_normal(p: vec3<f32>) -> vec3<f32> {
     let ey = vec3<f32>(0.0, eps, 0.0);
     let ez = vec3<f32>(0.0, 0.0, eps);
     return normalize(vec3<f32>(
-        mandelbulb_de(p + ex) - mandelbulb_de(p - ex),
-        mandelbulb_de(p + ey) - mandelbulb_de(p - ey),
-        mandelbulb_de(p + ez) - mandelbulb_de(p - ez),
+        scene_de_space(p + ex) - scene_de_space(p - ex),
+        scene_de_space(p + ey) - scene_de_space(p - ey),
+        scene_de_space(p + ez) - scene_de_space(p - ez),
     ));
 }
 
@@ -112,22 +92,20 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         return vec4<f32>(sky, 1.0);
     }
 
-    let hit = march_out.xyz;
-    let n = estimate_normal(hit);
+    let hit_space = march_out.xyz;
+    let hit = hit_space / max(u.ball_scale, 1e-5);
+    let n = estimate_normal(hit_space);
     let sun_dir = normalize(vec3<f32>(0.4, 0.7, 0.3));
     let diffuse = max(dot(n, sun_dir), 0.0);
     let ambient = 0.15;
 
     // Exercise the rye-math Space prelude: geodesic stepping is handled
-    // by rye_exp / rye_parallel_transport, and camera-to-hit fog uses
-    // rye_distance. Swapping the host Space changes both trajectory and
-    // attenuation without rewriting the Mandelbulb SDF.
+    // by rye_exp / rye_parallel_transport, scene SDF uses rye_distance
+    // internally, and camera-to-hit fog also uses rye_distance.
     //
-    // `ball_scale` maps Euclidean scene coords into the unit Poincaré
-    // ball when the host Space is hyperbolic. In Euclidean mode it is
-    // 1.0, so this is a no-op and the output is byte-identical to the
-    // pre-flag version. `fog_scale` is the distance at which fog goes
-    // fully opaque.
+    // `ball_scale` maps Euclidean scene coords into the active Space
+    // coordinates consumed by the scene module and prelude. `fog_scale`
+    // is the distance at which fog goes fully opaque.
     let scaled_pos = u.camera_pos * u.ball_scale;
     let scaled_hit = hit * u.ball_scale;
     let cam_dist = rye_distance(scaled_pos, scaled_hit);

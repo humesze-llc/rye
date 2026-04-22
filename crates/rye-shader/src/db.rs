@@ -24,6 +24,7 @@ pub struct ShaderId(u32);
 struct Entry {
     path: PathBuf,
     module: ShaderModule,
+    scene_source: Option<String>,
     /// Incremented on every successful (re)compile. Render code caches
     /// the generation it last built a pipeline against; mismatch means
     /// the pipeline needs rebuilding.
@@ -63,10 +64,32 @@ impl ShaderDb {
     /// the same path. Call [`ShaderDb::load`] twice with the same path
     /// and you get the same ID and a fresh compilation.
     pub fn load<S: WgslSpace>(&mut self, path: impl AsRef<Path>, space: &S) -> Result<ShaderId> {
+        self.load_inner(path, None, space)
+    }
+
+    /// Load a shader from disk with an additional scene module.
+    ///
+    /// The scene source is stored with the entry and reused on hot
+    /// reloads of the shader file.
+    pub fn load_with_scene<S: WgslSpace>(
+        &mut self,
+        path: impl AsRef<Path>,
+        scene_source: &str,
+        space: &S,
+    ) -> Result<ShaderId> {
+        self.load_inner(path, Some(scene_source), space)
+    }
+
+    fn load_inner<S: WgslSpace>(
+        &mut self,
+        path: impl AsRef<Path>,
+        scene_source: Option<&str>,
+        space: &S,
+    ) -> Result<ShaderId> {
         let path = canonicalize(path.as_ref())?;
         let source = std::fs::read_to_string(&path)
             .with_context(|| format!("reading shader {}", path.display()))?;
-        let module = self.compile(&path, &source, space)?;
+        let module = self.compile(&path, &source, scene_source, space)?;
 
         let label = path
             .file_name()
@@ -76,6 +99,7 @@ impl ShaderDb {
         if let Some(&id) = self.path_index.get(&path) {
             let entry = self.entries.get_mut(&id).expect("path_index out of sync");
             entry.module = module;
+            entry.scene_source = scene_source.map(str::to_owned);
             entry.generation += 1;
             entry.label = label;
             Ok(id)
@@ -87,6 +111,7 @@ impl ShaderDb {
                 Entry {
                     path: path.clone(),
                     module,
+                    scene_source: scene_source.map(str::to_owned),
                     generation: 1,
                     label,
                 },
@@ -148,9 +173,10 @@ impl ShaderDb {
 
     fn reload<S: WgslSpace>(&mut self, id: ShaderId, space: &S) -> Result<()> {
         let path = self.entries[&id].path.clone();
+        let scene_source = self.entries[&id].scene_source.clone();
         let source = std::fs::read_to_string(&path)
             .with_context(|| format!("reading shader {}", path.display()))?;
-        let module = self.compile(&path, &source, space)?;
+        let module = self.compile(&path, &source, scene_source.as_deref(), space)?;
         let entry = self.entries.get_mut(&id).expect("id just looked up");
         entry.module = module;
         entry.generation += 1;
@@ -161,9 +187,10 @@ impl ShaderDb {
         &self,
         path: &Path,
         user_source: &str,
+        scene_source: Option<&str>,
         space: &S,
     ) -> Result<ShaderModule> {
-        let full = assemble_source(&space.wgsl_impl(), user_source);
+        let full = assemble_source_with_scene(&space.wgsl_impl(), scene_source, user_source);
         validate_wgsl(&full).with_context(|| format!("validating shader {}", path.display()))?;
         let label = path.file_name().and_then(|n| n.to_str());
         Ok(self.device.create_shader_module(ShaderModuleDescriptor {
@@ -182,12 +209,29 @@ fn canonicalize(path: &Path) -> Result<PathBuf> {
 ///
 /// Extracted for testability — this is the hot-reloadable logic that
 /// doesn't require a wgpu Device.
+#[cfg(test)]
 pub(crate) fn assemble_source(space_wgsl: &str, user_source: &str) -> String {
-    let mut out = String::with_capacity(space_wgsl.len() + user_source.len() + 64);
+    assemble_source_with_scene(space_wgsl, None, user_source)
+}
+
+pub(crate) fn assemble_source_with_scene(
+    space_wgsl: &str,
+    scene_wgsl: Option<&str>,
+    user_source: &str,
+) -> String {
+    let scene_len = scene_wgsl.map(str::len).unwrap_or(0);
+    let mut out = String::with_capacity(space_wgsl.len() + scene_len + user_source.len() + 96);
     out.push_str("// ---- rye-math Space prelude ----\n");
     out.push_str(space_wgsl);
     if !space_wgsl.ends_with('\n') {
         out.push('\n');
+    }
+    if let Some(scene_wgsl) = scene_wgsl {
+        out.push_str("// ---- rye-sdf scene module ----\n");
+        out.push_str(scene_wgsl);
+        if !scene_wgsl.ends_with('\n') {
+            out.push('\n');
+        }
     }
     out.push_str("// ---- user shader ----\n");
     out.push_str(user_source);
@@ -254,6 +298,15 @@ fn main() {
         // No double newline from our side; the input one is sufficient.
         assert!(!s.contains("fn a() {}\n\n// ---- user shader ----"));
         assert!(s.contains("fn a() {}\n// ---- user shader ----"));
+    }
+
+    #[test]
+    fn assemble_includes_scene_between_space_and_user() {
+        let s = assemble_source_with_scene("fn space() {}", Some("fn scene() {}"), "fn user() {}");
+        let i_space = s.find("fn space() {}").expect("space chunk present");
+        let i_scene = s.find("fn scene() {}").expect("scene chunk present");
+        let i_user = s.find("fn user() {}").expect("user chunk present");
+        assert!(i_space < i_scene && i_scene < i_user);
     }
 
     #[test]

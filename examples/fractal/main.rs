@@ -1,4 +1,4 @@
-//! Rye's first graphics example: a live Mandelbulb raymarcher.
+//! Rye's first graphics example: a live geodesic SDF raymarcher.
 //!
 //! Demonstrates the Phase 1 stack end-to-end:
 //! - rye-math's `WgslSpace` → shader prelude (`rye_distance` in WGSL)
@@ -13,7 +13,7 @@
 //! ## Modes
 //!
 //! Pass `--hyperbolic` to swap the WGSL prelude from `EuclideanR3` to
-//! `HyperbolicH3`. The Mandelbulb SDF stays in scene coordinates, but
+//! `HyperbolicH3`. The scene module stays fixed, but
 //! ray stepping follows Space geodesics via `rye_exp` and
 //! `rye_parallel_transport`, and fog uses `rye_distance`. Distant
 //! features dim more aggressively because hyperbolic distances grow
@@ -26,8 +26,7 @@
 //! from Euclidean and H³ output as rays approach the equator
 //! (`|p|² → 1`).
 //!
-//! Default (no flag) is Euclidean and produces byte-identical output to
-//! prior versions of this example.
+//! Default (no flag) is Euclidean.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,6 +40,7 @@ use rye_render::{
     graph::RenderNode,
     raymarch::{RayMarchNode, RayMarchUniforms},
 };
+use rye_sdf::geodesic_spheres_demo_wgsl;
 use rye_shader::{ShaderDb, ShaderId};
 use rye_time::FixedTimestep;
 use winit::{
@@ -93,24 +93,24 @@ struct ShaderKnobs {
 }
 
 const EUCLIDEAN_KNOBS: ShaderKnobs = ShaderKnobs {
-    ball_scale: 1.0,
-    fog_scale: 12.0,
-    title: "Rye — Mandelbulb",
+    ball_scale: 0.2,
+    fog_scale: 3.2,
+    title: "Rye — Geodesic SDF",
 };
 
 const HYPERBOLIC_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: 0.2,
-    fog_scale: 4.0,
-    title: "Rye — Mandelbulb (H³ fog)",
+    fog_scale: 3.0,
+    title: "Rye — Geodesic SDF (H³ fog)",
 };
 
 // S³ domain is |p|² < 1 (upper hemisphere). ball_scale compresses the
 // fractal into roughly |p| < 0.6 so geodesic wrapping is visible but
 // points stay comfortably inside the valid region.
 const SPHERICAL_KNOBS: ShaderKnobs = ShaderKnobs {
-    ball_scale: 0.15,
-    fog_scale: 2.5,
-    title: "Rye — Mandelbulb (S³ fog)",
+    ball_scale: 0.2,
+    fog_scale: 2.6,
+    title: "Rye — Geodesic SDF (S³ fog)",
 };
 
 struct App<S: WgslSpace + 'static> {
@@ -219,8 +219,9 @@ impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
         let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
 
         let mut shaders = ShaderDb::new(rd.device.clone());
+        let scene_module = geodesic_spheres_demo_wgsl();
         let id = shaders
-            .load(shader_path(), &self.space)
+            .load_with_scene(shader_path(), &scene_module, &self.space)
             .expect("load fractal.wgsl");
         let gen = shaders.generation(id);
 

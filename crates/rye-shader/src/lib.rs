@@ -3,8 +3,9 @@
 //! [`ShaderDb`] owns compiled `wgpu::ShaderModule`s and rebuilds them on
 //! filesystem events from [`rye_asset::AssetWatcher`]. When a shader is
 //! loaded, the active [`rye_math::WgslSpace`]'s `wgsl_impl` is prepended
-//! to the user source, so shader authors can call `rye_distance`,
-//! `rye_exp`, etc. without manually importing anything.
+//! to the user source (and an optional scene module can be inserted
+//! between them), so shader authors can call `rye_distance`, `rye_exp`,
+//! etc. without manually importing anything.
 //!
 //! ## Scope note
 //!

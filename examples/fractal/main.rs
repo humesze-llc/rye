@@ -130,6 +130,10 @@ struct App<S: WgslSpace + 'static> {
     camera: CameraState,
     input: InputState,
     start: Instant,
+
+    frame_count: u32,
+    last_fps_update: Instant,
+    fps: f32,
 }
 
 impl<S: WgslSpace + 'static> App<S> {
@@ -149,6 +153,9 @@ impl<S: WgslSpace + 'static> App<S> {
             camera: CameraState::default(),
             input: InputState::default(),
             start: Instant::now(),
+            frame_count: 0,
+            last_fps_update: Instant::now(),
+            fps: 0.0,
         }
     }
 
@@ -308,6 +315,21 @@ impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
                     self.camera.advance(input);
                 }
                 self.handle_hot_reload();
+
+                // FPS counter: update window title once per second.
+                self.frame_count += 1;
+                let fps_elapsed = self.last_fps_update.elapsed().as_secs_f32();
+                if fps_elapsed >= 1.0 {
+                    self.fps = self.frame_count as f32 / fps_elapsed;
+                    self.frame_count = 0;
+                    self.last_fps_update = Instant::now();
+                    let cam = self.camera.view();
+                    let p = cam.position;
+                    win.set_title(&format!(
+                        "{} | {:.0} fps | pos ({:.2}, {:.2}, {:.2})",
+                        self.knobs.title, self.fps, p.x, p.y, p.z,
+                    ));
+                }
 
                 let Some(uniforms) = self.current_uniforms() else {
                     return;

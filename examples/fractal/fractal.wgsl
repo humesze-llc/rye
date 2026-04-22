@@ -38,7 +38,7 @@ fn mandelbulb_de(p: vec3<f32>) -> f32 {
     var dr = 1.0;
     var r = 0.0;
     let power = 8.0 + u.power_offset;
-    let iterations = 8;
+    let iterations = 12;
     for (var i = 0; i < iterations; i = i + 1) {
         r = length(z);
         if (r > 2.0) { break; }
@@ -53,35 +53,52 @@ fn mandelbulb_de(p: vec3<f32>) -> f32 {
     return 0.5 * log(max(r, 1e-4)) * r / dr;
 }
 
-fn march_geodesic(ro_scene: vec3<f32>, rd_scene: vec3<f32>) -> vec4<f32> {
-    // Scene geometry (Mandelbulb SDF) is authored in Euclidean scene units.
-    // The active Space prelude operates in space coordinates, so we map:
-    //   p_space = p_scene * ball_scale
-    // and scale tangent-step magnitudes accordingly.
-    let scale = max(u.ball_scale, 1e-5);
-    var p_space = ro_scene * scale;
-    var v_space = rd_scene * scale;
-    var t_scene = 0.0;
+// Debug heat-map: set to 1 to visualise march iteration count instead of
+// shading. Blue = miss/fast, red = slow convergence, white = hit surface.
+// Useful for diagnosing space-specific march artifacts.
+const DEBUG_ITER_HEAT: bool = false;
+
+// Returns vec4(hit_pos_scene, t_scene) on hit, vec4(0,0,0,-1) on miss.
+// w2 encodes iteration count for the debug heat-map (always filled).
+struct MarchResult {
+    pos: vec3<f32>,
+    t: f32,
+    iters: f32,
+    t_arc: f32,
+}
+
+fn march_geodesic(ro_scene: vec3<f32>, rd_scene: vec3<f32>) -> MarchResult {
+    // The Mandelbulb SDF is Euclidean: authored in flat R³ scene coordinates.
+    // Combining a Euclidean SDF with geodesic ray steps requires a correct
+    // chart inverse (p_scene = f(p_space)), which is non-trivial and space-
+    // dependent. The inverse p_space/scale is only accurate at the origin.
+    //
+    // We therefore march Euclidean rays and apply Space geometry only where
+    // it is well-defined: in the fog computation via rye_distance. This gives
+    // correct curved-space attenuation (H³ fog grows faster; S³ fog saturates
+    // at π) without phantom-surface artifacts from coordinate conversion error.
+    //
+    // Future: add rye_origin_distance(p) to the Space ABI and use
+    //   p_scene = normalize(p_space) * rye_origin_distance(p_space) / scale
+    // to enable geodesic ray bending with a geometrically correct SDF lookup.
+    var p = ro_scene;
+    var t = 0.0;
+    var iters = 0.0;
 
     for (var i = 0; i < 128; i = i + 1) {
-        let p_scene = p_space / scale;
-        let d_scene = mandelbulb_de(p_scene);
-        if (d_scene < 0.001) {
-            return vec4<f32>(p_scene, t_scene);
+        iters = f32(i);
+        let d = mandelbulb_de(p);
+        if (d < 0.001) {
+            return MarchResult(p, t, iters, t * u.ball_scale);
         }
-        if (t_scene > 20.0) {
-            return vec4<f32>(0.0, 0.0, 0.0, -1.0);
+        if (t > 20.0) {
+            return MarchResult(vec3<f32>(0.0), -1.0, iters, t * u.ball_scale);
         }
-
-        let step_scene = d_scene * 0.9;
-        let step_space = step_scene * scale;
-        let next_p_space = rye_exp(p_space, v_space * step_space);
-        let next_v_space = rye_parallel_transport(p_space, next_p_space, v_space);
-        p_space = next_p_space;
-        v_space = next_v_space;
-        t_scene = t_scene + step_scene;
+        let step = max(d * 0.9, 0.001);
+        p = p + rd_scene * step;
+        t = t + step;
     }
-    return vec4<f32>(0.0, 0.0, 0.0, -1.0);
+    return MarchResult(vec3<f32>(0.0), -1.0, 128.0, t * u.ball_scale);
 }
 
 fn estimate_normal(p: vec3<f32>) -> vec3<f32> {
@@ -111,13 +128,22 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
     let sky = sky_color(rd);
     let sky_linear = pow(max(sky, vec3<f32>(0.0, 0.0, 0.0)), vec3<f32>(2.2));
-    let march_out = march_geodesic(u.camera_pos, rd);
-    let t = march_out.w;
-    if (t < 0.0) {
+    let mr = march_geodesic(u.camera_pos, rd);
+
+    // Debug heat-map: blue = miss/fast, yellow = slow, red = max iters.
+    if (DEBUG_ITER_HEAT) {
+        let heat = mr.iters / 128.0;
+        let miss = select(0.0, 1.0, mr.t < 0.0);
+        // arc fill: green channel shows arc fraction consumed
+        let arc_frac = clamp(mr.t_arc / max(RYE_MAX_ARC, 1e-5), 0.0, 1.0);
+        return vec4<f32>(heat, arc_frac * (1.0 - miss), miss * 0.5, 1.0);
+    }
+
+    if (mr.t < 0.0) {
         return vec4<f32>(sky, 1.0);
     }
 
-    let hit = march_out.xyz;
+    let hit = mr.pos;
     let n = estimate_normal(hit);
     let sun_dir = normalize(vec3<f32>(0.4, 0.7, 0.3));
     let diffuse = max(dot(n, sun_dir), 0.0);

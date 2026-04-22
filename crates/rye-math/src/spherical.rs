@@ -176,7 +176,8 @@ impl Space for SphericalS3 {
         if mag < 1e-7 {
             return at;
         }
-        from_sphere(q * mag.cos() + v4 * (mag.sin() / mag))
+        let result4 = (q * mag.cos() + v4 * (mag.sin() / mag)).normalize();
+        clamp_to_hemisphere(result4.truncate())
     }
 
     fn log(&self, from: Vec3, to: Vec3) -> Vec3 {
@@ -252,6 +253,11 @@ const WGSL_IMPL: &str = r#"
 // rye-math :: SphericalS3 (v0 Space WGSL ABI)
 // Upper hemisphere: points are vec3 with |p|² < 1, embedded in S³ as
 // (p.x, p.y, p.z, sqrt(1 − |p|²)). Origin = north pole (0,0,0,1).
+// Cap geodesic arcs well under π so rays cannot wrap past the S³ equator
+// and hit the scene from behind. With ball_scale=0.15 the full t_scene=20
+// budget only reaches t_arc≈3.0; cap at 1.5 to cut off wraparound while
+// leaving the entire front hemisphere reachable (fractal fits in ~0.75).
+const RYE_MAX_ARC: f32 = 1.5;
 const RYE_S3_R2_MAX: f32 = 0.999999;
 
 fn rye_s3_clamp(p: vec3<f32>) -> vec3<f32> {
@@ -263,6 +269,11 @@ fn rye_s3_clamp(p: vec3<f32>) -> vec3<f32> {
 fn rye_s3_lift(p: vec3<f32>) -> vec4<f32> {
     let r2 = min(dot(p, p), RYE_S3_R2_MAX);
     return vec4<f32>(p.x, p.y, p.z, sqrt(1.0 - r2));
+}
+
+fn rye_origin_distance(p: vec3<f32>) -> f32 {
+    let r2 = min(dot(p, p), RYE_S3_R2_MAX);
+    return acos(sqrt(1.0 - r2));
 }
 
 fn rye_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {
@@ -280,9 +291,9 @@ fn rye_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
     let vw = -dot(v, p) / q.w;
     let v4 = vec4<f32>(v.x, v.y, v.z, vw);
     let mag = length(v4);
-    if (mag < 1e-7) { return at; }
-    let result = q * cos(mag) + v4 * (sin(mag) / mag);
-    return result.xyz;
+    if (mag < 1e-7) { return p; }
+    let result4 = normalize(q * cos(mag) + v4 * (sin(mag) / mag));
+    return rye_s3_clamp(result4.xyz);
 }
 
 fn rye_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {

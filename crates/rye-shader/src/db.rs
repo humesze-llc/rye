@@ -268,9 +268,11 @@ fn main() {
     let b = vec3<f32>(0.2, -0.1, 0.05);
     let v = vec3<f32>(0.01, 0.02, -0.03);
     _ = rye_distance(a, b);
+    _ = rye_origin_distance(a);
     _ = rye_exp(a, v);
     _ = rye_log(a, b);
     _ = rye_parallel_transport(a, b, v);
+    _ = RYE_MAX_ARC;
 }
 "#;
 

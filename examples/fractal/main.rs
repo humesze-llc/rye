@@ -125,9 +125,16 @@ struct App<S: WgslSpace + 'static> {
 
 // Split out capture args so we can re-use them in resumed().
 struct CaptureArgs {
-    path: Option<PathBuf>,
+    apng_path: Option<PathBuf>,
+    gif_path: Option<PathBuf>,
     frames: u32,
     fps: u32,
+}
+
+impl CaptureArgs {
+    fn any_path(&self) -> Option<&PathBuf> {
+        self.apng_path.as_ref().or(self.gif_path.as_ref())
+    }
 }
 
 struct AppRunner<S: WgslSpace + 'static> {
@@ -142,7 +149,7 @@ impl<S: WgslSpace + 'static> AppRunner<S> {
         rotate: bool,
         capture_args: CaptureArgs,
     ) -> Self {
-        let rotate_yaw_per_frame = if capture_args.path.is_some() && capture_args.frames > 0 {
+        let rotate_yaw_per_frame = if capture_args.any_path().is_some() && capture_args.frames > 0 {
             std::f32::consts::TAU / capture_args.frames as f32
         } else {
             ROTATE_YAW_INTERACTIVE
@@ -242,7 +249,8 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
         let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
 
         // Build capture now that we know the surface size.
-        if let Some(ref path) = self.capture_args.path {
+        if let Some(path) = self.capture_args.any_path() {
+            let path = path.clone(); // reborrow ends here
             let w = rd.surface_bundle.config.width;
             let h = rd.surface_bundle.config.height;
             let cap = FrameCapture::new(self.capture_args.frames, self.capture_args.fps, w, h);
@@ -411,10 +419,12 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                         // After present: check if capture is complete.
                         let done = self.app.capture.as_ref().map_or(false, |c| c.is_done());
                         if done {
-                            if let (Some(cap), Some(path)) =
-                                (&self.app.capture, &self.capture_args.path)
-                            {
-                                cap.save_apng(path).expect("save apng");
+                            if let Some(cap) = &self.app.capture {
+                                if let Some(path) = &self.capture_args.apng_path {
+                                    cap.save_apng(path).expect("save apng");
+                                } else if let Some(path) = &self.capture_args.gif_path {
+                                    cap.save_gif(path).expect("save gif");
+                                }
                             }
                             elwt.exit();
                             return;
@@ -467,14 +477,18 @@ fn main() -> Result<()> {
         .windows(2)
         .find(|w| w[0] == "--capture-apng")
         .map(|w| PathBuf::from(&w[1]));
+    let capture_gif: Option<PathBuf> = args
+        .windows(2)
+        .find(|w| w[0] == "--capture-gif")
+        .map(|w| PathBuf::from(&w[1]));
     let capture_frames: u32 = parse_flag_value(&args, "--capture-frames", 300);
     let capture_fps: u32 = parse_flag_value(&args, "--capture-fps", 30);
 
-    // --rotate is implied when --capture-apng is given.
-    let rotate = rotate || capture_apng.is_some();
+    let rotate = rotate || capture_apng.is_some() || capture_gif.is_some();
 
     let cap_args = CaptureArgs {
-        path: capture_apng,
+        apng_path: capture_apng,
+        gif_path: capture_gif,
         frames: capture_frames,
         fps: capture_fps,
     };

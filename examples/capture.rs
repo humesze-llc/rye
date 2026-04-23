@@ -152,6 +152,40 @@ impl FrameCapture {
         Ok(())
     }
 
+    /// Encode all captured frames as a looping GIF (256-color palette per frame).
+    pub fn save_gif(&self, path: &Path) -> Result<()> {
+        use std::fs::File;
+        use std::io::BufWriter;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let file = BufWriter::new(File::create(path)?);
+        let mut encoder = gif::Encoder::new(file, self.width as u16, self.height as u16, &[])?;
+        encoder.set_repeat(gif::Repeat::Infinite)?;
+
+        // Centiseconds per frame (GIF delay unit).
+        let delay_cs = (100u16).saturating_div(self.fps as u16).max(1);
+
+        for rgba in &self.frames {
+            let mut frame =
+                gif::Frame::from_rgba_speed(self.width as u16, self.height as u16, &mut rgba.clone(), 10);
+            frame.delay = delay_cs;
+            encoder.write_frame(&frame)?;
+        }
+
+        tracing::info!(
+            "saved {} frames → {:?} ({}×{} @ {} fps, GIF)",
+            self.frames.len(),
+            path,
+            self.width,
+            self.height,
+            self.fps,
+        );
+        Ok(())
+    }
+
     /// Save all frames as numbered PNGs for offline processing (rye-diag, ffmpeg).
     #[allow(dead_code)]
     pub fn save_pngs(&self, dir: &Path) -> Result<()> {

@@ -83,22 +83,32 @@ const HYPERBOLIC_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: 0.2,
     fog_scale: 3.0,
     title: "Rye - Geodesic Spheres (H3 fog)",
-    capture_distance: 5.5,
+    // capture_distance * ball_scale must be < 1.0 (Poincaré ball constraint).
+    // 4.5 * 0.2 = 0.9, safely inside H³.
+    capture_distance: 4.5,
 };
 
 const SPHERICAL_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: 0.2,
     fog_scale: 2.6,
     title: "Rye - Geodesic Spheres (S3 fog)",
-    capture_distance: 5.5,
+    // Same upper-hemisphere constraint as H³: distance * ball_scale < 1.0.
+    capture_distance: 4.5,
 };
 
 const ROTATE_YAW_INTERACTIVE: f32 = std::f32::consts::TAU / (60.0 * 20.0);
 
 struct CaptureArgs {
-    path: Option<PathBuf>,
+    apng_path: Option<PathBuf>,
+    gif_path: Option<PathBuf>,
     frames: u32,
     fps: u32,
+}
+
+impl CaptureArgs {
+    fn any_path(&self) -> Option<&PathBuf> {
+        self.apng_path.as_ref().or(self.gif_path.as_ref())
+    }
 }
 
 struct App<S: WgslSpace + 'static> {
@@ -131,7 +141,7 @@ struct AppRunner<S: WgslSpace + 'static> {
 
 impl<S: WgslSpace + 'static> AppRunner<S> {
     fn new(space: S, knobs: ShaderKnobs, rotate: bool, capture_args: CaptureArgs) -> Self {
-        let rotate_yaw_per_frame = if capture_args.path.is_some() && capture_args.frames > 0 {
+        let rotate_yaw_per_frame = if capture_args.any_path().is_some() && capture_args.frames > 0 {
             std::f32::consts::TAU / capture_args.frames as f32
         } else {
             ROTATE_YAW_INTERACTIVE
@@ -226,7 +236,8 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
 
         let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
 
-        if let Some(ref path) = self.capture_args.path {
+        if let Some(path) = self.capture_args.any_path() {
+            let path = path.clone();
             let w = rd.surface_bundle.config.width;
             let h = rd.surface_bundle.config.height;
             let cap = FrameCapture::new(self.capture_args.frames, self.capture_args.fps, w, h);
@@ -239,7 +250,7 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                 self.capture_args.fps,
             );
             app.capture = Some(cap);
-            app.camera.set_orbit(app.knobs.capture_distance, 0.32);
+            app.camera.set_orbit(app.knobs.capture_distance, -0.60);
         }
 
         let mut shaders = ShaderDb::new(rd.device.clone());
@@ -368,10 +379,12 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
 
                         let done = self.app.capture.as_ref().map_or(false, |c| c.is_done());
                         if done {
-                            if let (Some(cap), Some(path)) =
-                                (&self.app.capture, &self.capture_args.path)
-                            {
-                                cap.save_apng(path).expect("save apng");
+                            if let Some(cap) = &self.app.capture {
+                                if let Some(path) = &self.capture_args.apng_path {
+                                    cap.save_apng(path).expect("save apng");
+                                } else if let Some(path) = &self.capture_args.gif_path {
+                                    cap.save_gif(path).expect("save gif");
+                                }
                             }
                             elwt.exit();
                             return;
@@ -424,13 +437,18 @@ fn main() -> Result<()> {
         .windows(2)
         .find(|w| w[0] == "--capture-apng")
         .map(|w| PathBuf::from(&w[1]));
+    let capture_gif: Option<PathBuf> = args
+        .windows(2)
+        .find(|w| w[0] == "--capture-gif")
+        .map(|w| PathBuf::from(&w[1]));
     let capture_frames: u32 = parse_flag_value(&args, "--capture-frames", 300);
     let capture_fps: u32 = parse_flag_value(&args, "--capture-fps", 30);
 
-    let rotate = rotate || capture_apng.is_some();
+    let rotate = rotate || capture_apng.is_some() || capture_gif.is_some();
 
     let cap_args = CaptureArgs {
-        path: capture_apng,
+        apng_path: capture_apng,
+        gif_path: capture_gif,
         frames: capture_frames,
         fps: capture_fps,
     };

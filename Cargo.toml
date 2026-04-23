@@ -71,3 +71,4 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 glam = { workspace = true }
 png = "0.17"
+gif = "0.13"

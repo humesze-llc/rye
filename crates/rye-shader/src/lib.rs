@@ -18,3 +18,8 @@
 mod db;
 
 pub use db::{validate_wgsl, ShaderDb, ShaderId, WgslValidationError};
+
+/// Geodesic ray march kernel: `rye_safe_normalize`, `rye_march_geodesic`,
+/// `rye_estimate_normal`. Assembled between the scene SDF and user shading
+/// WGSL by [`ShaderDb::load_geodesic_scene`].
+pub const GEODESIC_MARCH_KERNEL: &str = include_str!("kernel.wgsl");

@@ -2,7 +2,7 @@ pub mod device;
 pub mod graph;
 pub mod raymarch;
 
-pub use raymarch::{RayMarchNode, RayMarchUniforms};
+pub use raymarch::{GeodesicRayMarchNode, RayMarchNode, RayMarchUniforms};
 
 // #[cfg(feature = "2d")]
 // pub mod two_d;

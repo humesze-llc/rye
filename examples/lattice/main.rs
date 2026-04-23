@@ -26,10 +26,10 @@ use anyhow::Result;
 use rye_math::{EuclideanR3, HyperbolicH3, SphericalS3, WgslSpace};
 use rye_render::{
     device::RenderDevice,
-    raymarch::{RayMarchNode, RayMarchUniforms},
+    raymarch::{GeodesicRayMarchNode, RayMarchUniforms},
 };
 use rye_sdf::LatticeSphereScene;
-use rye_shader::validate_wgsl;
+use rye_shader::{validate_wgsl, GEODESIC_MARCH_KERNEL};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, WindowEvent},
@@ -79,12 +79,13 @@ impl CaptureArgs {
     }
 }
 
-/// Assemble Space prelude + scene module + user shader into a single WGSL string.
+/// Assemble Space prelude + scene SDF + geodesic kernel + user shader.
 fn assemble(prelude: &str, scene: &str, user: &str) -> String {
     format!(
         "// ---- rye-math Space prelude ----\n{prelude}\n\
          // ---- rye-sdf scene module ----\n{scene}\n\
-         // ---- user shader ----\n{user}"
+         // ---- rye geodesic march kernel ----\n{GEODESIC_MARCH_KERNEL}\n\
+         // ---- user shading ----\n{user}"
     )
 }
 
@@ -93,9 +94,9 @@ struct App {
     rd: Option<RenderDevice>,
     minimized: bool,
 
-    node_e3: Option<RayMarchNode>,
-    node_h3: Option<RayMarchNode>,
-    node_s3: Option<RayMarchNode>,
+    node_e3: Option<GeodesicRayMarchNode>,
+    node_h3: Option<GeodesicRayMarchNode>,
+    node_s3: Option<GeodesicRayMarchNode>,
 
     timestep: rye_time::FixedTimestep,
     camera: CameraState,
@@ -222,9 +223,9 @@ impl ApplicationHandler for AppRunner {
         let mod_h3 = make_module(&HyperbolicH3.wgsl_impl(), &scene_h3);
         let mod_s3 = make_module(&SphericalS3.wgsl_impl(), &scene_s3);
 
-        app.node_e3 = Some(RayMarchNode::new(&rd.device, fmt, &mod_e3));
-        app.node_h3 = Some(RayMarchNode::new(&rd.device, fmt, &mod_h3));
-        app.node_s3 = Some(RayMarchNode::new(&rd.device, fmt, &mod_s3));
+        app.node_e3 = Some(GeodesicRayMarchNode::from_module(&rd.device, fmt, &mod_e3));
+        app.node_h3 = Some(GeodesicRayMarchNode::from_module(&rd.device, fmt, &mod_h3));
+        app.node_s3 = Some(GeodesicRayMarchNode::from_module(&rd.device, fmt, &mod_s3));
 
         app.window = Some(win.clone());
         app.rd = Some(rd);

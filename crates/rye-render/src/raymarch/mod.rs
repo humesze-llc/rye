@@ -1,8 +1,7 @@
-//! Ray-march render node: fullscreen-triangle + single UBO + user fragment shader.
+//! Ray-march render nodes: fullscreen-triangle + single UBO + user fragment shader.
 //!
-//! The node is deliberately dumb: it owns a pipeline and a uniform
-//! buffer, nothing else. Hot-reload is handled outside — callers
-//! replace the node on shader generation change.
+//! [`RayMarchNode`]: general Euclidean-fast path; takes a pre-compiled `ShaderModule`.
+//! [`GeodesicRayMarchNode`]: curved-space path built for the 4-layer kernel assembly.
 //!
 //! The user shader must export two entry points:
 //!
@@ -12,6 +11,9 @@
 //! ```
 //!
 //! See [`RayMarchUniforms`] for the layout of bind group 0 / binding 0.
+
+mod geodesic;
+pub use geodesic::GeodesicRayMarchNode;
 
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};

@@ -31,7 +31,7 @@ use rye_math::{EuclideanR3, HyperbolicH3, SphericalS3, WgslSpace};
 use rye_render::{
     device::RenderDevice,
     graph::RenderNode,
-    raymarch::{RayMarchNode, RayMarchUniforms},
+    raymarch::{GeodesicRayMarchNode, RayMarchUniforms},
 };
 use rye_sdf::corridor_demo_wgsl;
 use rye_shader::{ShaderDb, ShaderId};
@@ -137,7 +137,7 @@ struct App<S: WgslSpace + 'static> {
     shader_id: Option<ShaderId>,
     shader_gen: u64,
     watcher: Option<AssetWatcher>,
-    ray_march: Option<RayMarchNode>,
+    ray_march: Option<GeodesicRayMarchNode>,
 
     timestep: FixedTimestep,
     camera: CameraState,
@@ -204,9 +204,9 @@ impl<S: WgslSpace + 'static> AppRunner<S> {
         shaders.apply_events(&events, &app.space);
         let new_gen = shaders.generation(id);
         if new_gen != app.shader_gen {
-            tracing::info!("rebuilding RayMarchNode for shader gen {new_gen}");
+            tracing::info!("rebuilding GeodesicRayMarchNode for shader gen {new_gen}");
             app.shader_gen = new_gen;
-            app.ray_march = Some(RayMarchNode::new(
+            app.ray_march = Some(GeodesicRayMarchNode::from_module(
                 &rd.device,
                 rd.surface_bundle.config.format,
                 shaders.module(id),
@@ -276,14 +276,14 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
         let mut shaders = ShaderDb::new(rd.device.clone());
         let scene_module = corridor_demo_wgsl();
         let id = shaders
-            .load_with_scene(shader_path(), &scene_module, &app.space)
+            .load_geodesic_scene(shader_path(), &scene_module, &app.space)
             .expect("load corridor.wgsl");
         let gen = shaders.generation(id);
 
         let mut watcher = AssetWatcher::new().expect("asset watcher");
         watcher.watch(shader_dir()).expect("watch shader dir");
 
-        let ray_march = RayMarchNode::new(
+        let ray_march = GeodesicRayMarchNode::from_module(
             &rd.device,
             rd.surface_bundle.config.format,
             shaders.module(id),

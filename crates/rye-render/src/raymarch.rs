@@ -185,12 +185,34 @@ impl RayMarchNode {
     }
 }
 
-impl RenderNode for RayMarchNode {
-    fn name(&self) -> &'static str {
-        "raymarch"
+impl RayMarchNode {
+    /// Execute into a sub-region of the view.
+    ///
+    /// `clear` selects `LoadOp::Clear` (first panel) or `LoadOp::Load`
+    /// (subsequent panels). `scissor` is `[x, y, width, height]` in pixels;
+    /// fragments outside this rect are discarded by the GPU.
+    pub fn execute_panel(
+        &mut self,
+        rd: &RenderDevice,
+        view: &wgpu::TextureView,
+        clear: bool,
+        scissor: [u32; 4],
+    ) -> Result<()> {
+        self.execute_impl(rd, view, clear, Some(scissor))
     }
 
-    fn execute(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
+    fn execute_impl(
+        &mut self,
+        rd: &RenderDevice,
+        view: &wgpu::TextureView,
+        clear: bool,
+        scissor: Option<[u32; 4]>,
+    ) -> Result<()> {
+        let load = if clear {
+            LoadOp::Clear(self.clear_color)
+        } else {
+            LoadOp::Load
+        };
         let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("raymarch encoder"),
         });
@@ -201,10 +223,7 @@ impl RenderNode for RayMarchNode {
                     view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(self.clear_color),
-                        store: StoreOp::Store,
-                    },
+                    ops: Operations { load, store: StoreOp::Store },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -212,9 +231,22 @@ impl RenderNode for RayMarchNode {
             });
             rp.set_pipeline(&self.pipeline);
             rp.set_bind_group(0, &self.bind_group, &[]);
+            if let Some([x, y, w, h]) = scissor {
+                rp.set_scissor_rect(x, y, w, h);
+            }
             rp.draw(0..3, 0..1);
         }
         rd.queue.submit(Some(encoder.finish()));
         Ok(())
+    }
+}
+
+impl RenderNode for RayMarchNode {
+    fn name(&self) -> &'static str {
+        "raymarch"
+    }
+
+    fn execute(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
+        self.execute_impl(rd, view, true, None)
     }
 }

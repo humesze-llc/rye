@@ -80,6 +80,28 @@ impl ShaderDb {
         self.load_inner(path, Some(scene_source), space)
     }
 
+    /// Load a shader from disk for geodesic ray marching.
+    ///
+    /// Assembles four layers: Space prelude + scene SDF + geodesic march
+    /// kernel ([`crate::GEODESIC_MARCH_KERNEL`]) + user shading WGSL.
+    /// The kernel defines `rye_march_geodesic`, `rye_estimate_normal`, and
+    /// `rye_safe_normalize` for the user shading fragment to call.
+    ///
+    /// The assembled scene + kernel is stored and reused on hot reloads of
+    /// the user shading file.
+    pub fn load_geodesic_scene<S: WgslSpace>(
+        &mut self,
+        path: impl AsRef<Path>,
+        scene_source: &str,
+        space: &S,
+    ) -> Result<ShaderId> {
+        let scene_with_kernel = format!(
+            "{scene_source}// ---- rye geodesic march kernel ----\n{}",
+            crate::GEODESIC_MARCH_KERNEL
+        );
+        self.load_inner(path, Some(&scene_with_kernel), space)
+    }
+
     fn load_inner<S: WgslSpace>(
         &mut self,
         path: impl AsRef<Path>,
@@ -327,6 +349,51 @@ fn main() {
     fn spherical_space_prelude_validates_against_abi_probe() {
         let src = assemble_source(&SphericalS3.wgsl_impl(), ABI_PROBE);
         validate_wgsl(&src).expect("SphericalS3 WGSL prelude should validate");
+    }
+
+    // Minimal stub of rye_scene_sdf so the kernel has something to call.
+    const KERNEL_SCENE: &str = r#"
+fn rye_scene_sdf(p: vec3<f32>) -> f32 {
+    return rye_distance(p, vec3<f32>(0.0, 0.0, 0.0)) - 0.25;
+}
+"#;
+
+    // Compute probe that exercises all three kernel entry points.
+    const KERNEL_PROBE: &str = r#"
+@compute @workgroup_size(1)
+fn main() {
+    let ro = vec3<f32>(0.0, 0.0, 2.0);
+    let rd = vec3<f32>(0.0, 0.0, -1.0);
+    _ = rye_march_geodesic(ro, rd, 0.2);
+    _ = rye_estimate_normal(vec3<f32>(0.0, 0.0, 0.0), 0.2);
+    _ = rye_safe_normalize(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0));
+}
+"#;
+
+    fn assemble_geodesic_probe(space_wgsl: &str) -> String {
+        assemble_source_with_scene(
+            space_wgsl,
+            Some(&format!("{KERNEL_SCENE}{}", crate::GEODESIC_MARCH_KERNEL)),
+            KERNEL_PROBE,
+        )
+    }
+
+    #[test]
+    fn euclidean_geodesic_kernel_validates() {
+        let src = assemble_geodesic_probe(&EuclideanR3.wgsl_impl());
+        validate_wgsl(&src).expect("EuclideanR3 + geodesic kernel should validate");
+    }
+
+    #[test]
+    fn hyperbolic_geodesic_kernel_validates() {
+        let src = assemble_geodesic_probe(&HyperbolicH3.wgsl_impl());
+        validate_wgsl(&src).expect("HyperbolicH3 + geodesic kernel should validate");
+    }
+
+    #[test]
+    fn spherical_geodesic_kernel_validates() {
+        let src = assemble_geodesic_probe(&SphericalS3.wgsl_impl());
+        validate_wgsl(&src).expect("SphericalS3 + geodesic kernel should validate");
     }
 
     #[repr(C)]

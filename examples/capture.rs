@@ -52,8 +52,7 @@ impl FrameCapture {
 
         // bytes_per_row must be a multiple of COPY_BYTES_PER_ROW_ALIGNMENT (256).
         let bytes_per_row_unaligned = width * 4;
-        let bytes_per_row = (bytes_per_row_unaligned + COPY_BYTES_PER_ROW_ALIGNMENT - 1)
-            / COPY_BYTES_PER_ROW_ALIGNMENT
+        let bytes_per_row = bytes_per_row_unaligned.div_ceil(COPY_BYTES_PER_ROW_ALIGNMENT)
             * COPY_BYTES_PER_ROW_ALIGNMENT;
 
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -169,8 +168,12 @@ impl FrameCapture {
         let delay_cs = (100u16).saturating_div(self.fps as u16).max(1);
 
         for rgba in &self.frames {
-            let mut frame =
-                gif::Frame::from_rgba_speed(self.width as u16, self.height as u16, &mut rgba.clone(), 10);
+            let mut frame = gif::Frame::from_rgba_speed(
+                self.width as u16,
+                self.height as u16,
+                &mut rgba.clone(),
+                10,
+            );
             frame.delay = delay_cs;
             encoder.write_frame(&frame)?;
         }

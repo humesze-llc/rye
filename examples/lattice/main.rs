@@ -210,10 +210,11 @@ impl ApplicationHandler for AppRunner {
         let make_module = |prelude: &str, scene: &str| {
             let full = assemble(prelude, scene, &user_src);
             validate_wgsl(&full).expect("lattice shader should validate");
-            rd.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("lattice"),
-                source: wgpu::ShaderSource::Wgsl(full.into()),
-            })
+            rd.device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("lattice"),
+                    source: wgpu::ShaderSource::Wgsl(full.into()),
+                })
         };
 
         let fmt = rd.surface_bundle.config.format;
@@ -240,7 +241,9 @@ impl ApplicationHandler for AppRunner {
         _id: winit::window::WindowId,
         ev: WindowEvent,
     ) {
-        let Some(win) = self.app.window.clone() else { return };
+        let Some(win) = self.app.window.clone() else {
+            return;
+        };
         let app = &mut self.app;
 
         match ev {
@@ -277,7 +280,9 @@ impl ApplicationHandler for AppRunner {
             }
 
             WindowEvent::RedrawRequested => {
-                if app.minimized { return; }
+                if app.minimized {
+                    return;
+                }
 
                 let ticks = app.timestep.advance(Instant::now());
                 if !ticks.is_empty() {
@@ -299,13 +304,19 @@ impl ApplicationHandler for AppRunner {
 
                 // Upload uniforms for all three panels.
                 {
-                    let u_e3 = self.panel_uniforms(w, h, 0,        pw,  0.0, FOG_E3);
-                    let u_h3 = self.panel_uniforms(w, h, pw,       pw,  1.0, FOG_H3);
-                    let u_s3 = self.panel_uniforms(w, h, pw * 2,   pw2, 2.0, FOG_S3);
+                    let u_e3 = self.panel_uniforms(w, h, 0, pw, 0.0, FOG_E3);
+                    let u_h3 = self.panel_uniforms(w, h, pw, pw, 1.0, FOG_H3);
+                    let u_s3 = self.panel_uniforms(w, h, pw * 2, pw2, 2.0, FOG_S3);
                     let rd = self.app.rd.as_ref().unwrap();
-                    if let Some(n) = &mut self.app.node_e3 { n.set_uniforms(&rd.queue, u_e3); }
-                    if let Some(n) = &mut self.app.node_h3 { n.set_uniforms(&rd.queue, u_h3); }
-                    if let Some(n) = &mut self.app.node_s3 { n.set_uniforms(&rd.queue, u_s3); }
+                    if let Some(n) = &mut self.app.node_e3 {
+                        n.set_uniforms(&rd.queue, u_e3);
+                    }
+                    if let Some(n) = &mut self.app.node_h3 {
+                        n.set_uniforms(&rd.queue, u_h3);
+                    }
+                    if let Some(n) = &mut self.app.node_s3 {
+                        n.set_uniforms(&rd.queue, u_s3);
+                    }
                 }
 
                 let rd = self.app.rd.as_ref().unwrap();
@@ -345,7 +356,7 @@ impl ApplicationHandler for AppRunner {
 
                         frame.present();
 
-                        let done = self.app.capture.as_ref().map_or(false, |c| c.is_done());
+                        let done = self.app.capture.as_ref().is_some_and(|c| c.is_done());
                         if done {
                             if let Some(cap) = &self.app.capture {
                                 if let Some(path) = &self.capture_args.apng_path {
@@ -392,8 +403,7 @@ fn parse_flag_value<T: std::str::FromStr>(args: &[String], flag: &str, default: 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 

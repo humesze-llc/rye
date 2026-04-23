@@ -377,7 +377,7 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
 
                         frame.present();
 
-                        let done = self.app.capture.as_ref().map_or(false, |c| c.is_done());
+                        let done = self.app.capture.as_ref().is_some_and(|c| c.is_done());
                         if done {
                             if let Some(cap) = &self.app.capture {
                                 if let Some(path) = &self.capture_args.apng_path {
@@ -424,8 +424,7 @@ fn parse_flag_value<T: std::str::FromStr>(args: &[String], flag: &str, default: 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 

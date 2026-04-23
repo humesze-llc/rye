@@ -185,9 +185,18 @@ impl CorridorScene {
         );
         let mut out = String::new();
         out.push_str("// ---- rye-sdf scene module: corridor ----\n");
-        out.push_str(&format!("const RYE_CORR_HALF_W: f32 = {:.6};\n", self.half_width));
-        out.push_str(&format!("const RYE_CORR_HALF_H: f32 = {:.6};\n", self.half_height));
-        out.push_str(&format!("const RYE_CORR_HALF_D: f32 = {:.6};\n", self.half_depth));
+        out.push_str(&format!(
+            "const RYE_CORR_HALF_W: f32 = {:.6};\n",
+            self.half_width
+        ));
+        out.push_str(&format!(
+            "const RYE_CORR_HALF_H: f32 = {:.6};\n",
+            self.half_height
+        ));
+        out.push_str(&format!(
+            "const RYE_CORR_HALF_D: f32 = {:.6};\n",
+            self.half_depth
+        ));
         out.push_str(&format!(
             "const RYE_CORR_PILLAR_R: f32 = {:.6};\n",
             self.pillar_radius
@@ -292,9 +301,12 @@ impl LatticeSphereScene {
         let mut centers: Vec<Vec3> = vec![Vec3::ZERO];
 
         let axes = [
-            Vec3::X, Vec3::NEG_X,
-            Vec3::Y, Vec3::NEG_Y,
-            Vec3::Z, Vec3::NEG_Z,
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::Z,
+            Vec3::NEG_Z,
         ];
         for axis in axes {
             for k in 1..=self.steps {

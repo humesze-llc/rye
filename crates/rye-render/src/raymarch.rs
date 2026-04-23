@@ -223,7 +223,10 @@ impl RayMarchNode {
                     view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: Operations { load, store: StoreOp::Store },
+                    ops: Operations {
+                        load,
+                        store: StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,

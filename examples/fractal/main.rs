@@ -143,12 +143,7 @@ struct AppRunner<S: WgslSpace + 'static> {
 }
 
 impl<S: WgslSpace + 'static> AppRunner<S> {
-    fn new(
-        space: S,
-        knobs: ShaderKnobs,
-        rotate: bool,
-        capture_args: CaptureArgs,
-    ) -> Self {
+    fn new(space: S, knobs: ShaderKnobs, rotate: bool, capture_args: CaptureArgs) -> Self {
         let rotate_yaw_per_frame = if capture_args.any_path().is_some() && capture_args.frames > 0 {
             std::f32::consts::TAU / capture_args.frames as f32
         } else {
@@ -417,7 +412,7 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                         frame.present();
 
                         // After present: check if capture is complete.
-                        let done = self.app.capture.as_ref().map_or(false, |c| c.is_done());
+                        let done = self.app.capture.as_ref().is_some_and(|c| c.is_done());
                         if done {
                             if let Some(cap) = &self.app.capture {
                                 if let Some(path) = &self.capture_args.apng_path {
@@ -464,8 +459,7 @@ fn parse_flag_value<T: std::str::FromStr>(args: &[String], flag: &str, default: 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 

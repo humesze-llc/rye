@@ -1,13 +1,13 @@
-/// WGSL combinator helpers.
-///
-/// Each combinator emits a named WGSL function that takes pre-evaluated
-/// distance values and returns a combined distance. The Scene tree calls
-/// the SDF sub-functions first, stores results in `let` bindings, then
-/// passes them to the combinator function.
-///
-/// All combinators are Space-agnostic: they operate on scalar distances
-/// returned by `rye_distance`-based SDF functions, so they are correct
-/// in E³, H³, and S³ without modification.
+//! WGSL combinator helpers.
+//!
+//! Each combinator emits a named WGSL function that takes pre-evaluated
+//! distance values and returns a combined distance. The Scene tree calls
+//! the SDF sub-functions first, stores results in `let` bindings, then
+//! passes them to the combinator function.
+//!
+//! All combinators are Space-agnostic: they operate on scalar distances
+//! returned by `rye_distance`-based SDF functions, so they are correct
+//! in E³, H³, and S³ without modification.
 
 /// Emit a WGSL expression for the union (minimum) of two distances.
 ///
@@ -39,7 +39,5 @@ pub fn smooth_min_fn(name: &str, k: f32) -> String {
          \tlet h = clamp(0.5 + 0.5 * (b - a) / {k:.6}, 0.0, 1.0);\n\
          \treturn mix(b, a, h) - {k:.6} * h * (1.0 - h);\n\
          }}\n",
-        name = name,
-        k = k,
     )
 }

@@ -51,7 +51,8 @@ impl RenderDevice {
             .unwrap_or(caps.formats[0]);
 
         let config = SurfaceConfiguration {
-            usage: TextureUsages::RENDER_ATTACHMENT,
+            // COPY_SRC allows texture readback for frame capture.
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
             format,
             width: size.width,
             height: size.height,

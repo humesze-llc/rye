@@ -1,33 +1,16 @@
 //! Rye's first graphics example: a live Mandelbulb raymarcher.
 //!
-//! Demonstrates the Phase 1 stack end-to-end:
-//! - rye-math's `WgslSpace` → shader prelude (`rye_distance` in WGSL)
-//! - rye-asset's file watcher → shader hot reload
-//! - rye-shader's ShaderDb → compiled modules, keyed by path
-//! - rye-render's RayMarchNode → fullscreen triangle + UBO
-//! - rye-time's FixedTimestep → deterministic tick counter
-//!
 //! Edit `examples/fractal/fractal.wgsl` while the example runs and the
 //! scene recompiles on save.
 //!
-//! ## Modes
+//! ## Flags
 //!
-//! Pass `--hyperbolic` to swap the WGSL prelude from `EuclideanR3` to
-//! `HyperbolicH3`. The Mandelbulb SDF stays in scene coordinates, but
-//! ray stepping follows Space geodesics via `rye_exp` and
-//! `rye_parallel_transport`, and fog uses `rye_distance`. Distant
-//! features dim more aggressively because hyperbolic distances grow
-//! faster than Euclidean ones far from the origin.
-//!
-//! Pass `--spherical` to use `SphericalS3`. Points are interpreted as
-//! upper-hemisphere coordinates (`|p|² < 1`), so the scene is rescaled
-//! to keep the fractal inside the valid domain. Geodesic ray stepping
-//! and fog both run in S³, so trajectories and attenuation can diverge
-//! from Euclidean and H³ output as rays approach the equator
-//! (`|p|² → 1`).
-//!
-//! Default (no flag) is Euclidean and produces byte-identical output to
-//! prior versions of this example.
+//! `--hyperbolic`  — swap Space prelude to HyperbolicH3 (geodesic fog)
+//! `--spherical`   — swap Space prelude to SphericalS3
+//! `--rotate`      — auto-rotate camera; interactive at 1 rev/20 s
+//! `--capture-apng PATH`   — render N frames, save looping APNG, exit
+//! `--capture-frames N`    — frame count for APNG (default 300 = 10 s @ 30 fps)
+//! `--capture-fps N`       — playback fps baked into APNG (default 30)
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -52,8 +35,11 @@ use winit::{
 };
 
 mod camera;
+#[path = "../capture.rs"]
+mod capture;
 
 use camera::{CameraState, InputState};
+use capture::FrameCapture;
 
 fn shader_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/fractal")
@@ -63,10 +49,6 @@ fn shader_path() -> PathBuf {
     shader_dir().join("fractal.wgsl")
 }
 
-/// Typed layout for `RayMarchUniforms::params` in the fractal shader.
-///
-/// Must match the `power_offset / ball_scale / fog_scale / params_pad`
-/// field order in `fractal.wgsl`'s `Uniforms` struct.
 struct FractalParams {
     power_offset: f32,
     ball_scale: f32,
@@ -79,39 +61,38 @@ impl FractalParams {
     }
 }
 
-/// Per-mode shader knobs the host pushes into the uniform buffer.
-///
-/// `ball_scale` maps Euclidean scene coords into the unit Poincaré ball
-/// before the H³ prelude consumes them; in Euclidean mode it stays at
-/// 1.0. `fog_scale` is the distance at which fog goes opaque; smaller
-/// for hyperbolic because geodesic distances grow faster.
 #[derive(Clone, Copy)]
 struct ShaderKnobs {
     ball_scale: f32,
     fog_scale: f32,
     title: &'static str,
+    /// Good camera distance for this Space's coordinate scale.
+    capture_distance: f32,
 }
 
 const EUCLIDEAN_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: 1.0,
     fog_scale: 12.0,
     title: "Rye — Mandelbulb",
+    capture_distance: 4.0,
 };
 
 const HYPERBOLIC_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: 0.2,
     fog_scale: 4.0,
     title: "Rye — Mandelbulb (H³ fog)",
+    capture_distance: 4.0,
 };
 
-// S³ domain is |p|² < 1 (upper hemisphere). ball_scale compresses the
-// fractal into roughly |p| < 0.6 so geodesic wrapping is visible but
-// points stay comfortably inside the valid region.
 const SPHERICAL_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: 0.15,
     fog_scale: 2.5,
     title: "Rye — Mandelbulb (S³ fog)",
+    capture_distance: 4.0,
 };
+
+/// Yaw advance per tick for interactive rotate (1 rev / 20 s at 60 Hz).
+const ROTATE_YAW_INTERACTIVE: f32 = std::f32::consts::TAU / (60.0 * 20.0);
 
 struct App<S: WgslSpace + 'static> {
     window: Option<Arc<Window>>,
@@ -134,11 +115,39 @@ struct App<S: WgslSpace + 'static> {
     frame_count: u32,
     last_fps_update: Instant,
     fps: f32,
+
+    rotate: bool,
+    /// Radians per rendered frame; set at startup based on capture_frames.
+    rotate_yaw_per_frame: f32,
+
+    capture: Option<FrameCapture>,
 }
 
-impl<S: WgslSpace + 'static> App<S> {
-    fn new(space: S, knobs: ShaderKnobs) -> Self {
-        Self {
+// Split out capture args so we can re-use them in resumed().
+struct CaptureArgs {
+    path: Option<PathBuf>,
+    frames: u32,
+    fps: u32,
+}
+
+struct AppRunner<S: WgslSpace + 'static> {
+    app: App<S>,
+    capture_args: CaptureArgs,
+}
+
+impl<S: WgslSpace + 'static> AppRunner<S> {
+    fn new(
+        space: S,
+        knobs: ShaderKnobs,
+        rotate: bool,
+        capture_args: CaptureArgs,
+    ) -> Self {
+        let rotate_yaw_per_frame = if capture_args.path.is_some() && capture_args.frames > 0 {
+            std::f32::consts::TAU / capture_args.frames as f32
+        } else {
+            ROTATE_YAW_INTERACTIVE
+        };
+        let app = App {
             window: None,
             rd: None,
             minimized: false,
@@ -156,15 +165,20 @@ impl<S: WgslSpace + 'static> App<S> {
             frame_count: 0,
             last_fps_update: Instant::now(),
             fps: 0.0,
-        }
+            rotate,
+            rotate_yaw_per_frame,
+            capture: None,
+        };
+        Self { app, capture_args }
     }
 
     fn handle_hot_reload(&mut self) {
+        let app = &mut self.app;
         let (Some(watcher), Some(shaders), Some(id), Some(rd)) = (
-            self.watcher.as_ref(),
-            self.shaders.as_mut(),
-            self.shader_id,
-            self.rd.as_ref(),
+            app.watcher.as_ref(),
+            app.shaders.as_mut(),
+            app.shader_id,
+            app.rd.as_ref(),
         ) else {
             return;
         };
@@ -172,12 +186,12 @@ impl<S: WgslSpace + 'static> App<S> {
         if events.is_empty() {
             return;
         }
-        shaders.apply_events(&events, &self.space);
+        shaders.apply_events(&events, &app.space);
         let new_gen = shaders.generation(id);
-        if new_gen != self.shader_gen {
-            tracing::info!("rebuilding RayMarchNode for shader generation {}", new_gen);
-            self.shader_gen = new_gen;
-            self.ray_march = Some(RayMarchNode::new(
+        if new_gen != app.shader_gen {
+            tracing::info!("rebuilding RayMarchNode for shader gen {new_gen}");
+            app.shader_gen = new_gen;
+            app.ray_march = Some(RayMarchNode::new(
                 &rd.device,
                 rd.surface_bundle.config.format,
                 shaders.module(id),
@@ -186,9 +200,10 @@ impl<S: WgslSpace + 'static> App<S> {
     }
 
     fn current_uniforms(&self) -> Option<RayMarchUniforms> {
-        let rd = self.rd.as_ref()?;
-        let t = self.start.elapsed().as_secs_f32();
-        let camera = self.camera.view();
+        let app = &self.app;
+        let rd = app.rd.as_ref()?;
+        let t = app.start.elapsed().as_secs_f32();
+        let camera = app.camera.view();
         let config = &rd.surface_bundle.config;
         Some(RayMarchUniforms {
             camera_pos: camera.position.to_array(),
@@ -201,23 +216,24 @@ impl<S: WgslSpace + 'static> App<S> {
             fov_y_tan: (60.0_f32.to_radians() * 0.5).tan(),
             resolution: [config.width as f32, config.height as f32],
             time: t,
-            tick: self.timestep.tick() as f32,
+            tick: app.timestep.tick() as f32,
             params: FractalParams {
                 power_offset: 0.0,
-                ball_scale: self.knobs.ball_scale,
-                fog_scale: self.knobs.fog_scale,
+                ball_scale: app.knobs.ball_scale,
+                fog_scale: app.knobs.fog_scale,
             }
             .as_array(),
         })
     }
 }
 
-impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
+impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
     fn resumed(&mut self, elwt: &ActiveEventLoop) {
+        let app = &mut self.app;
         let win = Arc::new(
             elwt.create_window(
                 WindowAttributes::default()
-                    .with_title(self.knobs.title)
+                    .with_title(app.knobs.title)
                     .with_visible(false),
             )
             .expect("create window"),
@@ -225,9 +241,28 @@ impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
 
         let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
 
+        // Build capture now that we know the surface size.
+        if let Some(ref path) = self.capture_args.path {
+            let w = rd.surface_bundle.config.width;
+            let h = rd.surface_bundle.config.height;
+            let cap = FrameCapture::new(self.capture_args.frames, self.capture_args.fps, w, h);
+            tracing::info!(
+                "capture mode: {} frames → {:?}  ({}×{} @ {} fps)",
+                self.capture_args.frames,
+                path,
+                w,
+                h,
+                self.capture_args.fps,
+            );
+            app.capture = Some(cap);
+
+            // Snap to a nice movie perspective.
+            app.camera.set_orbit(app.knobs.capture_distance, 0.40);
+        }
+
         let mut shaders = ShaderDb::new(rd.device.clone());
         let id = shaders
-            .load(shader_path(), &self.space)
+            .load(shader_path(), &app.space)
             .expect("load fractal.wgsl");
         let gen = shaders.generation(id);
 
@@ -240,15 +275,15 @@ impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
             shaders.module(id),
         );
 
-        self.window = Some(win.clone());
-        self.rd = Some(rd);
-        self.shaders = Some(shaders);
-        self.shader_id = Some(id);
-        self.shader_gen = gen;
-        self.watcher = Some(watcher);
-        self.ray_march = Some(ray_march);
-        self.minimized = false;
-        self.start = Instant::now();
+        app.window = Some(win.clone());
+        app.rd = Some(rd);
+        app.shaders = Some(shaders);
+        app.shader_id = Some(id);
+        app.shader_gen = gen;
+        app.watcher = Some(watcher);
+        app.ray_march = Some(ray_march);
+        app.minimized = false;
+        app.start = Instant::now();
 
         win.set_visible(true);
         win.request_redraw();
@@ -260,9 +295,10 @@ impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
         _id: winit::window::WindowId,
         ev: WindowEvent,
     ) {
-        let Some(win) = self.window.clone() else {
+        let Some(win) = self.app.window.clone() else {
             return;
         };
+        let app = &mut self.app;
 
         match ev {
             WindowEvent::CloseRequested => elwt.exit(),
@@ -275,91 +311,126 @@ impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
-                self.input.cursor_moved(position.x, position.y);
+                app.input.cursor_moved(position.x, position.y);
             }
-
-            WindowEvent::CursorLeft { .. } => {
-                self.input.cursor_invalidated();
-            }
-
+            WindowEvent::CursorLeft { .. } => app.input.cursor_invalidated(),
             WindowEvent::Focused(false) => {
-                self.input.cursor_invalidated();
-                self.input.release_buttons();
+                app.input.cursor_invalidated();
+                app.input.release_buttons();
             }
-
             WindowEvent::MouseInput { state, button, .. } => {
-                self.input.mouse_input(button, state);
+                app.input.mouse_input(button, state);
             }
-
             WindowEvent::MouseWheel { delta, .. } => {
-                self.input.mouse_wheel(delta);
+                app.input.mouse_wheel(delta);
             }
 
             WindowEvent::Resized(size) => {
-                self.minimized = size.width == 0 || size.height == 0;
-                if !self.minimized {
-                    if let Some(rd) = &mut self.rd {
+                app.minimized = size.width == 0 || size.height == 0;
+                if !app.minimized {
+                    if let Some(rd) = &mut app.rd {
                         rd.resize(size);
                     }
                 }
             }
 
             WindowEvent::RedrawRequested => {
-                if self.minimized {
+                if app.minimized {
                     return;
                 }
 
-                let ticks = self.timestep.advance(Instant::now());
+                let ticks = app.timestep.advance(Instant::now());
                 if !ticks.is_empty() {
-                    let input = self.input.take_frame();
-                    self.camera.advance(input);
+                    if app.rotate {
+                        app.camera.rotate_yaw(app.rotate_yaw_per_frame);
+                    } else {
+                        let input = app.input.take_frame();
+                        app.camera.advance(input);
+                    }
                 }
+                // Drop `app` borrow so `self.handle_hot_reload()` and
+                // `self.current_uniforms()` can re-borrow `self` freely.
+                let _ = app;
+
                 self.handle_hot_reload();
 
-                // FPS counter: update window title once per second.
-                self.frame_count += 1;
-                let fps_elapsed = self.last_fps_update.elapsed().as_secs_f32();
-                if fps_elapsed >= 1.0 {
-                    self.fps = self.frame_count as f32 / fps_elapsed;
-                    self.frame_count = 0;
-                    self.last_fps_update = Instant::now();
-                    let cam = self.camera.view();
-                    let p = cam.position;
-                    win.set_title(&format!(
-                        "{} | {:.0} fps | pos ({:.2}, {:.2}, {:.2})",
-                        self.knobs.title, self.fps, p.x, p.y, p.z,
-                    ));
+                // FPS counter (skipped in capture mode to avoid window title churn).
+                {
+                    let app = &mut self.app;
+                    if app.capture.is_none() {
+                        app.frame_count += 1;
+                        let elapsed = app.last_fps_update.elapsed().as_secs_f32();
+                        if elapsed >= 1.0 {
+                            app.fps = app.frame_count as f32 / elapsed;
+                            app.frame_count = 0;
+                            app.last_fps_update = Instant::now();
+                            let p = app.camera.view().position;
+                            win.set_title(&format!(
+                                "{} | {:.0} fps | pos ({:.2}, {:.2}, {:.2})",
+                                app.knobs.title, app.fps, p.x, p.y, p.z,
+                            ));
+                        }
+                    }
                 }
 
                 let Some(uniforms) = self.current_uniforms() else {
                     return;
                 };
-                let Some(rd) = self.rd.as_ref() else { return };
-                if let Some(node) = self.ray_march.as_mut() {
+                let Some(rd) = self.app.rd.as_ref() else {
+                    return;
+                };
+                if let Some(node) = self.app.ray_march.as_mut() {
                     node.set_uniforms(&rd.queue, uniforms);
                 }
 
                 match rd.begin_frame() {
                     Ok((frame, view)) => {
-                        if let Some(node) = self.ray_march.as_mut() {
+                        if let Some(node) = self.app.ray_march.as_mut() {
                             if let Err(e) = node.execute(rd, &view) {
                                 tracing::error!("render error: {e:#}");
                             }
                         }
+
+                        // Capture before present.
+                        if let Some(cap) = &mut self.app.capture {
+                            if !cap.is_done() {
+                                cap.capture(&rd.device, &rd.queue, &frame);
+                                let n = cap.frame_count();
+                                let total = self.capture_args.frames;
+                                if n % 30 == 0 || n == total as usize {
+                                    win.set_title(&format!(
+                                        "{} — capturing {n}/{total}",
+                                        self.app.knobs.title
+                                    ));
+                                }
+                            }
+                        }
+
                         frame.present();
+
+                        // After present: check if capture is complete.
+                        let done = self.app.capture.as_ref().map_or(false, |c| c.is_done());
+                        if done {
+                            if let (Some(cap), Some(path)) =
+                                (&self.app.capture, &self.capture_args.path)
+                            {
+                                cap.save_apng(path).expect("save apng");
+                            }
+                            elwt.exit();
+                            return;
+                        }
+
                         win.request_redraw();
                     }
                     Err(err) => match err {
                         wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated => {
-                            if let Some(rd) = &mut self.rd {
+                            if let Some(rd) = &mut self.app.rd {
                                 let size = rd.surface_bundle.size;
                                 rd.resize(size);
                             }
                             win.request_redraw();
                         }
-                        wgpu::SurfaceError::Timeout => {
-                            win.request_redraw();
-                        }
+                        wgpu::SurfaceError::Timeout => win.request_redraw(),
                         wgpu::SurfaceError::OutOfMemory => elwt.exit(),
                         wgpu::SurfaceError::Other => {
                             tracing::error!("surface error: {err:?}");
@@ -373,26 +444,52 @@ impl<S: WgslSpace + 'static> ApplicationHandler for App<S> {
     }
 }
 
+fn parse_flag_value<T: std::str::FromStr>(args: &[String], flag: &str, default: T) -> T {
+    args.windows(2)
+        .find(|w| w[0] == flag)
+        .and_then(|w| w[1].parse().ok())
+        .unwrap_or(default)
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info".into()),
         )
         .init();
 
     let args: Vec<String> = std::env::args().collect();
     let hyperbolic = args.iter().any(|a| a == "--hyperbolic");
     let spherical = args.iter().any(|a| a == "--spherical");
+    let rotate = args.iter().any(|a| a == "--rotate");
+    let capture_apng: Option<PathBuf> = args
+        .windows(2)
+        .find(|w| w[0] == "--capture-apng")
+        .map(|w| PathBuf::from(&w[1]));
+    let capture_frames: u32 = parse_flag_value(&args, "--capture-frames", 300);
+    let capture_fps: u32 = parse_flag_value(&args, "--capture-fps", 30);
+
+    // --rotate is implied when --capture-apng is given.
+    let rotate = rotate || capture_apng.is_some();
+
+    let cap_args = CaptureArgs {
+        path: capture_apng,
+        frames: capture_frames,
+        fps: capture_fps,
+    };
+
     let event_loop: EventLoop<()> = EventLoop::new()?;
+
     if hyperbolic {
-        let mut app = App::new(HyperbolicH3, HYPERBOLIC_KNOBS);
-        event_loop.run_app(&mut app)?;
+        let mut runner = AppRunner::new(HyperbolicH3, HYPERBOLIC_KNOBS, rotate, cap_args);
+        event_loop.run_app(&mut runner)?;
     } else if spherical {
-        let mut app = App::new(SphericalS3, SPHERICAL_KNOBS);
-        event_loop.run_app(&mut app)?;
+        let mut runner = AppRunner::new(SphericalS3, SPHERICAL_KNOBS, rotate, cap_args);
+        event_loop.run_app(&mut runner)?;
     } else {
-        let mut app = App::new(EuclideanR3, EUCLIDEAN_KNOBS);
-        event_loop.run_app(&mut app)?;
+        let mut runner = AppRunner::new(EuclideanR3, EUCLIDEAN_KNOBS, rotate, cap_args);
+        event_loop.run_app(&mut runner)?;
     }
     Ok(())
 }

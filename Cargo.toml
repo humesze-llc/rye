@@ -6,6 +6,10 @@ members = [
   "crates/rye-shader",
   "crates/rye-render",
   "crates/rye-asset",
+  "crates/rye-input",
+  "crates/rye-camera",
+  "crates/rye-player",
+  "crates/rye-collision",
 ]
 resolver = "2"
 
@@ -46,12 +50,16 @@ repository.workspace = true
 description = "Rye: a Rust game engine with non-Euclidean geometry as a primitive"
 
 [dependencies]
-rye-math   = { path = "crates/rye-math" }
-rye-sdf    = { path = "crates/rye-sdf" }
-rye-time   = { path = "crates/rye-time" }
-rye-shader = { path = "crates/rye-shader" }
-rye-render = { path = "crates/rye-render" }
-rye-asset  = { path = "crates/rye-asset" }
+rye-math      = { path = "crates/rye-math" }
+rye-sdf       = { path = "crates/rye-sdf" }
+rye-time      = { path = "crates/rye-time" }
+rye-shader    = { path = "crates/rye-shader" }
+rye-render    = { path = "crates/rye-render" }
+rye-asset     = { path = "crates/rye-asset" }
+rye-input     = { path = "crates/rye-input" }
+rye-camera    = { path = "crates/rye-camera" }
+rye-player    = { path = "crates/rye-player" }
+rye-collision = { path = "crates/rye-collision" }
 
 [features]
 default = []

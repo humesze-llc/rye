@@ -81,6 +81,20 @@ impl CameraState {
         }
     }
 
+    /// Advance the yaw by `delta` radians. Used by auto-rotate mode.
+    pub fn rotate_yaw(&mut self, delta: f32) {
+        self.yaw += delta;
+        self.rebuild_orientation();
+    }
+
+    /// Snap to a fixed orbit position (for capture / movie mode).
+    pub fn set_orbit(&mut self, distance: f32, pitch: f32) {
+        self.distance = distance.clamp(MIN_DISTANCE, MAX_DISTANCE);
+        self.pitch = pitch.clamp(MIN_PITCH, MAX_PITCH);
+        self.yaw = 0.0;
+        self.rebuild_orientation();
+    }
+
     fn rebuild_orientation(&mut self) {
         let yaw = Quat::from_rotation_y(self.yaw);
         let pitch = Quat::from_rotation_x(self.pitch);

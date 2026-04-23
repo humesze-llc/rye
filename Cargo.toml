@@ -2,6 +2,7 @@
 members = [
   "crates/rye-core",
   "crates/rye-math",
+  "crates/rye-sdf",
   "crates/rye-time",
   "crates/rye-shader",
   "crates/rye-window",
@@ -50,6 +51,7 @@ description = "Rye: a Rust game engine with non-Euclidean geometry as a primitiv
 [dependencies]
 rye-core   = { path = "crates/rye-core" }
 rye-math   = { path = "crates/rye-math" }
+rye-sdf    = { path = "crates/rye-sdf" }
 rye-time   = { path = "crates/rye-time" }
 rye-shader = { path = "crates/rye-shader" }
 rye-window = { path = "crates/rye-window" }
@@ -68,3 +70,5 @@ wgpu  = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 glam = { workspace = true }
+png = "0.17"
+gif = "0.13"

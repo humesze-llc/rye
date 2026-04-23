@@ -122,7 +122,9 @@ impl WgslSpace for EuclideanR3 {
 // `from` is a WGSL reserved keyword (WGSL spec §3.2); use `p_from`/`p_to`.
 const WGSL_IMPL: &str = r#"
 // rye-math :: EuclideanR3 (v0 Space WGSL ABI)
+const RYE_MAX_ARC: f32 = 1e9;
 fn rye_distance(a: vec3<f32>, b: vec3<f32>) -> f32 { return length(a - b); }
+fn rye_origin_distance(p: vec3<f32>) -> f32 { return length(p); }
 fn rye_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> { return at + v; }
 fn rye_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> { return p_to - p_from; }
 fn rye_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> { return v; }

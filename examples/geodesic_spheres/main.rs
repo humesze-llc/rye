@@ -1,16 +1,18 @@
-//! Rye's first graphics example: a live Mandelbulb raymarcher.
+//! Geodesic spheres raymarch demo.
 //!
-//! Edit `examples/fractal/fractal.wgsl` while the example runs and the
-//! scene recompiles on save.
+//! Injects a scene module from `rye-sdf`:
+//! - Space prelude from `rye-math` (`rye_distance`, `rye_exp`, ...)
+//! - scene module from `rye-sdf` (`rye_scene_sdf`)
+//! - user shader from `examples/geodesic_spheres/spheres.wgsl`
 //!
 //! ## Flags
 //!
-//! `--hyperbolic`  — swap Space prelude to HyperbolicH3 (geodesic fog)
+//! `--hyperbolic`  — swap Space prelude to HyperbolicH3
 //! `--spherical`   — swap Space prelude to SphericalS3
 //! `--rotate`      — auto-rotate camera; interactive at 1 rev/20 s
-//! `--capture-apng PATH`   — render N frames, save looping APNG, exit
-//! `--capture-frames N`    — frame count for APNG (default 300 = 10 s @ 30 fps)
-//! `--capture-fps N`       — playback fps baked into APNG (default 30)
+//! `--capture-apng PATH`  — render N frames, save looping APNG, exit
+//! `--capture-frames N`   — frame count (default 300 = 10 s @ 30 fps)
+//! `--capture-fps N`      — playback fps baked into APNG (default 30)
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,6 +26,7 @@ use rye_render::{
     graph::RenderNode,
     raymarch::{RayMarchNode, RayMarchUniforms},
 };
+use rye_sdf::geodesic_spheres_demo_wgsl;
 use rye_shader::{ShaderDb, ShaderId};
 use rye_time::FixedTimestep;
 use winit::{
@@ -34,6 +37,7 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
+#[path = "../fractal/camera.rs"]
 mod camera;
 #[path = "../capture.rs"]
 mod capture;
@@ -42,22 +46,21 @@ use camera::{CameraState, InputState};
 use capture::FrameCapture;
 
 fn shader_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/fractal")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/geodesic_spheres")
 }
 
 fn shader_path() -> PathBuf {
-    shader_dir().join("fractal.wgsl")
+    shader_dir().join("spheres.wgsl")
 }
 
-struct FractalParams {
-    power_offset: f32,
+struct SceneParams {
     ball_scale: f32,
     fog_scale: f32,
 }
 
-impl FractalParams {
+impl SceneParams {
     fn as_array(&self) -> [f32; 4] {
-        [self.power_offset, self.ball_scale, self.fog_scale, 0.0]
+        [0.0, self.ball_scale, self.fog_scale, 0.0]
     }
 }
 
@@ -66,33 +69,47 @@ struct ShaderKnobs {
     ball_scale: f32,
     fog_scale: f32,
     title: &'static str,
-    /// Good camera distance for this Space's coordinate scale.
     capture_distance: f32,
 }
 
 const EUCLIDEAN_KNOBS: ShaderKnobs = ShaderKnobs {
-    ball_scale: 1.0,
-    fog_scale: 12.0,
-    title: "Rye — Mandelbulb",
-    capture_distance: 4.0,
+    ball_scale: 0.2,
+    fog_scale: 3.2,
+    title: "Rye - Geodesic Spheres",
+    capture_distance: 5.5,
 };
 
 const HYPERBOLIC_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: 0.2,
-    fog_scale: 4.0,
-    title: "Rye — Mandelbulb (H³ fog)",
-    capture_distance: 4.0,
+    fog_scale: 3.0,
+    title: "Rye - Geodesic Spheres (H3 fog)",
+    // capture_distance * ball_scale must be < 1.0 (Poincaré ball constraint).
+    // 4.5 * 0.2 = 0.9, safely inside H³.
+    capture_distance: 4.5,
 };
 
 const SPHERICAL_KNOBS: ShaderKnobs = ShaderKnobs {
-    ball_scale: 0.15,
-    fog_scale: 2.5,
-    title: "Rye — Mandelbulb (S³ fog)",
-    capture_distance: 4.0,
+    ball_scale: 0.2,
+    fog_scale: 2.6,
+    title: "Rye - Geodesic Spheres (S3 fog)",
+    // Same upper-hemisphere constraint as H³: distance * ball_scale < 1.0.
+    capture_distance: 4.5,
 };
 
-/// Yaw advance per tick for interactive rotate (1 rev / 20 s at 60 Hz).
 const ROTATE_YAW_INTERACTIVE: f32 = std::f32::consts::TAU / (60.0 * 20.0);
+
+struct CaptureArgs {
+    apng_path: Option<PathBuf>,
+    gif_path: Option<PathBuf>,
+    frames: u32,
+    fps: u32,
+}
+
+impl CaptureArgs {
+    fn any_path(&self) -> Option<&PathBuf> {
+        self.apng_path.as_ref().or(self.gif_path.as_ref())
+    }
+}
 
 struct App<S: WgslSpace + 'static> {
     window: Option<Arc<Window>>,
@@ -112,29 +129,9 @@ struct App<S: WgslSpace + 'static> {
     input: InputState,
     start: Instant,
 
-    frame_count: u32,
-    last_fps_update: Instant,
-    fps: f32,
-
     rotate: bool,
-    /// Radians per rendered frame; set at startup based on capture_frames.
     rotate_yaw_per_frame: f32,
-
     capture: Option<FrameCapture>,
-}
-
-// Split out capture args so we can re-use them in resumed().
-struct CaptureArgs {
-    apng_path: Option<PathBuf>,
-    gif_path: Option<PathBuf>,
-    frames: u32,
-    fps: u32,
-}
-
-impl CaptureArgs {
-    fn any_path(&self) -> Option<&PathBuf> {
-        self.apng_path.as_ref().or(self.gif_path.as_ref())
-    }
 }
 
 struct AppRunner<S: WgslSpace + 'static> {
@@ -164,9 +161,6 @@ impl<S: WgslSpace + 'static> AppRunner<S> {
             camera: CameraState::default(),
             input: InputState::default(),
             start: Instant::now(),
-            frame_count: 0,
-            last_fps_update: Instant::now(),
-            fps: 0.0,
             rotate,
             rotate_yaw_per_frame,
             capture: None,
@@ -219,8 +213,7 @@ impl<S: WgslSpace + 'static> AppRunner<S> {
             resolution: [config.width as f32, config.height as f32],
             time: t,
             tick: app.timestep.tick() as f32,
-            params: FractalParams {
-                power_offset: 0.0,
+            params: SceneParams {
                 ball_scale: app.knobs.ball_scale,
                 fog_scale: app.knobs.fog_scale,
             }
@@ -243,9 +236,8 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
 
         let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
 
-        // Build capture now that we know the surface size.
         if let Some(path) = self.capture_args.any_path() {
-            let path = path.clone(); // reborrow ends here
+            let path = path.clone();
             let w = rd.surface_bundle.config.width;
             let h = rd.surface_bundle.config.height;
             let cap = FrameCapture::new(self.capture_args.frames, self.capture_args.fps, w, h);
@@ -258,15 +250,14 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                 self.capture_args.fps,
             );
             app.capture = Some(cap);
-
-            // Snap to a nice movie perspective.
-            app.camera.set_orbit(app.knobs.capture_distance, 0.40);
+            app.camera.set_orbit(app.knobs.capture_distance, -0.60);
         }
 
         let mut shaders = ShaderDb::new(rd.device.clone());
+        let scene_module = geodesic_spheres_demo_wgsl();
         let id = shaders
-            .load(shader_path(), &app.space)
-            .expect("load fractal.wgsl");
+            .load_with_scene(shader_path(), &scene_module, &app.space)
+            .expect("load spheres.wgsl");
         let gen = shaders.generation(id);
 
         let mut watcher = AssetWatcher::new().expect("asset watcher");
@@ -305,7 +296,6 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
 
         match ev {
             WindowEvent::CloseRequested => elwt.exit(),
-
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
@@ -351,30 +341,7 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                         app.camera.advance(input);
                     }
                 }
-                // Drop `app` borrow so `self.handle_hot_reload()` and
-                // `self.current_uniforms()` can re-borrow `self` freely.
-                let _ = app;
-
                 self.handle_hot_reload();
-
-                // FPS counter (skipped in capture mode to avoid window title churn).
-                {
-                    let app = &mut self.app;
-                    if app.capture.is_none() {
-                        app.frame_count += 1;
-                        let elapsed = app.last_fps_update.elapsed().as_secs_f32();
-                        if elapsed >= 1.0 {
-                            app.fps = app.frame_count as f32 / elapsed;
-                            app.frame_count = 0;
-                            app.last_fps_update = Instant::now();
-                            let p = app.camera.view().position;
-                            win.set_title(&format!(
-                                "{} | {:.0} fps | pos ({:.2}, {:.2}, {:.2})",
-                                app.knobs.title, app.fps, p.x, p.y, p.z,
-                            ));
-                        }
-                    }
-                }
 
                 let Some(uniforms) = self.current_uniforms() else {
                     return;
@@ -394,7 +361,6 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                             }
                         }
 
-                        // Capture before present.
                         if let Some(cap) = &mut self.app.capture {
                             if !cap.is_done() {
                                 cap.capture(&rd.device, &rd.queue, &frame);
@@ -411,7 +377,6 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
 
                         frame.present();
 
-                        // After present: check if capture is complete.
                         let done = self.app.capture.as_ref().is_some_and(|c| c.is_done());
                         if done {
                             if let Some(cap) = &self.app.capture {

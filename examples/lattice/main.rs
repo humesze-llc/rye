@@ -1,31 +1,35 @@
-//! Rye's first graphics example: a live Mandelbulb raymarcher.
+//! Geodesic lattice — side-by-side E³ / H³ / S³ comparison demo.
 //!
-//! Edit `examples/fractal/fractal.wgsl` while the example runs and the
-//! scene recompiles on save.
+//! Renders three panels into a single window: left E³, centre H³, right S³.
+//! The same camera orbits the same lattice of spheres; the only difference
+//! is the Space prelude injected at shader compile time. The visual difference
+//! (evenly-spaced grid vs. tanh-compressed vs. sin-wrapped) is the engine's
+//! geometric thesis made visible.
+//!
+//! `lattice.wgsl` is compiled three times — once per Space — using
+//! `WgslSpace::wgsl_impl()` assembled directly (no ShaderDb hot-reload,
+//! since the three shaders share a path and ShaderDb is single-path-keyed).
 //!
 //! ## Flags
 //!
-//! `--hyperbolic`  — swap Space prelude to HyperbolicH3 (geodesic fog)
-//! `--spherical`   — swap Space prelude to SphericalS3
-//! `--rotate`      — auto-rotate camera; interactive at 1 rev/20 s
-//! `--capture-apng PATH`   — render N frames, save looping APNG, exit
-//! `--capture-frames N`    — frame count for APNG (default 300 = 10 s @ 30 fps)
-//! `--capture-fps N`       — playback fps baked into APNG (default 30)
+//! `--rotate`               — auto-rotate camera
+//! `--capture-apng PATH`    — render N frames, save looping APNG, exit
+//! `--capture-gif  PATH`    — render N frames, save looping GIF, exit
+//! `--capture-frames N`     — frame count (default 300)
+//! `--capture-fps N`        — playback fps (default 30)
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use rye_asset::AssetWatcher;
 use rye_math::{EuclideanR3, HyperbolicH3, SphericalS3, WgslSpace};
 use rye_render::{
     device::RenderDevice,
-    graph::RenderNode,
     raymarch::{RayMarchNode, RayMarchUniforms},
 };
-use rye_shader::{ShaderDb, ShaderId};
-use rye_time::FixedTimestep;
+use rye_sdf::LatticeSphereScene;
+use rye_shader::validate_wgsl;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, WindowEvent},
@@ -34,6 +38,7 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
+#[path = "../fractal/camera.rs"]
 mod camera;
 #[path = "../capture.rs"]
 mod capture;
@@ -41,89 +46,26 @@ mod capture;
 use camera::{CameraState, InputState};
 use capture::FrameCapture;
 
-fn shader_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/fractal")
-}
+// BALL_SCALE is baked into lattice.wgsl as a constant; this comment documents
+// the value so main.rs and the shader stay in sync. Camera orbit distance ×
+// BALL_SCALE must stay < 1.0 for H³/S³ Poincaré ball validity (0.2 × 4.5 = 0.9).
 
-fn shader_path() -> PathBuf {
-    shader_dir().join("fractal.wgsl")
-}
+// Fog scale per space (tuned for visual clarity).
+const FOG_E3: f32 = 3.0;
+const FOG_H3: f32 = 4.2;
+const FOG_S3: f32 = 2.4;
 
-struct FractalParams {
-    power_offset: f32,
-    ball_scale: f32,
-    fog_scale: f32,
-}
+// Capture camera parameters (distance * BALL_SCALE must be < 1.0 for H³/S³).
+// 3.5 * 0.2 = 0.70, comfortably inside the Poincaré ball.
+const CAPTURE_DISTANCE: f32 = 3.5;
+const CAPTURE_PITCH: f32 = -0.35;
 
-impl FractalParams {
-    fn as_array(&self) -> [f32; 4] {
-        [self.power_offset, self.ball_scale, self.fog_scale, 0.0]
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ShaderKnobs {
-    ball_scale: f32,
-    fog_scale: f32,
-    title: &'static str,
-    /// Good camera distance for this Space's coordinate scale.
-    capture_distance: f32,
-}
-
-const EUCLIDEAN_KNOBS: ShaderKnobs = ShaderKnobs {
-    ball_scale: 1.0,
-    fog_scale: 12.0,
-    title: "Rye — Mandelbulb",
-    capture_distance: 4.0,
-};
-
-const HYPERBOLIC_KNOBS: ShaderKnobs = ShaderKnobs {
-    ball_scale: 0.2,
-    fog_scale: 4.0,
-    title: "Rye — Mandelbulb (H³ fog)",
-    capture_distance: 4.0,
-};
-
-const SPHERICAL_KNOBS: ShaderKnobs = ShaderKnobs {
-    ball_scale: 0.15,
-    fog_scale: 2.5,
-    title: "Rye — Mandelbulb (S³ fog)",
-    capture_distance: 4.0,
-};
-
-/// Yaw advance per tick for interactive rotate (1 rev / 20 s at 60 Hz).
 const ROTATE_YAW_INTERACTIVE: f32 = std::f32::consts::TAU / (60.0 * 20.0);
 
-struct App<S: WgslSpace + 'static> {
-    window: Option<Arc<Window>>,
-    rd: Option<RenderDevice>,
-    minimized: bool,
-
-    space: S,
-    knobs: ShaderKnobs,
-    shaders: Option<ShaderDb>,
-    shader_id: Option<ShaderId>,
-    shader_gen: u64,
-    watcher: Option<AssetWatcher>,
-    ray_march: Option<RayMarchNode>,
-
-    timestep: FixedTimestep,
-    camera: CameraState,
-    input: InputState,
-    start: Instant,
-
-    frame_count: u32,
-    last_fps_update: Instant,
-    fps: f32,
-
-    rotate: bool,
-    /// Radians per rendered frame; set at startup based on capture_frames.
-    rotate_yaw_per_frame: f32,
-
-    capture: Option<FrameCapture>,
+fn shader_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/lattice/lattice.wgsl")
 }
 
-// Split out capture args so we can re-use them in resumed().
 struct CaptureArgs {
     apng_path: Option<PathBuf>,
     gif_path: Option<PathBuf>,
@@ -137,13 +79,41 @@ impl CaptureArgs {
     }
 }
 
-struct AppRunner<S: WgslSpace + 'static> {
-    app: App<S>,
+/// Assemble Space prelude + scene module + user shader into a single WGSL string.
+fn assemble(prelude: &str, scene: &str, user: &str) -> String {
+    format!(
+        "// ---- rye-math Space prelude ----\n{prelude}\n\
+         // ---- rye-sdf scene module ----\n{scene}\n\
+         // ---- user shader ----\n{user}"
+    )
+}
+
+struct App {
+    window: Option<Arc<Window>>,
+    rd: Option<RenderDevice>,
+    minimized: bool,
+
+    node_e3: Option<RayMarchNode>,
+    node_h3: Option<RayMarchNode>,
+    node_s3: Option<RayMarchNode>,
+
+    timestep: rye_time::FixedTimestep,
+    camera: CameraState,
+    input: InputState,
+    start: Instant,
+
+    rotate: bool,
+    rotate_yaw_per_frame: f32,
+    capture: Option<FrameCapture>,
+}
+
+struct AppRunner {
+    app: App,
     capture_args: CaptureArgs,
 }
 
-impl<S: WgslSpace + 'static> AppRunner<S> {
-    fn new(space: S, knobs: ShaderKnobs, rotate: bool, capture_args: CaptureArgs) -> Self {
+impl AppRunner {
+    fn new(rotate: bool, capture_args: CaptureArgs) -> Self {
         let rotate_yaw_per_frame = if capture_args.any_path().is_some() && capture_args.frames > 0 {
             std::f32::consts::TAU / capture_args.frames as f32
         } else {
@@ -153,20 +123,13 @@ impl<S: WgslSpace + 'static> AppRunner<S> {
             window: None,
             rd: None,
             minimized: false,
-            space,
-            knobs,
-            shaders: None,
-            shader_id: None,
-            shader_gen: 0,
-            watcher: None,
-            ray_march: None,
-            timestep: FixedTimestep::new(60),
+            node_e3: None,
+            node_h3: None,
+            node_s3: None,
+            timestep: rye_time::FixedTimestep::new(60),
             camera: CameraState::default(),
             input: InputState::default(),
             start: Instant::now(),
-            frame_count: 0,
-            last_fps_update: Instant::now(),
-            fps: 0.0,
             rotate,
             rotate_yaw_per_frame,
             capture: None,
@@ -174,40 +137,18 @@ impl<S: WgslSpace + 'static> AppRunner<S> {
         Self { app, capture_args }
     }
 
-    fn handle_hot_reload(&mut self) {
-        let app = &mut self.app;
-        let (Some(watcher), Some(shaders), Some(id), Some(rd)) = (
-            app.watcher.as_ref(),
-            app.shaders.as_mut(),
-            app.shader_id,
-            app.rd.as_ref(),
-        ) else {
-            return;
-        };
-        let events = watcher.poll();
-        if events.is_empty() {
-            return;
-        }
-        shaders.apply_events(&events, &app.space);
-        let new_gen = shaders.generation(id);
-        if new_gen != app.shader_gen {
-            tracing::info!("rebuilding RayMarchNode for shader gen {new_gen}");
-            app.shader_gen = new_gen;
-            app.ray_march = Some(RayMarchNode::new(
-                &rd.device,
-                rd.surface_bundle.config.format,
-                shaders.module(id),
-            ));
-        }
-    }
-
-    fn current_uniforms(&self) -> Option<RayMarchUniforms> {
-        let app = &self.app;
-        let rd = app.rd.as_ref()?;
-        let t = app.start.elapsed().as_secs_f32();
-        let camera = app.camera.view();
-        let config = &rd.surface_bundle.config;
-        Some(RayMarchUniforms {
+    fn panel_uniforms(
+        &self,
+        w: u32,
+        h: u32,
+        x_offset: u32,
+        panel_w: u32,
+        panel_idx: f32,
+        fog_scale: f32,
+    ) -> RayMarchUniforms {
+        let t = self.app.start.elapsed().as_secs_f32();
+        let camera = self.app.camera.view();
+        RayMarchUniforms {
             camera_pos: camera.position.to_array(),
             _pad0: 0.0,
             camera_forward: camera.forward.to_array(),
@@ -216,26 +157,22 @@ impl<S: WgslSpace + 'static> AppRunner<S> {
             _pad2: 0.0,
             camera_up: camera.up.to_array(),
             fov_y_tan: (60.0_f32.to_radians() * 0.5).tan(),
-            resolution: [config.width as f32, config.height as f32],
+            resolution: [w as f32, h as f32],
             time: t,
-            tick: app.timestep.tick() as f32,
-            params: FractalParams {
-                power_offset: 0.0,
-                ball_scale: app.knobs.ball_scale,
-                fog_scale: app.knobs.fog_scale,
-            }
-            .as_array(),
-        })
+            tick: self.app.timestep.tick() as f32,
+            params: [x_offset as f32, panel_idx, panel_w as f32, fog_scale],
+        }
     }
 }
 
-impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
+impl ApplicationHandler for AppRunner {
     fn resumed(&mut self, elwt: &ActiveEventLoop) {
         let app = &mut self.app;
+
         let win = Arc::new(
             elwt.create_window(
                 WindowAttributes::default()
-                    .with_title(app.knobs.title)
+                    .with_title("Rye — Geodesic Lattice (E³ / H³ / S³)")
                     .with_visible(false),
             )
             .expect("create window"),
@@ -243,9 +180,8 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
 
         let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
 
-        // Build capture now that we know the surface size.
         if let Some(path) = self.capture_args.any_path() {
-            let path = path.clone(); // reborrow ends here
+            let path = path.clone();
             let w = rd.surface_bundle.config.width;
             let h = rd.surface_bundle.config.height;
             let cap = FrameCapture::new(self.capture_args.frames, self.capture_args.fps, w, h);
@@ -258,33 +194,40 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                 self.capture_args.fps,
             );
             app.capture = Some(cap);
-
-            // Snap to a nice movie perspective.
-            app.camera.set_orbit(app.knobs.capture_distance, 0.40);
+            app.camera.set_orbit(CAPTURE_DISTANCE, CAPTURE_PITCH);
         }
 
-        let mut shaders = ShaderDb::new(rd.device.clone());
-        let id = shaders
-            .load(shader_path(), &app.space)
-            .expect("load fractal.wgsl");
-        let gen = shaders.generation(id);
+        // Build lattice scene modules — centers are computed per-Space in Rust.
+        let lattice = LatticeSphereScene::default();
+        let scene_e3 = lattice.to_wgsl(&EuclideanR3);
+        let scene_h3 = lattice.to_wgsl(&HyperbolicH3);
+        let scene_s3 = lattice.to_wgsl(&SphericalS3);
 
-        let mut watcher = AssetWatcher::new().expect("asset watcher");
-        watcher.watch(shader_dir()).expect("watch shader dir");
+        // Read the user WGSL once.
+        let user_src = std::fs::read_to_string(shader_path()).expect("read lattice.wgsl");
 
-        let ray_march = RayMarchNode::new(
-            &rd.device,
-            rd.surface_bundle.config.format,
-            shaders.module(id),
-        );
+        // Assemble and compile three distinct shader modules.
+        let make_module = |prelude: &str, scene: &str| {
+            let full = assemble(prelude, scene, &user_src);
+            validate_wgsl(&full).expect("lattice shader should validate");
+            rd.device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("lattice"),
+                    source: wgpu::ShaderSource::Wgsl(full.into()),
+                })
+        };
+
+        let fmt = rd.surface_bundle.config.format;
+        let mod_e3 = make_module(&EuclideanR3.wgsl_impl(), &scene_e3);
+        let mod_h3 = make_module(&HyperbolicH3.wgsl_impl(), &scene_h3);
+        let mod_s3 = make_module(&SphericalS3.wgsl_impl(), &scene_s3);
+
+        app.node_e3 = Some(RayMarchNode::new(&rd.device, fmt, &mod_e3));
+        app.node_h3 = Some(RayMarchNode::new(&rd.device, fmt, &mod_h3));
+        app.node_s3 = Some(RayMarchNode::new(&rd.device, fmt, &mod_s3));
 
         app.window = Some(win.clone());
         app.rd = Some(rd);
-        app.shaders = Some(shaders);
-        app.shader_id = Some(id);
-        app.shader_gen = gen;
-        app.watcher = Some(watcher);
-        app.ray_march = Some(ray_march);
         app.minimized = false;
         app.start = Instant::now();
 
@@ -305,7 +248,6 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
 
         match ev {
             WindowEvent::CloseRequested => elwt.exit(),
-
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
@@ -351,50 +293,54 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                         app.camera.advance(input);
                     }
                 }
-                // Drop `app` borrow so `self.handle_hot_reload()` and
-                // `self.current_uniforms()` can re-borrow `self` freely.
-                let _ = app;
 
-                self.handle_hot_reload();
+                let Some(rd) = app.rd.as_ref() else { return };
+                let w = rd.surface_bundle.config.width;
+                let h = rd.surface_bundle.config.height;
 
-                // FPS counter (skipped in capture mode to avoid window title churn).
+                // Divide width into three panels (rounding the last to fill any remainder).
+                let pw = w / 3;
+                let pw2 = w - pw * 2;
+
+                // Upload uniforms for all three panels.
                 {
-                    let app = &mut self.app;
-                    if app.capture.is_none() {
-                        app.frame_count += 1;
-                        let elapsed = app.last_fps_update.elapsed().as_secs_f32();
-                        if elapsed >= 1.0 {
-                            app.fps = app.frame_count as f32 / elapsed;
-                            app.frame_count = 0;
-                            app.last_fps_update = Instant::now();
-                            let p = app.camera.view().position;
-                            win.set_title(&format!(
-                                "{} | {:.0} fps | pos ({:.2}, {:.2}, {:.2})",
-                                app.knobs.title, app.fps, p.x, p.y, p.z,
-                            ));
-                        }
+                    let u_e3 = self.panel_uniforms(w, h, 0, pw, 0.0, FOG_E3);
+                    let u_h3 = self.panel_uniforms(w, h, pw, pw, 1.0, FOG_H3);
+                    let u_s3 = self.panel_uniforms(w, h, pw * 2, pw2, 2.0, FOG_S3);
+                    let rd = self.app.rd.as_ref().unwrap();
+                    if let Some(n) = &mut self.app.node_e3 {
+                        n.set_uniforms(&rd.queue, u_e3);
+                    }
+                    if let Some(n) = &mut self.app.node_h3 {
+                        n.set_uniforms(&rd.queue, u_h3);
+                    }
+                    if let Some(n) = &mut self.app.node_s3 {
+                        n.set_uniforms(&rd.queue, u_s3);
                     }
                 }
 
-                let Some(uniforms) = self.current_uniforms() else {
-                    return;
-                };
-                let Some(rd) = self.app.rd.as_ref() else {
-                    return;
-                };
-                if let Some(node) = self.app.ray_march.as_mut() {
-                    node.set_uniforms(&rd.queue, uniforms);
-                }
-
+                let rd = self.app.rd.as_ref().unwrap();
                 match rd.begin_frame() {
                     Ok((frame, view)) => {
-                        if let Some(node) = self.app.ray_march.as_mut() {
-                            if let Err(e) = node.execute(rd, &view) {
-                                tracing::error!("render error: {e:#}");
+                        // E³: clear + draw left panel
+                        if let Some(n) = &mut self.app.node_e3 {
+                            if let Err(e) = n.execute_panel(rd, &view, true, [0, 0, pw, h]) {
+                                tracing::error!("E³ render error: {e:#}");
+                            }
+                        }
+                        // H³: load + draw centre panel
+                        if let Some(n) = &mut self.app.node_h3 {
+                            if let Err(e) = n.execute_panel(rd, &view, false, [pw, 0, pw, h]) {
+                                tracing::error!("H³ render error: {e:#}");
+                            }
+                        }
+                        // S³: load + draw right panel
+                        if let Some(n) = &mut self.app.node_s3 {
+                            if let Err(e) = n.execute_panel(rd, &view, false, [pw * 2, 0, pw2, h]) {
+                                tracing::error!("S³ render error: {e:#}");
                             }
                         }
 
-                        // Capture before present.
                         if let Some(cap) = &mut self.app.capture {
                             if !cap.is_done() {
                                 cap.capture(&rd.device, &rd.queue, &frame);
@@ -402,8 +348,7 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                                 let total = self.capture_args.frames;
                                 if n % 30 == 0 || n == total as usize {
                                     win.set_title(&format!(
-                                        "{} — capturing {n}/{total}",
-                                        self.app.knobs.title
+                                        "Rye — Geodesic Lattice — capturing {n}/{total}"
                                     ));
                                 }
                             }
@@ -411,7 +356,6 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
 
                         frame.present();
 
-                        // After present: check if capture is complete.
                         let done = self.app.capture.as_ref().is_some_and(|c| c.is_done());
                         if done {
                             if let Some(cap) = &self.app.capture {
@@ -464,8 +408,6 @@ fn main() -> Result<()> {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
-    let hyperbolic = args.iter().any(|a| a == "--hyperbolic");
-    let spherical = args.iter().any(|a| a == "--spherical");
     let rotate = args.iter().any(|a| a == "--rotate");
     let capture_apng: Option<PathBuf> = args
         .windows(2)
@@ -488,16 +430,7 @@ fn main() -> Result<()> {
     };
 
     let event_loop: EventLoop<()> = EventLoop::new()?;
-
-    if hyperbolic {
-        let mut runner = AppRunner::new(HyperbolicH3, HYPERBOLIC_KNOBS, rotate, cap_args);
-        event_loop.run_app(&mut runner)?;
-    } else if spherical {
-        let mut runner = AppRunner::new(SphericalS3, SPHERICAL_KNOBS, rotate, cap_args);
-        event_loop.run_app(&mut runner)?;
-    } else {
-        let mut runner = AppRunner::new(EuclideanR3, EUCLIDEAN_KNOBS, rotate, cap_args);
-        event_loop.run_app(&mut runner)?;
-    }
+    let mut runner = AppRunner::new(rotate, cap_args);
+    event_loop.run_app(&mut runner)?;
     Ok(())
 }

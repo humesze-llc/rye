@@ -247,6 +247,7 @@ impl WgslSpace for HyperbolicH3 {
 // passed into shaders for `iso_apply`.
 const WGSL_IMPL: &str = r#"
 // rye-math :: HyperbolicH3 (v0 Space WGSL ABI)
+const RYE_MAX_ARC: f32 = 1e9;
 const RYE_H3_R2_MAX: f32 = 0.9999999;
 
 fn rye_artanh(x: f32) -> f32 {
@@ -280,6 +281,11 @@ fn rye_gyr_apply(a: vec3<f32>, b: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
     return rye_mobius_add(-ab, abv);
 }
 
+fn rye_origin_distance(p: vec3<f32>) -> f32 {
+    let r = min(length(p), sqrt(RYE_H3_R2_MAX));
+    return 2.0 * rye_artanh(r);
+}
+
 fn rye_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {
     // Möbius (artanh) form: stable near zero distance where the
     // equivalent acosh form quantizes. Saturates near the boundary.
@@ -298,7 +304,7 @@ fn rye_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
     let lambda = 2.0 / (1.0 - aa);
     let dir = v / n;
     let scale = tanh(lambda * n * 0.5);
-    return rye_mobius_add(p_at, scale * dir);
+    return rye_clamp_to_ball(rye_mobius_add(p_at, scale * dir));
 }
 
 fn rye_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {

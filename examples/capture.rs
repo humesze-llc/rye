@@ -207,3 +207,10 @@ impl FrameCapture {
         Ok(())
     }
 }
+
+// Satisfy Cargo's example auto-discovery: this file is a shared module
+// included via `#[path]` from fractal, geodesic_spheres, lattice, and
+// corridor. When compiled as a standalone "capture" example it still
+// needs a main; when pulled in via `#[path]` it's unused, hence the allow.
+#[allow(dead_code)]
+fn main() {}

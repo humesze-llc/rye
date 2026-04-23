@@ -1,13 +1,23 @@
-//! `rye-sdf` - tiny scene-module builders for Rye.
+//! `rye-sdf` — signed-distance field primitives and scene builders for Rye.
 //!
-//! Phase 2 starts with a narrow vertical slice: emit WGSL scene modules
-//! that define:
+//! # Phase 2 additions
 //!
-//! `fn rye_scene_sdf(p: vec3<f32>) -> f32`
+//! [`Primitive`] is the typed abstraction for geometric objects. Every
+//! primitive emits a WGSL function `fn {name}(p: vec3<f32>) -> f32` that
+//! uses only `rye_*` Space-prelude functions, guaranteeing correctness
+//! across E³, H³, and S³.
 //!
-//! The scene is evaluated in the active Space coordinates, so authors
-//! can use `rye_distance` directly and get Euclidean / H3 / S3 behavior
-//! from the same module source.
+//! [`combinator`] provides Space-agnostic combinators (union, intersection,
+//! smooth-min) that operate on the scalar distances returned by primitive SDFs.
+//!
+//! The legacy scene builders ([`GeodesicSpheresScene`], [`CorridorScene`],
+//! [`LatticeSphereScene`]) remain for existing demos. They will be rewritten
+//! on top of the typed primitive layer in Phase 2 step 6.
+
+pub mod combinator;
+pub mod primitive;
+
+pub use primitive::{Box, Plane, Primitive, Sphere};
 
 use glam::Vec3;
 use rye_math::Space;
@@ -338,6 +348,73 @@ impl LatticeSphereScene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Primitive trait tests -------------------------------------------
+
+    #[test]
+    fn sphere_emits_rye_distance_call() {
+        use primitive::Sphere;
+        use rye_math::EuclideanR3;
+        let s = Sphere::new(Vec3::ZERO, 0.25);
+        let src = s.to_wgsl(&EuclideanR3, "sdf_0");
+        assert!(src.contains("fn sdf_0(p: vec3<f32>) -> f32"));
+        assert!(src.contains("rye_distance"));
+        assert!(src.contains("0.250000"));
+    }
+
+    #[test]
+    fn sphere_wgsl_is_space_agnostic() {
+        use primitive::Sphere;
+        use rye_math::{EuclideanR3, HyperbolicH3, SphericalS3};
+        let s = Sphere::at_origin(0.3);
+        let e3 = s.to_wgsl(&EuclideanR3, "sdf_0");
+        let h3 = s.to_wgsl(&HyperbolicH3, "sdf_0");
+        let s3 = s.to_wgsl(&SphericalS3, "sdf_0");
+        // The emitted body must be identical across spaces — only rye_distance
+        // differs at prelude link time, not in the emitted text.
+        assert_eq!(e3, h3);
+        assert_eq!(h3, s3);
+    }
+
+    #[test]
+    fn plane_emits_dot_product_sdf() {
+        use primitive::Plane;
+        use rye_math::EuclideanR3;
+        let p = Plane::floor(-0.5);
+        let src = p.to_wgsl(&EuclideanR3, "sdf_floor");
+        assert!(src.contains("fn sdf_floor(p: vec3<f32>) -> f32"));
+        assert!(src.contains("dot(p,"));
+        // floor at y = -0.5: normal = (0,1,0), offset = -0.5
+        assert!(src.contains("-0.500000"));
+    }
+
+    #[test]
+    fn box_emits_euclidean_box_sdf() {
+        use primitive::Box;
+        use rye_math::EuclideanR3;
+        let b = Box::cube(0.4);
+        let src = b.to_wgsl(&EuclideanR3, "sdf_box");
+        assert!(src.contains("fn sdf_box(p: vec3<f32>) -> f32"));
+        assert!(src.contains("abs(p)"));
+        assert!(src.contains("0.400000"));
+    }
+
+    #[test]
+    fn combinator_union_expr() {
+        use combinator::union_expr;
+        let expr = union_expr("da", "db");
+        assert_eq!(expr, "min(da, db)");
+    }
+
+    #[test]
+    fn combinator_smooth_min_fn_compiles() {
+        use combinator::smooth_min_fn;
+        let src = smooth_min_fn("smin", 0.08);
+        assert!(src.contains("fn smin(a: f32, b: f32) -> f32"));
+        assert!(src.contains("0.080000"));
+        assert!(src.contains("clamp"));
+        assert!(src.contains("mix"));
+    }
 
     #[test]
     fn emits_required_scene_entrypoint() {

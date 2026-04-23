@@ -112,7 +112,7 @@ impl Primitive for Plane {
     fn to_wgsl<S: WgslSpace>(&self, _space: &S, name: &str) -> String {
         format!(
             "fn {name}(p: vec3<f32>) -> f32 {{\n\
-             \treturn dot(p, vec3<f32>({nx:.6}, {ny:.6}, {nz:.6})) - {d:.6};\n\
+             \treturn dot(p, vec3<f32>({nx:.6}, {ny:.6}, {nz:.6})) - ({d:.6});\n\
              }}\n",
             name = name,
             nx = self.normal.x,

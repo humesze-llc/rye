@@ -16,8 +16,10 @@
 
 pub mod combinator;
 pub mod primitive;
+pub mod scene;
 
-pub use primitive::{Box, Plane, Primitive, Sphere};
+pub use primitive::{BoxSdf, Plane, Primitive, Sphere};
+pub use scene::{PrimitiveKind, Scene, SceneNode};
 
 use glam::Vec3;
 use rye_math::Space;
@@ -390,9 +392,9 @@ mod tests {
 
     #[test]
     fn box_emits_euclidean_box_sdf() {
-        use primitive::Box;
+        use primitive::BoxSdf;
         use rye_math::EuclideanR3;
-        let b = Box::cube(0.4);
+        let b = BoxSdf::cube(0.4);
         let src = b.to_wgsl(&EuclideanR3, "sdf_box");
         assert!(src.contains("fn sdf_box(p: vec3<f32>) -> f32"));
         assert!(src.contains("abs(p)"));

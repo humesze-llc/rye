@@ -1,5 +1,6 @@
 use glam::Vec3;
 use rye_math::WgslSpace;
+use serde::{Deserialize, Serialize};
 
 /// A geometric primitive that emits its signed-distance function as WGSL.
 ///
@@ -24,7 +25,7 @@ pub trait Primitive {
 /// The SDF is `rye_distance(p, center) - radius` in every Space.
 /// No per-space specialization is needed because `rye_distance` resolves
 /// to the correct metric at shader link time.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Sphere {
     pub center: Vec3,
     pub radius: f32,
@@ -77,7 +78,7 @@ impl Primitive for Sphere {
 /// approximation in H³/S³. The space-correct formulas are tracked in the
 /// Phase 2 plan and will replace this once the `SpaceKind` dispatch pattern
 /// is established.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Plane {
     /// Outward unit normal (Euclidean).
     pub normal: Vec3,
@@ -129,12 +130,12 @@ impl Primitive for Plane {
 /// defined in Space coordinates, so in H³/S³ the corners appear
 /// compressed/expanded according to the metric — the same way Euclidean-coord
 /// walls in the corridor demo appear to bow.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Box {
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BoxSdf {
     pub half_extents: Vec3,
 }
 
-impl Box {
+impl BoxSdf {
     pub fn new(half_extents: Vec3) -> Self {
         Self { half_extents }
     }
@@ -146,7 +147,7 @@ impl Box {
     }
 }
 
-impl Primitive for Box {
+impl Primitive for BoxSdf {
     fn to_wgsl<S: WgslSpace>(&self, _space: &S, name: &str) -> String {
         format!(
             "fn {name}(p: vec3<f32>) -> f32 {{\n\

@@ -10,3 +10,5 @@ description = "Rye SDF scene module helpers."
 [dependencies]
 rye-math = { path = "../rye-math" }
 glam.workspace = true
+serde.workspace = true
+ron.workspace = true

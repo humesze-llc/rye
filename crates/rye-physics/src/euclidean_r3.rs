@@ -334,18 +334,43 @@ fn polytope_polytope_r3(
         return None;
     }
 
+    // --- DIAGNOSTIC INSTRUMENTATION (temporary) ---
+    // Trace every polytope-polytope pair that actually reaches GJK, so
+    // we can see which call dies. Pipe to stderr so it survives winit
+    // swallowing stdout.
+    eprintln!(
+        "[pp] a=({:.2},{:.2},{:.2}) b=({:.2},{:.2},{:.2}) dist2={:.3} combined={:.3}",
+        a.position.x, a.position.y, a.position.z,
+        b.position.x, b.position.y, b.position.z,
+        center_dist_sq, combined
+    );
+
     let va = world_vertices(va_local, a.position, a.orientation.rotation);
     let vb = world_vertices(vb_local, b.position, b.orientation.rotation);
     let hull_a = ConvexHull { vertices: &va };
     let hull_b = ConvexHull { vertices: &vb };
 
+    eprintln!("[pp] calling gjk...");
     let initial_dir = b.position - a.position;
     let simplex = match gjk_intersect(&hull_a, &hull_b, initial_dir) {
-        GjkResult::Intersecting { simplex } => simplex,
-        GjkResult::Separated => return None,
+        GjkResult::Intersecting { simplex } => {
+            eprintln!("[pp] gjk returned Intersecting");
+            simplex
+        }
+        GjkResult::Separated => {
+            eprintln!("[pp] gjk returned Separated");
+            return None;
+        }
     };
+    eprintln!("[pp] calling epa...");
     let info = epa(&hull_a, &hull_b, simplex)?;
-    validate_contact(&info, a, b)
+    eprintln!(
+        "[pp] epa returned: pen={} n=({:.2},{:.2},{:.2})",
+        info.penetration, info.normal.x, info.normal.y, info.normal.z
+    );
+    let result = validate_contact(&info, a, b);
+    eprintln!("[pp] validate_contact: {}", if result.is_some() { "accepted" } else { "rejected" });
+    result
 }
 
 fn sphere_polytope_r3(

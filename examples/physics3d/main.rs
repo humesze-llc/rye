@@ -107,7 +107,8 @@ fn build_world() -> World<EuclideanR3> {
         if i % 2 == 0 {
             let radius = rng.range(0.25, 0.40);
             world.push_body(sphere_body_r3(Vec3::new(x, y, z), vel, radius, 1.0));
-        } else {
+        } 
+        else {
             let hx = rng.range(0.22, 0.36);
             let hy = rng.range(0.22, 0.36);
             let hz = rng.range(0.22, 0.36);
@@ -247,9 +248,11 @@ impl App {
             // (stack overflow, driver abort), this won't catch it —
             // but seeing the panic message here would tell us it's a
             // Rust issue.
+            eprintln!("[step] t={:.3} begin step", self.sim_time);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.world.step(FIXED_DT);
             }));
+            eprintln!("[step] t={:.3} end step", self.sim_time);
             match result {
                 Ok(()) => {}
                 Err(payload) => {

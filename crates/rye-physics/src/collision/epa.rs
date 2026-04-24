@@ -251,9 +251,31 @@ pub fn epa<A: SupportFn, B: SupportFn>(
     b: &B,
     initial_simplex: [MinkowskiPoint; 4],
 ) -> Option<ContactInfo> {
+    // Reject degenerate starting simplices: if the 4 GJK points are
+    // (nearly) coplanar, the tetrahedron has ~zero volume and EPA
+    // cannot produce meaningful outward normals. The signed volume is
+    // det([p1-p0, p2-p0, p3-p0])/6, and sign flips depending on
+    // handedness — we only care about magnitude.
+    let p0 = initial_simplex[0].point;
+    let p1 = initial_simplex[1].point;
+    let p2 = initial_simplex[2].point;
+    let p3 = initial_simplex[3].point;
+    let volume6 = (p1 - p0).dot((p2 - p0).cross(p3 - p0)).abs();
+    if volume6 < 1e-8 {
+        return None;
+    }
+
     let mut polytope = Polytope::from_tetra(initial_simplex);
 
+    let mut iter_count = 0u32;
     for _ in 0..EPA_MAX_ITERATIONS {
+        iter_count += 1;
+        eprintln!(
+            "  [epa iter {}] verts={} faces={}",
+            iter_count,
+            polytope.vertices.len(),
+            polytope.faces.len()
+        );
         // If expansion has collapsed the polytope (no faces), we've
         // left the domain where EPA can give a meaningful answer.
         // Bail cleanly rather than panicking on the empty slice.

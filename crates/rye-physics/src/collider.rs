@@ -28,13 +28,20 @@ pub enum Collider {
     /// frame (orientation-relative), ordered counter-clockwise.
     Polygon2D { vertices: Vec<Vec2> },
 
-    /// Convex polyhedron in 3D Euclidean space. Vertices + face normals
-    /// in local body frame.
-    Polyhedron3D {
-        vertices: Vec<Vec3>,
-        face_normals: Vec<Vec3>,
+    /// Half-space `{ p : dot(p, normal) ≥ offset }` in any dimension
+    /// whose `Vector` is `Vec3`. The complement is the "solid" side.
+    /// Used for infinite floors/walls until polyhedron SAT ships; also
+    /// useful long-term for static terrain planes.
+    ///
+    /// Only meaningful on a static body (`inv_mass == 0`) — dynamic
+    /// half-spaces are nonsensical.
+    HalfSpace {
+        normal: Vec3,
+        offset: f32,
     },
+
     // Future:
+    // ConvexPolyhedron3D { vertices: Vec<Vec3>, face_normals: Vec<Vec3>, edges: Vec<Vec3> },  // 3D SAT
     // Horosphere { point_at_inf: Vec3, offset: f32 },    // H³-only
     // Polytope4D { vertices: Vec<[f32; 4]>, ... },       // for Simplex 4D
 }
@@ -44,7 +51,7 @@ impl Collider {
         match self {
             Collider::Sphere { .. } => ColliderKind::Sphere,
             Collider::Polygon2D { .. } => ColliderKind::Polygon2D,
-            Collider::Polyhedron3D { .. } => ColliderKind::Polyhedron3D,
+            Collider::HalfSpace { .. } => ColliderKind::HalfSpace,
         }
     }
 }
@@ -54,5 +61,5 @@ impl Collider {
 pub enum ColliderKind {
     Sphere,
     Polygon2D,
-    Polyhedron3D,
+    HalfSpace,
 }

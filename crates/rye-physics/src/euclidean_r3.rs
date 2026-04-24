@@ -202,8 +202,41 @@ fn sphere_sphere_r3(
     })
 }
 
+fn sphere_halfspace_r3(
+    a: &RigidBody<EuclideanR3>,
+    b: &RigidBody<EuclideanR3>,
+    _space: &EuclideanR3,
+) -> Option<Contact<EuclideanR3>> {
+    let Collider::Sphere { radius } = a.collider else {
+        return None;
+    };
+    let Collider::HalfSpace { normal, offset } = b.collider else {
+        return None;
+    };
+    // Signed distance from sphere center to the plane. Positive = outside,
+    // negative = inside the half-space (penetrating).
+    let signed = a.position.dot(normal) - offset;
+    let penetration = radius - signed;
+    if penetration <= 0.0 {
+        return None;
+    }
+    // Contact normal A→B points *into* the half-space (into the wall),
+    // i.e. opposite to the half-space's outward normal. Pushing along this
+    // separates the sphere from the wall.
+    let contact_normal = -normal;
+    // Contact point: on the sphere's surface closest to the plane.
+    let point = a.position - normal * radius;
+    Some(Contact {
+        normal: contact_normal,
+        point,
+        penetration,
+        restitution: (a.restitution + b.restitution) * 0.5,
+    })
+}
+
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR3>) {
     np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r3);
+    np.register(ColliderKind::Sphere, ColliderKind::HalfSpace, sphere_halfspace_r3);
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +261,19 @@ pub fn sphere_body_r3(
         Collider::Sphere { radius },
         mass,
         sphere_inertia(mass, radius),
+        &EuclideanR3,
+    )
+}
+
+/// Static half-space body. `normal` is the outward direction (the side
+/// where the world is); `offset` places the plane at
+/// `dot(p, normal) = offset`.
+pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> RigidBody<EuclideanR3> {
+    let n = normal.try_normalize().unwrap_or(Vec3::Y);
+    RigidBody::fixed(
+        Vec3::ZERO,
+        Collider::HalfSpace { normal: n, offset },
+        1.0,
         &EuclideanR3,
     )
 }

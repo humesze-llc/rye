@@ -61,11 +61,13 @@ pub fn sphere_body(
     )
 }
 
-/// Register the narrowphase functions that are meaningful in R².
-/// Currently: sphere-sphere. Polygon-polygon and polygon-sphere are
-/// added when 2D SAT lands.
+/// Register all 2D Euclidean narrowphase functions:
+/// sphere-sphere, polygon-polygon, sphere-polygon (reversed pair handled
+/// by the dispatch table's auto-flip).
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR2>) {
     np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r2);
+    np.register(ColliderKind::Polygon2D, ColliderKind::Polygon2D, polygon_polygon_r2);
+    np.register(ColliderKind::Sphere, ColliderKind::Polygon2D, sphere_polygon_r2);
 }
 
 fn sphere_sphere_r2(
@@ -95,6 +97,272 @@ fn sphere_sphere_r2(
         penetration: combined - d,
         restitution: (a.restitution + b.restitution) * 0.5,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Polygon-polygon via SAT (Separating Axis Theorem).
+//
+// For two convex polygons, the pair is non-overlapping iff some edge
+// normal of A or B fully separates them. When they do overlap, the axis
+// of minimum overlap gives the contact normal and penetration depth.
+//
+// Polygons must have their local vertices in counter-clockwise order;
+// outward edge normals are `(edge.y, -edge.x) / |edge|`.
+// ---------------------------------------------------------------------------
+
+use rye_math::Rotor;
+
+fn world_vertices(local: &[Vec2], pos: Vec2, rot: rye_math::Rotor2) -> Vec<Vec2> {
+    local.iter().map(|&v| rot.apply(v) + pos).collect()
+}
+
+fn project_onto(axis: Vec2, verts: &[Vec2]) -> (f32, f32) {
+    let first = verts[0].dot(axis);
+    let (mut lo, mut hi) = (first, first);
+    for &v in &verts[1..] {
+        let p = v.dot(axis);
+        if p < lo {
+            lo = p;
+        }
+        if p > hi {
+            hi = p;
+        }
+    }
+    (lo, hi)
+}
+
+/// Best (smallest-overlap) axis found by iterating `sides`'s edge
+/// normals and projecting both polygons. Returns `None` when any axis
+/// shows separation (i.e. no collision).
+fn best_axis_from(sides: &[Vec2], other: &[Vec2]) -> Option<(Vec2, f32)> {
+    let n = sides.len();
+    let mut best: Option<(Vec2, f32)> = None;
+    for i in 0..n {
+        let v0 = sides[i];
+        let v1 = sides[(i + 1) % n];
+        let edge = v1 - v0;
+        let len = edge.length();
+        if len < 1e-8 {
+            continue;
+        }
+        // Outward normal for CCW winding.
+        let normal = Vec2::new(edge.y, -edge.x) / len;
+        let (lo_a, hi_a) = project_onto(normal, sides);
+        let (lo_b, hi_b) = project_onto(normal, other);
+        let overlap = hi_a.min(hi_b) - lo_a.max(lo_b);
+        if overlap <= 0.0 {
+            return None;
+        }
+        match best {
+            None => best = Some((normal, overlap)),
+            Some((_, prev)) if overlap < prev => best = Some((normal, overlap)),
+            _ => {}
+        }
+    }
+    best
+}
+
+fn polygon_polygon_r2(
+    a: &RigidBody<EuclideanR2>,
+    b: &RigidBody<EuclideanR2>,
+    _space: &EuclideanR2,
+) -> Option<Contact<EuclideanR2>> {
+    let Collider::Polygon2D { vertices: a_local } = &a.collider else {
+        return None;
+    };
+    let Collider::Polygon2D { vertices: b_local } = &b.collider else {
+        return None;
+    };
+    if a_local.len() < 3 || b_local.len() < 3 {
+        return None;
+    }
+
+    let va = world_vertices(a_local, a.position, a.orientation.rotation);
+    let vb = world_vertices(b_local, b.position, b.orientation.rotation);
+
+    // Take the minimum across both polygons' edge normals. If either
+    // polygon's axes find full separation, there is no collision.
+    let mut best = best_axis_from(&va, &vb)?;
+    if let Some((n, o)) = best_axis_from(&vb, &va) {
+        if o < best.1 {
+            best = (n, o);
+        }
+    } else {
+        return None;
+    }
+
+    let (mut normal, penetration) = best;
+
+    // Ensure the normal points from A's center toward B's center
+    // (the `Contact` convention).
+    let ab = b.position - a.position;
+    if normal.dot(ab) < 0.0 {
+        normal = -normal;
+    }
+
+    Some(Contact {
+        normal,
+        penetration,
+        restitution: (a.restitution + b.restitution) * 0.5,
+    })
+}
+
+/// True if `p` lies inside the convex polygon given by CCW vertices `poly`.
+/// Used by sphere-polygon to detect the "sphere center has tunneled
+/// inside" case and flip the normal accordingly.
+fn point_in_convex_ccw(poly: &[Vec2], p: Vec2) -> bool {
+    for i in 0..poly.len() {
+        let v0 = poly[i];
+        let v1 = poly[(i + 1) % poly.len()];
+        let edge = v1 - v0;
+        let outward = Vec2::new(edge.y, -edge.x);
+        if (p - v0).dot(outward) > 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Closest point on the polygon boundary (edges) to an external point,
+/// plus its distance.
+fn closest_on_polygon_boundary(poly: &[Vec2], p: Vec2) -> (Vec2, f32) {
+    let mut best = poly[0];
+    let mut best_d2 = (best - p).length_squared();
+    for i in 0..poly.len() {
+        let v0 = poly[i];
+        let v1 = poly[(i + 1) % poly.len()];
+        let edge = v1 - v0;
+        let e2 = edge.length_squared();
+        let t = if e2 > 1e-12 {
+            ((p - v0).dot(edge) / e2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let q = v0 + edge * t;
+        let d2 = (q - p).length_squared();
+        if d2 < best_d2 {
+            best_d2 = d2;
+            best = q;
+        }
+    }
+    (best, best_d2.sqrt())
+}
+
+fn sphere_polygon_r2(
+    a: &RigidBody<EuclideanR2>,
+    b: &RigidBody<EuclideanR2>,
+    _space: &EuclideanR2,
+) -> Option<Contact<EuclideanR2>> {
+    let Collider::Sphere { radius } = a.collider else {
+        return None;
+    };
+    let Collider::Polygon2D { vertices: b_local } = &b.collider else {
+        return None;
+    };
+    if b_local.len() < 3 {
+        return None;
+    }
+
+    let vb = world_vertices(b_local, b.position, b.orientation.rotation);
+    let center = a.position;
+    let (closest, dist) = closest_on_polygon_boundary(&vb, center);
+
+    if point_in_convex_ccw(&vb, center) {
+        // Sphere center is inside the polygon — maximal penetration.
+        // Push the sphere out along (center - closest) = toward the
+        // nearest edge. Normal A→B is from sphere toward polygon =
+        // (closest - center) direction, but since the center is inside
+        // we flip to push it out.
+        let dir = (center - closest).try_normalize().unwrap_or(Vec2::Y);
+        return Some(Contact {
+            normal: -dir, // from sphere (A) toward polygon (B)
+            penetration: dist + radius,
+            restitution: (a.restitution + b.restitution) * 0.5,
+        });
+    }
+
+    if dist >= radius {
+        return None;
+    }
+
+    let normal = if dist > 1e-8 {
+        (closest - center) / dist
+    } else {
+        Vec2::Y
+    };
+
+    Some(Contact {
+        normal,
+        penetration: radius - dist,
+        restitution: (a.restitution + b.restitution) * 0.5,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Regular polygon builders.
+// ---------------------------------------------------------------------------
+
+/// Return CCW-ordered vertices of a regular n-gon with circumradius `r`.
+/// First vertex is at angle 0 (on +X axis).
+pub fn regular_polygon_vertices(n: u32, r: f32) -> Vec<Vec2> {
+    use std::f32::consts::TAU;
+    (0..n)
+        .map(|k| {
+            let theta = TAU * (k as f32) / (n as f32);
+            Vec2::new(theta.cos(), theta.sin()) * r
+        })
+        .collect()
+}
+
+/// Moment of inertia of a solid regular n-gon of mass `m` and
+/// circumradius `r` about its centroid:
+///
+/// `I = (m·r²/6) · (1 + 2·cos²(π/n))`
+///
+/// Reduces to `m·r²/4` for n=3, `m·r²/3` for n=4, and `m·r²/2` in the
+/// disk limit as n→∞.
+pub fn regular_polygon_inertia(mass: f32, n: u32, r: f32) -> f32 {
+    use std::f32::consts::PI;
+    let c = (PI / n as f32).cos();
+    (mass * r * r / 6.0) * (1.0 + 2.0 * c * c)
+}
+
+/// Convenience: build a dynamic regular n-gon body in R².
+pub fn polygon_body(
+    position: Vec2,
+    velocity: Vec2,
+    n: u32,
+    circumradius: f32,
+    mass: f32,
+) -> RigidBody<EuclideanR2> {
+    RigidBody::new(
+        position,
+        velocity,
+        Collider::Polygon2D {
+            vertices: regular_polygon_vertices(n, circumradius),
+        },
+        mass,
+        regular_polygon_inertia(mass, n, circumradius),
+        &EuclideanR2,
+    )
+}
+
+/// Build a static (infinite-mass) rectangular wall with CCW-wound
+/// corners. `half_extents` is (width/2, height/2).
+pub fn static_wall(center: Vec2, half_extents: Vec2) -> RigidBody<EuclideanR2> {
+    let (hx, hy) = (half_extents.x, half_extents.y);
+    let vertices = vec![
+        Vec2::new(-hx, -hy),
+        Vec2::new(hx, -hy),
+        Vec2::new(hx, hy),
+        Vec2::new(-hx, hy),
+    ];
+    RigidBody::fixed(
+        center,
+        Collider::Polygon2D { vertices },
+        1.0,
+        &EuclideanR2,
+    )
 }
 
 #[cfg(test)]
@@ -160,6 +428,193 @@ mod tests {
         let a = sphere_body(Vec2::ZERO, Vec2::ZERO, 0.4, 1.0);
         let b = sphere_body(Vec2::new(2.0, 0.0), Vec2::ZERO, 0.4, 1.0);
         assert!(np.test(&a, &b, &EuclideanR2).is_none());
+    }
+
+    #[test]
+    fn regular_polygon_vertices_are_ccw() {
+        // CCW square at the origin: cross product of successive edges
+        // should be positive.
+        let verts = regular_polygon_vertices(4, 1.0);
+        assert_eq!(verts.len(), 4);
+        for i in 0..4 {
+            let e0 = verts[(i + 1) % 4] - verts[i];
+            let e1 = verts[(i + 2) % 4] - verts[(i + 1) % 4];
+            let cross = e0.x * e1.y - e0.y * e1.x;
+            assert!(cross > 0.0, "winding not CCW at edge {i}: cross={cross}");
+        }
+    }
+
+    /// Helper: axis-aligned rectangular body (CCW winding).
+    fn aa_box(center: Vec2, half: Vec2, mass: f32) -> RigidBody<EuclideanR2> {
+        let vertices = vec![
+            Vec2::new(half.x, -half.y),
+            Vec2::new(half.x, half.y),
+            Vec2::new(-half.x, half.y),
+            Vec2::new(-half.x, -half.y),
+        ];
+        // Moment of inertia of a rectangle about its center:
+        // I = m·(w² + h²)/12 where w = 2·half.x, h = 2·half.y.
+        let inertia = mass * (half.x * half.x + half.y * half.y) / 3.0;
+        RigidBody::new(
+            center,
+            Vec2::ZERO,
+            Collider::Polygon2D { vertices },
+            mass,
+            inertia,
+            &EuclideanR2,
+        )
+    }
+
+    #[test]
+    fn polygon_polygon_detects_overlap() {
+        let mut np = Narrowphase::<EuclideanR2>::new();
+        register_default_narrowphase(&mut np);
+
+        // Two axis-aligned unit squares (half-extent 1), centers 1.5
+        // apart along X → x-extents overlap by 0.5.
+        let a = aa_box(Vec2::ZERO, Vec2::ONE, 1.0);
+        let b = aa_box(Vec2::new(1.5, 0.0), Vec2::ONE, 1.0);
+
+        let c = np.test(&a, &b, &EuclideanR2).expect("should collide");
+        // Normal A→B should point along ±X; minimum overlap 0.5.
+        assert!(
+            c.normal.dot(Vec2::X).abs() > 0.99,
+            "normal not ±X: {:?}",
+            c.normal
+        );
+        assert!(c.normal.dot(Vec2::X) > 0.0, "normal not A→B: {:?}", c.normal);
+        assert!(
+            (c.penetration - 0.5).abs() < 1e-4,
+            "penetration: {}",
+            c.penetration
+        );
+    }
+
+    #[test]
+    fn polygon_polygon_separating_produces_no_contact() {
+        let mut np = Narrowphase::<EuclideanR2>::new();
+        register_default_narrowphase(&mut np);
+
+        let a = polygon_body(Vec2::ZERO, Vec2::ZERO, 4, 1.0, 1.0);
+        let b = polygon_body(Vec2::new(3.0, 0.0), Vec2::ZERO, 4, 1.0, 1.0);
+        assert!(np.test(&a, &b, &EuclideanR2).is_none());
+    }
+
+    #[test]
+    fn polygon_rotation_affects_collision() {
+        let mut np = Narrowphase::<EuclideanR2>::new();
+        register_default_narrowphase(&mut np);
+
+        // Two squares (circumradius 1) centers 1.9 apart. When unrotated
+        // their x-extent is ±1, so they overlap.
+        let a = polygon_body(Vec2::ZERO, Vec2::ZERO, 4, 1.0, 1.0);
+        let b = polygon_body(Vec2::new(1.9, 0.0), Vec2::ZERO, 4, 1.0, 1.0);
+        assert!(
+            np.test(&a, &b, &EuclideanR2).is_some(),
+            "unrotated squares at 1.9 should overlap"
+        );
+
+        // Rotate B by 45°. Its x-extent becomes ±√2/2 ≈ ±0.707, so the
+        // gap between A's right edge (x=1) and B's left edge (x=1.9−0.707=1.193)
+        // is positive → no collision.
+        let mut b = polygon_body(Vec2::new(1.9, 0.0), Vec2::ZERO, 4, 1.0, 1.0);
+        b.orientation = Iso2 {
+            rotation: rye_math::Bivector2(std::f32::consts::FRAC_PI_4).exp(),
+            translation: Vec2::ZERO,
+        };
+        assert!(np.test(&a, &b, &EuclideanR2).is_none());
+    }
+
+    #[test]
+    fn sphere_polygon_edge_contact() {
+        let mut np = Narrowphase::<EuclideanR2>::new();
+        register_default_narrowphase(&mut np);
+
+        // Square circumradius 1 at origin. Its right edge is at x=1.
+        // Sphere radius 0.5 at (1.3, 0) → distance from center to edge
+        // is 0.3, penetration = 0.5 − 0.3 = 0.2.
+        let square = polygon_body(Vec2::ZERO, Vec2::ZERO, 4, 1.0, 1.0);
+        let sphere = sphere_body(Vec2::new(1.3, 0.0), Vec2::ZERO, 0.5, 1.0);
+
+        let c = np.test(&sphere, &square, &EuclideanR2).expect("should collide");
+        // Normal sphere→square (A→B): points from sphere toward polygon = −X.
+        assert!(c.normal.dot(-Vec2::X) > 0.99, "normal: {:?}", c.normal);
+        assert!(
+            (c.penetration - 0.2).abs() < 1e-4,
+            "penetration: {}",
+            c.penetration
+        );
+    }
+
+    #[test]
+    fn sphere_polygon_no_contact_when_separated() {
+        let mut np = Narrowphase::<EuclideanR2>::new();
+        register_default_narrowphase(&mut np);
+
+        let square = polygon_body(Vec2::ZERO, Vec2::ZERO, 4, 1.0, 1.0);
+        let sphere = sphere_body(Vec2::new(2.5, 0.0), Vec2::ZERO, 0.5, 1.0);
+        assert!(np.test(&sphere, &square, &EuclideanR2).is_none());
+    }
+
+    #[test]
+    fn sphere_polygon_reverse_pair_handled() {
+        // Registered as (Sphere, Polygon2D). When bodies come in as
+        // (Polygon2D, Sphere), the dispatch table should flip and
+        // negate the normal.
+        let mut np = Narrowphase::<EuclideanR2>::new();
+        register_default_narrowphase(&mut np);
+
+        let square = polygon_body(Vec2::ZERO, Vec2::ZERO, 4, 1.0, 1.0);
+        let sphere = sphere_body(Vec2::new(1.3, 0.0), Vec2::ZERO, 0.5, 1.0);
+
+        // polygon first, sphere second → dispatch flips.
+        let c = np.test(&square, &sphere, &EuclideanR2).expect("should collide");
+        // Normal polygon→sphere (A→B): now points from polygon toward sphere = +X.
+        assert!(c.normal.dot(Vec2::X) > 0.99, "normal: {:?}", c.normal);
+    }
+
+    #[test]
+    fn polygons_settle_on_floor_without_penetration() {
+        // Drop a ring of polygons onto a static floor; after enough
+        // time they should all rest above the floor surface.
+        let mut world = World::new(EuclideanR2);
+        register_default_narrowphase(&mut world.narrowphase);
+
+        // Floor at y = 0, top surface at y = 0.5.
+        let floor_top = 0.5;
+        world.push_body(static_wall(Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.5)));
+
+        // Drop five hexagons onto the floor.
+        for i in 0..5 {
+            let x = -2.0 + i as f32 * 1.0;
+            world.push_body(polygon_body(
+                Vec2::new(x, 4.0 + i as f32 * 0.2),
+                Vec2::ZERO,
+                6,
+                0.4,
+                1.0,
+            ));
+        }
+
+        world.push_field(Box::new(crate::field::Gravity::new(Vec2::new(
+            0.0, -9.8,
+        ))));
+
+        for _ in 0..240 {
+            world.step(1.0 / 60.0);
+        }
+
+        // Every dynamic body's lowest point should be ≥ floor_top minus
+        // a small slop tolerance (one tick of gravity-driven residual
+        // penetration is expected in a non-iterative solver).
+        for (idx, body) in world.bodies.iter().enumerate().skip(1) {
+            let lowest = body.position.y - 0.4;
+            assert!(
+                lowest >= floor_top - 0.15,
+                "body {idx} tunneled: lowest={lowest}, floor_top={floor_top}"
+            );
+            assert!(body.position.y.is_finite(), "body {idx} NaN position");
+        }
     }
 
     #[test]

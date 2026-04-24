@@ -63,6 +63,39 @@ where
     b.velocity = b.velocity + impulse * b.inv_mass;
 }
 
+/// Positional correction (Baumgarte): after velocities are resolved,
+/// directly shift bodies apart by a fraction of the remaining
+/// penetration. Prevents the slow sinking that impulse-only solvers
+/// exhibit under persistent forces like gravity.
+///
+/// - `SLOP`: small penetration we tolerate without correction (avoids
+///   jitter at rest).
+/// - `PERCENT`: fraction of the over-slop penetration to resolve each
+///   frame (smaller = smoother but slower convergence).
+pub fn correct_position<S>(a: &mut RigidBody<S>, b: &mut RigidBody<S>, contact: &Contact<S>, space: &S)
+where
+    S: PhysicsSpace,
+    S::Vector: Copy + std::ops::Mul<f32, Output = S::Vector>,
+{
+    const SLOP: f32 = 0.005;
+    const PERCENT: f32 = 0.4;
+
+    let inv_mass_sum = a.inv_mass + b.inv_mass;
+    if inv_mass_sum <= 0.0 {
+        return;
+    }
+
+    let magnitude = (contact.penetration - SLOP).max(0.0) * PERCENT / inv_mass_sum;
+    if magnitude <= 0.0 {
+        return;
+    }
+    let correction = contact.normal * magnitude;
+
+    // A moves against the normal (away from B), B moves along it.
+    a.position = space.exp(a.position, correction * (-a.inv_mass));
+    b.position = space.exp(b.position, correction * b.inv_mass);
+}
+
 /// Trait for the dot product on a vector type. Concrete impls for
 /// `glam::Vec2`, `Vec3`, `Vec4` below. Allows `apply_impulse` to be
 /// generic over the space's vector type.

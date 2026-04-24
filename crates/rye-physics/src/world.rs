@@ -25,7 +25,7 @@ use crate::body::RigidBody;
 use crate::field::ForceField;
 use crate::integrator::{integrate_body, PhysicsSpace};
 use crate::narrowphase::Narrowphase;
-use crate::response::{apply_impulse, DotProduct};
+use crate::response::{apply_impulse, correct_position, DotProduct};
 
 pub struct World<S: PhysicsSpace> {
     pub space: S,
@@ -79,6 +79,7 @@ impl<S: PhysicsSpace> World<S> {
             let b = &mut right[0];
             if let Some(contact) = self.narrowphase.test(a, b, &self.space) {
                 apply_impulse(a, b, &contact);
+                correct_position(a, b, &contact, &self.space);
             }
         }
 

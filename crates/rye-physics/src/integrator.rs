@@ -11,6 +11,7 @@ use std::ops::Mul;
 use rye_math::{Bivector, Space};
 
 use crate::body::RigidBody;
+use crate::response::Contact;
 
 /// A [`Space`] equipped with the rotation-dynamics machinery physics
 /// needs: angular velocity, inertia, and a way to integrate orientation
@@ -37,6 +38,25 @@ pub trait PhysicsSpace: Space {
     /// Apply the inverse inertia to a torque-bivector. Used by the
     /// solver for `ω ← ω + I⁻¹τ dt`.
     fn apply_inv_inertia(&self, inertia: Self::Inertia, torque: Self::AngVel) -> Self::AngVel;
+
+    /// Apply a velocity impulse (linear + angular) for one contact.
+    ///
+    /// The generic-solver version lives on the trait because the
+    /// calculation depends on the specific shapes of `AngVel` and
+    /// `Inertia` — a 2D scalar, a 3D bivector, a 4D bivector — that
+    /// don't share arithmetic bounds cleanly. Each space's impl
+    /// computes relative velocity at the contact point, the full
+    /// linear+angular impulse denominator, and friction.
+    ///
+    /// Positional correction (Baumgarte) is applied separately by
+    /// [`crate::correct_position`].
+    fn resolve_contact(
+        &self,
+        a: &mut RigidBody<Self>,
+        b: &mut RigidBody<Self>,
+        contact: &Contact<Self>,
+    ) where
+        Self: Sized;
 }
 
 /// Default integration step: advance position along the geodesic,

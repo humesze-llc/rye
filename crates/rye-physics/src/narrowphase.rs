@@ -64,23 +64,16 @@ impl<S: PhysicsSpace> Narrowphase<S> {
         let reversed = (b.collider.kind(), a.collider.kind());
         if let Some(&f) = self.dispatch.get(&reversed) {
             // Flip bodies so the registered function sees the kinds it
-            // expects; flip the contact normal on the way out.
+            // expects; flip the contact normal on the way out. The
+            // contact point is in world space and does not need to be
+            // flipped.
             return f(b, a, space).map(|c| Contact {
-                normal: flip_vec(c.normal, space),
+                normal: c.normal * -1.0,
+                point: c.point,
                 penetration: c.penetration,
                 restitution: c.restitution,
             });
         }
         None
     }
-}
-
-/// Flip a vector. Defined as a helper because `S::Vector` doesn't have
-/// a generic `Neg` bound; concrete vector types implement this via the
-/// [`response::DotProduct`] sibling trait below.
-fn flip_vec<S: PhysicsSpace>(v: S::Vector, _space: &S) -> S::Vector
-where
-    S::Vector: std::ops::Mul<f32, Output = S::Vector>,
-{
-    v * -1.0
 }

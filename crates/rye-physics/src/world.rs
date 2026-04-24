@@ -25,7 +25,7 @@ use crate::body::RigidBody;
 use crate::field::ForceField;
 use crate::integrator::{integrate_body, PhysicsSpace};
 use crate::narrowphase::Narrowphase;
-use crate::response::{apply_impulse, correct_position, DotProduct};
+use crate::response::correct_position;
 
 pub struct World<S: PhysicsSpace> {
     pub space: S,
@@ -62,11 +62,8 @@ impl<S: PhysicsSpace> World<S> {
     pub fn step(&mut self, dt: f32)
     where
         S::Vector: Copy
-            + Default
             + std::ops::Add<Output = S::Vector>
-            + std::ops::Sub<Output = S::Vector>
-            + Mul<f32, Output = S::Vector>
-            + DotProduct,
+            + Mul<f32, Output = S::Vector>,
     {
         self.apply_forces(dt);
         self.integrate(dt);
@@ -78,7 +75,7 @@ impl<S: PhysicsSpace> World<S> {
             let a = &mut left[i];
             let b = &mut right[0];
             if let Some(contact) = self.narrowphase.test(a, b, &self.space) {
-                apply_impulse(a, b, &contact);
+                self.space.resolve_contact(a, b, &contact);
                 correct_position(a, b, &contact, &self.space);
             }
         }

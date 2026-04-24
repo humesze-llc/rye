@@ -14,6 +14,11 @@ use crate::integrator::PhysicsSpace;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
+/// Coulomb friction coefficient for 2D contacts. Applied as a static
+/// friction limit on the tangential impulse; 0.35 reads as "moderate
+/// grip" — shapes roll under gravity rather than slide indefinitely.
+const FRICTION_R2: f32 = 0.35;
+
 impl PhysicsSpace for EuclideanR2 {
     type AngVel = Bivector2;
     /// Scalar moment of inertia I about the body's center.
@@ -35,6 +40,95 @@ impl PhysicsSpace for EuclideanR2 {
         } else {
             Bivector2::zero()
         }
+    }
+
+    fn resolve_contact(
+        &self,
+        a: &mut RigidBody<EuclideanR2>,
+        b: &mut RigidBody<EuclideanR2>,
+        contact: &Contact<EuclideanR2>,
+    ) {
+        let inv_mass_sum = a.inv_mass + b.inv_mass;
+        if inv_mass_sum <= 0.0 {
+            return;
+        }
+
+        // Static bodies contribute zero inverse inertia to prevent
+        // spurious angular response even if `body.inertia` is nonzero.
+        let inv_i_a = if a.inv_mass > 0.0 && a.inertia > 0.0 {
+            1.0 / a.inertia
+        } else {
+            0.0
+        };
+        let inv_i_b = if b.inv_mass > 0.0 && b.inertia > 0.0 {
+            1.0 / b.inertia
+        } else {
+            0.0
+        };
+
+        let ra = contact.point - a.position;
+        let rb = contact.point - b.position;
+
+        // Velocity at the contact point is body linear velocity plus
+        // the tangential velocity from the body's rotation:
+        //   v_contact = v + ω × r         (3D)
+        //             = v + ω · (−r.y, r.x)  (2D, ω a bivector scalar)
+        let v_at = |lin: Vec2, omega: f32, r: Vec2| -> Vec2 {
+            lin + Vec2::new(-omega * r.y, omega * r.x)
+        };
+        let cross2d = |u: Vec2, v: Vec2| -> f32 { u.x * v.y - u.y * v.x };
+
+        // ---- Normal impulse: resolves the approaching component. ----
+        let v_rel_pre = v_at(b.velocity, b.angular_velocity.0, rb)
+            - v_at(a.velocity, a.angular_velocity.0, ra);
+        let v_rel_n = v_rel_pre.dot(contact.normal);
+        if v_rel_n >= 0.0 {
+            // Already separating — the contact is a false positive from
+            // a previous correction or a grazing touch.
+            return;
+        }
+
+        let ra_cross_n = cross2d(ra, contact.normal);
+        let rb_cross_n = cross2d(rb, contact.normal);
+        let denom_n = inv_mass_sum
+            + ra_cross_n * ra_cross_n * inv_i_a
+            + rb_cross_n * rb_cross_n * inv_i_b;
+        let jn = -(1.0 + contact.restitution) * v_rel_n / denom_n;
+        let n_impulse = contact.normal * jn;
+
+        a.velocity = a.velocity - n_impulse * a.inv_mass;
+        b.velocity = b.velocity + n_impulse * b.inv_mass;
+        a.angular_velocity = Bivector2(a.angular_velocity.0 - ra_cross_n * jn * inv_i_a);
+        b.angular_velocity = Bivector2(b.angular_velocity.0 + rb_cross_n * jn * inv_i_b);
+
+        // ---- Tangential (friction) impulse: opposes sliding. ----
+        // Recompute relative velocity post-normal-impulse.
+        let v_rel = v_at(b.velocity, b.angular_velocity.0, rb)
+            - v_at(a.velocity, a.angular_velocity.0, ra);
+        let v_rel_t = v_rel - contact.normal * v_rel.dot(contact.normal);
+        let t_mag = v_rel_t.length();
+        if t_mag < 1e-6 {
+            return;
+        }
+        let tangent = v_rel_t / t_mag;
+
+        let ra_cross_t = cross2d(ra, tangent);
+        let rb_cross_t = cross2d(rb, tangent);
+        let denom_t = inv_mass_sum
+            + ra_cross_t * ra_cross_t * inv_i_a
+            + rb_cross_t * rb_cross_t * inv_i_b;
+
+        // Coulomb limit: |jt| ≤ μ·|jn|.
+        let jt_unclamped = t_mag / denom_t;
+        let jt = jt_unclamped.min(jn.abs() * FRICTION_R2);
+        let t_impulse = tangent * jt;
+
+        // Apply in opposite directions: the contact drags `a` along the
+        // relative-motion direction and brakes `b` against it.
+        a.velocity = a.velocity + t_impulse * a.inv_mass;
+        b.velocity = b.velocity - t_impulse * b.inv_mass;
+        a.angular_velocity = Bivector2(a.angular_velocity.0 + ra_cross_t * jt * inv_i_a);
+        b.angular_velocity = Bivector2(b.angular_velocity.0 - rb_cross_t * jt * inv_i_b);
     }
 }
 
@@ -92,8 +186,17 @@ fn sphere_sphere_r2(
     let len = log.length();
     let normal = if len > 1e-8 { log / len } else { Vec2::Y };
 
+    // Contact point: midpoint of the two surface points along the line
+    // between centers. For equal-radius spheres this is just the
+    // midpoint; for unequal radii it's biased toward the smaller one,
+    // which is what impulse response wants.
+    let surface_a = a.position + normal * ra;
+    let surface_b = b.position - normal * rb;
+    let point = (surface_a + surface_b) * 0.5;
+
     Some(Contact {
         normal,
+        point,
         penetration: combined - d,
         restitution: (a.restitution + b.restitution) * 0.5,
     })
@@ -200,8 +303,44 @@ fn polygon_polygon_r2(
         normal = -normal;
     }
 
+    // Contact-point heuristic: find the deepest-penetrating vertex of
+    // each polygon (projected along the contact normal), then pick
+    // whichever actually lies inside the other polygon. In a vertex-
+    // face contact only one side has a penetrating vertex — that vertex
+    // IS the contact point. For edge-edge (both inside) or grazing
+    // (neither strictly inside), fall back to the midpoint of the two
+    // candidates. Imperfect; replace with a full Sutherland-Hodgman
+    // manifold when stability demands it.
+    let mut deepest_a = va[0];
+    let mut max_proj = va[0].dot(normal);
+    for &v in &va[1..] {
+        let p = v.dot(normal);
+        if p > max_proj {
+            max_proj = p;
+            deepest_a = v;
+        }
+    }
+    let mut deepest_b = vb[0];
+    let mut min_proj = vb[0].dot(normal);
+    for &v in &vb[1..] {
+        let p = v.dot(normal);
+        if p < min_proj {
+            min_proj = p;
+            deepest_b = v;
+        }
+    }
+
+    let a_inside_b = point_in_convex_ccw(&vb, deepest_a);
+    let b_inside_a = point_in_convex_ccw(&va, deepest_b);
+    let point = match (a_inside_b, b_inside_a) {
+        (true, false) => deepest_a,
+        (false, true) => deepest_b,
+        _ => (deepest_a + deepest_b) * 0.5,
+    };
+
     Some(Contact {
         normal,
+        point,
         penetration,
         restitution: (a.restitution + b.restitution) * 0.5,
     })
@@ -276,6 +415,7 @@ fn sphere_polygon_r2(
         let dir = (center - closest).try_normalize().unwrap_or(Vec2::Y);
         return Some(Contact {
             normal: -dir, // from sphere (A) toward polygon (B)
+            point: closest,
             penetration: dist + radius,
             restitution: (a.restitution + b.restitution) * 0.5,
         });
@@ -293,6 +433,7 @@ fn sphere_polygon_r2(
 
     Some(Contact {
         normal,
+        point: closest,
         penetration: radius - dist,
         restitution: (a.restitution + b.restitution) * 0.5,
     })
@@ -347,19 +488,51 @@ pub fn polygon_body(
     )
 }
 
-/// Build a static (infinite-mass) rectangular wall with CCW-wound
-/// corners. `half_extents` is (width/2, height/2).
-pub fn static_wall(center: Vec2, half_extents: Vec2) -> RigidBody<EuclideanR2> {
+/// CCW-wound corners of an axis-aligned rectangle centered at origin.
+/// Matches the winding `polygon_polygon_r2` / `sphere_polygon_r2` expect.
+fn rectangle_vertices(half_extents: Vec2) -> Vec<Vec2> {
     let (hx, hy) = (half_extents.x, half_extents.y);
-    let vertices = vec![
-        Vec2::new(-hx, -hy),
+    vec![
         Vec2::new(hx, -hy),
         Vec2::new(hx, hy),
         Vec2::new(-hx, hy),
-    ];
+        Vec2::new(-hx, -hy),
+    ]
+}
+
+/// Build a dynamic axis-aligned rectangular body.
+pub fn rectangle_body(
+    center: Vec2,
+    velocity: Vec2,
+    half_extents: Vec2,
+    mass: f32,
+) -> RigidBody<EuclideanR2> {
+    // Rectangle moment of inertia about its center: m·(w² + h²)/12,
+    // where w = 2·half.x, h = 2·half.y, so I = m·(4·hx² + 4·hy²)/12
+    // = m·(hx² + hy²)/3.
+    let inertia = mass * (half_extents.x * half_extents.x + half_extents.y * half_extents.y) / 3.0;
+    RigidBody::new(
+        center,
+        velocity,
+        Collider::Polygon2D {
+            vertices: rectangle_vertices(half_extents),
+        },
+        mass,
+        inertia,
+        &EuclideanR2,
+    )
+}
+
+/// Build a static (infinite-mass) rectangular wall with CCW-wound
+/// corners. `half_extents` is (width/2, height/2).
+pub fn static_wall(center: Vec2, half_extents: Vec2) -> RigidBody<EuclideanR2> {
     RigidBody::fixed(
         center,
-        Collider::Polygon2D { vertices },
+        Collider::Polygon2D {
+            vertices: rectangle_vertices(half_extents),
+        },
+        // Any finite value is fine — the solver gates angular response
+        // on `inv_mass > 0`, so static walls never actually rotate.
         1.0,
         &EuclideanR2,
     )
@@ -444,25 +617,9 @@ mod tests {
         }
     }
 
-    /// Helper: axis-aligned rectangular body (CCW winding).
+    /// Test-local wrapper: axis-aligned box at rest.
     fn aa_box(center: Vec2, half: Vec2, mass: f32) -> RigidBody<EuclideanR2> {
-        let vertices = vec![
-            Vec2::new(half.x, -half.y),
-            Vec2::new(half.x, half.y),
-            Vec2::new(-half.x, half.y),
-            Vec2::new(-half.x, -half.y),
-        ];
-        // Moment of inertia of a rectangle about its center:
-        // I = m·(w² + h²)/12 where w = 2·half.x, h = 2·half.y.
-        let inertia = mass * (half.x * half.x + half.y * half.y) / 3.0;
-        RigidBody::new(
-            center,
-            Vec2::ZERO,
-            Collider::Polygon2D { vertices },
-            mass,
-            inertia,
-            &EuclideanR2,
-        )
+        rectangle_body(center, Vec2::ZERO, half, mass)
     }
 
     #[test]
@@ -571,6 +728,64 @@ mod tests {
         let c = np.test(&square, &sphere, &EuclideanR2).expect("should collide");
         // Normal polygon→sphere (A→B): now points from polygon toward sphere = +X.
         assert!(c.normal.dot(Vec2::X) > 0.99, "normal: {:?}", c.normal);
+    }
+
+    #[test]
+    fn off_center_impact_produces_angular_velocity() {
+        // A stationary square hit by a sphere falling onto its top-
+        // right corner should acquire clockwise (negative) angular
+        // velocity. This is the core bug the angular-response fix
+        // addresses: without torque from off-center contact, the
+        // square would just translate.
+        let mut world = World::new(EuclideanR2);
+        register_default_narrowphase(&mut world.narrowphase);
+
+        let square_id = world.push_body(aa_box(Vec2::ZERO, Vec2::ONE, 1.0));
+        // Sphere above the right half of the square, moving down fast.
+        let _sphere_id = world.push_body(sphere_body(
+            Vec2::new(0.6, 3.0),
+            Vec2::new(0.0, -10.0),
+            0.3,
+            1.0,
+        ));
+
+        // Simulate until the sphere has landed and resolved.
+        for _ in 0..60 {
+            world.step(1.0 / 120.0);
+        }
+
+        let omega = world.bodies[square_id].angular_velocity.0;
+        assert!(
+            omega < -0.05,
+            "square failed to rotate clockwise from off-center hit: ω = {omega}"
+        );
+    }
+
+    #[test]
+    fn head_on_contact_produces_no_rotation() {
+        // Symmetrically aligned sphere-sphere head-on collision should
+        // only produce linear response, no spin. Sanity-check that
+        // angular response doesn't leak into axis-aligned cases.
+        let mut world = World::new(EuclideanR2);
+        register_default_narrowphase(&mut world.narrowphase);
+
+        let a = world.push_body(sphere_body(
+            Vec2::new(-1.0, 0.0),
+            Vec2::new(2.0, 0.0),
+            0.5,
+            1.0,
+        ));
+        let b = world.push_body(sphere_body(
+            Vec2::new(1.0, 0.0),
+            Vec2::new(-2.0, 0.0),
+            0.5,
+            1.0,
+        ));
+        for _ in 0..30 {
+            world.step(1.0 / 120.0);
+        }
+        assert!(world.bodies[a].angular_velocity.0.abs() < 0.01);
+        assert!(world.bodies[b].angular_velocity.0.abs() < 0.01);
     }
 
     #[test]

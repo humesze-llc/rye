@@ -126,7 +126,16 @@ fn collect_gpu_bodies(world: &World<EuclideanR3>) -> (BodyBuffer, u32) {
         if count as usize >= MAX_BODIES {
             break;
         }
+        // Skip bodies whose state went non-finite — feeding NaN
+        // positions/quats to wgpu triggers validation panics that
+        // look unrelated to the physics bug that produced them.
+        if !body.position.is_finite() {
+            continue;
+        }
         let q = body.orientation.rotation;
+        if !q.length_squared().is_finite() {
+            continue;
+        }
         let rotation = [q.x, q.y, q.z, q.w];
 
         match &body.collider {

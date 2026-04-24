@@ -43,12 +43,22 @@ impl PhysicsSpace for EuclideanR3 {
     type Inertia = f32;
 
     fn integrate_orientation(&self, iso: Iso3, omega: Bivector3, dt: f32) -> Iso3 {
+        // Guard against NaN/infinite angular velocity leaking into the
+        // orientation. Without this, one bad impulse → NaN ω → NaN
+        // rotor → NaN quaternion → downstream wgpu validation blows up
+        // when it hits the GPU buffer.
+        if !(omega.xy.is_finite() && omega.yz.is_finite() && omega.zx.is_finite()) {
+            return iso;
+        }
         let delta_rotor = (omega * dt).exp();
         let delta_quat = rotor_to_quat(delta_rotor);
-        // Compose: delta applied after existing rotation.
-        // Quat multiplication: (q1 * q2) acts as q1 after q2.
+        // Compose: delta applied after existing rotation. Renormalize
+        // the result to prevent slow drift off the unit manifold under
+        // repeated f32 composition.
+        let composed = delta_quat * iso.rotation;
+        let rotation = composed.normalize();
         Iso3 {
-            rotation: delta_quat * iso.rotation,
+            rotation,
             translation: iso.translation,
         }
     }
@@ -67,6 +77,16 @@ impl PhysicsSpace for EuclideanR3 {
         b: &mut RigidBody<EuclideanR3>,
         contact: &Contact<EuclideanR3>,
     ) {
+        // Input sanity: a contact with non-finite fields would inject
+        // NaN into every state we touch below. Should have been caught
+        // by `validate_contact` upstream, but belt-and-braces.
+        if !contact.normal.is_finite()
+            || !contact.point.is_finite()
+            || !contact.penetration.is_finite()
+        {
+            return;
+        }
+
         let inv_mass_sum = a.inv_mass + b.inv_mass;
         if inv_mass_sum <= 0.0 {
             return;

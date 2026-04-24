@@ -11,7 +11,8 @@ use std::ops::Mul;
 use rye_math::{Bivector, Space};
 
 use crate::body::RigidBody;
-use crate::response::Contact;
+use crate::collision::VectorOps;
+use crate::response::{Contact, FRICTION_COEFF};
 
 /// A [`Space`] equipped with the rotation-dynamics machinery physics
 /// needs: angular velocity, inertia, and a way to integrate orientation
@@ -39,14 +40,55 @@ pub trait PhysicsSpace: Space {
     /// solver for `ω ← ω + I⁻¹τ dt`.
     fn apply_inv_inertia(&self, inertia: Self::Inertia, torque: Self::AngVel) -> Self::AngVel;
 
-    /// Apply a velocity impulse (linear + angular) for one contact.
+    /// World-space velocity of `body` at world point `p`, accounting
+    /// for both linear velocity and the angular contribution
+    /// `ω × (p − body.position)` (the latter expressed via the
+    /// bivector-acting-on-vector operation appropriate to the space).
+    fn velocity_at_point(&self, body: &RigidBody<Self>, p: Self::Point) -> Self::Vector
+    where
+        Self: Sized;
+
+    /// Inverse effective mass for a unit-direction impulse `direction`
+    /// applied at world point `contact_point` between `a` and `b`. The
+    /// PGS solver divides by this to convert a velocity constraint to
+    /// an impulse magnitude:
     ///
-    /// The generic-solver version lives on the trait because the
-    /// calculation depends on the specific shapes of `AngVel` and
-    /// `Inertia` — a 2D scalar, a 3D bivector, a 4D bivector — that
-    /// don't share arithmetic bounds cleanly. Each space's impl
-    /// computes relative velocity at the contact point, the full
-    /// linear+angular impulse denominator, and friction.
+    ///   `K = inv_m_a + inv_m_b
+    ///        + ((r_a ∧ n) · I_a⁻¹ · (r_a ∧ n))
+    ///        + ((r_b ∧ n) · I_b⁻¹ · (r_b ∧ n))`
+    ///
+    /// Returns 0 only when both bodies are static.
+    fn effective_mass_inv(
+        &self,
+        a: &RigidBody<Self>,
+        b: &RigidBody<Self>,
+        contact_point: Self::Point,
+        direction: Self::Vector,
+    ) -> f32
+    where
+        Self: Sized;
+
+    /// Apply a linear+angular impulse of magnitude `magnitude` along
+    /// `direction` at world point `contact_point`. Sign convention:
+    /// subtracts from A, adds to B (matches `Contact::normal` pointing
+    /// from A toward B as the *separating* direction).
+    fn apply_contact_impulse(
+        &self,
+        a: &mut RigidBody<Self>,
+        b: &mut RigidBody<Self>,
+        contact_point: Self::Point,
+        direction: Self::Vector,
+        magnitude: f32,
+    ) where
+        Self: Sized;
+
+    /// Single-contact, single-iteration impulse solve.
+    ///
+    /// Retained as a thin compatibility shim while the PGS solver is
+    /// the primary code path. Default-implemented in terms of
+    /// `velocity_at_point`, `effective_mass_inv`, and
+    /// `apply_contact_impulse` — there is no longer a reason for
+    /// per-space impls to override it.
     ///
     /// Positional correction (Baumgarte) is applied separately by
     /// [`crate::correct_position`].
@@ -56,7 +98,49 @@ pub trait PhysicsSpace: Space {
         b: &mut RigidBody<Self>,
         contact: &Contact<Self>,
     ) where
-        Self: Sized;
+        Self: Sized,
+        Self::Vector: VectorOps,
+    {
+        if !VectorOps::is_finite(contact.normal)
+            || !contact.penetration.is_finite()
+            || a.inv_mass + b.inv_mass <= 0.0
+        {
+            return;
+        }
+
+        // Normal impulse.
+        let v_rel_pre =
+            self.velocity_at_point(b, contact.point) - self.velocity_at_point(a, contact.point);
+        let v_n = VectorOps::dot(v_rel_pre, contact.normal);
+        if v_n >= 0.0 {
+            return;
+        }
+        let k_n = self.effective_mass_inv(a, b, contact.point, contact.normal);
+        if k_n <= 0.0 {
+            return;
+        }
+        let jn = -(1.0 + contact.restitution) * v_n / k_n;
+        self.apply_contact_impulse(a, b, contact.point, contact.normal, jn);
+
+        // Friction impulse, recompute relative velocity post-normal.
+        let v_rel =
+            self.velocity_at_point(b, contact.point) - self.velocity_at_point(a, contact.point);
+        let v_t = v_rel - contact.normal * VectorOps::dot(v_rel, contact.normal);
+        let t_mag = VectorOps::length(v_t);
+        if t_mag < 1e-6 {
+            return;
+        }
+        let tangent = v_t * (1.0 / t_mag);
+        let k_t = self.effective_mass_inv(a, b, contact.point, tangent);
+        if k_t <= 0.0 {
+            return;
+        }
+        // jt zeros relative tangential velocity, Coulomb-clamped to
+        // μ·|jn|. Tangent points along v_rel_t (the sliding direction);
+        // applying along −tangent brakes the slide.
+        let jt = (t_mag / k_t).min(jn.abs() * FRICTION_COEFF);
+        self.apply_contact_impulse(a, b, contact.point, tangent, -jt);
+    }
 }
 
 /// Default integration step: advance position along the geodesic,

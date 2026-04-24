@@ -73,14 +73,13 @@ impl PhysicsSpace for EuclideanR2 {
         // the tangential velocity from the body's rotation:
         //   v_contact = v + ω × r         (3D)
         //             = v + ω · (−r.y, r.x)  (2D, ω a bivector scalar)
-        let v_at = |lin: Vec2, omega: f32, r: Vec2| -> Vec2 {
-            lin + Vec2::new(-omega * r.y, omega * r.x)
-        };
+        let v_at =
+            |lin: Vec2, omega: f32, r: Vec2| -> Vec2 { lin + Vec2::new(-omega * r.y, omega * r.x) };
         let cross2d = |u: Vec2, v: Vec2| -> f32 { u.x * v.y - u.y * v.x };
 
         // ---- Normal impulse: resolves the approaching component. ----
-        let v_rel_pre = v_at(b.velocity, b.angular_velocity.0, rb)
-            - v_at(a.velocity, a.angular_velocity.0, ra);
+        let v_rel_pre =
+            v_at(b.velocity, b.angular_velocity.0, rb) - v_at(a.velocity, a.angular_velocity.0, ra);
         let v_rel_n = v_rel_pre.dot(contact.normal);
         if v_rel_n >= 0.0 {
             // Already separating — the contact is a false positive from
@@ -90,9 +89,8 @@ impl PhysicsSpace for EuclideanR2 {
 
         let ra_cross_n = cross2d(ra, contact.normal);
         let rb_cross_n = cross2d(rb, contact.normal);
-        let denom_n = inv_mass_sum
-            + ra_cross_n * ra_cross_n * inv_i_a
-            + rb_cross_n * rb_cross_n * inv_i_b;
+        let denom_n =
+            inv_mass_sum + ra_cross_n * ra_cross_n * inv_i_a + rb_cross_n * rb_cross_n * inv_i_b;
         let jn = -(1.0 + contact.restitution) * v_rel_n / denom_n;
         let n_impulse = contact.normal * jn;
 
@@ -103,8 +101,8 @@ impl PhysicsSpace for EuclideanR2 {
 
         // ---- Tangential (friction) impulse: opposes sliding. ----
         // Recompute relative velocity post-normal-impulse.
-        let v_rel = v_at(b.velocity, b.angular_velocity.0, rb)
-            - v_at(a.velocity, a.angular_velocity.0, ra);
+        let v_rel =
+            v_at(b.velocity, b.angular_velocity.0, rb) - v_at(a.velocity, a.angular_velocity.0, ra);
         let v_rel_t = v_rel - contact.normal * v_rel.dot(contact.normal);
         let t_mag = v_rel_t.length();
         if t_mag < 1e-6 {
@@ -114,9 +112,8 @@ impl PhysicsSpace for EuclideanR2 {
 
         let ra_cross_t = cross2d(ra, tangent);
         let rb_cross_t = cross2d(rb, tangent);
-        let denom_t = inv_mass_sum
-            + ra_cross_t * ra_cross_t * inv_i_a
-            + rb_cross_t * rb_cross_t * inv_i_b;
+        let denom_t =
+            inv_mass_sum + ra_cross_t * ra_cross_t * inv_i_a + rb_cross_t * rb_cross_t * inv_i_b;
 
         // Coulomb limit: |jt| ≤ μ·|jn|.
         let jt_unclamped = t_mag / denom_t;
@@ -160,8 +157,16 @@ pub fn sphere_body(
 /// by the dispatch table's auto-flip).
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR2>) {
     np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r2);
-    np.register(ColliderKind::Polygon2D, ColliderKind::Polygon2D, polygon_polygon_r2);
-    np.register(ColliderKind::Sphere, ColliderKind::Polygon2D, sphere_polygon_r2);
+    np.register(
+        ColliderKind::Polygon2D,
+        ColliderKind::Polygon2D,
+        polygon_polygon_r2,
+    );
+    np.register(
+        ColliderKind::Sphere,
+        ColliderKind::Polygon2D,
+        sphere_polygon_r2,
+    );
 }
 
 fn sphere_sphere_r2(
@@ -639,7 +644,11 @@ mod tests {
             "normal not ±X: {:?}",
             c.normal
         );
-        assert!(c.normal.dot(Vec2::X) > 0.0, "normal not A→B: {:?}", c.normal);
+        assert!(
+            c.normal.dot(Vec2::X) > 0.0,
+            "normal not A→B: {:?}",
+            c.normal
+        );
         assert!(
             (c.penetration - 0.5).abs() < 1e-4,
             "penetration: {}",
@@ -693,7 +702,9 @@ mod tests {
         let square = polygon_body(Vec2::ZERO, Vec2::ZERO, 4, 1.0, 1.0);
         let sphere = sphere_body(Vec2::new(1.3, 0.0), Vec2::ZERO, 0.5, 1.0);
 
-        let c = np.test(&sphere, &square, &EuclideanR2).expect("should collide");
+        let c = np
+            .test(&sphere, &square, &EuclideanR2)
+            .expect("should collide");
         // Normal sphere→square (A→B): points from sphere toward polygon = −X.
         assert!(c.normal.dot(-Vec2::X) > 0.99, "normal: {:?}", c.normal);
         assert!(
@@ -725,7 +736,9 @@ mod tests {
         let sphere = sphere_body(Vec2::new(1.3, 0.0), Vec2::ZERO, 0.5, 1.0);
 
         // polygon first, sphere second → dispatch flips.
-        let c = np.test(&square, &sphere, &EuclideanR2).expect("should collide");
+        let c = np
+            .test(&square, &sphere, &EuclideanR2)
+            .expect("should collide");
         // Normal polygon→sphere (A→B): now points from polygon toward sphere = +X.
         assert!(c.normal.dot(Vec2::X) > 0.99, "normal: {:?}", c.normal);
     }
@@ -811,9 +824,7 @@ mod tests {
             ));
         }
 
-        world.push_field(Box::new(crate::field::Gravity::new(Vec2::new(
-            0.0, -9.8,
-        ))));
+        world.push_field(Box::new(crate::field::Gravity::new(Vec2::new(0.0, -9.8))));
 
         for _ in 0..240 {
             world.step(1.0 / 60.0);

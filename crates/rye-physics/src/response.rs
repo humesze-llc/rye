@@ -45,8 +45,12 @@ pub struct Contact<S: PhysicsSpace> {
 ///   jitter at rest).
 /// - `PERCENT`: fraction of the over-slop penetration to resolve each
 ///   frame (smaller = smoother but slower convergence).
-pub fn correct_position<S>(a: &mut RigidBody<S>, b: &mut RigidBody<S>, contact: &Contact<S>, space: &S)
-where
+pub fn correct_position<S>(
+    a: &mut RigidBody<S>,
+    b: &mut RigidBody<S>,
+    contact: &Contact<S>,
+    space: &S,
+) where
     S: PhysicsSpace,
     S::Vector: Copy + std::ops::Mul<f32, Output = S::Vector>,
 {

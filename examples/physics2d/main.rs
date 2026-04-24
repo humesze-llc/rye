@@ -262,10 +262,12 @@ impl ApplicationHandler for App {
         let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
 
         let shader_src = include_str!("physics2d.wgsl");
-        let module = rd.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("physics2d"),
-            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
-        });
+        let module = rd
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("physics2d"),
+                source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+            });
 
         let scene_buffer = rd.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("physics2d scene ub"),
@@ -280,31 +282,33 @@ impl ApplicationHandler for App {
             mapped_at_creation: false,
         });
 
-        let bgl = rd.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("physics2d bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+        let bgl = rd
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("physics2d bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
+                ],
+            });
 
         let bind_group = rd.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("physics2d bg"),
@@ -387,7 +391,12 @@ impl ApplicationHandler for App {
                     self.frame_count = 0;
                     self.last_fps = Instant::now();
                     if let Some(w) = &self.window {
-                        let dynamic_count = self.world.bodies.iter().filter(|b| b.inv_mass > 0.0).count();
+                        let dynamic_count = self
+                            .world
+                            .bodies
+                            .iter()
+                            .filter(|b| b.inv_mass > 0.0)
+                            .count();
                         w.set_title(&format!(
                             "Rye — 2D Physics | {fps:.0} fps | {dynamic_count} bodies | sim {:.1}s (R: reset)",
                             self.sim_time
@@ -424,16 +433,20 @@ impl App {
             body_count,
             _pad: 0,
         };
-        rd.queue.write_buffer(scene_buffer, 0, bytemuck::bytes_of(&scene));
-        rd.queue.write_buffer(body_buffer, 0, bytemuck::bytes_of(&body_data));
+        rd.queue
+            .write_buffer(scene_buffer, 0, bytemuck::bytes_of(&scene));
+        rd.queue
+            .write_buffer(body_buffer, 0, bytemuck::bytes_of(&body_data));
 
         let Ok((frame, view)) = rd.begin_frame() else {
             return;
         };
 
-        let mut encoder = rd.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("physics2d encoder"),
-        });
+        let mut encoder = rd
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("physics2d encoder"),
+            });
         {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("physics2d pass"),

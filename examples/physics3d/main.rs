@@ -99,11 +99,7 @@ fn build_world() -> World<EuclideanR3> {
         let z = rng.range(-2.0, 2.0);
         let y = 2.5 + (i as f32) * 0.55;
         let radius = rng.range(0.25, 0.45);
-        let vel = Vec3::new(
-            rng.range(-0.5, 0.5),
-            0.0,
-            rng.range(-0.5, 0.5),
-        );
+        let vel = Vec3::new(rng.range(-0.5, 0.5), 0.0, rng.range(-0.5, 0.5));
         world.push_body(sphere_body_r3(Vec3::new(x, y, z), vel, radius, 1.0));
     }
 
@@ -255,10 +251,12 @@ impl ApplicationHandler for App {
         let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
 
         let shader_src = include_str!("physics3d.wgsl");
-        let module = rd.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("physics3d"),
-            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
-        });
+        let module = rd
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("physics3d"),
+                source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+            });
 
         let scene_buffer = rd.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("physics3d scene ub"),
@@ -273,31 +271,33 @@ impl ApplicationHandler for App {
             mapped_at_creation: false,
         });
 
-        let bgl = rd.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("physics3d bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+        let bgl = rd
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("physics3d bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
+                ],
+            });
 
         let bind_group = rd.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("physics3d bg"),
@@ -399,7 +399,12 @@ impl ApplicationHandler for App {
                     let fps = self.frame_count as f32 / elapsed;
                     self.frame_count = 0;
                     self.last_fps = Instant::now();
-                    let dynamic_count = self.world.bodies.iter().filter(|b| b.inv_mass > 0.0).count();
+                    let dynamic_count = self
+                        .world
+                        .bodies
+                        .iter()
+                        .filter(|b| b.inv_mass > 0.0)
+                        .count();
                     win.set_title(&format!(
                         "Rye — 3D Physics | {fps:.0} fps | {dynamic_count} bodies | sim {:.1}s (R: reset, drag: orbit, scroll: zoom)",
                         self.sim_time
@@ -445,16 +450,20 @@ impl App {
             floor_normal: [0.0, 1.0, 0.0],
             floor_offset: 0.0,
         };
-        rd.queue.write_buffer(scene_buffer, 0, bytemuck::bytes_of(&scene));
-        rd.queue.write_buffer(body_buffer, 0, bytemuck::bytes_of(&body_data));
+        rd.queue
+            .write_buffer(scene_buffer, 0, bytemuck::bytes_of(&scene));
+        rd.queue
+            .write_buffer(body_buffer, 0, bytemuck::bytes_of(&body_data));
 
         let Ok((frame, view_tex)) = rd.begin_frame() else {
             return;
         };
 
-        let mut encoder = rd.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("physics3d encoder"),
-        });
+        let mut encoder = rd
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("physics3d encoder"),
+            });
         {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("physics3d pass"),

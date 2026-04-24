@@ -35,11 +35,7 @@ pub enum Collider {
     ///
     /// Only meaningful on a static body (`inv_mass == 0`) — dynamic
     /// half-spaces are nonsensical.
-    HalfSpace {
-        normal: Vec3,
-        offset: f32,
-    },
-
+    HalfSpace { normal: Vec3, offset: f32 },
     // Future:
     // ConvexPolyhedron3D { vertices: Vec<Vec3>, face_normals: Vec<Vec3>, edges: Vec<Vec3> },  // 3D SAT
     // Horosphere { point_at_inf: Vec3, offset: f32 },    // H³-only

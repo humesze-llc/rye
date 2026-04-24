@@ -454,10 +454,7 @@ mod tests {
     // ---- 3D tests ----
 
     fn assert_vec3_close(a: Vec3, b: Vec3) {
-        assert!(
-            (a - b).length() <= 1e-5,
-            "expected {a:?} close to {b:?}"
-        );
+        assert!((a - b).length() <= 1e-5, "expected {a:?} close to {b:?}");
     }
 
     #[test]

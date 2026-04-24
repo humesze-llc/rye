@@ -110,12 +110,11 @@ impl PhysicsSpace for EuclideanR3 {
             )
         };
 
-        let bivec_mag_sq =
-            |b: Bivector3| -> f32 { b.xy * b.xy + b.yz * b.yz + b.zx * b.zx };
+        let bivec_mag_sq = |b: Bivector3| -> f32 { b.xy * b.xy + b.yz * b.yz + b.zx * b.zx };
 
         // ---- Normal impulse ----
-        let v_rel_pre = v_at(b.velocity, b.angular_velocity, rb)
-            - v_at(a.velocity, a.angular_velocity, ra);
+        let v_rel_pre =
+            v_at(b.velocity, b.angular_velocity, rb) - v_at(a.velocity, a.angular_velocity, ra);
         let v_rel_n = v_rel_pre.dot(contact.normal);
         if v_rel_n >= 0.0 {
             return;
@@ -123,9 +122,8 @@ impl PhysicsSpace for EuclideanR3 {
 
         let ra_wedge_n = wedge(ra, contact.normal);
         let rb_wedge_n = wedge(rb, contact.normal);
-        let denom_n = inv_mass_sum
-            + bivec_mag_sq(ra_wedge_n) * inv_i_a
-            + bivec_mag_sq(rb_wedge_n) * inv_i_b;
+        let denom_n =
+            inv_mass_sum + bivec_mag_sq(ra_wedge_n) * inv_i_a + bivec_mag_sq(rb_wedge_n) * inv_i_b;
         let jn = -(1.0 + contact.restitution) * v_rel_n / denom_n;
         let n_impulse = contact.normal * jn;
 
@@ -136,8 +134,8 @@ impl PhysicsSpace for EuclideanR3 {
         b.angular_velocity = b.angular_velocity + rb_wedge_n * (jn * inv_i_b);
 
         // ---- Tangential friction ----
-        let v_rel = v_at(b.velocity, b.angular_velocity, rb)
-            - v_at(a.velocity, a.angular_velocity, ra);
+        let v_rel =
+            v_at(b.velocity, b.angular_velocity, rb) - v_at(a.velocity, a.angular_velocity, ra);
         let v_rel_t = v_rel - contact.normal * v_rel.dot(contact.normal);
         let t_mag = v_rel_t.length();
         if t_mag < 1e-6 {
@@ -147,9 +145,8 @@ impl PhysicsSpace for EuclideanR3 {
 
         let ra_wedge_t = wedge(ra, tangent);
         let rb_wedge_t = wedge(rb, tangent);
-        let denom_t = inv_mass_sum
-            + bivec_mag_sq(ra_wedge_t) * inv_i_a
-            + bivec_mag_sq(rb_wedge_t) * inv_i_b;
+        let denom_t =
+            inv_mass_sum + bivec_mag_sq(ra_wedge_t) * inv_i_a + bivec_mag_sq(rb_wedge_t) * inv_i_b;
         let jt_unclamped = t_mag / denom_t;
         let jt = jt_unclamped.min(jn.abs() * FRICTION_R3);
         let t_impulse = tangent * jt;
@@ -236,7 +233,11 @@ fn sphere_halfspace_r3(
 
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR3>) {
     np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r3);
-    np.register(ColliderKind::Sphere, ColliderKind::HalfSpace, sphere_halfspace_r3);
+    np.register(
+        ColliderKind::Sphere,
+        ColliderKind::HalfSpace,
+        sphere_halfspace_r3,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +286,10 @@ mod tests {
     use crate::world::World;
 
     fn assert_close(a: f32, b: f32, tol: f32) {
-        assert!((a - b).abs() <= tol, "expected {a} close to {b} (tol {tol})");
+        assert!(
+            (a - b).abs() <= tol,
+            "expected {a} close to {b} (tol {tol})"
+        );
     }
 
     #[test]
@@ -355,12 +359,7 @@ mod tests {
 
         // Target: heavy, so most of the impulse ends up as motion/spin
         // on the lighter projectile.
-        let target_id = world.push_body(sphere_body_r3(
-            Vec3::ZERO,
-            Vec3::ZERO,
-            0.5,
-            10.0,
-        ));
+        let target_id = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 0.5, 10.0));
         // Projectile offset +0.4 in y; moving in −x to collide.
         let projectile_id = world.push_body(sphere_body_r3(
             Vec3::new(2.0, 0.4, 0.0),

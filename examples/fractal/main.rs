@@ -34,12 +34,12 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-mod camera;
 #[path = "../capture.rs"]
 mod capture;
 
-use camera::{CameraState, InputState};
 use capture::FrameCapture;
+use rye_camera::OrbitCamera;
+use rye_input::InputState;
 
 fn shader_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/fractal")
@@ -108,7 +108,7 @@ struct App<S: WgslSpace + 'static> {
     ray_march: Option<RayMarchNode>,
 
     timestep: FixedTimestep,
-    camera: CameraState,
+    camera: OrbitCamera,
     input: InputState,
     start: Instant,
 
@@ -161,7 +161,7 @@ impl<S: WgslSpace + 'static> AppRunner<S> {
             watcher: None,
             ray_march: None,
             timestep: FixedTimestep::new(60),
-            camera: CameraState::default(),
+            camera: OrbitCamera::default(),
             input: InputState::default(),
             start: Instant::now(),
             frame_count: 0,
@@ -311,6 +311,9 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
             {
                 elwt.exit();
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                app.input.key_input(event.physical_key, event.state);
             }
 
             WindowEvent::CursorMoved { position, .. } => {

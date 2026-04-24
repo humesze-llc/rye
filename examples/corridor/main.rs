@@ -44,13 +44,12 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-#[path = "../fractal/camera.rs"]
-mod camera;
 #[path = "../capture.rs"]
 mod capture;
 
-use camera::{CameraState, InputState};
 use capture::FrameCapture;
+use rye_camera::OrbitCamera;
+use rye_input::InputState;
 
 fn shader_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/corridor")
@@ -140,7 +139,7 @@ struct App<S: WgslSpace + 'static> {
     ray_march: Option<GeodesicRayMarchNode>,
 
     timestep: FixedTimestep,
-    camera: CameraState,
+    camera: OrbitCamera,
     input: InputState,
     start: Instant,
 
@@ -163,7 +162,7 @@ impl<S: WgslSpace + 'static> AppRunner<S> {
         };
         // Seed the camera inside the corridor from the start, so
         // interactive mode doesn't begin looking at the scene from outside.
-        let mut camera = CameraState::default();
+        let mut camera = OrbitCamera::default();
         camera.set_orbit(knobs.capture_distance, knobs.capture_pitch);
         let app = App {
             window: None,
@@ -321,6 +320,9 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
             {
                 elwt.exit();
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                app.input.key_input(event.physical_key, event.state);
             }
 
             WindowEvent::CursorMoved { position, .. } => {

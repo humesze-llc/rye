@@ -6,6 +6,11 @@ members = [
   "crates/rye-shader",
   "crates/rye-render",
   "crates/rye-asset",
+  "crates/rye-input",
+  "crates/rye-camera",
+  "crates/rye-player",
+  "crates/rye-collision",
+  "crates/rye-physics",
 ]
 resolver = "2"
 
@@ -23,18 +28,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 glam = { version = "0.27", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 ron = "0.8"
-hashbrown = "0.14"
-smallvec = "1.13"
-parking_lot = "0.12"
 
 wgpu  = { version = "26", features = ["wgsl"] }
 winit = "0.30"
 naga = { version = "26", features = ["wgsl-in"] }
 bytemuck = { version = "1", features = ["derive"] }
 notify = "6"
-rayon = "1.10"
 
 [package]
 name = "rye"
@@ -46,12 +46,17 @@ repository.workspace = true
 description = "Rye: a Rust game engine with non-Euclidean geometry as a primitive"
 
 [dependencies]
-rye-math   = { path = "crates/rye-math" }
-rye-sdf    = { path = "crates/rye-sdf" }
-rye-time   = { path = "crates/rye-time" }
-rye-shader = { path = "crates/rye-shader" }
-rye-render = { path = "crates/rye-render" }
-rye-asset  = { path = "crates/rye-asset" }
+rye-math      = { path = "crates/rye-math" }
+rye-sdf       = { path = "crates/rye-sdf" }
+rye-time      = { path = "crates/rye-time" }
+rye-shader    = { path = "crates/rye-shader" }
+rye-render    = { path = "crates/rye-render" }
+rye-asset     = { path = "crates/rye-asset" }
+rye-input     = { path = "crates/rye-input" }
+rye-camera    = { path = "crates/rye-camera" }
+rye-player    = { path = "crates/rye-player" }
+rye-collision = { path = "crates/rye-collision" }
+rye-physics   = { path = "crates/rye-physics" }
 
 [features]
 default = []

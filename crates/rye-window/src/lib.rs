@@ -1,3 +1,0 @@
-pub fn hello() {
-    println!("Hello from rye-window!");
-}

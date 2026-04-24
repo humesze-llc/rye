@@ -38,13 +38,12 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-#[path = "../fractal/camera.rs"]
-mod camera;
 #[path = "../capture.rs"]
 mod capture;
 
-use camera::{CameraState, InputState};
 use capture::FrameCapture;
+use rye_camera::OrbitCamera;
+use rye_input::InputState;
 
 // BALL_SCALE is baked into lattice.wgsl as a constant; this comment documents
 // the value so main.rs and the shader stay in sync. Camera orbit distance ×
@@ -99,7 +98,7 @@ struct App {
     node_s3: Option<GeodesicRayMarchNode>,
 
     timestep: rye_time::FixedTimestep,
-    camera: CameraState,
+    camera: OrbitCamera,
     input: InputState,
     start: Instant,
 
@@ -128,7 +127,7 @@ impl AppRunner {
             node_h3: None,
             node_s3: None,
             timestep: rye_time::FixedTimestep::new(60),
-            camera: CameraState::default(),
+            camera: OrbitCamera::default(),
             input: InputState::default(),
             start: Instant::now(),
             rotate,
@@ -254,6 +253,9 @@ impl ApplicationHandler for AppRunner {
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
             {
                 elwt.exit();
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                app.input.key_input(event.physical_key, event.state);
             }
 
             WindowEvent::CursorMoved { position, .. } => {

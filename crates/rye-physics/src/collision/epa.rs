@@ -129,17 +129,19 @@ impl Polytope {
         self.faces = keep;
 
         // Stitch new faces from each horizon edge to the new vertex.
-        // For outward orientation, pass an interior reference vertex
-        // — any existing vertex that's not on this new face. Such a
-        // vertex is guaranteed to exist (the polytope always has ≥ 4
-        // vertices) and always lies on the interior side of any face,
-        // so "orient away from it" gives a correct outward normal.
+        // For outward orientation we pass an interior reference vertex
+        // — any existing vertex that's not on this new face. In a
+        // non-degenerate polytope such a vertex always exists; if it
+        // doesn't (all vertices somehow coincide on a degenerate
+        // expansion), skip the face rather than panic. `epa` will fall
+        // back to its iteration cap.
         for &(i, j) in &horizon {
-            let reference = (0..self.vertices.len())
-                .find(|&idx| idx != i && idx != j && idx != new_idx)
-                .expect("polytope must have at least 4 vertices");
-            self.faces
-                .push(build_face(&self.vertices, i, j, new_idx, Some(reference)));
+            if let Some(reference) =
+                (0..self.vertices.len()).find(|&idx| idx != i && idx != j && idx != new_idx)
+            {
+                self.faces
+                    .push(build_face(&self.vertices, i, j, new_idx, Some(reference)));
+            }
         }
     }
 }

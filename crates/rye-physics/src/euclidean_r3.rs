@@ -243,11 +243,17 @@ fn world_vertices(local: &[Vec3], pos: Vec3, rot: Quat) -> Vec<Vec3> {
 }
 
 /// Shared sanity check on EPA output: reject results that are
-/// numerically bad (NaN, infinite, zero-length normal) or that signal
-/// a degenerate touching contact (penetration below `MIN_PENETRATION`).
-/// A bad contact left in circulation feeds NaN velocities back into
-/// the integrator and compounds across frames; better to return None.
+/// numerically bad (NaN, infinite, zero-length normal, or implausibly
+/// large depth) or that signal a degenerate touching contact
+/// (penetration below `MIN_PENETRATION`). A bad contact left in
+/// circulation feeds NaN velocities back into the integrator and
+/// compounds across frames; better to return None.
 const MIN_POLYTOPE_PENETRATION: f32 = 1e-4;
+/// Upper bound on penetration depth we accept. Any deeper is almost
+/// certainly an EPA iteration-cap fallback on a numerically wild
+/// input — applying an impulse scaled by that depth would detonate
+/// body velocities.
+const MAX_POLYTOPE_PENETRATION: f32 = 5.0;
 
 fn validate_contact(
     info: &crate::collision::ContactInfo,
@@ -256,6 +262,7 @@ fn validate_contact(
 ) -> Option<Contact<EuclideanR3>> {
     if !info.penetration.is_finite()
         || info.penetration < MIN_POLYTOPE_PENETRATION
+        || info.penetration > MAX_POLYTOPE_PENETRATION
         || !info.normal.is_finite()
         || !info.point.is_finite()
     {
@@ -273,6 +280,17 @@ fn validate_contact(
     })
 }
 
+/// Conservative bounding-sphere radius of a polytope about its
+/// centroid. Used as a cheap pre-cull before running GJK — if the
+/// bounding spheres don't overlap, the polytopes can't overlap either.
+fn polytope_bounding_radius(local_vertices: &[Vec3]) -> f32 {
+    local_vertices
+        .iter()
+        .map(|v| v.length_squared())
+        .fold(0.0_f32, f32::max)
+        .sqrt()
+}
+
 fn polytope_polytope_r3(
     a: &RigidBody<EuclideanR3>,
     b: &RigidBody<EuclideanR3>,
@@ -284,6 +302,17 @@ fn polytope_polytope_r3(
     let Collider::ConvexPolytope3D { vertices: vb_local } = &b.collider else {
         return None;
     };
+
+    // Bounding-sphere pre-cull. Cheap sphere-sphere test; skips the
+    // entire GJK/EPA path whenever the polytopes can't possibly touch.
+    // Also sidesteps numerical thrashing on far-apart pairs.
+    let ra = polytope_bounding_radius(va_local);
+    let rb = polytope_bounding_radius(vb_local);
+    let center_dist_sq = (b.position - a.position).length_squared();
+    let combined = ra + rb;
+    if center_dist_sq > combined * combined {
+        return None;
+    }
 
     let va = world_vertices(va_local, a.position, a.orientation.rotation);
     let vb = world_vertices(vb_local, b.position, b.orientation.rotation);
@@ -310,6 +339,14 @@ fn sphere_polytope_r3(
     let Collider::ConvexPolytope3D { vertices: vb_local } = &b.collider else {
         return None;
     };
+
+    // Bounding-sphere cull before running GJK.
+    let rb = polytope_bounding_radius(vb_local);
+    let center_dist_sq = (b.position - a.position).length_squared();
+    let combined = radius + rb;
+    if center_dist_sq > combined * combined {
+        return None;
+    }
 
     let vb = world_vertices(vb_local, b.position, b.orientation.rotation);
     let support_a = GjkSphere {

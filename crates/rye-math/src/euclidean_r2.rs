@@ -8,7 +8,7 @@
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
-use crate::bivector::{Bivector, Rotor, Rotor2};
+use crate::bivector::{Rotor, Rotor2};
 use crate::space::Space;
 
 /// A rigid motion of R²: a rotation followed by a translation.
@@ -119,7 +119,7 @@ impl Space for EuclideanR2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bivector::Bivector2;
+    use crate::bivector::{Bivector, Bivector2};
     use std::f32::consts::FRAC_PI_2;
 
     fn assert_close(a: f32, b: f32) {

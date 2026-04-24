@@ -1,14 +1,17 @@
-// 3D physics demo shader — raymarches a small scene of sphere bodies
-// plus an infinite floor. Designed for clarity over efficiency; at ~32
-// bodies the per-pixel loop is cheap.
+// 3D physics demo shader — renders a scene of sphere bodies plus an
+// infinite floor via **exact** ray-shape intersection (not sphere-tracing
+// SDFs). The SDF-trace approach had a precision failure at the
+// sphere-floor tangent: near grazing angles the ray terminated on the
+// sphere with small but positive SDF, reporting sphere hits where the
+// true hit was on the floor beyond. The result looked like gravitational
+// lensing but was just numerics. Exact intersection is both correct and
+// cheaper at this shape count.
 //
 // Body data is packed as (position, radius, kind) in a uniform buffer.
 
 const PI: f32 = 3.14159265359;
 const MAX_BODIES: u32 = 32u;
-const MAX_STEPS: u32 = 96u;
 const MAX_DIST: f32 = 60.0;
-const HIT_EPS: f32 = 0.001;
 
 struct Scene {
     camera_pos: vec3<f32>,
@@ -50,69 +53,73 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32
     return vec4<f32>(pos[vid], 0.0, 1.0);
 }
 
-fn sdf_sphere(p: vec3<f32>, c: vec3<f32>, r: f32) -> f32 {
-    return length(p - c) - r;
-}
-
-fn sdf_halfspace(p: vec3<f32>, n: vec3<f32>, offset: f32) -> f32 {
-    // Distance to the plane. Negative inside the half-space.
-    return dot(p, n) - offset;
-}
-
 struct Hit {
     d: f32,
-    /// -1 = floor, 0..N = body index.
+    /// -2 = miss (sky), -1 = floor, 0..N = body index.
     id: i32,
 }
 
-fn scene_sdf(p: vec3<f32>) -> Hit {
-    var best: Hit;
-    best.d = sdf_halfspace(p, scene.floor_normal, scene.floor_offset);
-    best.id = -1;
+/// Exact ray-sphere intersection. Returns the near positive `t`, or a
+/// large sentinel when the ray misses or the sphere is behind the
+/// camera.
+fn intersect_sphere(ro: vec3<f32>, rd: vec3<f32>, c: vec3<f32>, r: f32) -> f32 {
+    let oc = ro - c;
+    let b = dot(oc, rd);
+    let cc = dot(oc, oc) - r * r;
+    let disc = b * b - cc;
+    if disc < 0.0 {
+        return 1e30;
+    }
+    let t = -b - sqrt(disc);
+    if t < 0.0 {
+        return 1e30;
+    }
+    return t;
+}
 
+/// Exact ray-plane intersection. Returns the positive `t` for a ray
+/// pointing into the solid side, or a sentinel for miss / ray going
+/// away from the plane.
+fn intersect_plane(ro: vec3<f32>, rd: vec3<f32>, n: vec3<f32>, offset: f32) -> f32 {
+    let denom = dot(rd, n);
+    if denom >= -1e-6 {
+        return 1e30;
+    }
+    let t = (offset - dot(ro, n)) / denom;
+    if t < 0.0 {
+        return 1e30;
+    }
+    return t;
+}
+
+fn cast_ray(ro: vec3<f32>, rd: vec3<f32>) -> Hit {
+    var best: Hit;
+    best.d = MAX_DIST;
+    best.id = -2;
+
+    let floor_t = intersect_plane(ro, rd, scene.floor_normal, scene.floor_offset);
+    if floor_t < best.d {
+        best.d = floor_t;
+        best.id = -1;
+    }
     for (var i: u32 = 0u; i < scene.body_count; i = i + 1u) {
         let b = bodies[i];
-        let d = sdf_sphere(p, b.position, b.radius);
-        if d < best.d {
-            best.d = d;
+        let t = intersect_sphere(ro, rd, b.position, b.radius);
+        if t < best.d {
+            best.d = t;
             best.id = i32(i);
         }
     }
     return best;
 }
 
-/// Analytical normal for the surface we actually hit. Using
-/// finite-differences on `scene_sdf` produces "lensing" artefacts
-/// because the min-over-shapes leaks each shape's gradient into its
-/// neighbors' surfaces — e.g. floor pixels near a sphere pick up the
-/// sphere's radial gradient and bend toward it.
+/// Analytical surface normal at the hit point.
 fn normal_for_hit(p: vec3<f32>, id: i32) -> vec3<f32> {
     if id < 0 {
         return scene.floor_normal;
     }
     let b = bodies[u32(id)];
     return normalize(p - b.position);
-}
-
-fn raymarch(ro: vec3<f32>, rd: vec3<f32>) -> Hit {
-    var t: f32 = 0.0;
-    var result: Hit;
-    result.id = -2; // miss sentinel
-    result.d = MAX_DIST;
-    for (var i: u32 = 0u; i < MAX_STEPS; i = i + 1u) {
-        let p = ro + rd * t;
-        let h = scene_sdf(p);
-        if h.d < HIT_EPS {
-            result.d = t;
-            result.id = h.id;
-            return result;
-        }
-        t = t + max(h.d * 0.9, HIT_EPS);
-        if t > MAX_DIST {
-            return result;
-        }
-    }
-    return result;
 }
 
 fn color_for_body(id: i32) -> vec3<f32> {
@@ -156,7 +163,7 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
             + scene.camera_up * ndc.y * scene.fov_y_tan,
     );
 
-    let hit = raymarch(scene.camera_pos, rd);
+    let hit = cast_ray(scene.camera_pos, rd);
 
     if hit.id == -2 {
         // Sky: soft vertical gradient.

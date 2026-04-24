@@ -33,6 +33,7 @@ pub mod narrowphase;
 pub mod response;
 pub mod world;
 
+pub mod collision;
 pub mod euclidean_r2;
 pub mod euclidean_r3;
 

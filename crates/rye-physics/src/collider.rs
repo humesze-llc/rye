@@ -36,10 +36,20 @@ pub enum Collider {
     /// Only meaningful on a static body (`inv_mass == 0`) — dynamic
     /// half-spaces are nonsensical.
     HalfSpace { normal: Vec3, offset: f32 },
+
+    /// Convex polytope in 3D — arbitrary vertex list, assumed convex.
+    /// GJK only needs the vertex list (support function returns the
+    /// vertex with max dot against the query direction); EPA reuses
+    /// the same support function for penetration depth.
+    ///
+    /// Vertices are in body-local coordinates. The body's `position`
+    /// and `orientation` transform them to world space per query.
+    /// Winding and face structure aren't required for GJK or EPA.
+    ConvexPolytope3D { vertices: Vec<Vec3> },
+
     // Future:
-    // ConvexPolyhedron3D { vertices: Vec<Vec3>, face_normals: Vec<Vec3>, edges: Vec<Vec3> },  // 3D SAT
     // Horosphere { point_at_inf: Vec3, offset: f32 },    // H³-only
-    // Polytope4D { vertices: Vec<[f32; 4]>, ... },       // for Simplex 4D
+    // ConvexPolytope4D { vertices: Vec<Vec4> },          // for Simplex 4D
 }
 
 impl Collider {
@@ -48,6 +58,7 @@ impl Collider {
             Collider::Sphere { .. } => ColliderKind::Sphere,
             Collider::Polygon2D { .. } => ColliderKind::Polygon2D,
             Collider::HalfSpace { .. } => ColliderKind::HalfSpace,
+            Collider::ConvexPolytope3D { .. } => ColliderKind::ConvexPolytope3D,
         }
     }
 }
@@ -58,4 +69,5 @@ pub enum ColliderKind {
     Sphere,
     Polygon2D,
     HalfSpace,
+    ConvexPolytope3D,
 }

@@ -12,7 +12,7 @@
 //!
 //! Nothing in the solver or `World` changes.
 
-use glam::{Vec2, Vec3};
+use glam::{Vec2, Vec3, Vec4};
 
 /// All collider shapes supported by Rye's physics. Space-agnostic data —
 /// the same `Polygon2D` can live in `EuclideanR2` or (in principle) in
@@ -46,9 +46,16 @@ pub enum Collider {
     /// and `orientation` transform them to world space per query.
     /// Winding and face structure aren't required for GJK or EPA.
     ConvexPolytope3D { vertices: Vec<Vec3> },
+
+    /// Convex polytope in 4D — arbitrary `Vec4` vertex list, assumed
+    /// convex. Used by the 4D physics pipeline (pentatope, tesseract,
+    /// 16-cell, 24-cell, and caller-defined convex bodies). GJK's
+    /// support function and EPA's polytope expansion both operate on
+    /// the raw vertex list; winding and face structure are recovered
+    /// by EPA as needed.
+    ConvexPolytope4D { vertices: Vec<Vec4> },
     // Future:
     // Horosphere { point_at_inf: Vec3, offset: f32 },    // H³-only
-    // ConvexPolytope4D { vertices: Vec<Vec4> },          // for Simplex 4D
 }
 
 impl Collider {
@@ -58,6 +65,7 @@ impl Collider {
             Collider::Polygon2D { .. } => ColliderKind::Polygon2D,
             Collider::HalfSpace { .. } => ColliderKind::HalfSpace,
             Collider::ConvexPolytope3D { .. } => ColliderKind::ConvexPolytope3D,
+            Collider::ConvexPolytope4D { .. } => ColliderKind::ConvexPolytope4D,
         }
     }
 }
@@ -69,4 +77,5 @@ pub enum ColliderKind {
     Polygon2D,
     HalfSpace,
     ConvexPolytope3D,
+    ConvexPolytope4D,
 }

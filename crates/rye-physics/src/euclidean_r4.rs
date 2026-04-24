@@ -20,10 +20,11 @@
 
 use glam::Vec4;
 
-use rye_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat};
+use rye_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat, Rotor};
 
 use crate::body::RigidBody;
 use crate::collider::{Collider, ColliderKind};
+use crate::collision::{epa_r4, gjk_intersect_r4, ConvexHull4, GjkResult4, Sphere4 as GjkSphere4};
 use crate::integrator::PhysicsSpace;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
@@ -162,8 +163,138 @@ fn sphere_sphere_r4(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Polytope narrowphases via 4D GJK + EPA. Same wrapper shape as the R³
+// path: transform body-local vertices to world, build a support-fn
+// adapter, run GJK, hand the 5-simplex to EPA, validate the result.
+// ---------------------------------------------------------------------------
+
+/// Conservative bounding-sphere radius of a 4D polytope about its
+/// centroid. Cheap pre-cull for narrowphase — if bounding spheres
+/// don't overlap, the polytopes can't either.
+fn polytope4_bounding_radius(local_vertices: &[Vec4]) -> f32 {
+    local_vertices
+        .iter()
+        .map(|v| v.length_squared())
+        .fold(0.0_f32, f32::max)
+        .sqrt()
+}
+
+fn world_vertices4(local: &[Vec4], pos: Vec4, rot: rye_math::Rotor4) -> Vec<Vec4> {
+    local.iter().map(|&v| rot.apply(v) + pos).collect()
+}
+
+/// Minimum and maximum penetration depths EPA will return; reject
+/// anything outside these as likely numerical noise (too small) or
+/// EPA iteration-cap fallback on pathological input (too deep).
+const MIN_POLYTOPE4_PENETRATION: f32 = 1e-4;
+const MAX_POLYTOPE4_PENETRATION: f32 = 5.0;
+
+fn validate_contact4(
+    info: &crate::collision::ContactInfo4,
+    a: &RigidBody<EuclideanR4>,
+    b: &RigidBody<EuclideanR4>,
+) -> Option<Contact<EuclideanR4>> {
+    if !info.penetration.is_finite()
+        || info.penetration < MIN_POLYTOPE4_PENETRATION
+        || info.penetration > MAX_POLYTOPE4_PENETRATION
+        || !info.normal.is_finite()
+        || !info.point.is_finite()
+    {
+        return None;
+    }
+    let n2 = info.normal.length_squared();
+    if !(0.5..=1.5).contains(&n2) {
+        return None;
+    }
+    Some(Contact {
+        normal: info.normal,
+        point: info.point,
+        penetration: info.penetration,
+        restitution: (a.restitution + b.restitution) * 0.5,
+    })
+}
+
+fn polytope_polytope_r4(
+    a: &RigidBody<EuclideanR4>,
+    b: &RigidBody<EuclideanR4>,
+    _space: &EuclideanR4,
+) -> Option<Contact<EuclideanR4>> {
+    let Collider::ConvexPolytope4D { vertices: va_local } = &a.collider else {
+        return None;
+    };
+    let Collider::ConvexPolytope4D { vertices: vb_local } = &b.collider else {
+        return None;
+    };
+
+    let ra = polytope4_bounding_radius(va_local);
+    let rb = polytope4_bounding_radius(vb_local);
+    let center_dist_sq = (b.position - a.position).length_squared();
+    let combined = ra + rb;
+    if center_dist_sq > combined * combined {
+        return None;
+    }
+
+    let va = world_vertices4(va_local, a.position, a.orientation.rotation);
+    let vb = world_vertices4(vb_local, b.position, b.orientation.rotation);
+    let hull_a = ConvexHull4 { vertices: &va };
+    let hull_b = ConvexHull4 { vertices: &vb };
+
+    let initial_dir = b.position - a.position;
+    let simplex = match gjk_intersect_r4(&hull_a, &hull_b, initial_dir) {
+        GjkResult4::Intersecting { simplex } => simplex,
+        GjkResult4::Separated => return None,
+    };
+    let info = epa_r4(&hull_a, &hull_b, simplex)?;
+    validate_contact4(&info, a, b)
+}
+
+fn sphere_polytope_r4(
+    a: &RigidBody<EuclideanR4>,
+    b: &RigidBody<EuclideanR4>,
+    _space: &EuclideanR4,
+) -> Option<Contact<EuclideanR4>> {
+    let Collider::Sphere { radius } = a.collider else {
+        return None;
+    };
+    let Collider::ConvexPolytope4D { vertices: vb_local } = &b.collider else {
+        return None;
+    };
+
+    let rb = polytope4_bounding_radius(vb_local);
+    let center_dist_sq = (b.position - a.position).length_squared();
+    let combined = radius + rb;
+    if center_dist_sq > combined * combined {
+        return None;
+    }
+
+    let vb = world_vertices4(vb_local, b.position, b.orientation.rotation);
+    let support_a = GjkSphere4 {
+        center: a.position,
+        radius,
+    };
+    let support_b = ConvexHull4 { vertices: &vb };
+    let initial_dir = b.position - a.position;
+    let simplex = match gjk_intersect_r4(&support_a, &support_b, initial_dir) {
+        GjkResult4::Intersecting { simplex } => simplex,
+        GjkResult4::Separated => return None,
+    };
+    let info = epa_r4(&support_a, &support_b, simplex)?;
+    validate_contact4(&info, a, b)
+}
+
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR4>) {
     np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r4);
+    np.register(
+        ColliderKind::ConvexPolytope4D,
+        ColliderKind::ConvexPolytope4D,
+        polytope_polytope_r4,
+    );
+    np.register(
+        ColliderKind::Sphere,
+        ColliderKind::ConvexPolytope4D,
+        sphere_polytope_r4,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +322,32 @@ pub fn sphere_body_r4(
         Collider::Sphere { radius },
         mass,
         ball4_inertia(mass, radius),
+        &EuclideanR4,
+    )
+}
+
+/// Dynamic 4D convex-polytope body. Inertia uses the bounding-
+/// sphere approximation `(2/n)·m·r²` with `n = 4`; same pragmatic
+/// trade as the 3D path — correct for sphere-like polytopes, in the
+/// right order of magnitude for cube-like ones, replaced by a full
+/// 6×6 bivector-inertia tensor when a game actually needs it.
+pub fn polytope_body_r4(
+    position: Vec4,
+    velocity: Vec4,
+    vertices: Vec<Vec4>,
+    mass: f32,
+) -> RigidBody<EuclideanR4> {
+    let bounding_r_sq = vertices
+        .iter()
+        .map(|v| v.length_squared())
+        .fold(0.0, f32::max);
+    let inertia = 0.5 * mass * bounding_r_sq;
+    RigidBody::new(
+        position,
+        velocity,
+        Collider::ConvexPolytope4D { vertices },
+        mass,
+        inertia,
         &EuclideanR4,
     )
 }
@@ -512,6 +669,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Narrowphase integration: a sphere deeply inside a tesseract
+    /// should produce a contact with a sensible normal and finite
+    /// penetration — this exercises the sphere-polytope 4D GJK+EPA
+    /// path end-to-end, with bounding-sphere cull included.
+    #[test]
+    fn sphere_inside_tesseract_produces_contact() {
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+        let _a = world.push_body(sphere_body_r4(Vec4::ZERO, Vec4::ZERO, 0.3, 1.0));
+        let _b = world.push_body(polytope_body_r4(
+            Vec4::ZERO,
+            Vec4::ZERO,
+            tesseract_vertices(0.8),
+            0.0,
+        ));
+        // Zero-mass wrapper makes the tesseract static; exercise the
+        // narrowphase lookup and verify a contact is found (the
+        // solver would then apply it, but we only care about
+        // detection here).
+        let pair_found = {
+            let (a, b) = world.bodies.split_at_mut(1);
+            world.narrowphase.test(&a[0], &b[0], &EuclideanR4).is_some()
+        };
+        assert!(
+            pair_found,
+            "sphere inside tesseract should produce a contact"
+        );
+    }
+
+    /// Separated 4D polytopes → no contact. Exercises the bounding-
+    /// sphere pre-cull plus GJK's Separated path.
+    #[test]
+    fn separated_pentatopes_produce_no_contact() {
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+        let _a = world.push_body(polytope_body_r4(
+            Vec4::ZERO,
+            Vec4::ZERO,
+            pentatope_vertices(1.0),
+            1.0,
+        ));
+        let _b = world.push_body(polytope_body_r4(
+            Vec4::new(10.0, 0.0, 0.0, 0.0),
+            Vec4::ZERO,
+            pentatope_vertices(1.0),
+            1.0,
+        ));
+        let (a, b) = world.bodies.split_at_mut(1);
+        assert!(world.narrowphase.test(&a[0], &b[0], &EuclideanR4).is_none());
     }
 
     #[test]

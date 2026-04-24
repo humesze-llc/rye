@@ -173,10 +173,12 @@ fn collect_gpu_bodies(world: &World<EuclideanR3>) -> (BodyBuffer, u32) {
                 };
                 count += 1;
             }
-            Collider::HalfSpace { .. } | Collider::Polygon2D { .. } => {
+            Collider::HalfSpace { .. }
+            | Collider::Polygon2D { .. }
+            | Collider::ConvexPolytope4D { .. } => {
                 // Halfspace is implicit (scene uniforms); 2D polygons
-                // shouldn't appear in a 3D world but skip them
-                // defensively.
+                // and 4D polytopes shouldn't appear in a 3D world but
+                // skip them defensively.
             }
         }
     }

@@ -24,13 +24,17 @@
 //! precision near the horizon; if that becomes a problem we'll add a
 //! `Scalar` associated type rather than rewrite call sites.
 
+pub mod bivector;
 pub mod euclidean;
+pub mod euclidean_r2;
 pub mod hyperbolic;
 pub mod space;
 pub mod spherical;
 pub mod tangent;
 
+pub use bivector::{Bivector, Bivector2, Rotor, Rotor2};
 pub use euclidean::{EuclideanR3, Iso3};
+pub use euclidean_r2::{EuclideanR2, Iso2};
 pub use hyperbolic::{HyperbolicH3, Iso3H};
 pub use space::{Space, WgslSpace};
 pub use spherical::{Iso4, SphericalS3};

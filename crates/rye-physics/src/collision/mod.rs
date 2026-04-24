@@ -12,8 +12,10 @@
 //! - *(upcoming)* `manifold` — persistent contact cache for stable
 //!   stacking over multiple frames.
 
+pub mod epa;
 pub mod gjk;
 pub mod vector_ops;
 
+pub use epa::{epa, ContactInfo};
 pub use gjk::{gjk_intersect, ConvexHull, GjkResult, MinkowskiPoint, Sphere, SupportFn};
 pub use vector_ops::VectorOps;

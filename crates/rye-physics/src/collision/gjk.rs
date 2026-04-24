@@ -186,11 +186,33 @@ fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
         // by how `a` was produced). Next search direction is
         // perpendicular to AB, pointing toward origin.
         let dir = triple_product(ab, ao, ab);
-        (false, 2, dir)
+        if dir.length_squared() < 1e-10 {
+            // Degenerate: origin lies on the line A–B. Pick any vector
+            // perpendicular to AB and recurse along that — the next
+            // support will either exit the line (→ triangle) or
+            // confirm containment along a different axis.
+            (false, 2, any_perpendicular(ab))
+        } else {
+            (false, 2, dir)
+        }
     } else {
         // Origin is past A, away from B. Discard B.
         simplex[0] = simplex[1];
         (false, 1, ao)
+    }
+}
+
+/// An arbitrary unit-ish vector perpendicular to `v`. Used to escape
+/// collinear degeneracies in GJK. The axis chosen depends on `v`'s
+/// dominant component to avoid near-zero cross products.
+fn any_perpendicular(v: Vec3) -> Vec3 {
+    // Cross with whichever cardinal axis `v` is *least* aligned with.
+    if v.x.abs() <= v.y.abs() && v.x.abs() <= v.z.abs() {
+        v.cross(Vec3::X)
+    } else if v.y.abs() <= v.z.abs() {
+        v.cross(Vec3::Y)
+    } else {
+        v.cross(Vec3::Z)
     }
 }
 
@@ -248,6 +270,15 @@ fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
 /// Tetrahedron case: [d, c, b, a] with `a` most recent. Either the
 /// origin is inside (intersection!) or it lies in the Voronoi region
 /// of one of the three faces adjacent to `a` (ABC / ACD / ADB).
+///
+/// Textbook formulations of this step assume the simplex winding is
+/// such that the bare cross products `ab×ac`, `ac×ad`, `ad×ab` are
+/// already outward normals. That assumption doesn't hold for every
+/// path through `do_triangle` (specifically the swap branch produces
+/// an inverted winding). Rather than patch the winding invariant
+/// everywhere, we explicitly orient each face normal using the
+/// opposite vertex of the tetrahedron — pointing away from that
+/// vertex is always outward.
 fn do_tetrahedron(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let a = simplex[3].point;
     let b = simplex[2].point;
@@ -259,35 +290,46 @@ fn do_tetrahedron(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let ad = d - a;
     let ao = -a;
 
-    let abc = ab.cross(ac);
-    let acd = ac.cross(ad);
-    let adb = ad.cross(ab);
+    // Outward normal of face ABC (adjacent to a, opposite d).
+    let mut abc = ab.cross(ac);
+    if abc.dot(ad) > 0.0 {
+        abc = -abc;
+    }
+    // Outward normal of face ACD (adjacent to a, opposite b).
+    let mut acd = ac.cross(ad);
+    if acd.dot(ab) > 0.0 {
+        acd = -acd;
+    }
+    // Outward normal of face ADB (adjacent to a, opposite c).
+    let mut adb = ad.cross(ab);
+    if adb.dot(ac) > 0.0 {
+        adb = -adb;
+    }
 
-    // Face ABC — outward normal is `abc` (tetrahedron was built so D
-    // is behind ABC; i.e. `abc.dot(ad) < 0`).
     if abc.dot(ao) > 0.0 {
         // Drop D, recurse on triangle [C, B, A].
-        simplex[0] = simplex[1]; // C → [0]
-        simplex[1] = simplex[2]; // B → [1]
-        simplex[2] = simplex[3]; // A → [2]
+        simplex[0] = simplex[1];
+        simplex[1] = simplex[2];
+        simplex[2] = simplex[3];
         return do_triangle(simplex);
     }
     if acd.dot(ao) > 0.0 {
         // Drop B, recurse on triangle [D, C, A].
-        // Current order is [d=0, c=1, b=2, a=3]; we need [D, C, A].
-        simplex[1] = simplex[1]; // C stays at [1]
-        simplex[2] = simplex[3]; // A → [2]
+        simplex[2] = simplex[3];
         return do_triangle(simplex);
     }
     if adb.dot(ao) > 0.0 {
         // Drop C, recurse on triangle [B, D, A].
-        simplex[1] = simplex[0]; // D → [1]
+        let d_point = simplex[0];
         simplex[0] = simplex[2]; // B → [0]
+        simplex[1] = d_point; // D → [1]
         simplex[2] = simplex[3]; // A → [2]
         return do_triangle(simplex);
     }
 
-    // Origin is inside the tetrahedron on all three sides.
+    // Origin is on the inward side of all three adjacent faces
+    // (opposite-d face is implicitly the 4th face; origin's being
+    // inside the tetrahedron is exactly these three checks).
     (true, 4, Vec3::ZERO)
 }
 

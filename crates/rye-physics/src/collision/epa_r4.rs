@@ -47,17 +47,19 @@ struct Face4 {
 struct Polytope4 {
     vertices: Vec<MinkowskiPoint4>,
     faces: Vec<Face4>,
-    /// Centroid of the seed 4-simplex. Guaranteed interior to the
-    /// polytope for all subsequent convex expansions — used to orient
-    /// new faces outward instead of the fragile "pick-an-old-vertex"
-    /// heuristic.
-    interior: Vec4,
+    /// Centroid of the seed 5-simplex. Guaranteed interior to the
+    /// polytope for all subsequent convex expansions, so it's a
+    /// reliable tiebreaker when the origin itself sits on a face
+    /// plane (common for symmetric Minkowski differences — the
+    /// origin lies on an edge of the seed simplex and multiple
+    /// initial faces pass through it).
+    centroid: Vec4,
 }
 
 impl Polytope4 {
     fn from_simplex(simplex: [MinkowskiPoint4; 5]) -> Self {
         let vertices = simplex.to_vec();
-        let interior = (simplex[0].point
+        let centroid = (simplex[0].point
             + simplex[1].point
             + simplex[2].point
             + simplex[3].point
@@ -65,8 +67,9 @@ impl Polytope4 {
             * 0.2;
 
         // Five tetrahedral faces of the 4-simplex: each one is the
-        // tetra of all vertices except the `l`-th one, oriented
-        // outward (away from vertex `l`).
+        // tetra of all vertices except the `l`-th. Orientation uses
+        // a hybrid "origin-first, centroid-fallback" rule — see
+        // `build_face`.
         let mut faces = Vec::with_capacity(5);
         for l in 0..5 {
             let mut tet = [0usize; 4];
@@ -77,39 +80,58 @@ impl Polytope4 {
                     idx += 1;
                 }
             }
-            faces.push(build_face_vs_point(
-                &vertices,
-                tet[0],
-                tet[1],
-                tet[2],
-                tet[3],
-                vertices[l].point,
-            ));
+            if let Some(face) = build_face(&vertices, tet[0], tet[1], tet[2], tet[3], centroid) {
+                faces.push(face);
+            }
         }
         Self {
             vertices,
             faces,
-            interior,
+            centroid,
         }
     }
 
+    /// Face with smallest distance from origin.
+    ///
+    /// Distance-0 faces are common in 4D EPA: many Minkowski-diff
+    /// vertices end up coplanar (e.g. pentatope-pentatope produces
+    /// dozens of `w=0` points), which spawns "through-origin" faces
+    /// during expansion. Naively picking the smallest distance always
+    /// chases these spurious faces and never converges on the real
+    /// Minkowski boundary.
+    ///
+    /// Strategy: if the polytope has any **strictly positive-
+    /// distance** face, prefer the smallest of those — they're real
+    /// boundary candidates. Only fall back to a distance-0 face when
+    /// no positive face exists (the boundary genuinely touches the
+    /// origin, e.g. tangent shapes; or the seed simplex is so
+    /// symmetric that every face passes through origin and we need
+    /// expansion to break the symmetry).
     fn closest_face(&self) -> Option<usize> {
-        let (idx, _) = self
+        if let Some((idx, _)) = self
             .faces
             .iter()
             .enumerate()
-            .min_by(|a, b| a.1.distance.total_cmp(&b.1.distance))?;
-        Some(idx)
+            .filter(|(_, f)| f.distance > ORIGIN_ON_PLANE_EPS)
+            .min_by(|a, b| a.1.distance.total_cmp(&b.1.distance))
+        {
+            return Some(idx);
+        }
+        self.faces
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.distance.total_cmp(&b.1.distance))
+            .map(|(idx, _)| idx)
     }
 
     fn expand(&mut self, support: MinkowskiPoint4) {
         let new_idx = self.vertices.len();
         self.vertices.push(support);
 
-        // Horizon = set of triangle faces on the boundary of the
-        // region being removed. Encoded as sorted-by-identity triples
-        // of vertex indices. Triangles shared between two removed
-        // tetrahedra are interior and cancel; unique ones form the
+        // Horizon = set of triangles on the boundary of the region
+        // being removed. Encoded as sorted-by-identity triples of
+        // vertex indices; triangles shared between two removed
+        // tetrahedra are interior and cancel, unique ones form the
         // 3D horizon "skin."
         let mut horizon: Vec<Triangle> = Vec::new();
         let mut keep = Vec::with_capacity(self.faces.len());
@@ -117,8 +139,7 @@ impl Polytope4 {
         for f in self.faces.drain(..) {
             let view = support.point - self.vertices[f.v[0]].point;
             if f.normal.dot(view) > 0.0 {
-                // Visible from the new point → remove. Emit its 4
-                // triangle faces as candidates for the horizon.
+                // Visible from the new point → remove.
                 for tri in tet_triangles(&f.v) {
                     add_or_remove_triangle(&mut horizon, tri);
                 }
@@ -128,21 +149,24 @@ impl Polytope4 {
         }
         self.faces = keep;
 
-        // Each horizon triangle + new vertex → a new tetrahedral face
-        // oriented outward from `self.interior`.
-        let interior = self.interior;
+        // Each horizon triangle + new vertex → new tetrahedral face.
+        // Re-uses the seed centroid as the interior reference —
+        // still inside the (only-expanding) polytope by convexity.
+        let centroid = self.centroid;
         for tri in &horizon {
-            self.faces.push(build_face_vs_point(
-                &self.vertices,
-                tri.0,
-                tri.1,
-                tri.2,
-                new_idx,
-                interior,
-            ));
+            if let Some(face) = build_face(&self.vertices, tri.0, tri.1, tri.2, new_idx, centroid) {
+                self.faces.push(face);
+            }
         }
     }
 }
+
+/// Threshold below which the origin's signed distance to a face
+/// plane is considered "on the plane" and the seed centroid is used
+/// as the interior reference instead. Empirical — larger than f32
+/// noise (~1e-7 for unit-scale geometry) but much smaller than any
+/// real penetration depth.
+const ORIGIN_ON_PLANE_EPS: f32 = 1e-4;
 
 /// A triangle (3-vertex index tuple) with sign implicit in order.
 type Triangle = (usize, usize, usize);
@@ -184,47 +208,73 @@ fn sort_triangle(t: Triangle) -> (usize, usize, usize) {
 }
 
 /// Build a tetrahedral face `(a, b, c, d)` with outward unit normal
-/// and distance-from-origin. Orientation: if the computed normal
-/// points toward `interior_point`, flip it (and the face's stored
-/// winding) so the normal points outward.
-fn build_face_vs_point(
+/// and distance-from-origin.
+///
+/// # Orientation (hybrid rule)
+///
+/// EPA's invariant is that both the origin and the polytope's
+/// centroid are interior points. The outward normal should put both
+/// on the same (negative-distance) side of the face plane. Usually
+/// they agree; the tricky case is when **the origin lies on a face
+/// plane** — common for symmetric Minkowski differences where the
+/// seed 5-simplex has an edge passing through origin. Then the
+/// origin-based test gives no signal, and we fall back to the seed
+/// centroid (guaranteed off-plane except for contrived full-symmetry
+/// cases, where the face is degenerate anyway).
+///
+/// Returns `None` when the face is degenerate (three edges nearly
+/// coplanar → tiny normal magnitude).
+fn build_face(
     verts: &[MinkowskiPoint4],
     a: usize,
     b: usize,
     c: usize,
     d: usize,
-    interior_point: Vec4,
-) -> Face4 {
+    centroid: Vec4,
+) -> Option<Face4> {
     let pa = verts[a].point;
     let pb = verts[b].point;
     let pc = verts[c].point;
     let pd = verts[d].point;
 
-    let mut normal = hodge_dual_of_trivector_wedge(pb - pa, pc - pa, pd - pa);
-    let len = normal.length();
+    let raw_normal = hodge_dual_of_trivector_wedge(pb - pa, pc - pa, pd - pa);
+    let len = raw_normal.length();
     if len < 1e-8 {
-        // Degenerate face (near-coplanar); give a benign non-zero
-        // direction. Expansion will either remove it or it'll never
-        // be chosen as `closest_face`.
-        normal = Vec4::Y;
-    } else {
-        normal /= len;
+        return None;
     }
+    let normal = raw_normal / len;
 
-    let to_interior = interior_point - pa;
-    let (v_order, outward) = if normal.dot(to_interior) > 0.0 {
-        ([a, b, d, c], -normal)
+    // Signed position of the origin relative to the face plane along
+    // `+normal`. `normal · pa` is the plane's offset from origin; if
+    // positive, origin is on `-normal` (interior) side and we keep
+    // `+normal` as outward.
+    let signed_origin = normal.dot(pa);
+    let flip = if signed_origin.abs() > ORIGIN_ON_PLANE_EPS {
+        signed_origin < 0.0
     } else {
-        ([a, b, c, d], normal)
+        // Origin lies on the face plane. Use the centroid as
+        // tiebreaker: if centroid is on `+normal` side (relative to
+        // pa), `+normal` points toward interior → flip.
+        let signed_c = normal.dot(centroid - pa);
+        signed_c > 0.0
     };
 
-    let raw_distance = outward.dot(verts[v_order[0]].point);
-    let distance = raw_distance.max(0.0);
-    Face4 {
+    let (outward, v_order) = if flip {
+        (-normal, [a, b, d, c])
+    } else {
+        (normal, [a, b, c, d])
+    };
+
+    // Face distance from origin along the outward normal. Clamp at 0
+    // for the origin-on-plane case where the signed result could dip
+    // slightly negative from f32 noise.
+    let distance = outward.dot(pa).max(0.0);
+
+    Some(Face4 {
         v: v_order,
         normal: outward,
         distance,
-    }
+    })
 }
 
 /// Generalized 4D cross product: the vector perpendicular to three
@@ -433,31 +483,22 @@ mod tests {
         assert!(contact.point.w.abs() < 0.1);
     }
 
-    // TODO(phase4): 4D EPA on polytope-polytope overlap occasionally
-    // collapses to a zero-distance face. The sphere-sphere path is
-    // reliable (the Minkowski diff is smooth), but the pentatope-
-    // pentatope GJK simplex has near-coplanar vertex groupings that
-    // drive new-face orientation into ambiguity. Sharper-feature
-    // polytope pairs (tesseract, 16-cell) will stress this further.
-    //
-    // Fix candidates: (a) robust interior reference that updates with
-    // expansion, not just the seed centroid; (b) reject zero-distance
-    // faces in `closest_face`; (c) reseed expansion with a support
-    // probe when all faces have near-zero distance. Flagged here so
-    // the gap stays visible while downstream narrowphase work lands.
+    /// Two overlapping pentatopes produce a finite penetration with
+    /// a unit-length normal. This is the case that used to collapse
+    /// to a zero-distance face under the fragile interior-reference
+    /// orientation heuristic; robustified via the hybrid origin-
+    /// first, centroid-fallback rule in `build_face`.
     #[test]
-    #[ignore]
     fn pentatope_pentatope_penetration_nonzero() {
-        // Two overlapping pentatopes should produce a finite
-        // penetration depth with a sensible contact normal.
+        use crate::collision::gjk_r4::ConvexHull4;
         use crate::euclidean_r4::pentatope_vertices;
+
         let va: Vec<Vec4> = pentatope_vertices(1.0);
         let vb: Vec<Vec4> = pentatope_vertices(1.0)
             .into_iter()
             .map(|v| v + Vec4::new(0.3, 0.0, 0.0, 0.0))
             .collect();
 
-        use crate::collision::gjk_r4::ConvexHull4;
         let a = ConvexHull4 { vertices: &va };
         let b = ConvexHull4 { vertices: &vb };
         let simplex = match gjk_intersect_r4(&a, &b, Vec4::X) {
@@ -470,6 +511,66 @@ mod tests {
             "penetration = {}",
             contact.penetration
         );
-        assert!(contact.normal.length_squared() > 0.9);
+        let n2 = contact.normal.length_squared();
+        assert!(
+            (n2 - 1.0).abs() < 1e-2,
+            "normal should be unit-length: |n|² = {n2}"
+        );
+    }
+
+    /// Two tesseracts sharing a corner region along all four axes.
+    /// Sharper features than the pentatope; used to be another EPA-
+    /// collapse source before the orientation fix.
+    #[test]
+    fn tesseract_tesseract_penetration_nonzero() {
+        use crate::collision::gjk_r4::ConvexHull4;
+        use crate::euclidean_r4::tesseract_vertices;
+
+        let va: Vec<Vec4> = tesseract_vertices(1.0);
+        let vb: Vec<Vec4> = tesseract_vertices(1.0)
+            .into_iter()
+            .map(|v| v + Vec4::new(0.4, 0.2, 0.1, 0.0))
+            .collect();
+
+        let a = ConvexHull4 { vertices: &va };
+        let b = ConvexHull4 { vertices: &vb };
+        let simplex = match gjk_intersect_r4(&a, &b, Vec4::X) {
+            GjkResult4::Intersecting { simplex } => simplex,
+            _ => panic!("tesseracts should overlap"),
+        };
+        let contact = epa_r4(&a, &b, simplex).expect("EPA should succeed");
+        assert!(
+            contact.penetration > 0.0 && contact.penetration.is_finite(),
+            "penetration = {}",
+            contact.penetration
+        );
+    }
+
+    /// 16-cell vs 16-cell: the cross-polytope with 8 vertices. Tests
+    /// the GJK→EPA pipeline on a sharp-vertexed polytope that has
+    /// fewer support points than the tesseract.
+    #[test]
+    fn cell16_cell16_penetration_nonzero() {
+        use crate::collision::gjk_r4::ConvexHull4;
+        use crate::euclidean_r4::cell16_vertices;
+
+        let va: Vec<Vec4> = cell16_vertices(1.0);
+        let vb: Vec<Vec4> = cell16_vertices(1.0)
+            .into_iter()
+            .map(|v| v + Vec4::new(0.5, 0.0, 0.0, 0.0))
+            .collect();
+
+        let a = ConvexHull4 { vertices: &va };
+        let b = ConvexHull4 { vertices: &vb };
+        let simplex = match gjk_intersect_r4(&a, &b, Vec4::X) {
+            GjkResult4::Intersecting { simplex } => simplex,
+            _ => panic!("16-cells should overlap"),
+        };
+        let contact = epa_r4(&a, &b, simplex).expect("EPA should succeed");
+        assert!(
+            contact.penetration > 0.0 && contact.penetration.is_finite(),
+            "penetration = {}",
+            contact.penetration
+        );
     }
 }

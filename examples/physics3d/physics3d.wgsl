@@ -81,16 +81,17 @@ fn scene_sdf(p: vec3<f32>) -> Hit {
     return best;
 }
 
-fn scene_normal(p: vec3<f32>) -> vec3<f32> {
-    // Central-difference gradient on the (always-positive) min distance.
-    let eps = 0.0015;
-    let ex = vec3<f32>(eps, 0.0, 0.0);
-    let ey = vec3<f32>(0.0, eps, 0.0);
-    let ez = vec3<f32>(0.0, 0.0, eps);
-    let gx = scene_sdf(p + ex).d - scene_sdf(p - ex).d;
-    let gy = scene_sdf(p + ey).d - scene_sdf(p - ey).d;
-    let gz = scene_sdf(p + ez).d - scene_sdf(p - ez).d;
-    return normalize(vec3<f32>(gx, gy, gz));
+/// Analytical normal for the surface we actually hit. Using
+/// finite-differences on `scene_sdf` produces "lensing" artefacts
+/// because the min-over-shapes leaks each shape's gradient into its
+/// neighbors' surfaces — e.g. floor pixels near a sphere pick up the
+/// sphere's radial gradient and bend toward it.
+fn normal_for_hit(p: vec3<f32>, id: i32) -> vec3<f32> {
+    if id < 0 {
+        return scene.floor_normal;
+    }
+    let b = bodies[u32(id)];
+    return normalize(p - b.position);
 }
 
 fn raymarch(ro: vec3<f32>, rd: vec3<f32>) -> Hit {
@@ -164,7 +165,7 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     }
 
     let p = scene.camera_pos + rd * hit.d;
-    let n = scene_normal(p);
+    let n = normal_for_hit(p, hit.id);
 
     var base = color_for_body(hit.id);
     if hit.id < 0 {

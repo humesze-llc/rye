@@ -33,12 +33,14 @@ pub mod narrowphase;
 pub mod response;
 pub mod world;
 
+pub mod collision;
 pub mod euclidean_r2;
+pub mod euclidean_r3;
 
 pub use body::RigidBody;
 pub use collider::{Collider, ColliderKind};
 pub use field::{ForceField, Gravity};
 pub use integrator::{integrate_body, PhysicsSpace};
 pub use narrowphase::{Narrowphase, NarrowphaseFn};
-pub use response::{apply_impulse, Contact};
+pub use response::{correct_position, Contact};
 pub use world::World;

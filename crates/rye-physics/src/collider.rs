@@ -28,15 +28,27 @@ pub enum Collider {
     /// frame (orientation-relative), ordered counter-clockwise.
     Polygon2D { vertices: Vec<Vec2> },
 
-    /// Convex polyhedron in 3D Euclidean space. Vertices + face normals
-    /// in local body frame.
-    Polyhedron3D {
-        vertices: Vec<Vec3>,
-        face_normals: Vec<Vec3>,
-    },
+    /// Half-space `{ p : dot(p, normal) ≥ offset }` in any dimension
+    /// whose `Vector` is `Vec3`. The complement is the "solid" side.
+    /// Used for infinite floors/walls until polyhedron SAT ships; also
+    /// useful long-term for static terrain planes.
+    ///
+    /// Only meaningful on a static body (`inv_mass == 0`) — dynamic
+    /// half-spaces are nonsensical.
+    HalfSpace { normal: Vec3, offset: f32 },
+
+    /// Convex polytope in 3D — arbitrary vertex list, assumed convex.
+    /// GJK only needs the vertex list (support function returns the
+    /// vertex with max dot against the query direction); EPA reuses
+    /// the same support function for penetration depth.
+    ///
+    /// Vertices are in body-local coordinates. The body's `position`
+    /// and `orientation` transform them to world space per query.
+    /// Winding and face structure aren't required for GJK or EPA.
+    ConvexPolytope3D { vertices: Vec<Vec3> },
     // Future:
     // Horosphere { point_at_inf: Vec3, offset: f32 },    // H³-only
-    // Polytope4D { vertices: Vec<[f32; 4]>, ... },       // for Simplex 4D
+    // ConvexPolytope4D { vertices: Vec<Vec4> },          // for Simplex 4D
 }
 
 impl Collider {
@@ -44,7 +56,8 @@ impl Collider {
         match self {
             Collider::Sphere { .. } => ColliderKind::Sphere,
             Collider::Polygon2D { .. } => ColliderKind::Polygon2D,
-            Collider::Polyhedron3D { .. } => ColliderKind::Polyhedron3D,
+            Collider::HalfSpace { .. } => ColliderKind::HalfSpace,
+            Collider::ConvexPolytope3D { .. } => ColliderKind::ConvexPolytope3D,
         }
     }
 }
@@ -54,5 +67,6 @@ impl Collider {
 pub enum ColliderKind {
     Sphere,
     Polygon2D,
-    Polyhedron3D,
+    HalfSpace,
+    ConvexPolytope3D,
 }

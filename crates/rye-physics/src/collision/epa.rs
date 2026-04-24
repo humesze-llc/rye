@@ -88,17 +88,17 @@ impl Polytope {
         Self { vertices, faces }
     }
 
-    /// Index of the face with the smallest distance from origin.
-    fn closest_face(&self) -> usize {
-        let mut best = 0;
-        let mut best_d = self.faces[0].distance;
-        for (idx, f) in self.faces.iter().enumerate().skip(1) {
-            if f.distance < best_d {
-                best_d = f.distance;
-                best = idx;
-            }
-        }
-        best
+    /// Index of the face with the smallest distance from origin, or
+    /// `None` if the polytope has no faces (should not happen in a
+    /// well-formed expansion, but a degenerate support sequence can
+    /// remove every face without producing any stitch replacements).
+    fn closest_face(&self) -> Option<usize> {
+        let (idx, _) = self
+            .faces
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.distance.total_cmp(&b.1.distance))?;
+        Some(idx)
     }
 
     /// Add `support` to the polytope: remove all faces whose outward
@@ -252,7 +252,10 @@ pub fn epa<A: SupportFn, B: SupportFn>(
     let mut polytope = Polytope::from_tetra(initial_simplex);
 
     for _ in 0..EPA_MAX_ITERATIONS {
-        let face_idx = polytope.closest_face();
+        // If expansion has collapsed the polytope (no faces), we've
+        // left the domain where EPA can give a meaningful answer.
+        // Bail cleanly rather than panicking on the empty slice.
+        let face_idx = polytope.closest_face()?;
         let face = polytope.faces[face_idx];
 
         let support = minkowski_support(a, b, face.normal);
@@ -272,7 +275,7 @@ pub fn epa<A: SupportFn, B: SupportFn>(
 
     // Iteration cap — return the current best estimate rather than
     // failing outright. Happens only for nearly-degenerate inputs.
-    let face_idx = polytope.closest_face();
+    let face_idx = polytope.closest_face()?;
     contact_from_face(&polytope, polytope.faces[face_idx])
 }
 

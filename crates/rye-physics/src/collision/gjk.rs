@@ -140,18 +140,25 @@ pub fn gjk_intersect<A: SupportFn, B: SupportFn>(a: &A, b: &B, initial_direction
             return GjkResult::Intersecting { simplex };
         }
         if new_dir.length_squared() < GJK_EPS {
-            // Degenerate: origin sits on a boundary face / edge.
-            // Treat as intersection (boundary touch).
-            return GjkResult::Intersecting { simplex };
+            // Degenerate: origin sits on a boundary face / edge, or
+            // the simplex collapsed. Only return Intersecting if we
+            // have a full 4-point tetrahedron — EPA can't operate on
+            // anything less. Otherwise report Separated; missing a
+            // grazing touch is much safer than crashing EPA with a
+            // degenerate simplex.
+            if n >= 4 {
+                return GjkResult::Intersecting { simplex };
+            }
+            return GjkResult::Separated;
         }
         dir = new_dir;
     }
 
-    // Iteration cap. In practice GJK converges in <10 for normal
-    // shapes. Hitting the cap usually means numerical thrashing near
-    // a tangent boundary — treat as intersection (safer than missing
-    // a contact).
-    GjkResult::Intersecting { simplex }
+    // Iteration cap hit without convergence. This is almost always
+    // numerical thrashing at a tangent boundary; the simplex probably
+    // doesn't genuinely enclose the origin. Report Separated — better
+    // to lose a marginal contact than to feed EPA a bad tetrahedron.
+    GjkResult::Separated
 }
 
 /// Voronoi-region simplex logic. Reduces the simplex to the feature

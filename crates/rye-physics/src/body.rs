@@ -57,12 +57,7 @@ impl<S: PhysicsSpace> RigidBody<S> {
     }
 
     /// Static body: infinite mass, zero velocity, immovable.
-    pub fn fixed(
-        position: S::Point,
-        collider: Collider,
-        inertia: S::Inertia,
-        space: &S,
-    ) -> Self
+    pub fn fixed(position: S::Point, collider: Collider, inertia: S::Inertia, space: &S) -> Self
     where
         S::Vector: Default,
     {

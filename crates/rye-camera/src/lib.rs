@@ -125,7 +125,10 @@ pub struct FirstPersonCamera {
 
 impl Default for FirstPersonCamera {
     fn default() -> Self {
-        Self { yaw: 0.0, pitch: 0.0 }
+        Self {
+            yaw: 0.0,
+            pitch: 0.0,
+        }
     }
 }
 
@@ -173,7 +176,10 @@ mod tests {
     use glam::Vec2;
 
     fn assert_close(a: f32, b: f32) {
-        assert!((a - b).abs() <= 1e-5, "expected {a} to be within 1e-5 of {b}");
+        assert!(
+            (a - b).abs() <= 1e-5,
+            "expected {a} to be within 1e-5 of {b}"
+        );
     }
 
     #[test]

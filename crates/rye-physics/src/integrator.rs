@@ -32,12 +32,7 @@ pub trait PhysicsSpace: Space {
 
     /// Integrate orientation by angular velocity over a timestep.
     /// Returns the new orientation.
-    fn integrate_orientation(
-        &self,
-        iso: Self::Iso,
-        omega: Self::AngVel,
-        dt: f32,
-    ) -> Self::Iso;
+    fn integrate_orientation(&self, iso: Self::Iso, omega: Self::AngVel, dt: f32) -> Self::Iso;
 
     /// Apply the inverse inertia to a torque-bivector. Used by the
     /// solver for `ω ← ω + I⁻¹τ dt`.

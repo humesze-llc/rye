@@ -40,9 +40,9 @@ use winit::{
 #[path = "../capture.rs"]
 mod capture;
 
+use capture::FrameCapture;
 use rye_camera::OrbitCamera;
 use rye_input::InputState;
-use capture::FrameCapture;
 
 fn shader_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/geodesic_spheres")

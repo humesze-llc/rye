@@ -21,8 +21,7 @@ use crate::response::Contact;
 /// A narrowphase collision function. Returns `Some(contact)` if bodies
 /// `a` and `b` overlap, `None` otherwise. Always called with `a.kind()`
 /// matching the key's first component.
-pub type NarrowphaseFn<S> =
-    fn(a: &RigidBody<S>, b: &RigidBody<S>, space: &S) -> Option<Contact<S>>;
+pub type NarrowphaseFn<S> = fn(a: &RigidBody<S>, b: &RigidBody<S>, space: &S) -> Option<Contact<S>>;
 
 /// Registry of narrowphase functions, keyed by the collider kinds of
 /// both bodies.
@@ -46,23 +45,13 @@ impl<S: PhysicsSpace> Narrowphase<S> {
     /// Register a narrowphase function for a specific collider pair.
     /// Registering a new pair is additive; registering over an existing
     /// pair replaces it.
-    pub fn register(
-        &mut self,
-        a: ColliderKind,
-        b: ColliderKind,
-        f: NarrowphaseFn<S>,
-    ) {
+    pub fn register(&mut self, a: ColliderKind, b: ColliderKind, f: NarrowphaseFn<S>) {
         self.dispatch.insert((a, b), f);
     }
 
     /// Look up and call the narrowphase function for this pair. Returns
     /// `None` if no function is registered.
-    pub fn test(
-        &self,
-        a: &RigidBody<S>,
-        b: &RigidBody<S>,
-        space: &S,
-    ) -> Option<Contact<S>>
+    pub fn test(&self, a: &RigidBody<S>, b: &RigidBody<S>, space: &S) -> Option<Contact<S>>
     where
         S::Vector: std::ops::Mul<f32, Output = S::Vector>,
     {

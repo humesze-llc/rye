@@ -41,9 +41,9 @@ use winit::{
 #[path = "../capture.rs"]
 mod capture;
 
+use capture::FrameCapture;
 use rye_camera::OrbitCamera;
 use rye_input::InputState;
-use capture::FrameCapture;
 
 // BALL_SCALE is baked into lattice.wgsl as a constant; this comment documents
 // the value so main.rs and the shader stay in sync. Camera orbit distance ×

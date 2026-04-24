@@ -76,7 +76,10 @@ mod tests {
         let mut player: PlayerState<EuclideanR3> = PlayerState::new(Vec3::ZERO);
         // yaw=0 → forward = −Z
         player.advance(
-            &FrameInput { move_forward: 1.0, ..FrameInput::default() },
+            &FrameInput {
+                move_forward: 1.0,
+                ..FrameInput::default()
+            },
             &EuclideanR3,
             1.0,
         );
@@ -96,7 +99,10 @@ mod tests {
     fn advance_look_updates_yaw() {
         let mut player: PlayerState<EuclideanR3> = PlayerState::new(Vec3::ZERO);
         player.advance_look(
-            &FrameInput { mouse_delta: Vec2::new(100.0, 0.0), ..FrameInput::default() },
+            &FrameInput {
+                mouse_delta: Vec2::new(100.0, 0.0),
+                ..FrameInput::default()
+            },
             0.002,
         );
         assert_close(player.yaw, -0.2);

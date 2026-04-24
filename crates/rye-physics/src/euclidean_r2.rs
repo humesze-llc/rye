@@ -106,12 +106,7 @@ mod tests {
     #[test]
     fn falling_body_accelerates_under_gravity() {
         let mut world = World::new(EuclideanR2);
-        let id = world.push_body(sphere_body(
-            Vec2::new(0.0, 5.0),
-            Vec2::ZERO,
-            0.5,
-            1.0,
-        ));
+        let id = world.push_body(sphere_body(Vec2::new(0.0, 5.0), Vec2::ZERO, 0.5, 1.0));
         world.push_field(Box::new(Gravity::new(Vec2::new(0.0, -9.8))));
 
         // One tick of dt = 1/60.
@@ -172,8 +167,18 @@ mod tests {
         let mut world = World::new(EuclideanR2);
         register_default_narrowphase(&mut world.narrowphase);
 
-        world.push_body(sphere_body(Vec2::new(-1.0, 0.0), Vec2::new(2.0, 0.0), 0.5, 1.0));
-        world.push_body(sphere_body(Vec2::new(1.0, 0.0), Vec2::new(-2.0, 0.0), 0.5, 1.0));
+        world.push_body(sphere_body(
+            Vec2::new(-1.0, 0.0),
+            Vec2::new(2.0, 0.0),
+            0.5,
+            1.0,
+        ));
+        world.push_body(sphere_body(
+            Vec2::new(1.0, 0.0),
+            Vec2::new(-2.0, 0.0),
+            0.5,
+            1.0,
+        ));
 
         // Step a few times so they meet.
         for _ in 0..30 {
@@ -182,7 +187,13 @@ mod tests {
 
         // Velocities should have their sign reversed in the x direction
         // for an elastic-ish bounce.
-        assert!(world.bodies[0].velocity.x < 0.0, "body 0 should bounce back");
-        assert!(world.bodies[1].velocity.x > 0.0, "body 1 should bounce back");
+        assert!(
+            world.bodies[0].velocity.x < 0.0,
+            "body 0 should bounce back"
+        );
+        assert!(
+            world.bodies[1].velocity.x > 0.0,
+            "body 1 should bounce back"
+        );
     }
 }

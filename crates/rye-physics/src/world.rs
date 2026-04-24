@@ -87,9 +87,7 @@ impl<S: PhysicsSpace> World<S> {
 
     fn apply_forces(&mut self, dt: f32)
     where
-        S::Vector: Copy
-            + std::ops::Add<Output = S::Vector>
-            + Mul<f32, Output = S::Vector>,
+        S::Vector: Copy + std::ops::Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
     {
         for body in &mut self.bodies {
             if body.inv_mass == 0.0 {

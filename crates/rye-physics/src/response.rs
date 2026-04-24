@@ -33,11 +33,8 @@ pub struct Contact<S: PhysicsSpace> {
 ///
 /// where `v_rel = v_b − v_a` is relative velocity in A's frame. The
 /// impulse is then added to B's velocity and subtracted from A's.
-pub fn apply_impulse<S>(
-    a: &mut RigidBody<S>,
-    b: &mut RigidBody<S>,
-    contact: &Contact<S>,
-) where
+pub fn apply_impulse<S>(a: &mut RigidBody<S>, b: &mut RigidBody<S>, contact: &Contact<S>)
+where
     S: PhysicsSpace,
     S::Vector: Copy
         + std::ops::Add<Output = S::Vector>

@@ -113,11 +113,7 @@ impl InputState {
     }
 }
 
-fn axis(
-    held: &std::collections::HashSet<KeyCode>,
-    pos: KeyCode,
-    neg: KeyCode,
-) -> f32 {
+fn axis(held: &std::collections::HashSet<KeyCode>, pos: KeyCode, neg: KeyCode) -> f32 {
     let p = held.contains(&pos) as u8 as f32;
     let n = held.contains(&neg) as u8 as f32;
     p - n
@@ -128,7 +124,10 @@ mod tests {
     use super::*;
 
     fn assert_close(a: f32, b: f32) {
-        assert!((a - b).abs() <= 1e-5, "expected {a} to be within 1e-5 of {b}");
+        assert!(
+            (a - b).abs() <= 1e-5,
+            "expected {a} to be within 1e-5 of {b}"
+        );
     }
 
     #[test]

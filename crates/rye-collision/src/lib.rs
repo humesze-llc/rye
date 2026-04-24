@@ -40,11 +40,7 @@ where
     // log gives the tangent vector from a → b in the tangent space at a.center.
     let log_vec = space.log(a.center, b.center);
     let len = log_vec.length();
-    let normal = if len > 1e-8 {
-        log_vec / len
-    } else {
-        Vec3::Y
-    };
+    let normal = if len > 1e-8 { log_vec / len } else { Vec3::Y };
 
     Some(Contact {
         normal,

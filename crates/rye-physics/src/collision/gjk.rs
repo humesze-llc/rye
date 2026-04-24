@@ -74,7 +74,11 @@ pub struct MinkowskiPoint {
     pub sb: Vec3,
 }
 
-pub fn minkowski_support<A: SupportFn, B: SupportFn>(a: &A, b: &B, direction: Vec3) -> MinkowskiPoint {
+pub fn minkowski_support<A: SupportFn, B: SupportFn>(
+    a: &A,
+    b: &B,
+    direction: Vec3,
+) -> MinkowskiPoint {
     let sa = a.support(direction);
     let sb = b.support(-direction);
     MinkowskiPoint {
@@ -90,9 +94,7 @@ pub fn minkowski_support<A: SupportFn, B: SupportFn>(a: &A, b: &B, direction: Ve
 /// point queries but currently unused downstream).
 #[derive(Debug)]
 pub enum GjkResult {
-    Intersecting {
-        simplex: [MinkowskiPoint; 4],
-    },
+    Intersecting { simplex: [MinkowskiPoint; 4] },
     Separated,
 }
 
@@ -102,7 +104,11 @@ const GJK_EPS: f32 = 1e-6;
 /// Test whether shapes `a` and `b` overlap. Returns the final enclosing
 /// tetrahedron simplex on intersection for EPA, or `Separated` when a
 /// separating direction is found.
-pub fn gjk_intersect<A: SupportFn, B: SupportFn>(a: &A, b: &B, initial_direction: Vec3) -> GjkResult {
+pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
+    a: &A,
+    b: &B,
+    initial_direction: Vec3,
+) -> GjkResult {
     // First support point, seeded with the caller's initial direction
     // (typically `b.center − a.center`). If that vector is zero we fall
     // back to `+x`.
@@ -422,9 +428,9 @@ mod tests {
     #[test]
     fn sphere_vs_sphere_matches_distance_test() {
         for &(ax, bx, overlap) in &[
-            (0.0, 3.0, false),  // 3 apart, radii 1 each → gap of 1
-            (0.0, 1.5, true),   // 1.5 apart, radii 1 each → overlap
-            (0.0, 2.0, true),   // exactly touching
+            (0.0, 3.0, false), // 3 apart, radii 1 each → gap of 1
+            (0.0, 1.5, true),  // 1.5 apart, radii 1 each → overlap
+            (0.0, 2.0, true),  // exactly touching
         ] {
             let a = Sphere {
                 center: Vec3::new(ax, 0.0, 0.0),
@@ -497,7 +503,9 @@ mod tests {
             .iter()
             .map(|&v| rot * v + Vec3::new(2.2, 0.0, 0.0))
             .collect();
-        let b_close = ConvexHull { vertices: &vb_close };
+        let b_close = ConvexHull {
+            vertices: &vb_close,
+        };
         assert!(matches!(
             gjk_intersect(&a, &b_close, Vec3::new(2.2, 0.0, 0.0)),
             GjkResult::Intersecting { .. }

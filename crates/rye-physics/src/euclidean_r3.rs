@@ -148,8 +148,8 @@ impl PhysicsSpace for EuclideanR3 {
         let jn = -(1.0 + contact.restitution) * v_rel_n / denom_n;
         let n_impulse = contact.normal * jn;
 
-        a.velocity = a.velocity - n_impulse * a.inv_mass;
-        b.velocity = b.velocity + n_impulse * b.inv_mass;
+        a.velocity -= n_impulse * a.inv_mass;
+        b.velocity += n_impulse * b.inv_mass;
         // ω_a += (r_a × −n_impulse) / I_a = −(ra ∧ n·jn) · inv_i_a
         a.angular_velocity = a.angular_velocity + ra_wedge_n * (-jn * inv_i_a);
         b.angular_velocity = b.angular_velocity + rb_wedge_n * (jn * inv_i_b);
@@ -172,8 +172,8 @@ impl PhysicsSpace for EuclideanR3 {
         let jt = jt_unclamped.min(jn.abs() * FRICTION_R3);
         let t_impulse = tangent * jt;
 
-        a.velocity = a.velocity + t_impulse * a.inv_mass;
-        b.velocity = b.velocity - t_impulse * b.inv_mass;
+        a.velocity += t_impulse * a.inv_mass;
+        b.velocity -= t_impulse * b.inv_mass;
         a.angular_velocity = a.angular_velocity + ra_wedge_t * (jt * inv_i_a);
         b.angular_velocity = b.angular_velocity + rb_wedge_t * (-jt * inv_i_b);
     }

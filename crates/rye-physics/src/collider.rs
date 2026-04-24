@@ -46,7 +46,6 @@ pub enum Collider {
     /// and `orientation` transform them to world space per query.
     /// Winding and face structure aren't required for GJK or EPA.
     ConvexPolytope3D { vertices: Vec<Vec3> },
-
     // Future:
     // Horosphere { point_at_inf: Vec3, offset: f32 },    // H³-only
     // ConvexPolytope4D { vertices: Vec<Vec4> },          // for Simplex 4D

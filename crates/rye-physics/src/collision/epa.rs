@@ -85,12 +85,7 @@ impl Polytope {
         // that each face's cross-product normal points away from the
         // opposite vertex.
         let mut faces = Vec::with_capacity(4);
-        for &(i, j, k, l) in &[
-            (0, 1, 2, 3),
-            (0, 3, 1, 2),
-            (0, 2, 3, 1),
-            (1, 3, 2, 0),
-        ] {
+        for &(i, j, k, l) in &[(0, 1, 2, 3), (0, 3, 1, 2), (0, 2, 3, 1), (1, 3, 2, 0)] {
             faces.push(build_face_vs_point(&vertices, i, j, k, vertices[l].point));
         }
         Self {
@@ -344,7 +339,10 @@ mod tests {
     }
 
     fn assert_close(a: f32, b: f32, tol: f32) {
-        assert!((a - b).abs() <= tol, "expected {a} close to {b} (tol {tol})");
+        assert!(
+            (a - b).abs() <= tol,
+            "expected {a} close to {b} (tol {tol})"
+        );
     }
 
     #[test]
@@ -372,8 +370,16 @@ mod tests {
         let b = ConvexHull { vertices: &vb };
 
         let info = run(&a, &b, Vec3::new(1.5, 0.0, 0.0));
-        assert!(info.normal.dot(Vec3::X).abs() > 0.99, "normal: {:?}", info.normal);
-        assert!(info.normal.dot(Vec3::X) > 0.0, "normal not A→B: {:?}", info.normal);
+        assert!(
+            info.normal.dot(Vec3::X).abs() > 0.99,
+            "normal: {:?}",
+            info.normal
+        );
+        assert!(
+            info.normal.dot(Vec3::X) > 0.0,
+            "normal not A→B: {:?}",
+            info.normal
+        );
         assert_close(info.penetration, 0.5, 1e-3);
     }
 

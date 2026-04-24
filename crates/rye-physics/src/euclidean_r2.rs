@@ -94,8 +94,8 @@ impl PhysicsSpace for EuclideanR2 {
         let jn = -(1.0 + contact.restitution) * v_rel_n / denom_n;
         let n_impulse = contact.normal * jn;
 
-        a.velocity = a.velocity - n_impulse * a.inv_mass;
-        b.velocity = b.velocity + n_impulse * b.inv_mass;
+        a.velocity -= n_impulse * a.inv_mass;
+        b.velocity += n_impulse * b.inv_mass;
         a.angular_velocity = Bivector2(a.angular_velocity.0 - ra_cross_n * jn * inv_i_a);
         b.angular_velocity = Bivector2(b.angular_velocity.0 + rb_cross_n * jn * inv_i_b);
 
@@ -122,8 +122,8 @@ impl PhysicsSpace for EuclideanR2 {
 
         // Apply in opposite directions: the contact drags `a` along the
         // relative-motion direction and brakes `b` against it.
-        a.velocity = a.velocity + t_impulse * a.inv_mass;
-        b.velocity = b.velocity - t_impulse * b.inv_mass;
+        a.velocity += t_impulse * a.inv_mass;
+        b.velocity -= t_impulse * b.inv_mass;
         a.angular_velocity = Bivector2(a.angular_velocity.0 + ra_cross_t * jt * inv_i_a);
         b.angular_velocity = Bivector2(b.angular_velocity.0 - rb_cross_t * jt * inv_i_b);
     }

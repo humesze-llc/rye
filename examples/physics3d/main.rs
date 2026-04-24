@@ -16,9 +16,7 @@ use rye_camera::OrbitCamera;
 use rye_input::InputState;
 use rye_math::EuclideanR3;
 use rye_physics::{
-    euclidean_r3::{
-        box_body, halfspace_body_r3, register_default_narrowphase, sphere_body_r3,
-    },
+    euclidean_r3::{box_body, halfspace_body_r3, register_default_narrowphase, sphere_body_r3},
     field::Gravity,
     Collider, World,
 };
@@ -107,12 +105,16 @@ fn build_world() -> World<EuclideanR3> {
         if i % 2 == 0 {
             let radius = rng.range(0.25, 0.40);
             world.push_body(sphere_body_r3(Vec3::new(x, y, z), vel, radius, 1.0));
-        } 
-        else {
+        } else {
             let hx = rng.range(0.22, 0.36);
             let hy = rng.range(0.22, 0.36);
             let hz = rng.range(0.22, 0.36);
-            world.push_body(box_body(Vec3::new(x, y, z), vel, Vec3::new(hx, hy, hz), 1.0));
+            world.push_body(box_body(
+                Vec3::new(x, y, z),
+                vel,
+                Vec3::new(hx, hy, hz),
+                1.0,
+            ));
         }
     }
 
@@ -262,8 +264,15 @@ impl App {
                         "<non-string panic payload>".to_string()
                     };
                     eprintln!("PHYSICS STEP PANIC CAUGHT: {msg}");
-                    eprintln!("  sim_time={:.3}s  dynamic_bodies={}", self.sim_time,
-                        self.world.bodies.iter().filter(|b| b.inv_mass > 0.0).count());
+                    eprintln!(
+                        "  sim_time={:.3}s  dynamic_bodies={}",
+                        self.sim_time,
+                        self.world
+                            .bodies
+                            .iter()
+                            .filter(|b| b.inv_mass > 0.0)
+                            .count()
+                    );
                     // Resume unwinding so the app-level hook prints the
                     // full backtrace.
                     std::panic::resume_unwind(payload);

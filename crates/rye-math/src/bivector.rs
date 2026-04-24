@@ -607,7 +607,7 @@ impl Bivector for Bivector4 {
 /// scalar, six bivector coefficients, and a pseudoscalar. Unit-norm
 /// by construction when produced by [`Bivector4::exp`] or by composing
 /// rotors.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Rotor4 {
     pub s: f32,
     pub xy: f32,

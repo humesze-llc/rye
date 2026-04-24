@@ -432,6 +432,34 @@ impl Bivector4 {
         2.0 * (self.xy * self.zw - self.xz * self.yw + self.xw * self.yz)
     }
 
+    /// Wedge product of two 4-vectors: `u ∧ v` as a bivector. Each
+    /// basis plane coefficient is the 2×2 determinant of the two
+    /// components it projects onto, e.g. `xy = u.x·v.y − u.y·v.x`.
+    /// Used by physics to build the torque bivector `r ∧ f`.
+    pub fn wedge(u: Vec4, v: Vec4) -> Self {
+        Self {
+            xy: u.x * v.y - u.y * v.x,
+            xz: u.x * v.z - u.z * v.x,
+            xw: u.x * v.w - u.w * v.x,
+            yz: u.y * v.z - u.z * v.y,
+            yw: u.y * v.w - u.w * v.y,
+            zw: u.z * v.w - u.w * v.z,
+        }
+    }
+
+    /// The 1-vector part of `self · v` — the "angular velocity
+    /// contribution at offset `v`" in rigid-body kinematics. Parallels
+    /// `ω × r` in 3D; in 4D the bivector contracted with a vector
+    /// gives a vector directly.
+    pub fn contract_vec(self, v: Vec4) -> Vec4 {
+        Vec4::new(
+            self.xy * v.y + self.xz * v.z + self.xw * v.w,
+            -self.xy * v.x + self.yz * v.z + self.yw * v.w,
+            -self.xz * v.x - self.yz * v.y + self.zw * v.w,
+            -self.xw * v.x - self.yw * v.y - self.zw * v.z,
+        )
+    }
+
     /// Hodge dual `B* = B · I`. Swaps each plane with its orthogonal
     /// complement (with signs from reordering basis vectors):
     /// `xy ↔ −zw`, `xz ↔ +yw`, `xw ↔ −yz` (and the reverse swaps for

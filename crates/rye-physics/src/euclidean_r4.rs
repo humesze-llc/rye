@@ -1,0 +1,325 @@
+//! `impl PhysicsSpace for EuclideanR4` — 4D Euclidean rigid-body physics.
+//!
+//! Angular velocity is a [`Bivector4`] (six rotation-plane components);
+//! inertia is the scalar moment for isotropic bodies, same pragmatic
+//! simplification made in 3D. A full 4D inertia tensor is a 6×6
+//! bivector-to-bivector map — it doesn't land until an actual anisotropic
+//! 4D body demands it.
+//!
+//! Orientation integration uses [`Rotor4`] directly. The Clifford-rotor
+//! multiplication convention is "left operand applied first" (opposite to
+//! `glam::Quat`'s "right first"), so the composed orientation after a
+//! timestep is `rotation_new = rotation_current * delta_rotor`.
+//!
+//! ## Scope
+//!
+//! First cut is **sphere-sphere only** — enough to prove the integration
+//! loop and collision resolution work in 4D. Polytope narrowphase (GJK
+//! already works generically; EPA needs a 4D face-normal reconstruction)
+//! lands in a follow-up commit.
+
+use glam::Vec4;
+
+use rye_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat};
+
+use crate::body::RigidBody;
+use crate::collider::{Collider, ColliderKind};
+use crate::integrator::PhysicsSpace;
+use crate::narrowphase::Narrowphase;
+use crate::response::Contact;
+
+/// Inverse isotropic moment of inertia, treating static or zero-inertia
+/// bodies as infinite (returns 0).
+fn inv_inertia(body: &RigidBody<EuclideanR4>) -> f32 {
+    if body.inv_mass > 0.0 && body.inertia > 0.0 {
+        1.0 / body.inertia
+    } else {
+        0.0
+    }
+}
+
+impl PhysicsSpace for EuclideanR4 {
+    type AngVel = Bivector4;
+    /// Scalar isotropic moment of inertia. Suitable for spheres and
+    /// the regular 4D polytopes (5-cell, tesseract, 16-cell, 24-cell)
+    /// about their centroids.
+    type Inertia = f32;
+
+    fn integrate_orientation(&self, iso: Iso4Flat, omega: Bivector4, dt: f32) -> Iso4Flat {
+        // Guard against NaN/infinite angular velocity leaking into
+        // the orientation — same defense in depth as the 3D path.
+        if !(omega.xy.is_finite()
+            && omega.xz.is_finite()
+            && omega.xw.is_finite()
+            && omega.yz.is_finite()
+            && omega.yw.is_finite()
+            && omega.zw.is_finite())
+        {
+            return iso;
+        }
+        let delta = (omega * dt).exp();
+        // Rotor4 multiplication is left-first: `A · B` applies A then
+        // B. To apply `iso_current` then `delta`, compose as
+        // `iso.rotation * delta`. Normalize to fight f32 drift off
+        // the unit manifold over long integrator runs.
+        let composed = iso.rotation * delta;
+        Iso4Flat {
+            rotation: composed.normalize(),
+            translation: iso.translation,
+        }
+    }
+
+    fn apply_inv_inertia(&self, inertia: f32, torque: Bivector4) -> Bivector4 {
+        if inertia > 0.0 {
+            torque * (1.0 / inertia)
+        } else {
+            Bivector4::ZERO
+        }
+    }
+
+    fn velocity_at_point(&self, body: &RigidBody<EuclideanR4>, p: Vec4) -> Vec4 {
+        // `v(r) = v_linear + ω⌋r` where `ω⌋r` is the 1-vector part of
+        // the bivector-vector contraction — the 4D analogue of `ω × r`.
+        let r = p - body.position;
+        body.velocity + body.angular_velocity.contract_vec(r)
+    }
+
+    fn effective_mass_inv(
+        &self,
+        a: &RigidBody<EuclideanR4>,
+        b: &RigidBody<EuclideanR4>,
+        contact_point: Vec4,
+        direction: Vec4,
+    ) -> f32 {
+        let ra = contact_point - a.position;
+        let rb = contact_point - b.position;
+        let ra_wedge = Bivector4::wedge(ra, direction);
+        let rb_wedge = Bivector4::wedge(rb, direction);
+        a.inv_mass
+            + b.inv_mass
+            + ra_wedge.magnitude_squared() * inv_inertia(a)
+            + rb_wedge.magnitude_squared() * inv_inertia(b)
+    }
+
+    fn apply_contact_impulse(
+        &self,
+        a: &mut RigidBody<EuclideanR4>,
+        b: &mut RigidBody<EuclideanR4>,
+        contact_point: Vec4,
+        direction: Vec4,
+        magnitude: f32,
+    ) {
+        let ra = contact_point - a.position;
+        let rb = contact_point - b.position;
+        let lin = direction * magnitude;
+        a.velocity -= lin * a.inv_mass;
+        b.velocity += lin * b.inv_mass;
+
+        // τ_a = r_a ∧ (−lin); τ_b = r_b ∧ (+lin). Apply via ω += I⁻¹·τ.
+        let inv_i_a = inv_inertia(a);
+        let inv_i_b = inv_inertia(b);
+        a.angular_velocity = a.angular_velocity + Bivector4::wedge(ra, lin) * (-inv_i_a);
+        b.angular_velocity = b.angular_velocity + Bivector4::wedge(rb, lin) * inv_i_b;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Narrowphase: sphere-sphere only at first cut. Polytope GJK+EPA for 4D
+// lands in the next commit.
+// ---------------------------------------------------------------------------
+
+fn sphere_sphere_r4(
+    a: &RigidBody<EuclideanR4>,
+    b: &RigidBody<EuclideanR4>,
+    space: &EuclideanR4,
+) -> Option<Contact<EuclideanR4>> {
+    let Collider::Sphere { radius: ra } = a.collider else {
+        return None;
+    };
+    let Collider::Sphere { radius: rb } = b.collider else {
+        return None;
+    };
+
+    use rye_math::Space;
+    let d = space.distance(a.position, b.position);
+    let combined = ra + rb;
+    if d >= combined {
+        return None;
+    }
+    let log = space.log(a.position, b.position);
+    let len = log.length();
+    let normal = if len > 1e-8 { log / len } else { Vec4::Y };
+
+    let surface_a = a.position + normal * ra;
+    let surface_b = b.position - normal * rb;
+    let point = (surface_a + surface_b) * 0.5;
+
+    Some(Contact {
+        normal,
+        point,
+        penetration: combined - d,
+        restitution: (a.restitution + b.restitution) * 0.5,
+    })
+}
+
+pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR4>) {
+    np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r4);
+}
+
+// ---------------------------------------------------------------------------
+// Convenience constructors.
+// ---------------------------------------------------------------------------
+
+/// Solid-ball moment of inertia in 4D: `I = (2/n)·m·r² = m·r² / 2`
+/// for a uniform 4-ball about its center. Same form as 3D's
+/// `(2/5)·m·r²` but with the 4D scaling; for prototypes this is
+/// "isotropic inertia of the right order of magnitude" and suffices.
+pub fn ball4_inertia(mass: f32, radius: f32) -> f32 {
+    0.5 * mass * radius * radius
+}
+
+/// Dynamic sphere body in R⁴.
+pub fn sphere_body_r4(
+    position: Vec4,
+    velocity: Vec4,
+    radius: f32,
+    mass: f32,
+) -> RigidBody<EuclideanR4> {
+    RigidBody::new(
+        position,
+        velocity,
+        Collider::Sphere { radius },
+        mass,
+        ball4_inertia(mass, radius),
+        &EuclideanR4,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::field::Gravity;
+    use crate::world::World;
+
+    fn assert_close(a: f32, b: f32, tol: f32) {
+        assert!(
+            (a - b).abs() <= tol,
+            "expected {a} close to {b} (tol {tol})"
+        );
+    }
+
+    #[test]
+    fn falling_sphere_accelerates_in_r4() {
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+        // Gravity along −y; other dimensions inert.
+        world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
+
+        let id = world.push_body(sphere_body_r4(
+            Vec4::new(0.0, 5.0, 0.0, 0.0),
+            Vec4::ZERO,
+            0.5,
+            1.0,
+        ));
+        world.step(1.0 / 60.0);
+        let body = &world.bodies[id];
+        assert!(body.velocity.y < -0.1 && body.velocity.y > -0.2);
+        // No motion in x / z / w without forces there.
+        assert_close(body.velocity.x, 0.0, 1e-6);
+        assert_close(body.velocity.z, 0.0, 1e-6);
+        assert_close(body.velocity.w, 0.0, 1e-6);
+    }
+
+    #[test]
+    fn head_on_sphere_collision_reverses_velocity() {
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+
+        // Two spheres on the x-axis closing at 4 m/s combined.
+        world.push_body(sphere_body_r4(
+            Vec4::new(-1.0, 0.0, 0.0, 0.0),
+            Vec4::new(2.0, 0.0, 0.0, 0.0),
+            0.5,
+            1.0,
+        ));
+        world.push_body(sphere_body_r4(
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Vec4::new(-2.0, 0.0, 0.0, 0.0),
+            0.5,
+            1.0,
+        ));
+
+        for _ in 0..120 {
+            world.step(1.0 / 120.0);
+        }
+        let a = &world.bodies[0];
+        let b = &world.bodies[1];
+        assert!(
+            a.velocity.x < 0.0,
+            "body 0 should bounce back: v.x = {}",
+            a.velocity.x
+        );
+        assert!(
+            b.velocity.x > 0.0,
+            "body 1 should bounce back: v.x = {}",
+            b.velocity.x
+        );
+        // Nothing should kick in the y/z/w directions.
+        assert_close(a.velocity.y, 0.0, 1e-4);
+        assert_close(a.velocity.z, 0.0, 1e-4);
+        assert_close(a.velocity.w, 0.0, 1e-4);
+    }
+
+    /// Off-plane contact in 4D: two spheres meeting with a relative
+    /// position vector that has components in all four dimensions
+    /// should produce a normal-only response along the line of centers
+    /// (no tangential spin develops for sphere-sphere hits).
+    #[test]
+    fn sphere_sphere_off_plane_contact_resolves_along_line_of_centers() {
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+        // Place two spheres offset in all four dimensions, closing.
+        let a_pos = Vec4::new(-0.8, -0.4, 0.3, 0.2);
+        let b_pos = Vec4::new(0.8, 0.4, -0.3, -0.2);
+        let a = world.push_body(sphere_body_r4(
+            a_pos,
+            (b_pos - a_pos).normalize() * 2.0,
+            0.5,
+            1.0,
+        ));
+        let b = world.push_body(sphere_body_r4(
+            b_pos,
+            (a_pos - b_pos).normalize() * 2.0,
+            0.5,
+            1.0,
+        ));
+        for _ in 0..120 {
+            world.step(1.0 / 120.0);
+        }
+        // After the collision, relative velocity along the original
+        // line-of-centers must have reversed sign.
+        let rel = world.bodies[b].velocity - world.bodies[a].velocity;
+        let axis = (b_pos - a_pos).normalize();
+        let v_along = rel.dot(axis);
+        assert!(
+            v_along > 0.0,
+            "relative velocity should now be separating: {v_along}"
+        );
+    }
+
+    #[test]
+    fn orientation_integration_preserves_unit_rotor() {
+        let space = EuclideanR4;
+        let mut iso = Iso4Flat::IDENTITY;
+        // Compound angular velocity: rotation in xy and zw planes.
+        let omega = Bivector4::new(0.2, 0.0, 0.0, 0.0, 0.0, 0.15);
+        for _ in 0..1000 {
+            iso = space.integrate_orientation(iso, omega, 1.0 / 60.0);
+        }
+        let n = iso.rotation.norm_squared();
+        assert!(
+            (n - 1.0).abs() < 1e-3,
+            "rotor drifted off the unit manifold: |R|² = {n}"
+        );
+    }
+}

@@ -32,8 +32,9 @@ struct Body {
     /// Packed as f32 for WGSL std140 alignment convenience.
     /// 0 = sphere.
     kind: f32,
-    // 12 bytes padding to reach 32-byte stride.
-    _pad: vec3<f32>,
+    // Struct-align is 16 (vec3), size is 20, so WGSL implicitly pads
+    // the struct to 32 bytes. The Rust-side `GpuBody` carries explicit
+    // trailing padding to match that 32-byte stride.
 }
 
 @group(0) @binding(0) var<uniform> scene: Scene;

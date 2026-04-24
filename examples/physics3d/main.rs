@@ -63,6 +63,14 @@ struct GpuBody {
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct BodyBuffer([GpuBody; MAX_BODIES]);
 
+// Compile-time layout checks. WGSL uniform-buffer rules: `SceneUniforms`
+// must be 96 bytes (6 vec3+f32 slots = 64 bytes, then vec2+u32+u32 pair
+// = 16, then vec3+f32 = 16 → 96). `GpuBody` must be 32 bytes so the
+// `array<Body, 32>` stride matches between Rust and WGSL.
+const _: () = assert!(std::mem::size_of::<SceneUniforms>() == 96);
+const _: () = assert!(std::mem::size_of::<GpuBody>() == 32);
+const _: () = assert!(std::mem::size_of::<BodyBuffer>() == 32 * MAX_BODIES);
+
 struct Rng(u32);
 
 impl Rng {

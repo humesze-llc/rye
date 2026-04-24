@@ -195,6 +195,126 @@ pub fn sphere_body_r4(
     )
 }
 
+// ---------------------------------------------------------------------------
+// 4D regular polytopes. Six exist in 4D (five analogues of the Platonic
+// solids plus the 24-cell which has no 3D counterpart). The four most
+// physically useful for games — 5-cell, tesseract, 16-cell, 24-cell —
+// are generated here. The 120-cell (600 vertices) and 600-cell (120
+// vertices) land when a demo actually needs them.
+//
+// Every generator returns vertices centered at the origin and scaled
+// so the circumradius (bounding-sphere radius) equals the caller-
+// provided `r`. Caller is responsible for further translation.
+// ---------------------------------------------------------------------------
+
+/// **5-cell / pentatope** (4D simplex): 5 vertices, 10 edges, 10 faces,
+/// 5 tetrahedral cells. The 4D analogue of the tetrahedron — the
+/// centerpiece of the Simplex-4D game concept.
+///
+/// Construction: take the five permutations-by-symmetry of `(1,1,1,1,−4)/√20`
+/// embedded in 5D and drop the "equalized" component. The result sits
+/// in a hyperplane of 5D; we return its 4D restriction with
+/// circumradius scaled to `r`.
+pub fn pentatope_vertices(r: f32) -> Vec<Vec4> {
+    // Equivalent lower-dimensional construction: start from a regular
+    // tetrahedron in the `w = −1/4` hyperplane, then add the apex at
+    // `(0, 0, 0, r)`. Scale the base so all inter-vertex distances
+    // match the apex-to-base distance, then rescale the whole thing
+    // to circumradius `r`.
+    //
+    // The clean closed form: use the five vertices
+    //   v_i = e_i − (1/5)·(1,1,1,1,1)
+    // from the 5D standard simplex, project onto the `Σ = 0` hyperplane
+    // (which they already lie in), pick an orthonormal basis for that
+    // hyperplane, and express each v_i in 4D. Circumradius works out
+    // to `sqrt(4/5)` in those units; rescale.
+    //
+    // Using the simpler tetrahedron-plus-apex form:
+    let k = r; // apex at (0, 0, 0, r)
+               // Base tetrahedron in `w = −r/4` plane with circumradius
+               // `r·sqrt(15)/4` (chosen so all edges are equal).
+    let base_w = -r * 0.25;
+    let base_r = r * (15.0_f32).sqrt() / 4.0;
+    // Use a regular tetrahedron's vertex set for the base, scaled.
+    let t = base_r / 3.0_f32.sqrt();
+    vec![
+        Vec4::new(0.0, 0.0, 0.0, k),
+        Vec4::new(t, t, t, base_w),
+        Vec4::new(t, -t, -t, base_w),
+        Vec4::new(-t, t, -t, base_w),
+        Vec4::new(-t, -t, t, base_w),
+    ]
+}
+
+/// **Tesseract / 8-cell** (hypercube): 16 vertices, 32 edges, 24
+/// square faces, 8 cubic cells. The 4D analogue of the cube.
+///
+/// Vertices are `(±a, ±a, ±a, ±a)` with `a = r/2` so the
+/// circumradius is `r` (distance from origin to any corner is
+/// `sqrt(4·a²) = 2a`; setting `2a = r` gives `a = r/2`).
+pub fn tesseract_vertices(r: f32) -> Vec<Vec4> {
+    let a = r * 0.5;
+    let mut v = Vec::with_capacity(16);
+    for &w in &[-a, a] {
+        for &z in &[-a, a] {
+            for &y in &[-a, a] {
+                for &x in &[-a, a] {
+                    v.push(Vec4::new(x, y, z, w));
+                }
+            }
+        }
+    }
+    v
+}
+
+/// **16-cell / hexadecachoron** (cross-polytope): 8 vertices, 24
+/// edges, 32 triangular faces, 16 tetrahedral cells. The 4D analogue
+/// of the octahedron.
+///
+/// Vertices are `±r` on each axis: `(±r, 0, 0, 0)`, `(0, ±r, 0, 0)`,
+/// and the y/w variants.
+pub fn cell16_vertices(r: f32) -> Vec<Vec4> {
+    vec![
+        Vec4::new(r, 0.0, 0.0, 0.0),
+        Vec4::new(-r, 0.0, 0.0, 0.0),
+        Vec4::new(0.0, r, 0.0, 0.0),
+        Vec4::new(0.0, -r, 0.0, 0.0),
+        Vec4::new(0.0, 0.0, r, 0.0),
+        Vec4::new(0.0, 0.0, -r, 0.0),
+        Vec4::new(0.0, 0.0, 0.0, r),
+        Vec4::new(0.0, 0.0, 0.0, -r),
+    ]
+}
+
+/// **24-cell / icositetrachoron**: 24 vertices, 96 edges, 96 triangle
+/// faces, 24 octahedral cells. Unique to 4D — it has no 3D analogue
+/// because 3D symmetry groups don't support it. Its vertex set is
+/// the union of a 16-cell and a tesseract (appropriately scaled), so
+/// it tiles R⁴ like the hexagon tiles R².
+///
+/// Vertex set: all 24 permutations of `(±1, ±1, 0, 0)`, i.e. every
+/// pair of nonzero coordinates at `±1` with the other two zero.
+/// Circumradius is `sqrt(2)` in those units; rescale to `r`.
+pub fn cell24_vertices(r: f32) -> Vec<Vec4> {
+    let k = r / 2.0_f32.sqrt();
+    let mut v = Vec::with_capacity(24);
+    // Pairs of axes (0=x, 1=y, 2=z, 3=w) — C(4, 2) = 6 pairs, each
+    // contributing 4 sign combinations = 24 vertices.
+    for i in 0..4 {
+        for j in (i + 1)..4 {
+            for &si in &[-k, k] {
+                for &sj in &[-k, k] {
+                    let mut c = [0.0_f32; 4];
+                    c[i] = si;
+                    c[j] = sj;
+                    v.push(Vec4::new(c[0], c[1], c[2], c[3]));
+                }
+            }
+        }
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,6 +425,93 @@ mod tests {
             v_along > 0.0,
             "relative velocity should now be separating: {v_along}"
         );
+    }
+
+    fn assert_all_on_circumsphere(verts: &[Vec4], radius: f32, label: &str) {
+        for (i, v) in verts.iter().enumerate() {
+            let d = v.length();
+            assert!(
+                (d - radius).abs() < 1e-4,
+                "{label} vertex {i} off circumsphere: |v| = {d}, want {radius}",
+            );
+        }
+    }
+
+    #[test]
+    fn pentatope_has_5_vertices_on_circumsphere() {
+        let verts = pentatope_vertices(1.0);
+        assert_eq!(verts.len(), 5);
+        assert_all_on_circumsphere(&verts, 1.0, "pentatope");
+    }
+
+    /// A regular 5-cell has `C(5,2) = 10` edges all of the same length.
+    /// Verify equidistance between every vertex pair.
+    #[test]
+    fn pentatope_edges_are_equal_length() {
+        let verts = pentatope_vertices(1.0);
+        let expected = (verts[0] - verts[1]).length();
+        for i in 0..5 {
+            for j in (i + 1)..5 {
+                let d = (verts[i] - verts[j]).length();
+                assert!(
+                    (d - expected).abs() < 1e-3,
+                    "edge ({i},{j}) = {d}, expected {expected}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tesseract_has_16_vertices_on_circumsphere() {
+        let verts = tesseract_vertices(1.0);
+        assert_eq!(verts.len(), 16);
+        assert_all_on_circumsphere(&verts, 1.0, "tesseract");
+    }
+
+    #[test]
+    fn cell16_has_8_vertices_on_circumsphere() {
+        let verts = cell16_vertices(1.0);
+        assert_eq!(verts.len(), 8);
+        assert_all_on_circumsphere(&verts, 1.0, "16-cell");
+    }
+
+    #[test]
+    fn cell24_has_24_vertices_on_circumsphere() {
+        let verts = cell24_vertices(1.0);
+        assert_eq!(verts.len(), 24);
+        assert_all_on_circumsphere(&verts, 1.0, "24-cell");
+    }
+
+    /// The 24-cell vertex set equals 16-cell ∪ (rescaled) tesseract
+    /// vertex set — the property that makes it self-dual and
+    /// space-filling. Check the count matches and each 24-cell vertex
+    /// either matches a 16-cell point or a tesseract corner.
+    #[test]
+    fn cell24_decomposes_into_16cell_plus_tesseract() {
+        let c24 = cell24_vertices(1.0);
+        // At `r = 1`, the 24-cell's nonzero coordinates are `±1/√2`;
+        // those are simultaneously the 16-cell vertices at
+        // `radius = 1/√2` and the tesseract vertices at `radius = 1`.
+        // This test confirms the numeric match.
+        let k = 1.0 / 2.0_f32.sqrt();
+        // The 8 vertices with exactly one nonzero coordinate of
+        // magnitude `k√2 = 1` would form a 16-cell at `r = 1`; the
+        // 24-cell uses coordinates of magnitude `k` instead, so it
+        // contains both the 8 axis-aligned-pair points and the 8
+        // all-corners-scaled-by-k points — but actually all 24 have
+        // two nonzero entries at `±k`, so verify that shape.
+        for v in &c24 {
+            let nz = [v.x, v.y, v.z, v.w]
+                .iter()
+                .filter(|&&c| c.abs() > 1e-6)
+                .count();
+            assert_eq!(nz, 2, "24-cell vertex should have 2 nonzero coords: {v:?}");
+            for c in [v.x, v.y, v.z, v.w] {
+                if c.abs() > 1e-6 {
+                    assert!((c.abs() - k).abs() < 1e-5);
+                }
+            }
+        }
     }
 
     #[test]

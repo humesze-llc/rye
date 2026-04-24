@@ -68,11 +68,19 @@ struct Face {
 struct Polytope {
     vertices: Vec<MinkowskiPoint>,
     faces: Vec<Face>,
+    /// Centroid of the seed tetrahedron. Stays interior to the
+    /// polytope for all subsequent (convex) expansions, so it's the
+    /// reliable reference for orienting new faces outward — much more
+    /// robust than "pick any old vertex," which can happen to lie on
+    /// a degenerate-face plane and produce an inward orientation that
+    /// cascades into a corrupted polytope.
+    interior: glam::Vec3,
 }
 
 impl Polytope {
     fn from_tetra(tetra: [MinkowskiPoint; 4]) -> Self {
         let vertices = tetra.to_vec();
+        let interior = (tetra[0].point + tetra[1].point + tetra[2].point + tetra[3].point) * 0.25;
         // Four triangular faces of the tetrahedron. Winding chosen so
         // that each face's cross-product normal points away from the
         // opposite vertex.
@@ -83,9 +91,13 @@ impl Polytope {
             (0, 2, 3, 1),
             (1, 3, 2, 0),
         ] {
-            faces.push(build_face(&vertices, i, j, k, Some(l)));
+            faces.push(build_face_vs_point(&vertices, i, j, k, vertices[l].point));
         }
-        Self { vertices, faces }
+        Self {
+            vertices,
+            faces,
+            interior,
+        }
     }
 
     /// Index of the face with the smallest distance from origin, or
@@ -129,32 +141,30 @@ impl Polytope {
         self.faces = keep;
 
         // Stitch new faces from each horizon edge to the new vertex.
-        // For outward orientation we pass an interior reference vertex
-        // — any existing vertex that's not on this new face. In a
-        // non-degenerate polytope such a vertex always exists; if it
-        // doesn't (all vertices somehow coincide on a degenerate
-        // expansion), skip the face rather than panic. `epa` will fall
-        // back to its iteration cap.
+        // Orientation uses `self.interior` — the seed tetrahedron's
+        // centroid — as a guaranteed interior reference. Using an
+        // arbitrary old vertex was the source of the "polytope face
+        // count explodes" bug: when an old vertex happens to lie on
+        // the plane of a new face, the sign test is ambiguous, the
+        // face gets an inward-facing normal, downstream visibility
+        // tests lie about it, and faces multiply without bound.
+        let interior = self.interior;
         for &(i, j) in &horizon {
-            if let Some(reference) =
-                (0..self.vertices.len()).find(|&idx| idx != i && idx != j && idx != new_idx)
-            {
-                self.faces
-                    .push(build_face(&self.vertices, i, j, new_idx, Some(reference)));
-            }
+            self.faces
+                .push(build_face_vs_point(&self.vertices, i, j, new_idx, interior));
         }
     }
 }
 
-/// Build a face with outward normal / distance, orienting the normal
-/// away from `opposite_vertex` if given, or away from the origin
-/// otherwise.
-fn build_face(
+/// Build a face with outward normal, orienting it away from
+/// `interior_point` — which the caller guarantees is inside the
+/// polytope (the seed tetrahedron's centroid satisfies this).
+fn build_face_vs_point(
     verts: &[MinkowskiPoint],
     a: usize,
     b: usize,
     c: usize,
-    opposite_vertex: Option<usize>,
+    interior_point: Vec3,
 ) -> Face {
     let pa = verts[a].point;
     let pb = verts[b].point;
@@ -163,43 +173,25 @@ fn build_face(
     let mut normal = (pb - pa).cross(pc - pa);
     let len = normal.length();
     if len < 1e-8 {
-        // Degenerate face — use +y as a fallback and let EPA iterate
-        // past it.
         normal = Vec3::Y;
     } else {
         normal /= len;
     }
 
-    // Orient outward: either away from `opposite_vertex`, or away from
-    // the origin (equivalent for tetrahedra that contain the origin).
-    let (v_order, outward_normal) = match opposite_vertex {
-        Some(op_idx) => {
-            let to_opposite = verts[op_idx].point - pa;
-            if normal.dot(to_opposite) > 0.0 {
-                ([a, c, b], -normal)
-            } else {
-                ([a, b, c], normal)
-            }
-        }
-        None => {
-            // No opposite vertex — flip if normal points toward origin.
-            if normal.dot(pa) < 0.0 {
-                ([a, c, b], -normal)
-            } else {
-                ([a, b, c], normal)
-            }
-        }
+    // Orient away from the interior reference point. If the normal
+    // currently points *toward* the interior, flip it.
+    let to_interior = interior_point - pa;
+    let (v_order, outward_normal) = if normal.dot(to_interior) > 0.0 {
+        ([a, c, b], -normal)
+    } else {
+        ([a, b, c], normal)
     };
 
     // Signed distance from origin to the face's plane along the
-    // outward normal. For a polytope that correctly encloses origin
-    // this is non-negative; if it comes out slightly negative that's
-    // numerical noise near a boundary face (treat as zero). Anything
-    // more negative signals a miswound face — we'd rather the solver
-    // ignore it than have EPA terminate on a garbage "closest face",
-    // so we cap the distance *up* to the face's plane distance.
+    // outward normal. Clamped at zero for numerical noise near the
+    // origin-on-boundary case.
     let raw_distance = outward_normal.dot(verts[v_order[0]].point);
-    let distance = if raw_distance < 0.0 { 0.0 } else { raw_distance };
+    let distance = raw_distance.max(0.0);
     Face {
         v: v_order,
         normal: outward_normal,
@@ -267,15 +259,7 @@ pub fn epa<A: SupportFn, B: SupportFn>(
 
     let mut polytope = Polytope::from_tetra(initial_simplex);
 
-    let mut iter_count = 0u32;
     for _ in 0..EPA_MAX_ITERATIONS {
-        iter_count += 1;
-        eprintln!(
-            "  [epa iter {}] verts={} faces={}",
-            iter_count,
-            polytope.vertices.len(),
-            polytope.faces.len()
-        );
         // If expansion has collapsed the polytope (no faces), we've
         // left the domain where EPA can give a meaningful answer.
         // Bail cleanly rather than panicking on the empty slice.

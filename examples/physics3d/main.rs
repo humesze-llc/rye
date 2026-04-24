@@ -248,11 +248,9 @@ impl App {
             // (stack overflow, driver abort), this won't catch it —
             // but seeing the panic message here would tell us it's a
             // Rust issue.
-            eprintln!("[step] t={:.3} begin step", self.sim_time);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.world.step(FIXED_DT);
             }));
-            eprintln!("[step] t={:.3} end step", self.sim_time);
             match result {
                 Ok(()) => {}
                 Err(payload) => {

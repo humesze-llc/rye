@@ -242,6 +242,37 @@ fn world_vertices(local: &[Vec3], pos: Vec3, rot: Quat) -> Vec<Vec3> {
     local.iter().map(|&v| rot * v + pos).collect()
 }
 
+/// Shared sanity check on EPA output: reject results that are
+/// numerically bad (NaN, infinite, zero-length normal) or that signal
+/// a degenerate touching contact (penetration below `MIN_PENETRATION`).
+/// A bad contact left in circulation feeds NaN velocities back into
+/// the integrator and compounds across frames; better to return None.
+const MIN_POLYTOPE_PENETRATION: f32 = 1e-4;
+
+fn validate_contact(
+    info: &crate::collision::ContactInfo,
+    a: &RigidBody<EuclideanR3>,
+    b: &RigidBody<EuclideanR3>,
+) -> Option<Contact<EuclideanR3>> {
+    if !info.penetration.is_finite()
+        || info.penetration < MIN_POLYTOPE_PENETRATION
+        || !info.normal.is_finite()
+        || !info.point.is_finite()
+    {
+        return None;
+    }
+    let n2 = info.normal.length_squared();
+    if !(0.5..=1.5).contains(&n2) {
+        return None;
+    }
+    Some(Contact {
+        normal: info.normal,
+        point: info.point,
+        penetration: info.penetration,
+        restitution: (a.restitution + b.restitution) * 0.5,
+    })
+}
+
 fn polytope_polytope_r3(
     a: &RigidBody<EuclideanR3>,
     b: &RigidBody<EuclideanR3>,
@@ -265,13 +296,7 @@ fn polytope_polytope_r3(
         GjkResult::Separated => return None,
     };
     let info = epa(&hull_a, &hull_b, simplex)?;
-
-    Some(Contact {
-        normal: info.normal,
-        point: info.point,
-        penetration: info.penetration,
-        restitution: (a.restitution + b.restitution) * 0.5,
-    })
+    validate_contact(&info, a, b)
 }
 
 fn sphere_polytope_r3(
@@ -299,13 +324,7 @@ fn sphere_polytope_r3(
         GjkResult::Separated => return None,
     };
     let info = epa(&support_a, &support_b, simplex)?;
-
-    Some(Contact {
-        normal: info.normal,
-        point: info.point,
-        penetration: info.penetration,
-        restitution: (a.restitution + b.restitution) * 0.5,
-    })
+    validate_contact(&info, a, b)
 }
 
 /// Polytope vs half-space: analytical deep-vertex search. The polytope

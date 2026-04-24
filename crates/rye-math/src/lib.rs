@@ -32,7 +32,7 @@ pub mod space;
 pub mod spherical;
 pub mod tangent;
 
-pub use bivector::{Bivector, Bivector2, Rotor, Rotor2};
+pub use bivector::{Bivector, Bivector2, Bivector3, Rotor, Rotor2, Rotor3};
 pub use euclidean::{EuclideanR3, Iso3};
 pub use euclidean_r2::{EuclideanR2, Iso2};
 pub use hyperbolic::{HyperbolicH3, Iso3H};

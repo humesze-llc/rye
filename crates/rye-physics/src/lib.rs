@@ -34,6 +34,7 @@ pub mod response;
 pub mod world;
 
 pub mod euclidean_r2;
+pub mod euclidean_r3;
 
 pub use body::RigidBody;
 pub use collider::{Collider, ColliderKind};

@@ -17,6 +17,7 @@ use rye_math::{Bivector, Bivector3, EuclideanR3, Iso3};
 
 use crate::body::RigidBody;
 use crate::collider::{Collider, ColliderKind};
+use crate::collision::{epa, gjk_intersect, ConvexHull, GjkResult, Sphere as GjkSphere};
 use crate::integrator::PhysicsSpace;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
@@ -231,12 +232,149 @@ fn sphere_halfspace_r3(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Polytope narrowphases via GJK + EPA. All three pairs use the same
+// generic machinery from `crate::collision` — only the `SupportFn`
+// wrappers differ per collider kind.
+// ---------------------------------------------------------------------------
+
+fn world_vertices(local: &[Vec3], pos: Vec3, rot: Quat) -> Vec<Vec3> {
+    local.iter().map(|&v| rot * v + pos).collect()
+}
+
+fn polytope_polytope_r3(
+    a: &RigidBody<EuclideanR3>,
+    b: &RigidBody<EuclideanR3>,
+    _space: &EuclideanR3,
+) -> Option<Contact<EuclideanR3>> {
+    let Collider::ConvexPolytope3D { vertices: va_local } = &a.collider else {
+        return None;
+    };
+    let Collider::ConvexPolytope3D { vertices: vb_local } = &b.collider else {
+        return None;
+    };
+
+    let va = world_vertices(va_local, a.position, a.orientation.rotation);
+    let vb = world_vertices(vb_local, b.position, b.orientation.rotation);
+    let hull_a = ConvexHull { vertices: &va };
+    let hull_b = ConvexHull { vertices: &vb };
+
+    let initial_dir = b.position - a.position;
+    let simplex = match gjk_intersect(&hull_a, &hull_b, initial_dir) {
+        GjkResult::Intersecting { simplex } => simplex,
+        GjkResult::Separated => return None,
+    };
+    let info = epa(&hull_a, &hull_b, simplex)?;
+
+    Some(Contact {
+        normal: info.normal,
+        point: info.point,
+        penetration: info.penetration,
+        restitution: (a.restitution + b.restitution) * 0.5,
+    })
+}
+
+fn sphere_polytope_r3(
+    a: &RigidBody<EuclideanR3>,
+    b: &RigidBody<EuclideanR3>,
+    _space: &EuclideanR3,
+) -> Option<Contact<EuclideanR3>> {
+    let Collider::Sphere { radius } = a.collider else {
+        return None;
+    };
+    let Collider::ConvexPolytope3D { vertices: vb_local } = &b.collider else {
+        return None;
+    };
+
+    let vb = world_vertices(vb_local, b.position, b.orientation.rotation);
+    let support_a = GjkSphere {
+        center: a.position,
+        radius,
+    };
+    let support_b = ConvexHull { vertices: &vb };
+
+    let initial_dir = b.position - a.position;
+    let simplex = match gjk_intersect(&support_a, &support_b, initial_dir) {
+        GjkResult::Intersecting { simplex } => simplex,
+        GjkResult::Separated => return None,
+    };
+    let info = epa(&support_a, &support_b, simplex)?;
+
+    Some(Contact {
+        normal: info.normal,
+        point: info.point,
+        penetration: info.penetration,
+        restitution: (a.restitution + b.restitution) * 0.5,
+    })
+}
+
+/// Polytope vs half-space: analytical deep-vertex search. The polytope
+/// vertex penetrating deepest into the half-space is the contact point;
+/// normal = −plane_normal (A→B, from polytope into the solid side),
+/// depth = how far that vertex is beyond the plane.
+fn polytope_halfspace_r3(
+    a: &RigidBody<EuclideanR3>,
+    b: &RigidBody<EuclideanR3>,
+    _space: &EuclideanR3,
+) -> Option<Contact<EuclideanR3>> {
+    let Collider::ConvexPolytope3D { vertices: va_local } = &a.collider else {
+        return None;
+    };
+    let Collider::HalfSpace {
+        normal: plane_n,
+        offset,
+    } = b.collider
+    else {
+        return None;
+    };
+
+    let mut deepest = Vec3::ZERO;
+    let mut deepest_depth = 0.0_f32;
+    for &v_local in va_local {
+        let v_world = a.orientation.rotation * v_local + a.position;
+        // Signed distance to the plane. Positive = outside half-space,
+        // negative = inside (penetrating). We want the deepest negative.
+        let signed = v_world.dot(plane_n) - offset;
+        let depth = -signed;
+        if depth > deepest_depth {
+            deepest_depth = depth;
+            deepest = v_world;
+        }
+    }
+
+    if deepest_depth <= 0.0 {
+        return None;
+    }
+
+    Some(Contact {
+        normal: -plane_n,
+        point: deepest,
+        penetration: deepest_depth,
+        restitution: (a.restitution + b.restitution) * 0.5,
+    })
+}
+
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR3>) {
     np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r3);
     np.register(
         ColliderKind::Sphere,
         ColliderKind::HalfSpace,
         sphere_halfspace_r3,
+    );
+    np.register(
+        ColliderKind::ConvexPolytope3D,
+        ColliderKind::ConvexPolytope3D,
+        polytope_polytope_r3,
+    );
+    np.register(
+        ColliderKind::Sphere,
+        ColliderKind::ConvexPolytope3D,
+        sphere_polytope_r3,
+    );
+    np.register(
+        ColliderKind::ConvexPolytope3D,
+        ColliderKind::HalfSpace,
+        polytope_halfspace_r3,
     );
 }
 
@@ -277,6 +415,180 @@ pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> RigidBody<EuclideanR3> {
         1.0,
         &EuclideanR3,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Polytope builders. Inertia is computed as isotropic (scalar) — for a
+// prototype this is a reasonable approximation for roughly cube-ish or
+// regular shapes. A full 3×3 inertia tensor is a structural change to
+// `PhysicsSpace::Inertia` and lands when a game actually needs non-
+// isotropic rigid bodies.
+// ---------------------------------------------------------------------------
+
+/// Isotropic inertia for a box: `m·(w² + h² + d²) / 18`, which is the
+/// average of the three diagonal entries of the principal-axis tensor.
+/// For a cube this reduces to `m·(3·s²) / 18 = m·s²/6`, matching the
+/// exact cube inertia.
+pub fn box_inertia(mass: f32, half_extents: Vec3) -> f32 {
+    let w = half_extents.x * 2.0;
+    let h = half_extents.y * 2.0;
+    let d = half_extents.z * 2.0;
+    mass * (w * w + h * h + d * d) / 18.0
+}
+
+/// CCW-wound vertices of an axis-aligned box centred at origin.
+pub fn box_vertices(half_extents: Vec3) -> Vec<Vec3> {
+    let (hx, hy, hz) = (half_extents.x, half_extents.y, half_extents.z);
+    vec![
+        Vec3::new(-hx, -hy, -hz),
+        Vec3::new(hx, -hy, -hz),
+        Vec3::new(hx, hy, -hz),
+        Vec3::new(-hx, hy, -hz),
+        Vec3::new(-hx, -hy, hz),
+        Vec3::new(hx, -hy, hz),
+        Vec3::new(hx, hy, hz),
+        Vec3::new(-hx, hy, hz),
+    ]
+}
+
+/// Dynamic axis-aligned box body.
+pub fn box_body(
+    position: Vec3,
+    velocity: Vec3,
+    half_extents: Vec3,
+    mass: f32,
+) -> RigidBody<EuclideanR3> {
+    RigidBody::new(
+        position,
+        velocity,
+        Collider::ConvexPolytope3D {
+            vertices: box_vertices(half_extents),
+        },
+        mass,
+        box_inertia(mass, half_extents),
+        &EuclideanR3,
+    )
+}
+
+/// Dynamic convex polytope body with caller-provided vertices and an
+/// isotropic-inertia approximation: `(2/5)·m·r²` where `r` is the
+/// bounding-sphere radius. Exact for spheres; for polytopes it sits in
+/// the right order of magnitude and suffices for prototypes.
+pub fn polytope_body(
+    position: Vec3,
+    velocity: Vec3,
+    vertices: Vec<Vec3>,
+    mass: f32,
+) -> RigidBody<EuclideanR3> {
+    let bounding_r_sq = vertices
+        .iter()
+        .map(|v| v.length_squared())
+        .fold(0.0, f32::max);
+    let inertia = (2.0 / 5.0) * mass * bounding_r_sq;
+    RigidBody::new(
+        position,
+        velocity,
+        Collider::ConvexPolytope3D { vertices },
+        mass,
+        inertia,
+        &EuclideanR3,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Platonic solid vertex generators. Each centered at origin, scaled so
+// the bounding-sphere (circumradius) radius = 1.0. Callers scale by
+// their desired radius. All vertex lists are convex hulls — GJK doesn't
+// care about face winding.
+// ---------------------------------------------------------------------------
+
+/// Tetrahedron (4 vertices). Bounding-sphere radius 1.
+pub fn tetrahedron_vertices(r: f32) -> Vec<Vec3> {
+    // Standard construction: alternating corners of a cube. Scale to
+    // unit circumradius.
+    let k = r / 3.0_f32.sqrt();
+    vec![
+        Vec3::new(k, k, k),
+        Vec3::new(k, -k, -k),
+        Vec3::new(-k, k, -k),
+        Vec3::new(-k, -k, k),
+    ]
+}
+
+/// Cube (8 vertices). Bounding-sphere radius = `r`; side length = 2r/√3.
+pub fn cube_vertices(r: f32) -> Vec<Vec3> {
+    let h = r / 3.0_f32.sqrt();
+    box_vertices(Vec3::splat(h))
+}
+
+/// Octahedron (6 vertices). Bounding-sphere radius = `r`.
+pub fn octahedron_vertices(r: f32) -> Vec<Vec3> {
+    vec![
+        Vec3::new(r, 0.0, 0.0),
+        Vec3::new(-r, 0.0, 0.0),
+        Vec3::new(0.0, r, 0.0),
+        Vec3::new(0.0, -r, 0.0),
+        Vec3::new(0.0, 0.0, r),
+        Vec3::new(0.0, 0.0, -r),
+    ]
+}
+
+/// Icosahedron (12 vertices). Bounding-sphere radius = `r`.
+pub fn icosahedron_vertices(r: f32) -> Vec<Vec3> {
+    // Built from the golden ratio: (0, ±1, ±φ) and cyclic permutations.
+    let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
+    let norm = (1.0 + phi * phi).sqrt();
+    let s = r / norm;
+    let p = phi * s;
+    vec![
+        Vec3::new(0.0, s, p),
+        Vec3::new(0.0, s, -p),
+        Vec3::new(0.0, -s, p),
+        Vec3::new(0.0, -s, -p),
+        Vec3::new(s, p, 0.0),
+        Vec3::new(s, -p, 0.0),
+        Vec3::new(-s, p, 0.0),
+        Vec3::new(-s, -p, 0.0),
+        Vec3::new(p, 0.0, s),
+        Vec3::new(p, 0.0, -s),
+        Vec3::new(-p, 0.0, s),
+        Vec3::new(-p, 0.0, -s),
+    ]
+}
+
+/// Dodecahedron (20 vertices). Bounding-sphere radius = `r`.
+pub fn dodecahedron_vertices(r: f32) -> Vec<Vec3> {
+    // Vertices: (±1, ±1, ±1) and cyclic permutations of (0, ±1/φ, ±φ).
+    let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
+    let inv_phi = 1.0 / phi;
+    let norm = 3.0_f32.sqrt();
+    let s = r / norm;
+    let a = s * inv_phi;
+    let b = s * phi;
+    let mut v = Vec::with_capacity(20);
+    for &x in &[-s, s] {
+        for &y in &[-s, s] {
+            for &z in &[-s, s] {
+                v.push(Vec3::new(x, y, z));
+            }
+        }
+    }
+    for &y in &[-a, a] {
+        for &z in &[-b, b] {
+            v.push(Vec3::new(0.0, y, z));
+        }
+    }
+    for &x in &[-a, a] {
+        for &z in &[-b, b] {
+            v.push(Vec3::new(z, 0.0, x));
+        }
+    }
+    for &x in &[-a, a] {
+        for &y in &[-b, b] {
+            v.push(Vec3::new(y, x, 0.0));
+        }
+    }
+    v
 }
 
 #[cfg(test)]

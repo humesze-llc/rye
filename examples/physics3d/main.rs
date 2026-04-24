@@ -16,9 +16,11 @@ use rye_camera::OrbitCamera;
 use rye_input::InputState;
 use rye_math::EuclideanR3;
 use rye_physics::{
-    euclidean_r3::{halfspace_body_r3, register_default_narrowphase, sphere_body_r3},
+    euclidean_r3::{
+        box_body, halfspace_body_r3, register_default_narrowphase, sphere_body_r3,
+    },
     field::Gravity,
-    World,
+    Collider, World,
 };
 use rye_render::device::RenderDevice;
 use winit::{
@@ -54,22 +56,24 @@ struct SceneUniforms {
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
 struct GpuBody {
     position: [f32; 3],
-    radius: f32,
+    /// 0.0 = sphere, 1.0 = box. Packed as float for WGSL alignment.
     kind: f32,
-    _pad: [f32; 3],
+    /// For sphere: (radius, 0, 0). For box: half_extents.
+    extents: [f32; 3],
+    _pad: f32,
+    /// Unit quaternion (x, y, z, w). Identity for spheres.
+    rotation: [f32; 4],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct BodyBuffer([GpuBody; MAX_BODIES]);
 
-// Compile-time layout checks. WGSL uniform-buffer rules: `SceneUniforms`
-// must be 96 bytes (6 vec3+f32 slots = 64 bytes, then vec2+u32+u32 pair
-// = 16, then vec3+f32 = 16 → 96). `GpuBody` must be 32 bytes so the
-// `array<Body, 32>` stride matches between Rust and WGSL.
+// Compile-time layout checks. GpuBody is 48 bytes: vec3+f32 (16) +
+// vec3+f32 (16) + vec4 (16). Matches the WGSL Body struct.
 const _: () = assert!(std::mem::size_of::<SceneUniforms>() == 96);
-const _: () = assert!(std::mem::size_of::<GpuBody>() == 32);
-const _: () = assert!(std::mem::size_of::<BodyBuffer>() == 32 * MAX_BODIES);
+const _: () = assert!(std::mem::size_of::<GpuBody>() == 48);
+const _: () = assert!(std::mem::size_of::<BodyBuffer>() == 48 * MAX_BODIES);
 
 struct Rng(u32);
 
@@ -91,16 +95,24 @@ fn build_world() -> World<EuclideanR3> {
     // Infinite floor at y = 0.
     world.push_body(halfspace_body_r3(Vec3::Y, 0.0));
 
-    // ~12 spheres dropped from varied heights/positions with some
-    // initial horizontal velocity so they glance and spin off each other.
     let mut rng = Rng(0x51A3);
-    for i in 0..12 {
+    // Mix of spheres and boxes falling with mild horizontal velocity.
+    // Boxes exercise the full GJK+EPA path; spheres stay on the
+    // analytical sphere-sphere / sphere-halfspace fast paths.
+    for i in 0..14 {
         let x = rng.range(-2.0, 2.0);
         let z = rng.range(-2.0, 2.0);
         let y = 2.5 + (i as f32) * 0.55;
-        let radius = rng.range(0.25, 0.45);
-        let vel = Vec3::new(rng.range(-0.5, 0.5), 0.0, rng.range(-0.5, 0.5));
-        world.push_body(sphere_body_r3(Vec3::new(x, y, z), vel, radius, 1.0));
+        let vel = Vec3::new(rng.range(-0.4, 0.4), 0.0, rng.range(-0.4, 0.4));
+        if i % 2 == 0 {
+            let radius = rng.range(0.25, 0.40);
+            world.push_body(sphere_body_r3(Vec3::new(x, y, z), vel, radius, 1.0));
+        } else {
+            let hx = rng.range(0.22, 0.36);
+            let hy = rng.range(0.22, 0.36);
+            let hz = rng.range(0.22, 0.36);
+            world.push_body(box_body(Vec3::new(x, y, z), vel, Vec3::new(hx, hy, hz), 1.0));
+        }
     }
 
     world
@@ -108,20 +120,52 @@ fn build_world() -> World<EuclideanR3> {
 
 fn collect_gpu_bodies(world: &World<EuclideanR3>) -> (BodyBuffer, u32) {
     let mut buf = BodyBuffer([GpuBody::default(); MAX_BODIES]);
-    // Skip the floor (index 0); we render it from Scene.floor_normal/offset.
+    // Skip the floor; it's rendered via Scene.floor_normal/offset.
     let mut count = 0u32;
     for body in world.bodies.iter() {
         if count as usize >= MAX_BODIES {
             break;
         }
-        if let rye_physics::Collider::Sphere { radius } = body.collider {
-            buf.0[count as usize] = GpuBody {
-                position: body.position.to_array(),
-                radius,
-                kind: 0.0,
-                _pad: [0.0; 3],
-            };
-            count += 1;
+        let q = body.orientation.rotation;
+        let rotation = [q.x, q.y, q.z, q.w];
+
+        match &body.collider {
+            Collider::Sphere { radius } => {
+                buf.0[count as usize] = GpuBody {
+                    position: body.position.to_array(),
+                    kind: 0.0,
+                    extents: [*radius, 0.0, 0.0],
+                    _pad: 0.0,
+                    rotation,
+                };
+                count += 1;
+            }
+            Collider::ConvexPolytope3D { vertices } => {
+                // Assume the polytope is a box for visualization
+                // purposes: recover half-extents as the AABB of the
+                // local vertex set. Works for `box_body()` output; for
+                // arbitrary polytopes this renders their OBB instead
+                // of the true shape.
+                let (mut mn, mut mx) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+                for &v in vertices {
+                    mn = mn.min(v);
+                    mx = mx.max(v);
+                }
+                let half = (mx - mn) * 0.5;
+                buf.0[count as usize] = GpuBody {
+                    position: body.position.to_array(),
+                    kind: 1.0,
+                    extents: half.to_array(),
+                    _pad: 0.0,
+                    rotation,
+                };
+                count += 1;
+            }
+            Collider::HalfSpace { .. } | Collider::Polygon2D { .. } => {
+                // Halfspace is implicit (scene uniforms); 2D polygons
+                // shouldn't appear in a 3D world but skip them
+                // defensively.
+            }
         }
     }
     (buf, count)

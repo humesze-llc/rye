@@ -10,4 +10,5 @@ description = "Rye rigid-body physics: Space-generic integration, narrowphase di
 [dependencies]
 glam.workspace = true
 rye-math      = { path = "../rye-math" }
+rye-shape     = { path = "../rye-shape" }
 rye-collision = { path = "../rye-collision" }

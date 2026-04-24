@@ -134,10 +134,10 @@ fn sphere_sphere_r4(
     b: &RigidBody<EuclideanR4>,
     space: &EuclideanR4,
 ) -> Option<Contact<EuclideanR4>> {
-    let Collider::Sphere { radius: ra } = a.collider else {
+    let Collider::Sphere { radius: ra, .. } = a.collider else {
         return None;
     };
-    let Collider::Sphere { radius: rb } = b.collider else {
+    let Collider::Sphere { radius: rb, .. } = b.collider else {
         return None;
     };
 
@@ -254,7 +254,7 @@ fn sphere_polytope_r4(
     b: &RigidBody<EuclideanR4>,
     _space: &EuclideanR4,
 ) -> Option<Contact<EuclideanR4>> {
-    let Collider::Sphere { radius } = a.collider else {
+    let Collider::Sphere { radius, .. } = a.collider else {
         return None;
     };
     let Collider::ConvexPolytope4D { vertices: vb_local } = &b.collider else {
@@ -319,7 +319,7 @@ pub fn sphere_body_r4(
     RigidBody::new(
         position,
         velocity,
-        Collider::Sphere { radius },
+        Collider::sphere_at_origin(radius),
         mass,
         ball4_inertia(mass, radius),
         &EuclideanR4,

@@ -18,7 +18,8 @@ pub mod combinator;
 pub mod primitive;
 pub mod scene;
 
-pub use primitive::{BoxSdf, Plane, Primitive, Sphere};
+pub use primitive::Primitive;
+pub use rye_shape::Shape;
 pub use scene::{PrimitiveKind, Scene, SceneNode};
 
 use std::f32::consts::PI;
@@ -278,9 +279,8 @@ mod tests {
 
     #[test]
     fn sphere_emits_rye_distance_call() {
-        use primitive::Sphere;
         use rye_math::EuclideanR3;
-        let s = Sphere::new(Vec3::ZERO, 0.25);
+        let s = Shape::sphere_at(Vec3::ZERO, 0.25);
         let src = s.to_wgsl(&EuclideanR3, "sdf_0");
         assert!(src.contains("fn sdf_0(p: vec3<f32>) -> f32"));
         assert!(src.contains("rye_distance"));
@@ -289,23 +289,25 @@ mod tests {
 
     #[test]
     fn sphere_wgsl_is_space_agnostic() {
-        use primitive::Sphere;
         use rye_math::{EuclideanR3, HyperbolicH3, SphericalS3};
-        let s = Sphere::at_origin(0.3);
+        let s = Shape::sphere_at_origin(0.3);
         let e3 = s.to_wgsl(&EuclideanR3, "sdf_0");
         let h3 = s.to_wgsl(&HyperbolicH3, "sdf_0");
         let s3 = s.to_wgsl(&SphericalS3, "sdf_0");
-        // The emitted body must be identical across spaces — only rye_distance
-        // differs at prelude link time, not in the emitted text.
+        // The emitted body must be identical across spaces — only
+        // rye_distance differs at prelude link time, not in the
+        // emitted text.
         assert_eq!(e3, h3);
         assert_eq!(h3, s3);
     }
 
     #[test]
     fn plane_emits_dot_product_sdf() {
-        use primitive::Plane;
         use rye_math::EuclideanR3;
-        let p = Plane::floor(-0.5);
+        let p = Shape::HalfSpace {
+            normal: Vec3::Y,
+            offset: -0.5,
+        };
         let src = p.to_wgsl(&EuclideanR3, "sdf_floor");
         assert!(src.contains("fn sdf_floor(p: vec3<f32>) -> f32"));
         assert!(src.contains("dot(p,"));
@@ -315,9 +317,10 @@ mod tests {
 
     #[test]
     fn box_emits_euclidean_box_sdf() {
-        use primitive::BoxSdf;
         use rye_math::EuclideanR3;
-        let b = BoxSdf::cube(0.4);
+        let b = Shape::Box3 {
+            half_extents: Vec3::splat(0.4),
+        };
         let src = b.to_wgsl(&EuclideanR3, "sdf_box");
         assert!(src.contains("fn sdf_box(p: vec3<f32>) -> f32"));
         assert!(src.contains("abs(p)"));

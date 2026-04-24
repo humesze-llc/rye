@@ -118,7 +118,7 @@ pub fn sphere_body(
     RigidBody::new(
         position,
         velocity,
-        Collider::Sphere { radius },
+        Collider::sphere_at_origin(radius),
         mass,
         disk_inertia(mass, radius),
         &EuclideanR2,
@@ -147,10 +147,10 @@ fn sphere_sphere_r2(
     b: &RigidBody<EuclideanR2>,
     space: &EuclideanR2,
 ) -> Option<Contact<EuclideanR2>> {
-    let Collider::Sphere { radius: ra } = a.collider else {
+    let Collider::Sphere { radius: ra, .. } = a.collider else {
         return None;
     };
-    let Collider::Sphere { radius: rb } = b.collider else {
+    let Collider::Sphere { radius: rb, .. } = b.collider else {
         return None;
     };
 
@@ -370,7 +370,7 @@ fn sphere_polygon_r2(
     b: &RigidBody<EuclideanR2>,
     _space: &EuclideanR2,
 ) -> Option<Contact<EuclideanR2>> {
-    let Collider::Sphere { radius } = a.collider else {
+    let Collider::Sphere { radius, .. } = a.collider else {
         return None;
     };
     let Collider::Polygon2D { vertices: b_local } = &b.collider else {
@@ -544,7 +544,7 @@ mod tests {
         let mut world = World::new(EuclideanR2);
         let id = world.push_body(RigidBody::fixed(
             Vec2::new(0.0, 0.0),
-            Collider::Sphere { radius: 1.0 },
+            Collider::sphere_at_origin(1.0),
             disk_inertia(0.0, 1.0),
             &EuclideanR2,
         ));

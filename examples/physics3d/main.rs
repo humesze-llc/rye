@@ -142,7 +142,7 @@ fn collect_gpu_bodies(world: &World<EuclideanR3>) -> (BodyBuffer, u32) {
         let rotation = [q.x, q.y, q.z, q.w];
 
         match &body.collider {
-            Collider::Sphere { radius } => {
+            Collider::Sphere { radius, .. } => {
                 buf.0[count as usize] = GpuBody {
                     position: body.position.to_array(),
                     kind: 0.0,
@@ -175,10 +175,13 @@ fn collect_gpu_bodies(world: &World<EuclideanR3>) -> (BodyBuffer, u32) {
             }
             Collider::HalfSpace { .. }
             | Collider::Polygon2D { .. }
+            | Collider::Box3 { .. }
             | Collider::ConvexPolytope4D { .. } => {
                 // Halfspace is implicit (scene uniforms); 2D polygons
-                // and 4D polytopes shouldn't appear in a 3D world but
-                // skip them defensively.
+                // and 4D polytopes shouldn't appear in a 3D world;
+                // Box3 isn't used by this demo (it uses
+                // `ConvexPolytope3D`-backed box bodies instead). Skip
+                // defensively.
             }
         }
     }

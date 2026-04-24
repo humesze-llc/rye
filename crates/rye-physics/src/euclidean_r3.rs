@@ -154,10 +154,10 @@ fn sphere_sphere_r3(
     b: &RigidBody<EuclideanR3>,
     space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Collider::Sphere { radius: ra } = a.collider else {
+    let Collider::Sphere { radius: ra, .. } = a.collider else {
         return None;
     };
-    let Collider::Sphere { radius: rb } = b.collider else {
+    let Collider::Sphere { radius: rb, .. } = b.collider else {
         return None;
     };
 
@@ -188,7 +188,7 @@ fn sphere_halfspace_r3(
     b: &RigidBody<EuclideanR3>,
     _space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Collider::Sphere { radius } = a.collider else {
+    let Collider::Sphere { radius, .. } = a.collider else {
         return None;
     };
     let Collider::HalfSpace { normal, offset } = b.collider else {
@@ -316,7 +316,7 @@ fn sphere_polytope_r3(
     b: &RigidBody<EuclideanR3>,
     _space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Collider::Sphere { radius } = a.collider else {
+    let Collider::Sphere { radius, .. } = a.collider else {
         return None;
     };
     let Collider::ConvexPolytope3D { vertices: vb_local } = &b.collider else {
@@ -436,7 +436,7 @@ pub fn sphere_body_r3(
     RigidBody::new(
         position,
         velocity,
-        Collider::Sphere { radius },
+        Collider::sphere_at_origin(radius),
         mass,
         sphere_inertia(mass, radius),
         &EuclideanR3,

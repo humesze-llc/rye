@@ -31,8 +31,9 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::combinator::smooth_min_fn;
-use crate::primitive::{BoxSdf, Plane, Primitive, Sphere};
+use crate::primitive::Primitive;
 use rye_math::WgslSpace;
+pub use rye_shape::Shape as PrimitiveKind;
 
 /// A node in the typed SDF scene tree.
 ///
@@ -54,41 +55,25 @@ pub enum SceneNode {
     },
 }
 
-/// The concrete primitive types supported by the scene tree.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PrimitiveKind {
-    Sphere(Sphere),
-    Plane(Plane),
-    Box(BoxSdf),
-}
-
-impl PrimitiveKind {
-    fn to_wgsl_named<S: WgslSpace>(&self, space: &S, name: &str) -> String {
-        match self {
-            PrimitiveKind::Sphere(s) => s.to_wgsl(space, name),
-            PrimitiveKind::Plane(p) => p.to_wgsl(space, name),
-            PrimitiveKind::Box(b) => b.to_wgsl(space, name),
-        }
-    }
-}
-
 // ---- Constructors -----------------------------------------------------------
 
 impl SceneNode {
     pub fn sphere(center: Vec3, radius: f32) -> Self {
-        SceneNode::Leaf(PrimitiveKind::Sphere(Sphere::new(center, radius)))
+        SceneNode::Leaf(PrimitiveKind::Sphere { center, radius })
     }
 
     pub fn plane(normal: Vec3, offset: f32) -> Self {
-        SceneNode::Leaf(PrimitiveKind::Plane(Plane::new(normal, offset)))
+        SceneNode::Leaf(PrimitiveKind::HalfSpace { normal, offset })
     }
 
     pub fn box_(half_extents: Vec3) -> Self {
-        SceneNode::Leaf(PrimitiveKind::Box(BoxSdf::new(half_extents)))
+        SceneNode::Leaf(PrimitiveKind::Box3 { half_extents })
     }
 
     pub fn cube(half_side: f32) -> Self {
-        SceneNode::Leaf(PrimitiveKind::Box(BoxSdf::cube(half_side)))
+        SceneNode::Leaf(PrimitiveKind::Box3 {
+            half_extents: Vec3::splat(half_side),
+        })
     }
 
     // ---- Combinators --------------------------------------------------------
@@ -180,7 +165,7 @@ fn emit_node<S: WgslSpace>(
     match node {
         SceneNode::Leaf(prim) => {
             let fn_name = format!("sdf_p{idx}");
-            helpers.push_str(&prim.to_wgsl_named(space, &fn_name));
+            helpers.push_str(&prim.to_wgsl(space, &fn_name));
             let var = format!("d{idx}");
             body.push_str(&format!("\tlet {var} = {fn_name}(p);\n"));
             var

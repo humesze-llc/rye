@@ -119,7 +119,7 @@ fn collect_gpu_bodies(world: &World<EuclideanR2>) -> (BodyBuffer, u32) {
         let s = 2.0 * r.a * r.b;
 
         let (scale, kind, extent) = match &b.collider {
-            Collider::Sphere { radius } => (*radius, 0u32, [0.0, 0.0]),
+            Collider::Sphere { radius, .. } => (*radius, 0u32, [0.0, 0.0]),
             Collider::Polygon2D { vertices } => {
                 // Static-wall convention: inv_mass == 0 with 4 axis-aligned
                 // vertices → render as a rectangle (kind 100).

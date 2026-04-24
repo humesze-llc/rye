@@ -263,6 +263,14 @@ pub fn epa<A: SupportFn, B: SupportFn>(
         let support = minkowski_support(a, b, face.normal);
         let new_distance = support.point.dot(face.normal);
 
+        // Guard: if the support query produced non-finite values, the
+        // Minkowski diff has pathological inputs — bail rather than
+        // feed bad data back into `expand()` and grow the polytope
+        // with NaN vertices.
+        if !new_distance.is_finite() || !support.point.is_finite() {
+            return None;
+        }
+
         if (new_distance - face.distance).abs() < EPA_TOLERANCE {
             // Face is on the Minkowski boundary — terminate.
             return contact_from_face(&polytope, face);

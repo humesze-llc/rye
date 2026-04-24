@@ -241,7 +241,33 @@ impl App {
         self.last_frame = now;
         self.accumulator += dt;
         while self.accumulator >= FIXED_DT {
-            self.world.step(FIXED_DT);
+            // Wrap the physics step in `catch_unwind` to surface any
+            // Rust panic explicitly (diagnostic for the "no backtrace
+            // on crash" mystery). If the crash is a non-Rust event
+            // (stack overflow, driver abort), this won't catch it —
+            // but seeing the panic message here would tell us it's a
+            // Rust issue.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.world.step(FIXED_DT);
+            }));
+            match result {
+                Ok(()) => {}
+                Err(payload) => {
+                    let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+                        (*s).to_string()
+                    } else {
+                        "<non-string panic payload>".to_string()
+                    };
+                    eprintln!("PHYSICS STEP PANIC CAUGHT: {msg}");
+                    eprintln!("  sim_time={:.3}s  dynamic_bodies={}", self.sim_time,
+                        self.world.bodies.iter().filter(|b| b.inv_mass > 0.0).count());
+                    // Resume unwinding so the app-level hook prints the
+                    // full backtrace.
+                    std::panic::resume_unwind(payload);
+                }
+            }
             self.accumulator -= FIXED_DT;
             self.sim_time += FIXED_DT;
         }
@@ -554,6 +580,24 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    // Force RUST_BACKTRACE=1 so a panic in the physics step produces
+    // an actual stack trace even if the user didn't set the env var.
+    // Also install a hook that flushes stderr before the process dies
+    // — panics on the main/event-loop thread don't always get a chance
+    // to print through the default hook when winit unwinds weirdly.
+    std::env::set_var("RUST_BACKTRACE", "1");
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        eprintln!("\n=== PHYSICS3D PANIC ===");
+        eprintln!("{info}");
+        let bt = std::backtrace::Backtrace::force_capture();
+        eprintln!("backtrace:\n{bt}");
+        eprintln!("=======================\n");
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
+        default_hook(info);
+    }));
 
     let event_loop = EventLoop::new()?;
     let mut app = App::default();

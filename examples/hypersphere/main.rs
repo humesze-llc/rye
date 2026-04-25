@@ -1,35 +1,37 @@
-//! Hypersphere `w`-slice viewer — drop a 4D ball onto a 4D floor and
-//! render the 3D cross-section at user-controlled `w₀`.
+//! Hypersphere `w`-slice viewer — drop one or many 4D balls onto a
+//! 4D floor and render their 3D cross-sections at user-controlled
+//! `w₀`.
 //!
 //! The 4-ball `B = { x ∈ R⁴ : |x − c| ≤ r }` cross-sectioned at
 //! `w = w₀` is a 3D ball of radius `sqrt(r² − (w₀ − c.w)²)` for
-//! `|w₀ − c.w| < r`, and empty otherwise. As you scrub `w₀` past the
-//! body's `w`-coordinate the rendered ball grows from a point, peaks
-//! at radius `r` when `w₀ = c.w`, and shrinks back to a point. That
-//! growth-and-shrink is the visible signature of "we are slicing a
-//! 4D object through three dimensions."
+//! `|w₀ − c.w| < r`, and empty otherwise. As you scrub `w₀` past a
+//! body's `w`-coordinate its rendered cross-section grows from a
+//! point, peaks at radius `r` when `w₀ = c.w`, and shrinks back to
+//! a point. That growth-and-shrink is the visible signature of "we
+//! are slicing a 4D object through three dimensions."
 //!
 //! Visually this is simpler than the pentatope viewer (a 4-ball has
 //! no rotation degrees of freedom worth distinguishing — its
 //! cross-section is always a 3-ball) but it pins down the basic
-//! 4D-physics-with-3D-rendering pipeline cleanly: drop a body, watch
-//! it settle, scrub `w` to confirm it's really 4-dimensional.
+//! 4D-physics-with-3D-rendering pipeline cleanly: drop bodies, watch
+//! them collide and settle, scrub `w` to confirm they're really 4-
+//! dimensional.
 //!
-//! ## w-slice convention
+//! ## CLI
 //!
-//! Same as `examples/pentatope_slice`: the slice plane sits at
-//! `w_slice = body.w + w_offset`, so offset 0 always cuts through the
-//! body's centroid (maximum cross-section radius). Held ↑/↓ scrubs
-//! `w_offset` smoothly.
+//! - `-n N` / `--count N` — spawn N hyperspheres (default 1, max 32).
+//!   For `N > 1` the bodies are placed in a small lattice with
+//!   staggered `y` and `w` so they fall, collide with each other, and
+//!   settle as a 4D pile on the floor.
 //!
 //! ## Controls
 //!
 //! - Mouse: orbit camera (left-drag), zoom (scroll).
 //! - **Space**: pause / resume physics.
 //! - **↑ / ↓**: hold to slide the cross-section along `w` (0.6 u/s,
-//!   range ±1.5).
+//!   range ±1.5 around the first body's `w`).
 //! - **A**: toggle automatic offset sweep (cosine-paced).
-//! - **R**: reset — re-spawn the ball at `y = 2.5`, offset = 0.
+//! - **R**: reset — re-spawn all bodies, offset = 0.
 //! - **Esc**: exit.
 
 use std::path::PathBuf;
@@ -71,9 +73,54 @@ const TITLE: &str = "Rye — hypersphere w-slice (live)";
 const RADIUS_4D: f32 = 1.0;
 /// Offset range: ±1.5 covers the full ball (radius 1) plus margin so
 /// the user can scrub past the poles and watch the cross-section
-/// vanish.
+/// vanish. For multi-body mode we also extend it once the body pile
+/// spreads in `w`, but the default ±1.5 already covers a couple of
+/// adjacent bodies' worth of `w`-spread.
 const W_OFFSET_RANGE: f32 = 1.5;
 const W_SWEEP_RATE: f32 = 0.6;
+/// Maximum number of hyperspheres rendered simultaneously. Hard-capped
+/// here to keep the uniform layout fixed-size (`array<vec4, MAX_BODIES>`
+/// in WGSL) and avoid runtime resource recreation.
+const MAX_BODIES: usize = 32;
+
+#[derive(Debug)]
+struct Args {
+    count: usize,
+}
+
+impl Args {
+    fn parse() -> Self {
+        let mut args = Args { count: 1 };
+        let mut iter = std::env::args().skip(1);
+        while let Some(arg) = iter.next() {
+            match arg.as_str() {
+                "-n" | "--count" => {
+                    args.count = iter
+                        .next()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(args.count)
+                        .clamp(1, MAX_BODIES);
+                }
+                "-h" | "--help" => {
+                    println!("rye hypersphere w-slice viewer");
+                    println!();
+                    println!("Usage: cargo run --example hypersphere [options]");
+                    println!();
+                    println!("Options:");
+                    println!(
+                        "  -n, --count N    spawn N hyperspheres (default 1, max {MAX_BODIES})"
+                    );
+                    println!("  -h, --help       show this help and exit");
+                    std::process::exit(0);
+                }
+                other => {
+                    eprintln!("warning: unknown flag {other:?}; pass --help to see options");
+                }
+            }
+        }
+        args
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -89,11 +136,13 @@ struct SliceUniforms {
     resolution: [f32; 2],
     time: f32,
     tick: f32,
-    /// `[w_slice, radius4, body_w, _]`.
+    /// `[w_slice, radius4, body_count_f, _]`. `body_count_f` is the
+    /// number of active entries in `bodies`, encoded as `f32` for
+    /// uniform-buffer simplicity (cast to `u32` in WGSL).
     params: [f32; 4],
-    /// Body center xyz (for use as the cross-section ball's center).
-    body_xyz: [f32; 3],
-    _pad3: f32,
+    /// Up to `MAX_BODIES` body 4-positions (`vec4(x, y, z, w)` each).
+    /// Slots `>= body_count` are unread by the shader.
+    bodies: [[f32; 4]; MAX_BODIES],
 }
 
 impl Default for SliceUniforms {
@@ -111,8 +160,7 @@ impl Default for SliceUniforms {
             time: 0.0,
             tick: 0.0,
             params: [0.0; 4],
-            body_xyz: [0.0; 3],
-            _pad3: 0.0,
+            bodies: [[0.0; 4]; MAX_BODIES],
         }
     }
 }
@@ -237,20 +285,55 @@ impl RenderNode for SliceNode {
     }
 }
 
-fn build_world() -> (World<EuclideanR4>, usize) {
+/// Spawn-position generator for body `i` of `count`.
+///
+/// One body: directly above the origin so the single-ball mode looks
+/// like the original demo.
+///
+/// Many bodies: a stack/spiral of small offsets in `xz`, increasing
+/// drop height in `y`, and gently varied `w` so the user actually
+/// sees `w`-spread when scrubbing the slice plane. The `xz` offset is
+/// kept inside ≈1.5× the ball radius so the bodies overlap visually
+/// while falling and resolve into a 4D pile on the floor through
+/// sphere-sphere collision.
+fn spawn_position(i: usize, count: usize) -> Vec4 {
+    if count <= 1 {
+        return Vec4::new(0.0, 2.5, 0.0, 0.0);
+    }
+    let r_xz = 1.2 * RADIUS_4D;
+    let phi = (i as f32 / count as f32) * std::f32::consts::TAU;
+    let x = r_xz * phi.cos();
+    let z = r_xz * phi.sin();
+    // Each body starts at a different height so they don't all collide
+    // simultaneously on the first frame; the higher ones fall onto
+    // the lower ones over time.
+    let y = 2.5 + 2.5 * RADIUS_4D * i as f32;
+    // `w`-spread: alternate ± with a slowly growing magnitude so each
+    // body's cross-section appears at a slightly different `w₀` and
+    // the user can scrub from one to another. Within ±1.0 so all
+    // bodies' cross-sections overlap the default ±1.5 sweep range.
+    let w = 0.6 * RADIUS_4D * (i as f32 - 0.5 * (count - 1) as f32) / count.max(1) as f32;
+    Vec4::new(x, y, z, w)
+}
+
+fn build_world(count: usize) -> (World<EuclideanR4>, Vec<usize>) {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
     world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
     let floor_id = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
     world.bodies[floor_id].restitution = 0.0;
-    let ball_id = world.push_body(sphere_body_r4(
-        Vec4::new(0.0, 2.5, 0.0, 0.0),
-        Vec4::ZERO,
-        RADIUS_4D,
-        1.0,
-    ));
-    world.bodies[ball_id].restitution = 0.0;
-    (world, ball_id)
+    let mut ball_ids = Vec::with_capacity(count);
+    for i in 0..count {
+        let id = world.push_body(sphere_body_r4(
+            spawn_position(i, count),
+            Vec4::ZERO,
+            RADIUS_4D,
+            1.0,
+        ));
+        world.bodies[id].restitution = 0.0;
+        ball_ids.push(id);
+    }
+    (world, ball_ids)
 }
 
 struct App {
@@ -270,7 +353,7 @@ struct App {
     start: Instant,
 
     world: World<EuclideanR4>,
-    ball_id: usize,
+    ball_ids: Vec<usize>,
     paused: bool,
 
     w_offset: f32,
@@ -285,8 +368,11 @@ struct App {
 }
 
 impl App {
-    fn new() -> Self {
-        let (world, ball_id) = build_world();
+    fn new(count: usize) -> Self {
+        let (world, ball_ids) = build_world(count);
+        // Pull the camera out a bit further when there are many
+        // bodies so the whole stack is in frame at the start.
+        let cam_dist = (8.0 + 1.5 * count as f32).min(20.0);
         Self {
             window: None,
             rd: None,
@@ -299,13 +385,13 @@ impl App {
             timestep: FixedTimestep::new(60),
             camera: {
                 let mut c = OrbitCamera::default();
-                c.set_orbit(8.0, -0.35);
+                c.set_orbit(cam_dist, -0.35);
                 c
             },
             input: InputState::default(),
             start: Instant::now(),
             world,
-            ball_id,
+            ball_ids,
             paused: false,
             w_offset: 0.0,
             auto_sweep: false,
@@ -319,9 +405,10 @@ impl App {
     }
 
     fn reset(&mut self) {
-        let (world, ball_id) = build_world();
+        let count = self.ball_ids.len();
+        let (world, ball_ids) = build_world(count);
         self.world = world;
-        self.ball_id = ball_id;
+        self.ball_ids = ball_ids;
         self.w_offset = 0.0;
         self.auto_sweep = false;
         self.sweep_anchor = Instant::now();
@@ -382,15 +469,29 @@ impl App {
         }
     }
 
+    /// Reference body for the slice plane. Always the first
+    /// hypersphere; multi-body mode picks the *first* spawned body so
+    /// the ↑/↓ slider has a stable anchor (other bodies have varied
+    /// `w` offsets — see `spawn_position`).
+    fn anchor_body_w(&self) -> f32 {
+        self.world.bodies[self.ball_ids[0]].position.w
+    }
+
     fn effective_w_slice(&self) -> f32 {
-        self.world.bodies[self.ball_id].position.w + self.w_offset
+        self.anchor_body_w() + self.w_offset
     }
 
     fn current_uniforms(&self) -> Option<SliceUniforms> {
         let rd = self.rd.as_ref()?;
         let view = self.camera.view();
         let t = self.start.elapsed().as_secs_f32();
-        let body = &self.world.bodies[self.ball_id];
+
+        let mut bodies = [[0.0_f32; 4]; MAX_BODIES];
+        let count = self.ball_ids.len().min(MAX_BODIES);
+        for (slot, &id) in bodies.iter_mut().zip(self.ball_ids.iter()).take(count) {
+            *slot = self.world.bodies[id].position.to_array();
+        }
+
         Some(SliceUniforms {
             camera_pos: view.position.to_array(),
             _pad0: 0.0,
@@ -406,9 +507,8 @@ impl App {
             ],
             time: t,
             tick: self.timestep.tick() as f32,
-            params: [self.effective_w_slice(), RADIUS_4D, body.position.w, 0.0],
-            body_xyz: [body.position.x, body.position.y, body.position.z],
-            _pad3: 0.0,
+            params: [self.effective_w_slice(), RADIUS_4D, count as f32, 0.0],
+            bodies,
         })
     }
 
@@ -549,19 +649,22 @@ impl ApplicationHandler for App {
                     self.fps = self.frame_count as f32 / elapsed;
                     self.frame_count = 0;
                     self.last_fps_update = Instant::now();
-                    let body = &self.world.bodies[self.ball_id];
-                    let p = body.position;
+                    let n = self.ball_ids.len();
+                    let anchor = &self.world.bodies[self.ball_ids[0]];
+                    let p = anchor.position;
                     let pause = if self.paused { " [paused]" } else { "" };
                     let mode = if self.auto_sweep { "auto" } else { "manual" };
                     let w_eff = p.w + self.w_offset;
-                    // Visible-radius indicator: matches `slice_radius` in
-                    // the WGSL — useful for sanity-checking the cross-
-                    // section as the user scrubs.
+                    // Visible-radius indicator for the *anchor* body.
+                    // Matches `slice_radius` in the WGSL — useful for
+                    // sanity-checking the cross-section as the user
+                    // scrubs. Other bodies' radii will differ at the
+                    // same `w₀` because they sit at different `w`.
                     let dw = w_eff - p.w;
                     let r3_sq = RADIUS_4D * RADIUS_4D - dw * dw;
                     let r3 = if r3_sq > 0.0 { r3_sq.sqrt() } else { 0.0 };
                     win.set_title(&format!(
-                        "{TITLE} | {:.0} fps | offset={:+.2} ({mode}) w₀={:+.2}{pause} | r₃={:.3} | pos.y={:+.2} pos.w={:+.2}",
+                        "{TITLE} | {:.0} fps | n={n} | offset={:+.2} ({mode}) w₀={:+.2}{pause} | r₃[0]={:.3} | pos[0].y={:+.2} pos[0].w={:+.2}",
                         self.fps, self.w_offset, w_eff, r3, p.y, p.w
                     ));
                 }
@@ -611,9 +714,10 @@ fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
+    let args = Args::parse();
     let elwt = EventLoop::new()?;
     elwt.set_control_flow(winit::event_loop::ControlFlow::Poll);
-    let mut app = App::new();
+    let mut app = App::new(args.count);
     elwt.run_app(&mut app)?;
     let _ = Vec3::ZERO;
     Ok(())

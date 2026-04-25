@@ -27,7 +27,65 @@ These are tradeoffs to fit a very specific thesis.
 
 ## Status
 
-Very early. Nothing is sacred.
+Phases 1–3 done; Phase 4 about half complete (manifolds + PGS,
+4D physics, unified `Shape`). Still ahead in Phase 4: `BlendedSpace`,
+egui integration, an `App` abstraction. Nothing is sacred yet.
+
+### Examples shipped
+
+Each is `cargo run --release --example <name>` from the workspace
+root. They double as demos and as integration tests for the relevant
+subsystems.
+
+**Curved-space rendering (Phase 1–2):**
+
+- **`fractal`** — interactive 3D fractal ray-marcher with shader hot
+  reload and orbit camera. The first end-to-end demo of the
+  rendering stack.
+- **`geodesic_spheres`** — three spheres rendered side-by-side in
+  E³, H³, and S³ via the `WgslSpace` prelude swap, proving the same
+  scene takes on the metric of whichever Space you select.
+- **`lattice`** — the same `Scene` rendered in all three Spaces with
+  no per-Space WGSL written by the caller (validates the typed
+  scene tree).
+- **`corridor`** — extruded corridor scene; stress-tests the typed
+  primitive emit path under combinators (boolean ops, repeats).
+
+**Euclidean physics (Phase 3):**
+
+- **`physics2d`** — 2D rigid bodies under gravity with polygon SAT
+  collision, friction, and the manifold + PGS solver. The
+  reference for "does the solver actually settle stacks?"
+- **`physics3d`** — mixed spheres and oriented boxes falling onto a
+  floor, exercising the full GJK + EPA + manifold + PGS path in 3D.
+
+**4D physics + visualization (Phase 4, this branch):**
+
+- **`physics4d`** — headless 4D demo with three modes:
+  `--floor` drops a pentatope onto a 4D `y ≥ 0` half-space;
+  `--collide` drops one onto a static second pentatope, exercising
+  4D GJK + EPA end-to-end. Default mode is pure free-fall to verify
+  the integrator + 4D orientation transport in isolation. Prints
+  per-tick state to stdout.
+- **`pentatope_slice`** — live-physics 4D viewer. A pentatope falls
+  onto a 4D floor; the 3D viewport renders the cross-section of the
+  whole 4D scene at user-controlled `w₀`. Hold ↑/↓ to scrub the
+  slice plane along `w` and watch the cross-section morph through
+  the pentatope's five tetrahedral cells. Pause and reset live.
+- **`hypersphere`** — drop a 4D ball (or up to 32 with `-n N`) onto
+  the 4D floor and watch them collide and pile up under gravity.
+  Two viewing modes: **slice** (default; renders the 3D cross-
+  section at `w₀`, growing-and-shrinking as you scrub `w`) and
+  **ghost** (toggle with **G**; renders each body's full 4D extent
+  as translucent volume, opacity proportional to the body's
+  `w`-thickness through each xyz column).
+
+**Tooling:**
+
+- **`capture`** — frame-capture utility (APNG / GIF) for the demos
+  above; used to record clips without external screen recorders.
+- **`sysinfo`** — wgpu adapter + backend probe, useful when a demo
+  refuses to start on a particular machine.
 
 ## Hardware
 

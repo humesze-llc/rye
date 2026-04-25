@@ -1,49 +1,52 @@
-//! Pentatope `w`-slice viewer — sweep a 3-hyperplane through a 4D
-//! pentatope (5-cell) and watch the 3D cross-section morph.
+//! Pentatope `w`-slice viewer — live physics edition.
+//!
+//! A 4D pentatope falls under gravity onto a 4D `y = 0` floor; the
+//! 3D viewport renders the cross-section of the whole 4D scene at
+//! `w = w₀`. Sweep `w₀` to peer through the pentatope's interior;
+//! the cross-section shape morphs as different cells of the 4D body
+//! pass through the slicing hyperplane.
+//!
+//! The 4D floor is a half-space whose normal lives entirely in the
+//! `xyz` directions (`w` component zero), so its cross-section at any
+//! `w₀` is the same 3D plane `y = 0`. The pentatope's vertices, by
+//! contrast, span all four dimensions, so its slice depends strongly
+//! on `w₀`.
 //!
 //! ## Controls
 //!
 //! - Mouse: orbit camera (left-drag), zoom (scroll).
-//! - **↑ / ↓**: nudge `w₀` (the slice level) by ±0.02.
-//! - **A**: toggle automatic sweep (cosine-paced) of `w₀`.
-//! - **R**: reset `w₀` to 0 and re-enable auto-sweep.
-//! - **0–4**: highlight that pentatope cell (the cell index that
-//!   contributes the visible face is colored brighter when its index
-//!   matches the highlight).
-//! - **5 / Space / Esc** combo: 5 or Space clears highlighting; Esc exits.
-//!
-//! ## What you're seeing
-//!
-//! The pentatope is the 4D analogue of the tetrahedron. It has 5
-//! tetrahedral cells, each one the convex hull of 4 of its 5
-//! vertices. Slicing at `w = w₀` produces a convex 3D polyhedron whose
-//! faces correspond to the cells the hyperplane crosses. Each face is
-//! tinted by which cell contributes it — orange / blue / amber /
-//! green / magenta for cells 0..4.
-//!
-//! At critical `w₀` values (the unique `w` of any pentatope vertex)
-//! the cross-section degenerates to a single tetrahedral cell. Sweep
-//! through them and you can see all 5 cells appear in turn.
-//!
-//! Hot-reload the shader by editing `pentatope_slice.wgsl` while the
-//! example runs.
+//! - **↑ / ↓**: nudge `w₀` ±0.02 (disables auto-sweep).
+//! - **A**: toggle automatic `w₀` sweep (cosine-paced, 12 s period).
+//! - **R**: reset everything — physics body, `w₀ = 0`, auto-sweep on.
+//! - **Space**: pause / resume the physics tick. The cross-section
+//!   keeps responding to camera + `w₀` even while paused, so you can
+//!   freeze a frame and inspect it.
+//! - **0–4**: highlight that pentatope cell (its tinted faces glow
+//!   brighter when visible). **5**: clear highlight.
+//! - **Esc**: exit.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
+use bytemuck::{Pod, Zeroable};
+use glam::{Vec3, Vec4};
 use rye_asset::AssetWatcher;
 use rye_camera::OrbitCamera;
 use rye_input::InputState;
-use rye_math::EuclideanR3;
-use rye_render::{
-    device::RenderDevice,
-    graph::RenderNode,
-    raymarch::{RayMarchNode, RayMarchUniforms},
+use rye_math::{EuclideanR3, EuclideanR4, Rotor};
+use rye_physics::{
+    euclidean_r4::{
+        halfspace4_body_r4, pentatope_vertices, polytope_body_r4, register_default_narrowphase,
+    },
+    field::Gravity,
+    World,
 };
+use rye_render::{device::RenderDevice, graph::RenderNode};
 use rye_shader::{ShaderDb, ShaderId};
 use rye_time::FixedTimestep;
+use wgpu::{util::DeviceExt, *};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, WindowEvent},
@@ -55,20 +58,188 @@ use winit::{
 fn shader_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/pentatope_slice")
 }
-
 fn shader_path() -> PathBuf {
     shader_dir().join("pentatope_slice.wgsl")
 }
 
-const TITLE: &str = "Rye — pentatope w-slice";
-
-/// `w` range the slice can travel through. The pentatope's vertices
-/// live at `w = 1` (apex) and `w = −¼` (base 4 vertices), so the
-/// nontrivial range is `[−¼, 1]`. We pad it slightly so the user can
-/// see the cross-section vanish off either end.
+const TITLE: &str = "Rye — pentatope w-slice (live)";
+const PENTATOPE_RADIUS: f32 = 1.0;
 const W_MIN: f32 = -0.35;
 const W_MAX: f32 = 1.10;
 const NO_HIGHLIGHT: f32 = 5.0;
+
+// ---- Custom render uniform -----------------------------------------
+//
+// Bigger than `RayMarchUniforms` because we ship the pentatope's
+// world-space vertices (5 × `vec4<f32>`) every frame. Layout is
+// std140-compatible: `vec3` slots padded to 16 bytes; the trailing
+// `vec4` array packs naturally.
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct SliceUniforms {
+    camera_pos: [f32; 3],
+    _pad0: f32,
+    camera_forward: [f32; 3],
+    _pad1: f32,
+    camera_right: [f32; 3],
+    _pad2: f32,
+    camera_up: [f32; 3],
+    fov_y_tan: f32,
+    resolution: [f32; 2],
+    time: f32,
+    tick: f32,
+    /// `[w_slice, highlight, _, _]`.
+    params: [f32; 4],
+    /// Pentatope vertices in world coordinates, after the body's
+    /// orientation rotor and position translation.
+    pentatope_v: [[f32; 4]; 5],
+}
+
+impl Default for SliceUniforms {
+    fn default() -> Self {
+        Self {
+            camera_pos: [0.0, 0.0, 5.0],
+            _pad0: 0.0,
+            camera_forward: [0.0, 0.0, -1.0],
+            _pad1: 0.0,
+            camera_right: [1.0, 0.0, 0.0],
+            _pad2: 0.0,
+            camera_up: [0.0, 1.0, 0.0],
+            fov_y_tan: (60.0_f32.to_radians() * 0.5).tan(),
+            resolution: [1.0, 1.0],
+            time: 0.0,
+            tick: 0.0,
+            params: [0.0; 4],
+            pentatope_v: [[0.0; 4]; 5],
+        }
+    }
+}
+
+/// Custom render node: same fullscreen-triangle pipeline as
+/// `RayMarchNode`, but with a wider uniform layout to carry the
+/// pentatope vertex data alongside the camera.
+struct SliceNode {
+    pipeline: RenderPipeline,
+    uniforms: SliceUniforms,
+    uniform_buf: Buffer,
+    bind_group: BindGroup,
+}
+
+impl SliceNode {
+    fn new(device: &Device, surface_format: TextureFormat, shader: &ShaderModule) -> Self {
+        let uniforms = SliceUniforms::default();
+        let uniform_buf = device.create_buffer_init(&util::BufferInitDescriptor {
+            label: Some("pentatope_slice uniforms"),
+            contents: bytemuck::bytes_of(&uniforms),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+        let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("pentatope_slice bgl"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("pentatope_slice bg"),
+            layout: &bgl,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: uniform_buf.as_entire_binding(),
+            }],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("pentatope_slice pl"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("pentatope_slice pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: VertexState {
+                module: shader,
+                entry_point: Some("vs_fullscreen"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(ColorTargetState {
+                    format: surface_format,
+                    blend: None,
+                    write_mask: ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        Self {
+            pipeline,
+            uniforms,
+            uniform_buf,
+            bind_group,
+        }
+    }
+
+    fn set_uniforms(&mut self, queue: &Queue, uniforms: SliceUniforms) {
+        self.uniforms = uniforms;
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
+    }
+
+    fn execute_frame(&self, rd: &RenderDevice, view: &TextureView) -> Result<()> {
+        let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("pentatope_slice encoder"),
+        });
+        {
+            let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("pentatope_slice pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(Color::BLACK),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rp.set_pipeline(&self.pipeline);
+            rp.set_bind_group(0, &self.bind_group, &[]);
+            rp.draw(0..3, 0..1);
+        }
+        rd.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+}
+
+impl RenderNode for SliceNode {
+    fn name(&self) -> &'static str {
+        "pentatope_slice"
+    }
+    fn execute(&mut self, rd: &RenderDevice, view: &TextureView) -> Result<()> {
+        self.execute_frame(rd, view)
+    }
+}
+
+// ---- App -----------------------------------------------------------
 
 struct App {
     window: Option<Arc<Window>>,
@@ -79,19 +250,25 @@ struct App {
     shader_id: Option<ShaderId>,
     shader_gen: u64,
     watcher: Option<AssetWatcher>,
-    ray_march: Option<RayMarchNode>,
+    node: Option<SliceNode>,
 
     timestep: FixedTimestep,
     camera: OrbitCamera,
     input: InputState,
     start: Instant,
 
-    // Slice state.
+    // Physics.
+    world: World<EuclideanR4>,
+    pentatope_id: usize,
+    paused: bool,
+
+    // Slice.
     w_slice: f32,
     auto_sweep: bool,
+    sweep_anchor: Instant,
     highlight: f32,
 
-    // FPS / title bookkeeping.
+    // FPS bookkeeping.
     frame_count: u32,
     last_fps_update: Instant,
     fps: f32,
@@ -99,6 +276,18 @@ struct App {
 
 impl App {
     fn new() -> Self {
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+        world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
+        // 4D floor first so it has stable id 0.
+        let _floor_id = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+        let pentatope_id = world.push_body(polytope_body_r4(
+            Vec4::new(0.0, 4.0, 0.0, 0.0),
+            Vec4::ZERO,
+            pentatope_vertices(PENTATOPE_RADIUS),
+            1.0,
+        ));
+
         Self {
             window: None,
             rd: None,
@@ -107,19 +296,23 @@ impl App {
             shader_id: None,
             shader_gen: 0,
             watcher: None,
-            ray_march: None,
+            node: None,
             timestep: FixedTimestep::new(60),
             camera: {
-                // Pull the camera back so the cross-section
-                // (≤ √2 across at any w₀) fits in view comfortably.
                 let mut c = OrbitCamera::default();
-                c.set_orbit(3.0, 0.45);
+                // Pull camera back & up so the pentatope settling on
+                // y=0 is in frame.
+                c.set_orbit(8.0, 0.35);
                 c
             },
             input: InputState::default(),
             start: Instant::now(),
+            world,
+            pentatope_id,
+            paused: false,
             w_slice: 0.0,
             auto_sweep: true,
+            sweep_anchor: Instant::now(),
             highlight: NO_HIGHLIGHT,
             frame_count: 0,
             last_fps_update: Instant::now(),
@@ -127,17 +320,31 @@ impl App {
         }
     }
 
-    /// Update `w_slice` per tick when auto-sweep is on. Cosine pacing
-    /// makes the slider linger at the extremes (where the
-    /// cross-section degenerates to a single cell) so the user can
-    /// see those configurations clearly.
+    fn reset(&mut self) {
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+        world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
+        let _floor_id = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+        let pentatope_id = world.push_body(polytope_body_r4(
+            Vec4::new(0.0, 4.0, 0.0, 0.0),
+            Vec4::ZERO,
+            pentatope_vertices(PENTATOPE_RADIUS),
+            1.0,
+        ));
+        self.world = world;
+        self.pentatope_id = pentatope_id;
+        self.w_slice = 0.0;
+        self.auto_sweep = true;
+        self.sweep_anchor = Instant::now();
+        self.paused = false;
+    }
+
     fn advance_auto_sweep(&mut self) {
         if !self.auto_sweep {
             return;
         }
-        // 12-second period; eased so the motion slows at the ends.
-        let phase = (self.start.elapsed().as_secs_f32() / 12.0) * std::f32::consts::TAU;
-        let eased = 0.5 * (1.0 - phase.cos()); // 0..1
+        let phase = (self.sweep_anchor.elapsed().as_secs_f32() / 12.0) * std::f32::consts::TAU;
+        let eased = 0.5 * (1.0 - phase.cos());
         self.w_slice = W_MIN + (W_MAX - W_MIN) * eased;
     }
 
@@ -160,30 +367,40 @@ impl App {
             KeyCode::KeyA => {
                 self.auto_sweep = !self.auto_sweep;
                 if self.auto_sweep {
-                    // Reset start so the cosine phase is consistent.
-                    self.start = Instant::now();
+                    self.sweep_anchor = Instant::now();
                 }
             }
-            KeyCode::KeyR => {
-                self.w_slice = 0.0;
-                self.auto_sweep = true;
-                self.start = Instant::now();
-            }
+            KeyCode::KeyR => self.reset(),
+            KeyCode::Space => self.paused = !self.paused,
             KeyCode::Digit0 => self.highlight = 0.0,
             KeyCode::Digit1 => self.highlight = 1.0,
             KeyCode::Digit2 => self.highlight = 2.0,
             KeyCode::Digit3 => self.highlight = 3.0,
             KeyCode::Digit4 => self.highlight = 4.0,
-            KeyCode::Digit5 | KeyCode::Space => self.highlight = NO_HIGHLIGHT,
+            KeyCode::Digit5 => self.highlight = NO_HIGHLIGHT,
             _ => {}
         }
     }
 
-    fn current_uniforms(&self) -> Option<RayMarchUniforms> {
+    /// World-space pentatope vertices: each body-local vertex
+    /// rotated by the body's orientation rotor and translated by its
+    /// position. Sent to the shader every frame.
+    fn pentatope_world_vertices(&self) -> [[f32; 4]; 5] {
+        let body = &self.world.bodies[self.pentatope_id];
+        let local = pentatope_vertices(PENTATOPE_RADIUS);
+        let mut out = [[0.0_f32; 4]; 5];
+        for i in 0..5 {
+            let v_world = body.orientation.rotation.apply(local[i]) + body.position;
+            out[i] = v_world.to_array();
+        }
+        out
+    }
+
+    fn current_uniforms(&self) -> Option<SliceUniforms> {
         let rd = self.rd.as_ref()?;
         let view = self.camera.view();
         let t = self.start.elapsed().as_secs_f32();
-        Some(RayMarchUniforms {
+        Some(SliceUniforms {
             camera_pos: view.position.to_array(),
             _pad0: 0.0,
             camera_forward: view.forward.to_array(),
@@ -199,7 +416,34 @@ impl App {
             time: t,
             tick: self.timestep.tick() as f32,
             params: [self.w_slice, self.highlight, 0.0, 0.0],
+            pentatope_v: self.pentatope_world_vertices(),
         })
+    }
+
+    fn handle_hot_reload(&mut self) {
+        let (Some(watcher), Some(shaders), Some(id), Some(rd)) = (
+            self.watcher.as_ref(),
+            self.shaders.as_mut(),
+            self.shader_id,
+            self.rd.as_ref(),
+        ) else {
+            return;
+        };
+        let events = watcher.poll();
+        if events.is_empty() {
+            return;
+        }
+        shaders.apply_events(&events, &EuclideanR3);
+        let new_gen = shaders.generation(id);
+        if new_gen != self.shader_gen {
+            tracing::info!("rebuilding SliceNode for shader gen {new_gen}");
+            self.shader_gen = new_gen;
+            self.node = Some(SliceNode::new(
+                &rd.device,
+                rd.surface_bundle.config.format,
+                shaders.module(id),
+            ));
+        }
     }
 }
 
@@ -220,11 +464,9 @@ impl ApplicationHandler for App {
             .load(shader_path(), &EuclideanR3)
             .expect("load pentatope_slice.wgsl");
         let gen = shaders.generation(id);
-
         let mut watcher = AssetWatcher::new().expect("asset watcher");
         watcher.watch(shader_dir()).expect("watch shader dir");
-
-        let ray_march = RayMarchNode::new(
+        let node = SliceNode::new(
             &rd.device,
             rd.surface_bundle.config.format,
             shaders.module(id),
@@ -236,9 +478,10 @@ impl ApplicationHandler for App {
         self.shader_id = Some(id);
         self.shader_gen = gen;
         self.watcher = Some(watcher);
-        self.ray_march = Some(ray_march);
+        self.node = Some(node);
         self.minimized = false;
         self.start = Instant::now();
+        self.sweep_anchor = Instant::now();
 
         win.set_visible(true);
         win.request_redraw();
@@ -253,10 +496,8 @@ impl ApplicationHandler for App {
         let Some(win) = self.window.clone() else {
             return;
         };
-
         match ev {
             WindowEvent::CloseRequested => elwt.exit(),
-
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
@@ -267,7 +508,6 @@ impl ApplicationHandler for App {
                 self.input.key_input(event.physical_key, event.state);
                 self.handle_keyboard(event.physical_key, event.state);
             }
-
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.cursor_moved(position.x, position.y);
             }
@@ -282,7 +522,6 @@ impl ApplicationHandler for App {
             WindowEvent::MouseWheel { delta, .. } => {
                 self.input.mouse_wheel(delta);
             }
-
             WindowEvent::Resized(size) => {
                 self.minimized = size.width == 0 || size.height == 0;
                 if !self.minimized {
@@ -291,37 +530,41 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-
             WindowEvent::RedrawRequested => {
                 if self.minimized {
                     return;
                 }
-
                 let ticks = self.timestep.advance(Instant::now());
-                if !ticks.is_empty() {
-                    let input = self.input.take_frame();
-                    self.camera.advance(input);
+                let n_ticks = ticks.count();
+                if n_ticks > 0 {
+                    let frame_input = self.input.take_frame();
+                    self.camera.advance(frame_input);
                     self.advance_auto_sweep();
+                    if !self.paused {
+                        // One physics step per fixed tick (60 Hz).
+                        // Cap at 4 to prevent the spiral of death if
+                        // the renderer ever stalls.
+                        for _ in 0..n_ticks.min(4) {
+                            self.world.step(1.0 / 60.0);
+                        }
+                    }
                 }
-
                 self.handle_hot_reload();
 
-                // FPS update + title.
+                // FPS / title.
                 self.frame_count += 1;
                 let elapsed = self.last_fps_update.elapsed().as_secs_f32();
                 if elapsed >= 1.0 {
                     self.fps = self.frame_count as f32 / elapsed;
                     self.frame_count = 0;
                     self.last_fps_update = Instant::now();
+                    let body = &self.world.bodies[self.pentatope_id];
+                    let p = body.position;
+                    let pause = if self.paused { " [paused]" } else { "" };
                     let mode = if self.auto_sweep { "auto" } else { "manual" };
-                    let hl = if self.highlight < 5.0 {
-                        format!(", cell {}", self.highlight as u32)
-                    } else {
-                        String::new()
-                    };
                     win.set_title(&format!(
-                        "{TITLE} | {:.0} fps | w₀={:+.3} ({mode}{hl})",
-                        self.fps, self.w_slice
+                        "{TITLE} | {:.0} fps | w₀={:+.3} ({mode}){pause} | y={:+.2} w_pos={:+.2}",
+                        self.fps, self.w_slice, p.y, p.w
                     ));
                 }
 
@@ -329,14 +572,13 @@ impl ApplicationHandler for App {
                     return;
                 };
                 let Some(rd) = self.rd.as_ref() else { return };
-                if let Some(node) = self.ray_march.as_mut() {
+                if let Some(node) = self.node.as_mut() {
                     node.set_uniforms(&rd.queue, uniforms);
                 }
-
                 match rd.begin_frame() {
                     Ok((frame, view)) => {
-                        if let Some(node) = self.ray_march.as_mut() {
-                            if let Err(e) = node.execute(rd, &view) {
+                        if let Some(node) = self.node.as_mut() {
+                            if let Err(e) = node.execute_frame(rd, &view) {
                                 tracing::error!("render error: {e:#}");
                             }
                         }
@@ -344,16 +586,16 @@ impl ApplicationHandler for App {
                         win.request_redraw();
                     }
                     Err(err) => match err {
-                        wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated => {
+                        SurfaceError::Lost | SurfaceError::Outdated => {
                             if let Some(rd) = &mut self.rd {
                                 let size = rd.surface_bundle.size;
                                 rd.resize(size);
                             }
                             win.request_redraw();
                         }
-                        wgpu::SurfaceError::Timeout => win.request_redraw(),
-                        wgpu::SurfaceError::OutOfMemory => elwt.exit(),
-                        wgpu::SurfaceError::Other => {
+                        SurfaceError::Timeout => win.request_redraw(),
+                        SurfaceError::OutOfMemory => elwt.exit(),
+                        SurfaceError::Other => {
                             tracing::error!("surface error: {err:?}");
                             win.request_redraw();
                         }
@@ -365,44 +607,16 @@ impl ApplicationHandler for App {
     }
 }
 
-impl App {
-    fn handle_hot_reload(&mut self) {
-        let (Some(watcher), Some(shaders), Some(id), Some(rd)) = (
-            self.watcher.as_ref(),
-            self.shaders.as_mut(),
-            self.shader_id,
-            self.rd.as_ref(),
-        ) else {
-            return;
-        };
-        let events = watcher.poll();
-        if events.is_empty() {
-            return;
-        }
-        shaders.apply_events(&events, &EuclideanR3);
-        let new_gen = shaders.generation(id);
-        if new_gen != self.shader_gen {
-            tracing::info!("rebuilding RayMarchNode for shader gen {new_gen}");
-            self.shader_gen = new_gen;
-            self.ray_march = Some(RayMarchNode::new(
-                &rd.device,
-                rd.surface_bundle.config.format,
-                shaders.module(id),
-            ));
-        }
-    }
-}
-
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-
     let elwt = EventLoop::new()?;
     elwt.set_control_flow(winit::event_loop::ControlFlow::Poll);
     let mut app = App::new();
     elwt.run_app(&mut app)?;
+    let _ = Vec3::ZERO;
     Ok(())
 }

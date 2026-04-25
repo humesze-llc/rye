@@ -1,15 +1,19 @@
-// Pentatope w-slice viewer.
+// Pentatope w-slice viewer — live physics edition.
 //
-// The pentatope is the 4D analogue of the tetrahedron: 5 vertices, 10
-// edges, 10 triangular faces, 5 tetrahedral cells. Slicing it by a
-// 3-hyperplane `w = w₀` produces a 3D convex polyhedron that morphs
-// as `w₀` sweeps from −¼ (the "base" cell) up to +1 (the apex).
+// Differences from the static viewer that preceded this:
 //
-// At critical w₀ values the cross-section degenerates to one of the
-// pentatope's tetrahedral cells; between those values it interpolates
-// through triangular bipyramids and other shapes.
+// - The pentatope's 4D vertices are *not* hardcoded constants; they
+//   come in via the uniform buffer each frame, transformed by the
+//   physics body's position + Rotor4 orientation on the CPU.
+// - There's a 4D ground at `y = 0` (a half-space whose normal is
+//   `+y` in 4D, with `w` component zero). Its cross-section at any
+//   `w = w₀` is the 3D half-space `y ≥ 0` — i.e. a horizontal floor
+//   plane that doesn't move when you change `w₀`.
 //
-// Edit while the example runs; ShaderDb hot-reloads on save.
+// Rendering: ray march the union of the pentatope cross-section and
+// the floor plane. Pentatope faces are tinted by the cell that
+// contributes them; floor is a neutral checkerboard so you can see
+// the pentatope's shadow-like resting position.
 
 struct Uniforms {
     camera_pos: vec3<f32>,
@@ -22,54 +26,29 @@ struct Uniforms {
     tick: f32,
     // params[0] = w₀ slice value
     // params[1] = highlight cell index (0..4) or 5 for "no highlight"
+    // params[2..4] reserved
     w_slice: f32,
     highlight: f32,
     pad0: f32,
     pad1: f32,
+    // Pentatope world-space vertices, transformed each frame on the
+    // CPU from local body coords by the body's Rotor4 orientation
+    // and translated by its position. Five `vec4<f32>` = 80 bytes.
+    pentatope_v: array<vec4<f32>, 5>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
 @vertex
 fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
-    // Big-triangle fullscreen quad.
     let uv = vec2<f32>(f32((vid << 1u) & 2u), f32(vid & 2u));
     return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
 }
 
-// ---- Pentatope vertices (regular 4-simplex, circumradius = 1) ----
-// Same closed form as `pentatope_vertices(1.0)` in `rye-physics`:
-// apex at +w, four base vertices at w = −¼ on a tetrahedron of
-// circumradius √15/4 (so all 10 edge lengths match the apex-to-base
-// edge length).
-const T_BASE: f32 = 0.5590169943749475;  // √15/4 ÷ √3
-
-fn pentatope_v(i: u32) -> vec4<f32> {
-    switch (i) {
-        case 0u: { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
-        case 1u: { return vec4<f32>( T_BASE,  T_BASE,  T_BASE, -0.25); }
-        case 2u: { return vec4<f32>( T_BASE, -T_BASE, -T_BASE, -0.25); }
-        case 3u: { return vec4<f32>(-T_BASE,  T_BASE, -T_BASE, -0.25); }
-        default: { return vec4<f32>(-T_BASE, -T_BASE,  T_BASE, -0.25); }
-    }
-}
-
-// SDF of the cross-section polyhedron formed by slicing the pentatope
-// at `w = w0`. The polyhedron is bounded by up to 5 planes — one per
-// tetrahedral cell of the pentatope that the hyperplane crosses.
-//
-// For each cell (a tetrahedron, the convex hull of 4 of the 5
-// pentatope vertices), we find which of its 6 edges straddle `w₀`,
-// project those intersection points to 3D (drop the `w` component),
-// and use any 3 of the resulting points to define the plane that this
-// cell contributes to the cross-section's surface. The signed
-// distance to the polyhedron is then `max` of the per-face signed
-// distances — the standard "max of half-spaces" SDF for a convex
-// solid. Only an upper bound for points well outside, but Lipschitz
-// and exact at the surface, which is all the raymarch needs.
-//
-// Also returns the index of the cell that contributes the "closest"
-// face (largest signed distance) for highlighting in the shading.
+// SDF of the cross-section polyhedron formed by slicing the
+// pentatope at `w = w₀`. See the pre-edit version of this file for
+// the algorithm prose; the only delta here is reading `pentatope_v`
+// from the uniform buffer instead of using literal constants.
 struct SliceHit {
     dist: f32,
     cell: u32,
@@ -80,19 +59,18 @@ fn slice_sdf(p: vec3<f32>, w0: f32) -> SliceHit {
     var any_face: bool = false;
     var dominant_cell: u32 = 5u;
 
-    // The 5 pentatope cells, each excluding one vertex.
     for (var ci: u32 = 0u; ci < 5u; ci = ci + 1u) {
-        // Collect the 4 vertices of this cell into a local array.
+        // Cell ci is the tetrahedron of all pentatope vertices except ci.
         var cell_v: array<vec4<f32>, 4>;
         var n: i32 = 0;
         for (var vi: u32 = 0u; vi < 5u; vi = vi + 1u) {
             if (vi != ci) {
-                cell_v[n] = pentatope_v(vi);
+                cell_v[n] = u.pentatope_v[vi];
                 n = n + 1;
             }
         }
 
-        // 6 edges of the tetrahedron: (i, j) for 0 ≤ i < j < 4.
+        // 6 cell edges → up to 4 cross-section vertices.
         var verts: array<vec3<f32>, 4>;
         var nv: i32 = 0;
         for (var i: i32 = 0; i < 4; i = i + 1) {
@@ -102,7 +80,6 @@ fn slice_sdf(p: vec3<f32>, w0: f32) -> SliceHit {
                 let dwa = va.w - w0;
                 let dwb = vb.w - w0;
                 if (dwa * dwb < 0.0) {
-                    // Edge crosses the slice hyperplane.
                     let t = dwa / (dwa - dwb);
                     let pmix = mix(va, vb, t);
                     if (nv < 4) {
@@ -114,69 +91,95 @@ fn slice_sdf(p: vec3<f32>, w0: f32) -> SliceHit {
         }
 
         if (nv >= 3) {
-            // Plane normal from the first 3 cross-section vertices.
             let n_raw = cross(verts[1] - verts[0], verts[2] - verts[0]);
             let len_sq = dot(n_raw, n_raw);
             if (len_sq > 1.0e-12) {
                 let n_unit = n_raw / sqrt(len_sq);
-                // The pentatope's centroid is at origin; whichever
-                // half-space `+n` ends up in for `verts[0]` is
-                // outward (origin on opposite side = interior). When
-                // origin is on the plane, the cell is degenerate and
-                // we skip it.
-                let plane_offset = dot(n_unit, verts[0]);
-                if (abs(plane_offset) > 1.0e-6) {
-                    var outward_normal: vec3<f32>;
-                    var face_offset: f32;
-                    if (plane_offset > 0.0) {
-                        outward_normal = n_unit;
-                        face_offset = plane_offset;
-                    } else {
-                        outward_normal = -n_unit;
-                        face_offset = -plane_offset;
-                    }
-                    let face_dist = dot(p, outward_normal) - face_offset;
-                    if (!any_face || face_dist > dist) {
-                        dist = face_dist;
-                        dominant_cell = ci;
-                    }
-                    any_face = true;
+                // Orient outward via the body's centroid (uniform-
+                // average of the 5 transformed vertices) — that's an
+                // interior point regardless of w₀, more robust than
+                // assuming the world origin is interior.
+                let centroid = (
+                    u.pentatope_v[0]
+                    + u.pentatope_v[1]
+                    + u.pentatope_v[2]
+                    + u.pentatope_v[3]
+                    + u.pentatope_v[4]
+                ).xyz * 0.2;
+                let to_interior = centroid - verts[0];
+                var outward_normal: vec3<f32>;
+                var face_offset: f32;
+                if (dot(n_unit, to_interior) > 0.0) {
+                    outward_normal = -n_unit;
+                } else {
+                    outward_normal = n_unit;
                 }
+                face_offset = dot(outward_normal, verts[0]);
+                let face_dist = dot(p, outward_normal) - face_offset;
+                if (!any_face || face_dist > dist) {
+                    dist = face_dist;
+                    dominant_cell = ci;
+                }
+                any_face = true;
             }
         }
     }
 
     if (!any_face) {
-        // The hyperplane doesn't cross the pentatope at this `w0`;
-        // ray sees nothing.
         return SliceHit(1.0e9, 5u);
     }
     return SliceHit(dist, dominant_cell);
 }
 
-// ---- Lighting helpers ----------------------------------------------
+// Combined scene: pentatope cross-section + 4D floor at y = 0. The
+// floor's 4D normal is `+y` with w-component zero, so its cross-
+// section at any w₀ is the 3D half-space `y ≥ 0`. SDF = `p.y`.
+struct SceneHit {
+    dist: f32,
+    // 0..4: pentatope cell, 5: ground, 6: empty
+    material: u32,
+};
+
+fn scene_sdf(p: vec3<f32>, w0: f32) -> SceneHit {
+    let pent = slice_sdf(p, w0);
+    let ground = p.y;
+    if (pent.dist < ground) {
+        return SceneHit(pent.dist, pent.cell);
+    } else {
+        return SceneHit(ground, 5u);
+    }
+}
+
+// ---- Shading helpers ------------------------------------------------
 
 fn cell_color(cell: u32) -> vec3<f32> {
-    // Five distinct hues so the user can see which tetrahedral cell
-    // is contributing the dominant face.
     switch (cell) {
-        case 0u: { return vec3<f32>(0.95, 0.45, 0.25); }   // warm orange
-        case 1u: { return vec3<f32>(0.30, 0.75, 0.95); }   // sky blue
-        case 2u: { return vec3<f32>(0.95, 0.85, 0.30); }   // amber yellow
-        case 3u: { return vec3<f32>(0.55, 0.95, 0.50); }   // green
-        case 4u: { return vec3<f32>(0.85, 0.45, 0.95); }   // magenta
+        case 0u: { return vec3<f32>(0.95, 0.45, 0.25); }
+        case 1u: { return vec3<f32>(0.30, 0.75, 0.95); }
+        case 2u: { return vec3<f32>(0.95, 0.85, 0.30); }
+        case 3u: { return vec3<f32>(0.55, 0.95, 0.50); }
+        case 4u: { return vec3<f32>(0.85, 0.45, 0.95); }
         default: { return vec3<f32>(0.7,  0.7,  0.7);  }
     }
 }
 
+fn ground_color(p: vec3<f32>) -> vec3<f32> {
+    // Soft checkerboard, 1m squares. Helps depth perception.
+    let g = floor(p.x) + floor(p.z);
+    let alt = abs(g - 2.0 * floor(g * 0.5));
+    let dark = vec3<f32>(0.18, 0.20, 0.24);
+    let light = vec3<f32>(0.30, 0.32, 0.36);
+    return mix(dark, light, alt);
+}
+
 fn estimate_normal(p: vec3<f32>, w0: f32) -> vec3<f32> {
-    let h = 0.0008;
-    let dx = slice_sdf(p + vec3<f32>(h, 0.0, 0.0), w0).dist
-           - slice_sdf(p - vec3<f32>(h, 0.0, 0.0), w0).dist;
-    let dy = slice_sdf(p + vec3<f32>(0.0, h, 0.0), w0).dist
-           - slice_sdf(p - vec3<f32>(0.0, h, 0.0), w0).dist;
-    let dz = slice_sdf(p + vec3<f32>(0.0, 0.0, h), w0).dist
-           - slice_sdf(p - vec3<f32>(0.0, 0.0, h), w0).dist;
+    let h = 0.001;
+    let dx = scene_sdf(p + vec3<f32>(h, 0.0, 0.0), w0).dist
+           - scene_sdf(p - vec3<f32>(h, 0.0, 0.0), w0).dist;
+    let dy = scene_sdf(p + vec3<f32>(0.0, h, 0.0), w0).dist
+           - scene_sdf(p - vec3<f32>(0.0, h, 0.0), w0).dist;
+    let dz = scene_sdf(p + vec3<f32>(0.0, 0.0, h), w0).dist
+           - scene_sdf(p - vec3<f32>(0.0, 0.0, h), w0).dist;
     return normalize(vec3<f32>(dx, dy, dz));
 }
 
@@ -185,34 +188,29 @@ fn sky(rd: vec3<f32>) -> vec3<f32> {
     return mix(vec3<f32>(0.04, 0.05, 0.10), vec3<f32>(0.10, 0.13, 0.22), t);
 }
 
-// ---- Fragment shader -----------------------------------------------
-
 @fragment
 fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
-    // Build view ray from screen UV.
     let uv = (frag_pos.xy / u.resolution) * 2.0 - vec2<f32>(1.0, 1.0);
     let aspect = u.resolution.x / u.resolution.y;
-    let ndc = vec2<f32>(uv.x * aspect, -uv.y);  // flip y for screen coords
+    let ndc = vec2<f32>(uv.x * aspect, -uv.y);
     let rd = normalize(
         u.camera_forward
         + u.camera_right * (ndc.x * u.fov_y_tan)
         + u.camera_up    * (ndc.y * u.fov_y_tan)
     );
     let ro = u.camera_pos;
-
     let w0 = u.w_slice;
 
-    // Sphere-trace the cross-section's max-of-half-spaces SDF.
     var t: f32 = 0.0;
-    let max_t = 25.0;
-    var hit_cell: u32 = 5u;
+    let max_t = 60.0;
+    var hit_material: u32 = 6u;
     var hit = false;
-    for (var i: i32 = 0; i < 128; i = i + 1) {
+    for (var i: i32 = 0; i < 192; i = i + 1) {
         let p = ro + rd * t;
-        let s = slice_sdf(p, w0);
+        let s = scene_sdf(p, w0);
         if (s.dist < 0.001) {
             hit = true;
-            hit_cell = s.cell;
+            hit_material = s.material;
             break;
         }
         t = t + max(s.dist, 0.005);
@@ -229,14 +227,18 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     let lambert = max(dot(n, light_dir), 0.0);
     let ambient = 0.20;
 
-    let base = cell_color(hit_cell);
-    let highlighted = u.highlight >= 0.0 && u.highlight < 5.0
-        && u32(u.highlight) == hit_cell;
-    let tint = select(base, base * 1.4 + vec3<f32>(0.1, 0.1, 0.1), highlighted);
-    let lit = tint * (ambient + lambert * 0.85);
+    var base: vec3<f32>;
+    if (hit_material == 5u) {
+        base = ground_color(p_hit);
+    } else {
+        let c = cell_color(hit_material);
+        let highlighted = u.highlight >= 0.0 && u.highlight < 5.0
+            && u32(u.highlight) == hit_material;
+        base = select(c, c * 1.4 + vec3<f32>(0.1, 0.1, 0.1), highlighted);
+    }
 
-    // Soft fog with distance for depth cue.
-    let fog = 1.0 - exp(-t * 0.06);
-    let final_color = mix(lit, sky(rd), fog * 0.45);
+    let lit = base * (ambient + lambert * 0.85);
+    let fog = 1.0 - exp(-t * 0.05);
+    let final_color = mix(lit, sky(rd), fog * 0.5);
     return vec4<f32>(final_color, 1.0);
 }

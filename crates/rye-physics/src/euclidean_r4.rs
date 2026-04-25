@@ -29,6 +29,22 @@ use crate::integrator::PhysicsSpace;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
+/// Linear velocity at offset `r` due to angular velocity bivector
+/// `omega` — the 4D analogue of 3D's `ω × r`. For `ω = e_xy` and
+/// `r = e_x` this returns `+e_y` (rotation in the +xy plane sends
+/// the +x axis toward +y), matching the rigid-body convention used
+/// throughout `rye-physics`.
+///
+/// This is the **negation** of the Clifford left-contraction
+/// `omega.contract_vec(r)`. See [`Bivector4::contract_vec`] for why
+/// the math primitive is kept Clifford-pure: keeping the sign flip
+/// at the physics layer means future generic-`N` callers get
+/// consistent contraction semantics across dimensions, and a future
+/// physics-on-`N` path can wrap this same way without surprise.
+pub fn omega_cross_r(omega: Bivector4, r: glam::Vec4) -> glam::Vec4 {
+    -omega.contract_vec(r)
+}
+
 /// Inverse isotropic moment of inertia, treating static or zero-inertia
 /// bodies as infinite (returns 0).
 fn inv_inertia(body: &RigidBody<EuclideanR4>) -> f32 {
@@ -79,10 +95,12 @@ impl PhysicsSpace for EuclideanR4 {
     }
 
     fn velocity_at_point(&self, body: &RigidBody<EuclideanR4>, p: Vec4) -> Vec4 {
-        // `v(r) = v_linear + ω⌋r` where `ω⌋r` is the 1-vector part of
-        // the bivector-vector contraction — the 4D analogue of `ω × r`.
+        // `v(r) = v_linear + ω × r` — `omega_cross_r` is the
+        // physics-convention version of the bivector contraction (the
+        // negated Clifford left-contraction `ω⌋r`); see its doc for
+        // why the negation lives here rather than in `Bivector4`.
         let r = p - body.position;
-        body.velocity + body.angular_velocity.contract_vec(r)
+        body.velocity + omega_cross_r(body.angular_velocity, r)
     }
 
     fn effective_mass_inv(
@@ -253,8 +271,35 @@ fn polytope4_bounding_radius(local_vertices: &[Vec4]) -> f32 {
         .sqrt()
 }
 
-fn world_vertices4(local: &[Vec4], pos: Vec4, rot: rye_math::Rotor4) -> Vec<Vec4> {
-    local.iter().map(|&v| rot.apply(v) + pos).collect()
+/// Maximum vertex count for any 4D polytope collider. The 24-cell
+/// is the densest regular 4-polytope at 24 vertices; non-regular
+/// shapes with more vertices would need a larger constant or a
+/// different storage strategy. Hitting this limit without a
+/// recompile would silently truncate vertices and produce wrong
+/// collision results, so we assert in debug builds.
+pub(crate) const MAX_POLYTOPE4_VERTICES: usize = 32;
+
+/// Transform body-local vertices to world space, writing into the
+/// caller's stack-allocated buffer. Returns a slice of the populated
+/// prefix. Hot path: called once per polytope per polytope-pair per
+/// tick, so we don't allocate.
+fn world_vertices4_into<'a>(
+    local: &[Vec4],
+    pos: Vec4,
+    rot: rye_math::Rotor4,
+    out: &'a mut [Vec4; MAX_POLYTOPE4_VERTICES],
+) -> &'a [Vec4] {
+    debug_assert!(
+        local.len() <= MAX_POLYTOPE4_VERTICES,
+        "polytope vertex count {} exceeds MAX_POLYTOPE4_VERTICES = {}",
+        local.len(),
+        MAX_POLYTOPE4_VERTICES
+    );
+    let n = local.len().min(MAX_POLYTOPE4_VERTICES);
+    for i in 0..n {
+        out[i] = rot.apply(local[i]) + pos;
+    }
+    &out[..n]
 }
 
 /// Minimum and maximum penetration depths EPA will return; reject
@@ -308,10 +353,12 @@ fn polytope_polytope_r4(
         return None;
     }
 
-    let va = world_vertices4(va_local, a.position, a.orientation.rotation);
-    let vb = world_vertices4(vb_local, b.position, b.orientation.rotation);
-    let hull_a = ConvexHull4 { vertices: &va };
-    let hull_b = ConvexHull4 { vertices: &vb };
+    let mut buf_a = [Vec4::ZERO; MAX_POLYTOPE4_VERTICES];
+    let mut buf_b = [Vec4::ZERO; MAX_POLYTOPE4_VERTICES];
+    let va = world_vertices4_into(va_local, a.position, a.orientation.rotation, &mut buf_a);
+    let vb = world_vertices4_into(vb_local, b.position, b.orientation.rotation, &mut buf_b);
+    let hull_a = ConvexHull4 { vertices: va };
+    let hull_b = ConvexHull4 { vertices: vb };
 
     let initial_dir = b.position - a.position;
     let simplex = match gjk_intersect_r4(&hull_a, &hull_b, initial_dir) {
@@ -341,12 +388,13 @@ fn sphere_polytope_r4(
         return None;
     }
 
-    let vb = world_vertices4(vb_local, b.position, b.orientation.rotation);
+    let mut buf_b = [Vec4::ZERO; MAX_POLYTOPE4_VERTICES];
+    let vb = world_vertices4_into(vb_local, b.position, b.orientation.rotation, &mut buf_b);
     let support_a = GjkSphere4 {
         center: a.position,
         radius,
     };
-    let support_b = ConvexHull4 { vertices: &vb };
+    let support_b = ConvexHull4 { vertices: vb };
     let initial_dir = b.position - a.position;
     let simplex = match gjk_intersect_r4(&support_a, &support_b, initial_dir) {
         GjkResult4::Intersecting { simplex } => simplex,
@@ -699,6 +747,70 @@ mod tests {
         assert!(
             omega_mag2.is_finite() && omega_mag2 < 4.0,
             "pentatope angular velocity blew up: |ω|² = {omega_mag2}, ω = {omega:?}"
+        );
+    }
+
+    /// 4D tesseract dropped onto a 4D floor: this is the harder
+    /// settling case for the polytope-halfspace narrowphase. A
+    /// tesseract resting on a cell-face has eight vertices
+    /// simultaneously co-planar with the floor; the single-deepest-
+    /// vertex narrowphase returns one contact per frame, but the
+    /// `Manifold` accumulator picks up the others over a few frames
+    /// (each frame's "deepest" varies by f32 noise) until PGS has
+    /// enough constraints to stop the body from rocking.
+    ///
+    /// If this test ever starts failing with a "still moving" or
+    /// non-trivial angular velocity, that's the signal that
+    /// single-contact-per-call has run out of headroom and the
+    /// narrowphase needs to start emitting all
+    /// at-or-below-slop vertices in a single call (multi-contact
+    /// reduction, mirroring what the 3D path will eventually need
+    /// for thin slabs).
+    #[test]
+    fn tesseract_settles_on_4d_floor() {
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+        world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
+        let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+        let body_id = world.push_body(polytope_body_r4(
+            Vec4::new(0.0, 3.0, 0.0, 0.0),
+            Vec4::ZERO,
+            tesseract_vertices(0.5),
+            1.0,
+        ));
+        world.bodies[floor].restitution = 0.0;
+        world.bodies[body_id].restitution = 0.0;
+
+        for _ in 0..600 {
+            world.step(1.0 / 60.0);
+        }
+        let body = &world.bodies[body_id];
+
+        // Tesseract circumradius is 0.5 with edge half-length 0.25.
+        // Resting on a cell-face puts the centroid at ≈ y = 0.25.
+        // We allow a generous band because the body might also rest
+        // on an edge or a 2-face, which gives different heights.
+        assert!(
+            body.position.y.is_finite() && (-0.3..=1.0).contains(&body.position.y),
+            "tesseract position out of expected resting band: y = {}",
+            body.position.y
+        );
+        assert!(
+            body.velocity.length() < 1.5,
+            "tesseract still moving after 10 s: |v| = {}, v = {:?}",
+            body.velocity.length(),
+            body.velocity
+        );
+        let omega = body.angular_velocity;
+        let omega_mag2 = omega.xy * omega.xy
+            + omega.xz * omega.xz
+            + omega.xw * omega.xw
+            + omega.yz * omega.yz
+            + omega.yw * omega.yw
+            + omega.zw * omega.zw;
+        assert!(
+            omega_mag2.is_finite() && omega_mag2 < 4.0,
+            "tesseract angular velocity blew up: |ω|² = {omega_mag2}, ω = {omega:?}"
         );
     }
 

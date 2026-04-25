@@ -22,10 +22,6 @@ use crate::integrator::PhysicsSpace;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
-/// Coulomb friction coefficient for 3D contacts. Same value as
-/// `FRICTION_R2` for visual consistency across the 2D and 3D demos.
-const FRICTION_R3: f32 = 0.35;
-
 /// Convert a [`Rotor3`] to a [`Quat`] via the mapping
 /// `(s, xy, yz, zx) ↔ (w, z, x, y)`. This is the correspondence that
 /// makes `Rotor3::apply` agree with `Quat::mul_vec3` for the three
@@ -33,6 +29,38 @@ const FRICTION_R3: f32 = 0.35;
 /// in `rye-math`.
 fn rotor_to_quat(r: rye_math::Rotor3) -> Quat {
     Quat::from_xyzw(r.yz, r.zx, r.xy, r.s)
+}
+
+/// Velocity at body-offset `r` from the body's rotation:
+/// `v(r) = ω⌋r`. Components match `(ω as pseudovector) × r`.
+fn omega_cross_r(w: Bivector3, r: Vec3) -> Vec3 {
+    Vec3::new(
+        w.zx * r.z - w.xy * r.y,
+        w.xy * r.x - w.yz * r.z,
+        w.yz * r.y - w.zx * r.x,
+    )
+}
+
+/// Wedge product `r ∧ f` → bivector. Components match `r × f` mapped
+/// via the (xy↔z, yz↔x, zx↔y) correspondence used by `rotor_to_quat`.
+fn wedge(r: Vec3, f: Vec3) -> Bivector3 {
+    Bivector3::new(
+        r.x * f.y - r.y * f.x,
+        r.y * f.z - r.z * f.y,
+        r.z * f.x - r.x * f.z,
+    )
+}
+
+fn bivec_mag_sq(b: Bivector3) -> f32 {
+    b.xy * b.xy + b.yz * b.yz + b.zx * b.zx
+}
+
+fn inv_inertia(body: &RigidBody<EuclideanR3>) -> f32 {
+    if body.inv_mass > 0.0 && body.inertia > 0.0 {
+        1.0 / body.inertia
+    } else {
+        0.0
+    }
 }
 
 impl PhysicsSpace for EuclideanR3 {
@@ -71,111 +99,46 @@ impl PhysicsSpace for EuclideanR3 {
         }
     }
 
-    fn resolve_contact(
+    fn velocity_at_point(&self, body: &RigidBody<EuclideanR3>, p: Vec3) -> Vec3 {
+        let r = p - body.position;
+        body.velocity + omega_cross_r(body.angular_velocity, r)
+    }
+
+    fn effective_mass_inv(
+        &self,
+        a: &RigidBody<EuclideanR3>,
+        b: &RigidBody<EuclideanR3>,
+        contact_point: Vec3,
+        direction: Vec3,
+    ) -> f32 {
+        let ra = contact_point - a.position;
+        let rb = contact_point - b.position;
+        let ra_wedge = wedge(ra, direction);
+        let rb_wedge = wedge(rb, direction);
+        a.inv_mass
+            + b.inv_mass
+            + bivec_mag_sq(ra_wedge) * inv_inertia(a)
+            + bivec_mag_sq(rb_wedge) * inv_inertia(b)
+    }
+
+    fn apply_contact_impulse(
         &self,
         a: &mut RigidBody<EuclideanR3>,
         b: &mut RigidBody<EuclideanR3>,
-        contact: &Contact<EuclideanR3>,
+        contact_point: Vec3,
+        direction: Vec3,
+        magnitude: f32,
     ) {
-        // Input sanity: a contact with non-finite fields would inject
-        // NaN into every state we touch below. Should have been caught
-        // by `validate_contact` upstream, but belt-and-braces.
-        if !contact.normal.is_finite()
-            || !contact.point.is_finite()
-            || !contact.penetration.is_finite()
-        {
-            return;
-        }
-
-        let inv_mass_sum = a.inv_mass + b.inv_mass;
-        if inv_mass_sum <= 0.0 {
-            return;
-        }
-
-        let inv_i_a = if a.inv_mass > 0.0 && a.inertia > 0.0 {
-            1.0 / a.inertia
-        } else {
-            0.0
-        };
-        let inv_i_b = if b.inv_mass > 0.0 && b.inertia > 0.0 {
-            1.0 / b.inertia
-        } else {
-            0.0
-        };
-
-        let ra = contact.point - a.position;
-        let rb = contact.point - b.position;
-
-        // Velocity at a body-offset point from its rotation. In 3D,
-        // the linear velocity contribution of angular velocity ω (a
-        // bivector) at offset r is ω⌋r = the vector you'd call ω × r
-        // if ω were a pseudovector. Expressed in bivector components:
-        //   v(r).x = ω_zx·r.z − ω_xy·r.y
-        //   v(r).y = ω_xy·r.x − ω_yz·r.z
-        //   v(r).z = ω_yz·r.y − ω_zx·r.x
-        let v_at = |lin: Vec3, w: Bivector3, r: Vec3| -> Vec3 {
-            lin + Vec3::new(
-                w.zx * r.z - w.xy * r.y,
-                w.xy * r.x - w.yz * r.z,
-                w.yz * r.y - w.zx * r.x,
-            )
-        };
-
-        // Wedge product r ∧ f → bivector (the "torque bivector").
-        // Components match `r × f` mapped via (xy↔z, yz↔x, zx↔y).
-        let wedge = |r: Vec3, f: Vec3| -> Bivector3 {
-            Bivector3::new(
-                r.x * f.y - r.y * f.x,
-                r.y * f.z - r.z * f.y,
-                r.z * f.x - r.x * f.z,
-            )
-        };
-
-        let bivec_mag_sq = |b: Bivector3| -> f32 { b.xy * b.xy + b.yz * b.yz + b.zx * b.zx };
-
-        // ---- Normal impulse ----
-        let v_rel_pre =
-            v_at(b.velocity, b.angular_velocity, rb) - v_at(a.velocity, a.angular_velocity, ra);
-        let v_rel_n = v_rel_pre.dot(contact.normal);
-        if v_rel_n >= 0.0 {
-            return;
-        }
-
-        let ra_wedge_n = wedge(ra, contact.normal);
-        let rb_wedge_n = wedge(rb, contact.normal);
-        let denom_n =
-            inv_mass_sum + bivec_mag_sq(ra_wedge_n) * inv_i_a + bivec_mag_sq(rb_wedge_n) * inv_i_b;
-        let jn = -(1.0 + contact.restitution) * v_rel_n / denom_n;
-        let n_impulse = contact.normal * jn;
-
-        a.velocity -= n_impulse * a.inv_mass;
-        b.velocity += n_impulse * b.inv_mass;
-        // ω_a += (r_a × −n_impulse) / I_a = −(ra ∧ n·jn) · inv_i_a
-        a.angular_velocity = a.angular_velocity + ra_wedge_n * (-jn * inv_i_a);
-        b.angular_velocity = b.angular_velocity + rb_wedge_n * (jn * inv_i_b);
-
-        // ---- Tangential friction ----
-        let v_rel =
-            v_at(b.velocity, b.angular_velocity, rb) - v_at(a.velocity, a.angular_velocity, ra);
-        let v_rel_t = v_rel - contact.normal * v_rel.dot(contact.normal);
-        let t_mag = v_rel_t.length();
-        if t_mag < 1e-6 {
-            return;
-        }
-        let tangent = v_rel_t / t_mag;
-
-        let ra_wedge_t = wedge(ra, tangent);
-        let rb_wedge_t = wedge(rb, tangent);
-        let denom_t =
-            inv_mass_sum + bivec_mag_sq(ra_wedge_t) * inv_i_a + bivec_mag_sq(rb_wedge_t) * inv_i_b;
-        let jt_unclamped = t_mag / denom_t;
-        let jt = jt_unclamped.min(jn.abs() * FRICTION_R3);
-        let t_impulse = tangent * jt;
-
-        a.velocity += t_impulse * a.inv_mass;
-        b.velocity -= t_impulse * b.inv_mass;
-        a.angular_velocity = a.angular_velocity + ra_wedge_t * (jt * inv_i_a);
-        b.angular_velocity = b.angular_velocity + rb_wedge_t * (-jt * inv_i_b);
+        let ra = contact_point - a.position;
+        let rb = contact_point - b.position;
+        let lin = direction * magnitude;
+        a.velocity -= lin * a.inv_mass;
+        b.velocity += lin * b.inv_mass;
+        // τ_a = r_a × (−lin), τ_b = r_b × (+lin). Add to ω·I⁻¹·τ.
+        let inv_i_a = inv_inertia(a);
+        let inv_i_b = inv_inertia(b);
+        a.angular_velocity = a.angular_velocity + wedge(ra, lin) * (-inv_i_a);
+        b.angular_velocity = b.angular_velocity + wedge(rb, lin) * inv_i_b;
     }
 }
 
@@ -191,10 +154,10 @@ fn sphere_sphere_r3(
     b: &RigidBody<EuclideanR3>,
     space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Collider::Sphere { radius: ra } = a.collider else {
+    let Collider::Sphere { radius: ra, .. } = a.collider else {
         return None;
     };
-    let Collider::Sphere { radius: rb } = b.collider else {
+    let Collider::Sphere { radius: rb, .. } = b.collider else {
         return None;
     };
 
@@ -225,7 +188,7 @@ fn sphere_halfspace_r3(
     b: &RigidBody<EuclideanR3>,
     _space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Collider::Sphere { radius } = a.collider else {
+    let Collider::Sphere { radius, .. } = a.collider else {
         return None;
     };
     let Collider::HalfSpace { normal, offset } = b.collider else {
@@ -353,7 +316,7 @@ fn sphere_polytope_r3(
     b: &RigidBody<EuclideanR3>,
     _space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Collider::Sphere { radius } = a.collider else {
+    let Collider::Sphere { radius, .. } = a.collider else {
         return None;
     };
     let Collider::ConvexPolytope3D { vertices: vb_local } = &b.collider else {
@@ -473,7 +436,7 @@ pub fn sphere_body_r3(
     RigidBody::new(
         position,
         velocity,
-        Collider::Sphere { radius },
+        Collider::sphere_at_origin(radius),
         mass,
         sphere_inertia(mass, radius),
         &EuclideanR3,

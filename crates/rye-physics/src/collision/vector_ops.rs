@@ -15,9 +15,21 @@
 
 use std::ops::{Add, Mul, Neg, Sub};
 
-use glam::{Vec3, Vec4};
+use glam::{Vec2, Vec3, Vec4};
 
-/// Vector algebra that GJK (and most of EPA) needs.
+/// Vector algebra that GJK, EPA, and the PGS solver share across
+/// dimensions.
+///
+/// GJK walks the Minkowski difference of two shapes using nothing but
+/// vector algebra and dot products — no cross products, no bivectors,
+/// no dimension-specific machinery. EPA's face-normal reconstruction
+/// is dimension-specific (cross product in 3D, generalized cross in
+/// 4D+) and lives outside this trait — each dimension has its own
+/// EPA helper that uses `VectorOps` for the bulk of the math.
+///
+/// The PGS solver also uses `VectorOps` for the dimension-agnostic
+/// pieces (dot products against the contact normal, tangent vector
+/// recovery from a relative velocity).
 pub trait VectorOps:
     Copy
     + Add<Output = Self>
@@ -28,6 +40,7 @@ pub trait VectorOps:
 {
     fn zero() -> Self;
     fn dot(self, rhs: Self) -> f32;
+    fn is_finite(self) -> bool;
 
     fn length_squared(self) -> f32 {
         self.dot(self)
@@ -50,12 +63,27 @@ pub trait VectorOps:
     }
 }
 
+impl VectorOps for Vec2 {
+    fn zero() -> Self {
+        Vec2::ZERO
+    }
+    fn dot(self, rhs: Self) -> f32 {
+        Vec2::dot(self, rhs)
+    }
+    fn is_finite(self) -> bool {
+        Vec2::is_finite(self)
+    }
+}
+
 impl VectorOps for Vec3 {
     fn zero() -> Self {
         Vec3::ZERO
     }
     fn dot(self, rhs: Self) -> f32 {
         Vec3::dot(self, rhs)
+    }
+    fn is_finite(self) -> bool {
+        Vec3::is_finite(self)
     }
 }
 
@@ -65,6 +93,9 @@ impl VectorOps for Vec4 {
     }
     fn dot(self, rhs: Self) -> f32 {
         Vec4::dot(self, rhs)
+    }
+    fn is_finite(self) -> bool {
+        Vec4::is_finite(self)
     }
 }
 
@@ -86,6 +117,16 @@ mod tests {
         let z = Vec3::ZERO;
         let got = VectorOps::normalize_or(z, Vec3::Y);
         assert_eq!(got, Vec3::Y);
+    }
+
+    #[test]
+    fn vec2_ops_match_glam() {
+        let a = Vec2::new(3.0, 4.0);
+        let b = Vec2::new(1.0, -2.0);
+        assert_eq!(VectorOps::dot(a, b), a.dot(b));
+        assert_eq!(VectorOps::length(a), 5.0);
+        assert!(a.is_finite());
+        assert!(!Vec2::new(f32::NAN, 0.0).is_finite());
     }
 
     #[test]

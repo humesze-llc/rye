@@ -12,11 +12,20 @@
 use crate::body::RigidBody;
 use crate::integrator::PhysicsSpace;
 
-// Note: the per-contact velocity-impulse solver now lives on the
-// `PhysicsSpace` trait (see `integrator.rs`) because it needs access to
-// each space's specific angular/inertia types. This module only
-// provides the space-agnostic positional correction used after
-// velocities have been resolved.
+// Note: the per-contact velocity-impulse solver lives on the
+// `PhysicsSpace` trait (see `integrator.rs`), decomposed into building
+// blocks (`velocity_at_point`, `effective_mass_inv`, `apply_contact_impulse`)
+// because the angular-velocity / inertia types differ per space (scalar
+// in 2D, bivector in 3D, eigendecomposed bivector in 4D). This module
+// owns the space-agnostic positional correction and the shared
+// friction coefficient used by both the legacy single-pass solve and
+// the new PGS loop.
+
+/// Coulomb friction coefficient applied uniformly across spaces. 0.35
+/// reads as "moderate grip" — shapes roll under gravity rather than
+/// slide indefinitely. A per-material-pair coefficient is a future
+/// extension (track on `RigidBody` and combine via geometric mean).
+pub const FRICTION_COEFF: f32 = 0.35;
 
 /// Result of narrowphase collision detection between two bodies.
 pub struct Contact<S: PhysicsSpace> {

@@ -27,14 +27,16 @@
 pub mod bivector;
 pub mod euclidean;
 pub mod euclidean_r2;
+pub mod euclidean_r4;
 pub mod hyperbolic;
 pub mod space;
 pub mod spherical;
 pub mod tangent;
 
-pub use bivector::{Bivector, Bivector2, Bivector3, Rotor, Rotor2, Rotor3};
+pub use bivector::{Bivector, Bivector2, Bivector3, Bivector4, Rotor, Rotor2, Rotor3, Rotor4};
 pub use euclidean::{EuclideanR3, Iso3};
 pub use euclidean_r2::{EuclideanR2, Iso2};
+pub use euclidean_r4::{EuclideanR4, Iso4Flat};
 pub use hyperbolic::{HyperbolicH3, Iso3H};
 pub use space::{Space, WgslSpace};
 pub use spherical::{Iso4, SphericalS3};

@@ -14,10 +14,21 @@ use crate::integrator::PhysicsSpace;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
-/// Coulomb friction coefficient for 2D contacts. Applied as a static
-/// friction limit on the tangential impulse; 0.35 reads as "moderate
-/// grip" — shapes roll under gravity rather than slide indefinitely.
-const FRICTION_R2: f32 = 0.35;
+/// 2D scalar cross product: `u.x*v.y − u.y*v.x`. The "scalar bivector
+/// component" of `u ∧ v` in R².
+fn cross2d(u: Vec2, v: Vec2) -> f32 {
+    u.x * v.y - u.y * v.x
+}
+
+/// Inverse moment-of-inertia, treating static or zero-inertia bodies
+/// as having infinite inertia (returns 0).
+fn inv_inertia(body: &RigidBody<EuclideanR2>) -> f32 {
+    if body.inv_mass > 0.0 && body.inertia > 0.0 {
+        1.0 / body.inertia
+    } else {
+        0.0
+    }
+}
 
 impl PhysicsSpace for EuclideanR2 {
     type AngVel = Bivector2;
@@ -42,90 +53,52 @@ impl PhysicsSpace for EuclideanR2 {
         }
     }
 
-    fn resolve_contact(
+    fn velocity_at_point(&self, body: &RigidBody<EuclideanR2>, p: Vec2) -> Vec2 {
+        // v(r) = v_lin + ω × r, where in 2D ω is a scalar (the
+        // bivector component) and ω × r = (−ω·r.y, ω·r.x).
+        let r = p - body.position;
+        let w = body.angular_velocity.0;
+        body.velocity + Vec2::new(-w * r.y, w * r.x)
+    }
+
+    fn effective_mass_inv(
+        &self,
+        a: &RigidBody<EuclideanR2>,
+        b: &RigidBody<EuclideanR2>,
+        contact_point: Vec2,
+        direction: Vec2,
+    ) -> f32 {
+        let ra = contact_point - a.position;
+        let rb = contact_point - b.position;
+        let ra_cross = cross2d(ra, direction);
+        let rb_cross = cross2d(rb, direction);
+        a.inv_mass
+            + b.inv_mass
+            + ra_cross * ra_cross * inv_inertia(a)
+            + rb_cross * rb_cross * inv_inertia(b)
+    }
+
+    fn apply_contact_impulse(
         &self,
         a: &mut RigidBody<EuclideanR2>,
         b: &mut RigidBody<EuclideanR2>,
-        contact: &Contact<EuclideanR2>,
+        contact_point: Vec2,
+        direction: Vec2,
+        magnitude: f32,
     ) {
-        let inv_mass_sum = a.inv_mass + b.inv_mass;
-        if inv_mass_sum <= 0.0 {
-            return;
-        }
+        let ra = contact_point - a.position;
+        let rb = contact_point - b.position;
+        let lin = direction * magnitude;
+        a.velocity -= lin * a.inv_mass;
+        b.velocity += lin * b.inv_mass;
 
-        // Static bodies contribute zero inverse inertia to prevent
-        // spurious angular response even if `body.inertia` is nonzero.
-        let inv_i_a = if a.inv_mass > 0.0 && a.inertia > 0.0 {
-            1.0 / a.inertia
-        } else {
-            0.0
-        };
-        let inv_i_b = if b.inv_mass > 0.0 && b.inertia > 0.0 {
-            1.0 / b.inertia
-        } else {
-            0.0
-        };
-
-        let ra = contact.point - a.position;
-        let rb = contact.point - b.position;
-
-        // Velocity at the contact point is body linear velocity plus
-        // the tangential velocity from the body's rotation:
-        //   v_contact = v + ω × r         (3D)
-        //             = v + ω · (−r.y, r.x)  (2D, ω a bivector scalar)
-        let v_at =
-            |lin: Vec2, omega: f32, r: Vec2| -> Vec2 { lin + Vec2::new(-omega * r.y, omega * r.x) };
-        let cross2d = |u: Vec2, v: Vec2| -> f32 { u.x * v.y - u.y * v.x };
-
-        // ---- Normal impulse: resolves the approaching component. ----
-        let v_rel_pre =
-            v_at(b.velocity, b.angular_velocity.0, rb) - v_at(a.velocity, a.angular_velocity.0, ra);
-        let v_rel_n = v_rel_pre.dot(contact.normal);
-        if v_rel_n >= 0.0 {
-            // Already separating — the contact is a false positive from
-            // a previous correction or a grazing touch.
-            return;
-        }
-
-        let ra_cross_n = cross2d(ra, contact.normal);
-        let rb_cross_n = cross2d(rb, contact.normal);
-        let denom_n =
-            inv_mass_sum + ra_cross_n * ra_cross_n * inv_i_a + rb_cross_n * rb_cross_n * inv_i_b;
-        let jn = -(1.0 + contact.restitution) * v_rel_n / denom_n;
-        let n_impulse = contact.normal * jn;
-
-        a.velocity -= n_impulse * a.inv_mass;
-        b.velocity += n_impulse * b.inv_mass;
-        a.angular_velocity = Bivector2(a.angular_velocity.0 - ra_cross_n * jn * inv_i_a);
-        b.angular_velocity = Bivector2(b.angular_velocity.0 + rb_cross_n * jn * inv_i_b);
-
-        // ---- Tangential (friction) impulse: opposes sliding. ----
-        // Recompute relative velocity post-normal-impulse.
-        let v_rel =
-            v_at(b.velocity, b.angular_velocity.0, rb) - v_at(a.velocity, a.angular_velocity.0, ra);
-        let v_rel_t = v_rel - contact.normal * v_rel.dot(contact.normal);
-        let t_mag = v_rel_t.length();
-        if t_mag < 1e-6 {
-            return;
-        }
-        let tangent = v_rel_t / t_mag;
-
-        let ra_cross_t = cross2d(ra, tangent);
-        let rb_cross_t = cross2d(rb, tangent);
-        let denom_t =
-            inv_mass_sum + ra_cross_t * ra_cross_t * inv_i_a + rb_cross_t * rb_cross_t * inv_i_b;
-
-        // Coulomb limit: |jt| ≤ μ·|jn|.
-        let jt_unclamped = t_mag / denom_t;
-        let jt = jt_unclamped.min(jn.abs() * FRICTION_R2);
-        let t_impulse = tangent * jt;
-
-        // Apply in opposite directions: the contact drags `a` along the
-        // relative-motion direction and brakes `b` against it.
-        a.velocity += t_impulse * a.inv_mass;
-        b.velocity -= t_impulse * b.inv_mass;
-        a.angular_velocity = Bivector2(a.angular_velocity.0 + ra_cross_t * jt * inv_i_a);
-        b.angular_velocity = Bivector2(b.angular_velocity.0 - rb_cross_t * jt * inv_i_b);
+        let inv_i_a = inv_inertia(a);
+        let inv_i_b = inv_inertia(b);
+        // τ = r × (j·dir), with sign convention "subtract from A".
+        let torque_a = -cross2d(ra, lin);
+        let torque_b = cross2d(rb, lin);
+        a.angular_velocity = Bivector2(a.angular_velocity.0 + torque_a * inv_i_a);
+        b.angular_velocity = Bivector2(b.angular_velocity.0 + torque_b * inv_i_b);
     }
 }
 
@@ -145,7 +118,7 @@ pub fn sphere_body(
     RigidBody::new(
         position,
         velocity,
-        Collider::Sphere { radius },
+        Collider::sphere_at_origin(radius),
         mass,
         disk_inertia(mass, radius),
         &EuclideanR2,
@@ -174,10 +147,10 @@ fn sphere_sphere_r2(
     b: &RigidBody<EuclideanR2>,
     space: &EuclideanR2,
 ) -> Option<Contact<EuclideanR2>> {
-    let Collider::Sphere { radius: ra } = a.collider else {
+    let Collider::Sphere { radius: ra, .. } = a.collider else {
         return None;
     };
-    let Collider::Sphere { radius: rb } = b.collider else {
+    let Collider::Sphere { radius: rb, .. } = b.collider else {
         return None;
     };
 
@@ -397,7 +370,7 @@ fn sphere_polygon_r2(
     b: &RigidBody<EuclideanR2>,
     _space: &EuclideanR2,
 ) -> Option<Contact<EuclideanR2>> {
-    let Collider::Sphere { radius } = a.collider else {
+    let Collider::Sphere { radius, .. } = a.collider else {
         return None;
     };
     let Collider::Polygon2D { vertices: b_local } = &b.collider else {
@@ -571,7 +544,7 @@ mod tests {
         let mut world = World::new(EuclideanR2);
         let id = world.push_body(RigidBody::fixed(
             Vec2::new(0.0, 0.0),
-            Collider::Sphere { radius: 1.0 },
+            Collider::sphere_at_origin(1.0),
             disk_inertia(0.0, 1.0),
             &EuclideanR2,
         ));
@@ -876,5 +849,89 @@ mod tests {
             world.bodies[1].velocity.x > 0.0,
             "body 1 should bounce back"
         );
+    }
+
+    #[test]
+    fn box_stack_settles_to_rest() {
+        // Stack three unit boxes vertically on a static floor and run
+        // long enough for them to come to rest. Without persistent
+        // manifolds + iterative PGS this stack jitters indefinitely:
+        // single-contact-per-pair single-pass resolution can't satisfy
+        // the bottom box's two simultaneous constraints (floor below,
+        // box above) in one impulse application. With manifolds + PGS,
+        // both constraints are visible to the solver each iteration
+        // and the stack settles to rest.
+        //
+        // Capped at 3 because tall polygon stacks need SAT manifold
+        // clipping (Sutherland-Hodgman edge-to-face) to produce two
+        // corner contacts per pair per frame, which is what gives a
+        // stack torque resistance against tipping. Today's narrowphase
+        // returns one contact per pair per frame; persistent manifolds
+        // accumulate corner contacts over frames as the stack settles,
+        // but for fast-loading tall stacks the top boxes can drift off
+        // before manifolds populate. SAT clipping is on the Phase 4
+        // list for after this milestone lands.
+        let mut world = World::new(EuclideanR2);
+        register_default_narrowphase(&mut world.narrowphase);
+
+        // Floor at y = 0, top surface at y = 0.5.
+        let floor_top = 0.5;
+        world.push_body(static_wall(Vec2::new(0.0, 0.0), Vec2::new(8.0, 0.5)));
+
+        const N: usize = 3;
+        const HALF: f32 = 0.5;
+        for i in 0..N {
+            let y = floor_top + HALF + i as f32 * (2.0 * HALF + 0.05);
+            let mut body = aa_box(Vec2::new(0.0, y), Vec2::splat(HALF), 1.0);
+            // Stacking demos run with zero restitution. Default 0.2
+            // would micro-bounce every contact and prevent the stack
+            // from ever settling.
+            body.restitution = 0.0;
+            world.push_body(body);
+        }
+        // Tall stacks need more iterations than the default to
+        // converge — impulses propagate one box per iteration through
+        // the chain of contacts.
+        world.pgs_iters = 16;
+
+        world.push_field(Box::new(crate::field::Gravity::new(Vec2::new(0.0, -9.8))));
+
+        // Run for 5 seconds at 60 Hz — plenty of time to settle.
+        for _ in 0..300 {
+            world.step(1.0 / 60.0);
+        }
+
+        // After settling: every box is at rest (low linear and angular
+        // velocity), and the stack hasn't fallen over (x-positions
+        // close to original).
+        for (idx, body) in world.bodies.iter().enumerate().skip(1) {
+            assert!(
+                body.position.is_finite() && body.velocity.is_finite(),
+                "body {idx} not finite"
+            );
+            assert!(
+                body.velocity.length() < 0.5,
+                "body {idx} still moving: |v| = {}",
+                body.velocity.length()
+            );
+            assert!(
+                body.angular_velocity.0.abs() < 1.0,
+                "body {idx} still spinning: ω = {}",
+                body.angular_velocity.0
+            );
+            assert!(
+                body.position.x.abs() < 1.0,
+                "body {idx} drifted off stack: x = {}",
+                body.position.x
+            );
+            // No body should be below the floor surface (small slop
+            // tolerance for residual penetration the Baumgarte bias
+            // hasn't fully corrected).
+            assert!(
+                body.position.y - HALF >= floor_top - 0.1,
+                "body {idx} sank into floor: y_bottom = {}",
+                body.position.y - HALF
+            );
+        }
     }
 }

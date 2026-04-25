@@ -31,11 +31,11 @@ struct Uniforms {
     // params[0] = w₀ slice value
     // params[1] = body radius in 4D
     // params[2] = body_count (cast from f32 to u32 in the shader)
-    // params[3] reserved
+    // params[3] = ghost_mode (0 = slice mode, 1 = volumetric ghost)
     w_slice: f32,
     radius4: f32,
     body_count_f: f32,
-    pad1: f32,
+    ghost_mode_f: f32,
     // Up to MAX_BODIES body 4-positions (xyz, w). Slots >=
     // body_count are ignored.
     bodies: array<vec4<f32>, MAX_BODIES>,
@@ -138,6 +138,90 @@ fn body_base_color(idx: u32) -> vec3<f32> {
     }
 }
 
+/// Volumetric "ghost" rendering: integrate each body's `w`-extent
+/// (the 4D thickness of the body at each xyz column) along the ray.
+/// At a sample point `p` inside body `i`, density contribution is the
+/// chord length of body `i` along the `w`-axis through `p`, namely
+/// `2·√(r² − |p − c_i|²)`. Outside the xyz-projection it's zero.
+///
+/// Returns `(rgb, alpha)` in pre-multiplied form, ready to composite
+/// over a background.
+///
+/// Cost: `MAX_STEPS × body_count` per pixel — roughly 250 × 32 ≈ 8K
+/// per pixel for the worst case. GPU absorbs this fine at 1080p; the
+/// inner loop early-exits as soon as accumulated alpha saturates.
+fn ghost_volume(ro: vec3<f32>, rd: vec3<f32>, body_count: u32, t_max: f32) -> vec4<f32> {
+    let r4 = u.radius4;
+    let r4_sq = r4 * r4;
+    // Step size and extinction tuned for visually pleasing density:
+    //   * Step too small → fps tank; too large → banding artifacts.
+    //   * Sigma too low → ghosts read as faint smudges; too high → fully
+    //     opaque blobs that hide structure.
+    // Empirically dt = 0.06 with sigma = 0.35 gives smooth shading
+    // without banding for unit-radius balls.
+    let dt = 0.06;
+    let sigma = 0.35;
+    let max_steps = 250;
+
+    var t: f32 = 0.0;
+    var accum_rgb: vec3<f32> = vec3<f32>(0.0);
+    var accum_a: f32 = 0.0;
+    for (var step: i32 = 0; step < max_steps; step = step + 1) {
+        if (t >= t_max) { break; }
+        let p = ro + rd * t;
+
+        var density: f32 = 0.0;
+        var weighted_color: vec3<f32> = vec3<f32>(0.0);
+        for (var i: u32 = 0u; i < body_count; i = i + 1u) {
+            let b = u.bodies[i];
+            let d = p - b.xyz;
+            let d_sq = dot(d, d);
+            let r_sq_at = r4_sq - d_sq;
+            if (r_sq_at <= 0.0) { continue; }
+            // `w`-extent at this xyz inside body i.
+            let w_thick = 2.0 * sqrt(r_sq_at);
+            density = density + w_thick;
+            weighted_color = weighted_color + body_base_color(i) * w_thick;
+        }
+
+        if (density > 1.0e-4) {
+            let sample_alpha = 1.0 - exp(-sigma * density * dt);
+            let one_minus_a = 1.0 - accum_a;
+            // Front-to-back alpha compositing.
+            let sample_color = weighted_color / density;
+            accum_rgb = accum_rgb + sample_color * sample_alpha * one_minus_a;
+            accum_a = accum_a + sample_alpha * one_minus_a;
+            if (accum_a > 0.99) { break; }
+        }
+
+        t = t + dt;
+    }
+    return vec4<f32>(accum_rgb, accum_a);
+}
+
+/// Background shading for ghost mode: floor if the ray hits the
+/// `y = 0` plane in front of the camera, otherwise sky. Returns
+/// `(rgb, t_hit)`; if `t_hit < 0`, no floor hit (use sky for the
+/// whole ray).
+fn ghost_background(ro: vec3<f32>, rd: vec3<f32>) -> vec4<f32> {
+    if (rd.y < -1.0e-6) {
+        let t_floor = -ro.y / rd.y;
+        if (t_floor > 0.0) {
+            let p_hit = ro + rd * t_floor;
+            // Slightly desaturate floor under fog so ghosts read
+            // clearly against it.
+            let n = vec3<f32>(0.0, 1.0, 0.0);
+            let light_dir = normalize(vec3<f32>(0.5, 0.85, 0.3));
+            let lambert = max(dot(n, light_dir), 0.0);
+            let base = ground_color(p_hit);
+            let lit = base * (0.25 + lambert * 0.75);
+            let fog = 1.0 - exp(-t_floor * 0.05);
+            return vec4<f32>(mix(lit, sky(rd), fog * 0.5), t_floor);
+        }
+    }
+    return vec4<f32>(sky(rd), -1.0);
+}
+
 @fragment
 fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = (frag_pos.xy / u.resolution) * 2.0 - vec2<f32>(1.0, 1.0);
@@ -149,7 +233,22 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
         + u.camera_up    * (ndc.y * u.fov_y_tan)
     );
     let ro = u.camera_pos;
+    let body_count = min(u32(u.body_count_f + 0.5), MAX_BODIES);
 
+    // ---- Ghost (volumetric) mode -----------------------------------
+    if (u.ghost_mode_f > 0.5) {
+        let bg = ghost_background(ro, rd);
+        // Volumetric march up to the floor (or 60 units if no floor
+        // hit). We don't penetrate the floor — bodies below `y = 0`
+        // are unphysical anyway.
+        let t_max = select(60.0, bg.w, bg.w > 0.0);
+        let ghost = ghost_volume(ro, rd, body_count, t_max);
+        // Front-to-back composite over background.
+        let composed = ghost.rgb + bg.rgb * (1.0 - ghost.a);
+        return vec4<f32>(composed, 1.0);
+    }
+
+    // ---- Slice mode (default) --------------------------------------
     var t: f32 = 0.0;
     let max_t = 60.0;
     var hit_material: u32 = MAX_BODIES + 1u;

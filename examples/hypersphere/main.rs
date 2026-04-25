@@ -24,13 +24,29 @@
 //!   staggered `y` and `w` so they fall, collide with each other, and
 //!   settle as a 4D pile on the floor.
 //!
+//! ## Viewing modes
+//!
+//! - **Slice mode** (default) — render the 3D cross-section of the
+//!   bodies at the current `w₀`. Scrub `w₀` with ↑/↓ to peer at
+//!   different cells; bodies outside the slice plane vanish.
+//! - **Ghost mode** (toggle with **G**) — render the bodies' full 4D
+//!   extent simultaneously as a translucent volume. Each point in 3D
+//!   gets opacity proportional to the body's `w`-extent through that
+//!   xyz column (`2·√(r² − |xyz − c.xyz|²)` for points inside the
+//!   xyz-projection, zero outside). A ray through the body's centre
+//!   accumulates ≈ `2r` of `w`-thickness; a glancing ray accumulates
+//!   less; missing rays accumulate nothing. The result is a smoothly
+//!   shaded 3D shadow of the 4-ball that exposes its full extent
+//!   without scrubbing `w`.
+//!
 //! ## Controls
 //!
 //! - Mouse: orbit camera (left-drag), zoom (scroll).
 //! - **Space**: pause / resume physics.
-//! - **↑ / ↓**: hold to slide the cross-section along `w` (0.6 u/s,
-//!   range ±1.5 around the first body's `w`).
-//! - **A**: toggle automatic offset sweep (cosine-paced).
+//! - **↑ / ↓**: hold to slide the cross-section along `w` (slice mode
+//!   only; 0.6 u/s, range ±1.5 around the first body's `w`).
+//! - **A**: toggle automatic offset sweep (slice mode only).
+//! - **G**: toggle ghost / slice viewing mode.
 //! - **R**: reset — re-spawn all bodies, offset = 0.
 //! - **Esc**: exit.
 
@@ -361,6 +377,9 @@ struct App {
     sweep_anchor: Instant,
     slider_up_held: bool,
     slider_down_held: bool,
+    /// Ghost-mode flag: render the bodies' full 4D extent as a
+    /// translucent volume rather than a single `w`-slice.
+    ghost_mode: bool,
 
     frame_count: u32,
     last_fps_update: Instant,
@@ -398,6 +417,7 @@ impl App {
             sweep_anchor: Instant::now(),
             slider_up_held: false,
             slider_down_held: false,
+            ghost_mode: false,
             frame_count: 0,
             last_fps_update: Instant::now(),
             fps: 0.0,
@@ -464,6 +484,7 @@ impl App {
                 }
             }
             KeyCode::KeyR => self.reset(),
+            KeyCode::KeyG => self.ghost_mode = !self.ghost_mode,
             KeyCode::Space => self.paused = !self.paused,
             _ => {}
         }
@@ -507,7 +528,12 @@ impl App {
             ],
             time: t,
             tick: self.timestep.tick() as f32,
-            params: [self.effective_w_slice(), RADIUS_4D, count as f32, 0.0],
+            params: [
+                self.effective_w_slice(),
+                RADIUS_4D,
+                count as f32,
+                if self.ghost_mode { 1.0 } else { 0.0 },
+            ],
             bodies,
         })
     }
@@ -653,20 +679,26 @@ impl ApplicationHandler for App {
                     let anchor = &self.world.bodies[self.ball_ids[0]];
                     let p = anchor.position;
                     let pause = if self.paused { " [paused]" } else { "" };
-                    let mode = if self.auto_sweep { "auto" } else { "manual" };
-                    let w_eff = p.w + self.w_offset;
-                    // Visible-radius indicator for the *anchor* body.
-                    // Matches `slice_radius` in the WGSL — useful for
-                    // sanity-checking the cross-section as the user
-                    // scrubs. Other bodies' radii will differ at the
-                    // same `w₀` because they sit at different `w`.
-                    let dw = w_eff - p.w;
-                    let r3_sq = RADIUS_4D * RADIUS_4D - dw * dw;
-                    let r3 = if r3_sq > 0.0 { r3_sq.sqrt() } else { 0.0 };
-                    win.set_title(&format!(
-                        "{TITLE} | {:.0} fps | n={n} | offset={:+.2} ({mode}) w₀={:+.2}{pause} | r₃[0]={:.3} | pos[0].y={:+.2} pos[0].w={:+.2}",
-                        self.fps, self.w_offset, w_eff, r3, p.y, p.w
-                    ));
+                    let view_mode = if self.ghost_mode { "ghost" } else { "slice" };
+                    if self.ghost_mode {
+                        win.set_title(&format!(
+                            "{TITLE} | {:.0} fps | n={n} | mode={view_mode}{pause} | pos[0].y={:+.2} pos[0].w={:+.2}",
+                            self.fps, p.y, p.w
+                        ));
+                    } else {
+                        let mode = if self.auto_sweep { "auto" } else { "manual" };
+                        let w_eff = p.w + self.w_offset;
+                        // Visible-radius indicator for the *anchor*
+                        // body in slice mode. Matches `slice_radius`
+                        // in the WGSL.
+                        let dw = w_eff - p.w;
+                        let r3_sq = RADIUS_4D * RADIUS_4D - dw * dw;
+                        let r3 = if r3_sq > 0.0 { r3_sq.sqrt() } else { 0.0 };
+                        win.set_title(&format!(
+                            "{TITLE} | {:.0} fps | n={n} | mode={view_mode} offset={:+.2} ({mode}) w₀={:+.2}{pause} | r₃[0]={:.3} | pos[0].y={:+.2} pos[0].w={:+.2}",
+                            self.fps, self.w_offset, w_eff, r3, p.y, p.w
+                        ));
+                    }
                 }
 
                 let Some(uniforms) = self.current_uniforms() else {

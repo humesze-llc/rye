@@ -392,6 +392,59 @@ mod tests {
         assert!((camera.forward.length() - 1.0).abs() < 1e-3);
     }
 
+    /// Per-Space `OrbitController::advance` timing. `#[ignore]` by
+    /// default — run on demand via
+    ///
+    /// ```text
+    /// cargo test --release --package rye-camera \
+    ///     -- --ignored --nocapture orbit_advance_perf
+    /// ```
+    ///
+    /// to print median timings for E³ / H³ / S³. Smoke-test for the
+    /// design-doc claim that the controller's hot path is
+    /// sub-microsecond per call (the framework calls it once per
+    /// frame, so anything close to a microsecond is "free" relative
+    /// to a 16 ms frame budget). Catches accidental
+    /// quadratic-blowups in `Space::exp` /
+    /// `parallel_transport_along` impls.
+    ///
+    /// Not a CI gate: `cargo test --release` is heavy and the timing
+    /// numbers are machine-dependent. Run when changing camera or
+    /// Space hot-path code; eyeball the output.
+    #[test]
+    #[ignore]
+    fn orbit_advance_perf() {
+        use rye_math::{HyperbolicH3, SphericalS3};
+        use std::time::Instant;
+
+        const ITERATIONS: u32 = 100_000;
+
+        fn bench<S>(label: &str, space: &S, distance: f32)
+        where
+            S: rye_math::Space<Point = Vec3, Vector = Vec3>,
+        {
+            let mut camera = Camera::<S>::at_origin();
+            let mut ctrl: OrbitController<S> = OrbitController::around(Vec3::ZERO);
+            ctrl.distance = distance;
+            // Warm-up.
+            for _ in 0..1_000 {
+                ctrl.advance(FrameInput::default(), &mut camera, space, 0.0);
+            }
+            let start = Instant::now();
+            for _ in 0..ITERATIONS {
+                ctrl.advance(FrameInput::default(), &mut camera, space, 0.0);
+                std::hint::black_box(camera.view());
+            }
+            let elapsed = start.elapsed();
+            let per_call_ns = elapsed.as_nanos() as f64 / ITERATIONS as f64;
+            println!("[orbit_advance_perf] {label:>14}: {per_call_ns:>7.0} ns / call");
+        }
+
+        bench("EuclideanR3", &EuclideanR3, 3.5);
+        bench("HyperbolicH3", &HyperbolicH3, 0.4);
+        bench("SphericalS3", &SphericalS3, 0.5);
+    }
+
     #[test]
     fn first_person_pitch_clamps() {
         let mut camera = Camera::<EuclideanR3>::at_origin();

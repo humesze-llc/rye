@@ -35,11 +35,11 @@
 //! let wgsl_4d = scene.to_wgsl_4d();
 //! assert!(wgsl_4d.contains("fn rye_scene_sdf_4d(p: vec4<f32>) -> f32"));
 //! // Hyperslice mode: SDF takes vec3, internally evaluates at
-//! // vec4(p, w_slice). The `w_slice` uniform is supplied by the
-//! // render node.
-//! let wgsl_hs = scene.to_hyperslice_wgsl();
+//! // vec4(p, u.w_slice). The `u.w_slice` uniform is supplied by
+//! // the render node.
+//! let wgsl_hs = scene.to_hyperslice_wgsl("u.w_slice");
 //! assert!(wgsl_hs.contains("fn rye_scene_sdf(p: vec3<f32>) -> f32"));
-//! assert!(wgsl_hs.contains("w_slice"));
+//! assert!(wgsl_hs.contains("u.w_slice"));
 //! ```
 
 use std::boxed::Box;
@@ -135,21 +135,22 @@ impl Scene4 {
     }
 
     /// Emit the hyperslice SDF: `fn rye_scene_sdf(p: vec3<f32>) -> f32`
-    /// that evaluates this scene's 4D SDF at `vec4(p, w_slice)`.
-    /// The `w_slice` value is read from a uniform the render node
-    /// is responsible for supplying — the emit assumes the symbol
-    /// `w_slice: f32` is in scope (typically from the
-    /// `Hyperslice4DNode` uniform binding).
-    pub fn to_hyperslice_wgsl(&self) -> String {
+    /// that evaluates this scene's 4D SDF at `vec4(p, w_slice_expr)`.
+    ///
+    /// `w_slice_expr` is the WGSL expression the kernel uses to
+    /// reach its `w_slice` uniform — typically `"u.w_slice"` when
+    /// the node binds a single uniform struct named `u`. Passing a
+    /// literal (e.g. `"0.0"`) is also valid for static-slice tests.
+    pub fn to_hyperslice_wgsl(&self, w_slice_expr: &str) -> String {
         let mut helpers = String::new();
         let mut body = String::new();
         let mut counter = 0u32;
         let result_var = emit_node_4d(&self.root, &mut counter, &mut helpers, &mut body);
         format!(
-            "// ---- rye-sdf scene4 (hyperslice at w = w_slice) ----\n\
+            "// ---- rye-sdf scene4 (hyperslice at w = {w_slice_expr}) ----\n\
              {helpers}\
              fn rye_scene_sdf(p: vec3<f32>) -> f32 {{\n\
-             \tlet p4 = vec4<f32>(p, w_slice);\n\
+             \tlet p4 = vec4<f32>(p, {w_slice_expr});\n\
              \tlet p = p4;\n\
              {body}\
              \treturn {result_var};\n\
@@ -225,9 +226,9 @@ mod tests {
     #[test]
     fn hyperslice_wraps_4d_with_w_slice() {
         let scene = Scene4::new(SceneNode4::hypersphere(Vec4::ZERO, 0.5));
-        let wgsl = scene.to_hyperslice_wgsl();
+        let wgsl = scene.to_hyperslice_wgsl("u.w_slice");
         assert!(wgsl.contains("fn rye_scene_sdf(p: vec3<f32>) -> f32"));
-        assert!(wgsl.contains("let p4 = vec4<f32>(p, w_slice)"));
+        assert!(wgsl.contains("let p4 = vec4<f32>(p, u.w_slice)"));
         // The hyperslice emit reuses the 4D SDF helpers, so the
         // sphere's `length(p - ...)` body is still present and the
         // `let p = p4` shadow lets the helpers' `p` parameter

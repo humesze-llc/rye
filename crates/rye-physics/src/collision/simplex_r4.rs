@@ -166,12 +166,16 @@ fn solve_spd_system(g: &mut [[f32; 4]; 4], b: &mut [f32; 4], k: usize) -> Option
 
         // Normalize pivot row.
         let inv_piv = 1.0 / piv;
-        for col in i..k {
-            g[i][col] *= inv_piv;
+        for x in g[i][i..k].iter_mut() {
+            *x *= inv_piv;
         }
         b[i] *= inv_piv;
 
-        // Eliminate other rows.
+        // Eliminate other rows. `g[i]` is `[f32; 4]` (Copy), so cache
+        // it locally — that frees the borrow checker to mutate other
+        // rows of `g` without splitting the outer borrow.
+        let pivot_row = g[i];
+        let pivot_b = b[i];
         for r in 0..k {
             if r == i {
                 continue;
@@ -180,10 +184,10 @@ fn solve_spd_system(g: &mut [[f32; 4]; 4], b: &mut [f32; 4], k: usize) -> Option
             if factor == 0.0 {
                 continue;
             }
-            for col in i..k {
-                g[r][col] -= factor * g[i][col];
+            for (target, &p) in g[r][i..k].iter_mut().zip(pivot_row[i..k].iter()) {
+                *target -= factor * p;
             }
-            b[r] -= factor * b[i];
+            b[r] -= factor * pivot_b;
         }
     }
 

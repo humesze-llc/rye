@@ -214,6 +214,35 @@ mod tests {
         assert_relative_eq!(v.length(), v_at_to.length());
     }
 
+    /// In flat space the path-aware primitive is the identity for any
+    /// path. Default impl chains the segment-by-segment transport,
+    /// which for E³ is the identity per segment. Pins:
+    /// (1) empty / singleton paths return `v` unchanged, and
+    /// (2) multi-segment paths agree with single-segment transport.
+    /// Both invariants matter as the trait is consumed by camera and
+    /// player controllers that construct polyline paths from per-frame
+    /// motion.
+    #[test]
+    fn parallel_transport_along_default_impl_is_identity_in_flat_space() {
+        let s = r3();
+        let v = Vec3::new(1.7, -0.3, 0.5);
+        // Empty path → unchanged.
+        assert_eq!(s.parallel_transport_along(&[], v), v);
+        // Single point → unchanged.
+        assert_eq!(s.parallel_transport_along(&[Vec3::ZERO], v), v);
+        // Multi-segment polyline → still identity in E³.
+        let path = [
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(2.0, 3.0, -1.0),
+        ];
+        let transported = s.parallel_transport_along(&path, v);
+        assert_relative_eq!(transported.x, v.x);
+        assert_relative_eq!(transported.y, v.y);
+        assert_relative_eq!(transported.z, v.z);
+    }
+
     #[test]
     fn iso_transport_ignores_translation() {
         let s = r3();

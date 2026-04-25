@@ -61,12 +61,53 @@ pub trait Space {
     /// Parallel-transport `v` (a tangent vector at `from`) along the
     /// unique minimizing geodesic to `to`, returning the corresponding
     /// tangent vector at `to`.
+    ///
+    /// **Path uniqueness.** This signature implicitly assumes a
+    /// canonical geodesic exists between `from` and `to`. That holds
+    /// for the closed-form Spaces ($\mathbb{E}^3$, $H^3$, $S^3$ away
+    /// from antipodes, $\mathbb{E}^4$) but breaks down in Spaces with
+    /// non-uniform curvature where multiple geodesics may connect two
+    /// points (or constructing the geodesic requires solving a
+    /// boundary-value problem). Callers that already know the path
+    /// they want frame transport along should prefer
+    /// [`Self::parallel_transport_along`], which takes the path
+    /// explicitly and avoids the BVP entirely.
     fn parallel_transport(
         &self,
         from: Self::Point,
         to: Self::Point,
         v: Self::Vector,
     ) -> Self::Vector;
+
+    /// Parallel-transport `v` along the piecewise-geodesic path
+    /// through the listed points, segment by segment. Returns the
+    /// transported vector at the final point.
+    ///
+    /// **Why this is the path-aware primitive.** Parallel transport
+    /// is *path-dependent* in any non-flat geometry; "transport from
+    /// `a` to `b`" is only well-defined once a path is chosen.
+    /// [`Self::parallel_transport`] picks the geodesic between the
+    /// endpoints; this method lets the caller pick *any* path it
+    /// already knows (e.g. the polyline a camera or player traversed
+    /// over the last few frames). Spaces with expensive geodesic
+    /// construction — `BlendedSpace`, future numerical-only Spaces —
+    /// should override this method to integrate the polyline
+    /// directly rather than reconstructing each segment's geodesic.
+    ///
+    /// Edge cases:
+    /// - `path.len() < 2`: returns `v` unchanged.
+    /// - Consecutive duplicate points contribute identity transports.
+    ///
+    /// The default implementation chains
+    /// [`Self::parallel_transport`] over consecutive pairs, which is
+    /// exact for closed-form Spaces.
+    fn parallel_transport_along(&self, path: &[Self::Point], v: Self::Vector) -> Self::Vector {
+        let mut current = v;
+        for w in path.windows(2) {
+            current = self.parallel_transport(w[0], w[1], current);
+        }
+        current
+    }
 
     // ---- Isometry group -----------------------------------------------
 

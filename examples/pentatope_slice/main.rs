@@ -24,12 +24,11 @@
 //! ## Controls
 //!
 //! - Mouse: orbit camera (left-drag), zoom (scroll).
-//! - **Space**: start / pause physics. Starts paused — when you're
-//!   ready to drop the pentatope, hit Space.
+//! - **Space**: pause / resume physics.
 //! - **↑ / ↓**: nudge slice offset ±0.05 (disables auto-sweep).
 //! - **A**: toggle automatic offset sweep (cosine-paced, 8 s period,
 //!   range ±0.6).
-//! - **R**: reset everything — physics body, offset = 0, paused.
+//! - **R**: reset — re-spawn the pentatope at `y = 2.5`, offset = 0.
 //! - **0–4**: highlight that pentatope cell (its tinted faces glow
 //!   brighter when visible). **5**: clear highlight.
 //! - **Esc**: exit.
@@ -329,16 +328,20 @@ impl App {
             timestep: FixedTimestep::new(60),
             camera: {
                 let mut c = OrbitCamera::default();
-                // Pull camera back & up so the pentatope settling on
-                // y=0 is in frame.
-                c.set_orbit(8.0, 0.35);
+                // Pull back and **up** so the pentatope falling onto
+                // `y = 0` is framed from above. `OrbitCamera` uses
+                // negative pitch for "look down" (positive pitch tilts
+                // the camera below the floor — the SDF then reads the
+                // origin as inside the ground half-space and the
+                // viewport floods with checker).
+                c.set_orbit(8.0, -0.35);
                 c
             },
             input: InputState::default(),
             start: Instant::now(),
             world,
             pentatope_id,
-            paused: true,
+            paused: false,
             w_offset: 0.0,
             auto_sweep: false,
             sweep_anchor: Instant::now(),
@@ -355,7 +358,7 @@ impl App {
         self.w_offset = 0.0;
         self.auto_sweep = false;
         self.sweep_anchor = Instant::now();
-        self.paused = true;
+        self.paused = false;
     }
 
     fn advance_auto_sweep(&mut self) {

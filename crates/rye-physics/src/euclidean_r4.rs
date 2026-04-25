@@ -618,41 +618,87 @@ mod tests {
     }
 
     /// 4D pentatope falling onto a 4D floor produces a real contact
-    /// (not None from `validate_contact4`) and the body comes to rest
-    /// roughly above the floor. End-to-end test of the
-    /// `polytope_halfspace_r4` narrowphase under gravity.
+    /// (not None from `validate_contact4`), comes to rest above the
+    /// floor, and stays there with bounded angular velocity.
+    /// End-to-end integration test of the full
+    /// `gravity → integrator → polytope_halfspace_r4 → manifold → PGS`
+    /// pipeline in 4D.
+    ///
+    /// **Catches:**
+    /// - Sign errors in `Bivector4::contract_vec` /
+    ///   `Bivector4::wedge` that inject energy at off-center contacts
+    ///   (such bugs typically blow `|v|` past 10 m/s within 60 frames
+    ///   and the body rebounds violently — the original Clifford-vs-
+    ///   physics-convention bug had the pentatope reach +107 m/s).
+    /// - Failure to populate manifolds at 4D contacts (body free-
+    ///   falls past the floor).
+    /// - NaN propagation through orientation integration.
     #[test]
     fn pentatope_settles_on_4d_floor() {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
         world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
-        let _floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+        let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
         let body_id = world.push_body(polytope_body_r4(
             Vec4::new(0.0, 3.0, 0.0, 0.0),
             Vec4::ZERO,
             pentatope_vertices(0.5),
             1.0,
         ));
+        // Restitution 0 on both sides lets the body settle
+        // deterministically rather than tumbling for 5+ seconds;
+        // we're testing that the contact pipeline converges, not that
+        // bouncing eventually damps out.
+        world.bodies[floor].restitution = 0.0;
+        world.bodies[body_id].restitution = 0.0;
+
+        // 10 s of sim. The body falls ≈ 0.78 s, then has 9+ s to settle.
         for _ in 0..600 {
             world.step(1.0 / 60.0);
         }
         let body = &world.bodies[body_id];
-        // The pentatope should be above (or barely below) the floor —
-        // some downward drift is allowed under the basic contact
-        // resolver, but it shouldn't be free-falling.
+
+        // Pentatope circumradius is 0.5; the deepest point in any
+        // resting orientation is at most 0.5 below the centroid, so
+        // the centroid should sit in y ∈ (-0.1, +0.6) when at rest
+        // on y = 0.
         assert!(
-            body.position.y > -1.0,
-            "pentatope tunneled below 4D floor: y = {}",
+            body.position.y.is_finite() && (-0.5..=1.0).contains(&body.position.y),
+            "pentatope position out of expected resting band: y = {}",
             body.position.y
         );
-        // And it shouldn't be accelerating away from the floor at
-        // gravity-only speed (which would mean we never made contact).
-        // After 10 s with no contact, |v_y| would be ≈ 98; with
-        // contact + bounce-and-friction, it should be much smaller.
         assert!(
-            body.velocity.y.abs() < 50.0,
-            "pentatope velocity grew unbounded: v_y = {}",
-            body.velocity.y
+            body.position.x.abs() < 5.0
+                && body.position.z.abs() < 5.0
+                && body.position.w.abs() < 5.0,
+            "pentatope drifted too far horizontally: pos = {:?}",
+            body.position
+        );
+
+        // Linear velocity should be effectively zero. With the original
+        // contract_vec sign bug this hit ≈ +107 m/s; under 1.0 here is
+        // tight enough to catch any reintroduction without flaking on
+        // legitimate solver micro-residuals.
+        assert!(
+            body.velocity.length() < 1.0,
+            "pentatope still moving after 10 s: |v| = {}, v = {:?}",
+            body.velocity.length(),
+            body.velocity
+        );
+
+        // Angular velocity: bounded, finite. Allows some residual
+        // tumble (resting on an edge or face is non-unique) but
+        // catches NaN propagation and runaway angular impulse.
+        let omega = body.angular_velocity;
+        let omega_mag2 = omega.xy * omega.xy
+            + omega.xz * omega.xz
+            + omega.xw * omega.xw
+            + omega.yz * omega.yz
+            + omega.yw * omega.yw
+            + omega.zw * omega.zw;
+        assert!(
+            omega_mag2.is_finite() && omega_mag2 < 4.0,
+            "pentatope angular velocity blew up: |ω|² = {omega_mag2}, ω = {omega:?}"
         );
     }
 

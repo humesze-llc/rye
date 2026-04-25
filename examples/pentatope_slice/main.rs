@@ -12,15 +12,24 @@
 //! contrast, span all four dimensions, so its slice depends strongly
 //! on `w₀`.
 //!
+//! ## w-slice convention
+//!
+//! `w_slice` (the slice hyperplane's `w` coordinate) **tracks the
+//! body's current w-position** plus a user-controlled offset. The
+//! pentatope's vertices span ≈ `[body.w − 0.25, body.w + 1.0]`, so
+//! offset 0 always cuts through the pentatope; the user nudges the
+//! offset to peer at different cross-sections without losing the
+//! body off-screen as it drifts in 4D.
+//!
 //! ## Controls
 //!
 //! - Mouse: orbit camera (left-drag), zoom (scroll).
-//! - **↑ / ↓**: nudge `w₀` ±0.02 (disables auto-sweep).
-//! - **A**: toggle automatic `w₀` sweep (cosine-paced, 12 s period).
-//! - **R**: reset everything — physics body, `w₀ = 0`, auto-sweep on.
-//! - **Space**: pause / resume the physics tick. The cross-section
-//!   keeps responding to camera + `w₀` even while paused, so you can
-//!   freeze a frame and inspect it.
+//! - **Space**: start / pause physics. Starts paused — when you're
+//!   ready to drop the pentatope, hit Space.
+//! - **↑ / ↓**: nudge slice offset ±0.05 (disables auto-sweep).
+//! - **A**: toggle automatic offset sweep (cosine-paced, 8 s period,
+//!   range ±0.6).
+//! - **R**: reset everything — physics body, offset = 0, paused.
 //! - **0–4**: highlight that pentatope cell (its tinted faces glow
 //!   brighter when visible). **5**: clear highlight.
 //! - **Esc**: exit.
@@ -64,8 +73,10 @@ fn shader_path() -> PathBuf {
 
 const TITLE: &str = "Rye — pentatope w-slice (live)";
 const PENTATOPE_RADIUS: f32 = 1.0;
-const W_MIN: f32 = -0.35;
-const W_MAX: f32 = 1.10;
+/// Offset range relative to the body's current `w`-position. The
+/// pentatope's local vertices span ≈ `w ∈ [−0.25, +1.0]`, so a sweep
+/// of ±0.6 cuts through the body without going far past either tip.
+const W_OFFSET_RANGE: f32 = 0.6;
 const NO_HIGHLIGHT: f32 = 5.0;
 
 // ---- Custom render uniform -----------------------------------------
@@ -239,6 +250,30 @@ impl RenderNode for SliceNode {
     }
 }
 
+/// Build the demo world: a 4D `y ≥ 0` floor (id 0) and a pentatope
+/// dropped from `y = 2.5` with zero restitution so it settles cleanly
+/// instead of bouncing chaotically. Floor is id 0; pentatope is the
+/// last (and only other) body, so callers should grab
+/// `world.bodies.len() - 1`.
+fn build_world() -> World<EuclideanR4> {
+    let mut world = World::new(EuclideanR4);
+    register_default_narrowphase(&mut world.narrowphase);
+    world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
+    let floor_id = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+    world.bodies[floor_id].restitution = 0.0;
+    let pent_id = world.push_body(polytope_body_r4(
+        Vec4::new(0.0, 2.5, 0.0, 0.0),
+        Vec4::ZERO,
+        pentatope_vertices(PENTATOPE_RADIUS),
+        1.0,
+    ));
+    // Zero restitution so the body lands and rests instead of
+    // bouncing chaotically and tumbling its `w`-coordinate out of
+    // view.
+    world.bodies[pent_id].restitution = 0.0;
+    world
+}
+
 // ---- App -----------------------------------------------------------
 
 struct App {
@@ -262,8 +297,11 @@ struct App {
     pentatope_id: usize,
     paused: bool,
 
-    // Slice.
-    w_slice: f32,
+    // Slice. `w_slice` is computed each frame as
+    // `body.position.w + w_offset` so the slice plane tracks the body
+    // through 4D — without this the body drifts in `w` post-impact and
+    // the cross-section disappears off-screen within a second.
+    w_offset: f32,
     auto_sweep: bool,
     sweep_anchor: Instant,
     highlight: f32,
@@ -276,17 +314,8 @@ struct App {
 
 impl App {
     fn new() -> Self {
-        let mut world = World::new(EuclideanR4);
-        register_default_narrowphase(&mut world.narrowphase);
-        world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
-        // 4D floor first so it has stable id 0.
-        let _floor_id = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
-        let pentatope_id = world.push_body(polytope_body_r4(
-            Vec4::new(0.0, 4.0, 0.0, 0.0),
-            Vec4::ZERO,
-            pentatope_vertices(PENTATOPE_RADIUS),
-            1.0,
-        ));
+        let world = build_world();
+        let pentatope_id = world.bodies.len() - 1;
 
         Self {
             window: None,
@@ -309,9 +338,9 @@ impl App {
             start: Instant::now(),
             world,
             pentatope_id,
-            paused: false,
-            w_slice: 0.0,
-            auto_sweep: true,
+            paused: true,
+            w_offset: 0.0,
+            auto_sweep: false,
             sweep_anchor: Instant::now(),
             highlight: NO_HIGHLIGHT,
             frame_count: 0,
@@ -321,31 +350,21 @@ impl App {
     }
 
     fn reset(&mut self) {
-        let mut world = World::new(EuclideanR4);
-        register_default_narrowphase(&mut world.narrowphase);
-        world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
-        let _floor_id = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
-        let pentatope_id = world.push_body(polytope_body_r4(
-            Vec4::new(0.0, 4.0, 0.0, 0.0),
-            Vec4::ZERO,
-            pentatope_vertices(PENTATOPE_RADIUS),
-            1.0,
-        ));
-        self.world = world;
-        self.pentatope_id = pentatope_id;
-        self.w_slice = 0.0;
-        self.auto_sweep = true;
+        self.world = build_world();
+        self.pentatope_id = self.world.bodies.len() - 1;
+        self.w_offset = 0.0;
+        self.auto_sweep = false;
         self.sweep_anchor = Instant::now();
-        self.paused = false;
+        self.paused = true;
     }
 
     fn advance_auto_sweep(&mut self) {
         if !self.auto_sweep {
             return;
         }
-        let phase = (self.sweep_anchor.elapsed().as_secs_f32() / 12.0) * std::f32::consts::TAU;
-        let eased = 0.5 * (1.0 - phase.cos());
-        self.w_slice = W_MIN + (W_MAX - W_MIN) * eased;
+        // 8 s period, ±W_OFFSET_RANGE about 0 (cosine).
+        let phase = (self.sweep_anchor.elapsed().as_secs_f32() / 8.0) * std::f32::consts::TAU;
+        self.w_offset = W_OFFSET_RANGE * phase.cos();
     }
 
     fn handle_keyboard(&mut self, code: PhysicalKey, state: ElementState) {
@@ -358,11 +377,11 @@ impl App {
         match kc {
             KeyCode::ArrowUp => {
                 self.auto_sweep = false;
-                self.w_slice = (self.w_slice + 0.02).min(W_MAX);
+                self.w_offset = (self.w_offset + 0.05).min(W_OFFSET_RANGE);
             }
             KeyCode::ArrowDown => {
                 self.auto_sweep = false;
-                self.w_slice = (self.w_slice - 0.02).max(W_MIN);
+                self.w_offset = (self.w_offset - 0.05).max(-W_OFFSET_RANGE);
             }
             KeyCode::KeyA => {
                 self.auto_sweep = !self.auto_sweep;
@@ -396,6 +415,11 @@ impl App {
         out
     }
 
+    /// Effective slice plane: body's current `w` plus the user offset.
+    fn effective_w_slice(&self) -> f32 {
+        self.world.bodies[self.pentatope_id].position.w + self.w_offset
+    }
+
     fn current_uniforms(&self) -> Option<SliceUniforms> {
         let rd = self.rd.as_ref()?;
         let view = self.camera.view();
@@ -415,7 +439,7 @@ impl App {
             ],
             time: t,
             tick: self.timestep.tick() as f32,
-            params: [self.w_slice, self.highlight, 0.0, 0.0],
+            params: [self.effective_w_slice(), self.highlight, 0.0, 0.0],
             pentatope_v: self.pentatope_world_vertices(),
         })
     }
@@ -562,9 +586,10 @@ impl ApplicationHandler for App {
                     let p = body.position;
                     let pause = if self.paused { " [paused]" } else { "" };
                     let mode = if self.auto_sweep { "auto" } else { "manual" };
+                    let w_eff = p.w + self.w_offset;
                     win.set_title(&format!(
-                        "{TITLE} | {:.0} fps | w₀={:+.3} ({mode}){pause} | y={:+.2} w_pos={:+.2}",
-                        self.fps, self.w_slice, p.y, p.w
+                        "{TITLE} | {:.0} fps | offset={:+.2} ({mode}) w₀={:+.2}{pause} | pos.y={:+.2} pos.w={:+.2}",
+                        self.fps, self.w_offset, w_eff, p.y, p.w
                     ));
                 }
 

@@ -48,13 +48,7 @@ pub trait CameraController<S: Space> {
     /// `camera`. `dt` is the wall-clock seconds since the last
     /// `advance` call (frame-rate-independent controllers can use
     /// it; orbit ignores it).
-    fn advance(
-        &mut self,
-        input: FrameInput,
-        camera: &mut Camera<S>,
-        space: &S,
-        dt: f32,
-    );
+    fn advance(&mut self, input: FrameInput, camera: &mut Camera<S>, space: &S, dt: f32);
 }
 
 // ---------------------------------------------------------------------------
@@ -86,8 +80,7 @@ pub struct OrbitController<S: Space> {
 
 impl<S: Space<Point = Vec3, Vector = Vec3>> Default for OrbitController<S> {
     fn default() -> Self {
-        let distance =
-            (INITIAL_RADIUS * INITIAL_RADIUS + INITIAL_HEIGHT * INITIAL_HEIGHT).sqrt();
+        let distance = (INITIAL_RADIUS * INITIAL_RADIUS + INITIAL_HEIGHT * INITIAL_HEIGHT).sqrt();
         let pitch = -(INITIAL_HEIGHT / distance).asin();
         Self {
             target: Vec3::ZERO,
@@ -147,13 +140,7 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> OrbitController<S> {
 }
 
 impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for OrbitController<S> {
-    fn advance(
-        &mut self,
-        input: FrameInput,
-        camera: &mut Camera<S>,
-        space: &S,
-        _dt: f32,
-    ) {
+    fn advance(&mut self, input: FrameInput, camera: &mut Camera<S>, space: &S, _dt: f32) {
         if input.left_mouse_down {
             self.yaw -= input.mouse_delta.x * ORBIT_RADIANS_PER_PIXEL;
             self.pitch = (self.pitch - input.mouse_delta.y * ORBIT_RADIANS_PER_PIXEL)
@@ -232,13 +219,7 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> FirstPersonController<S> {
 }
 
 impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for FirstPersonController<S> {
-    fn advance(
-        &mut self,
-        input: FrameInput,
-        camera: &mut Camera<S>,
-        _space: &S,
-        _dt: f32,
-    ) {
+    fn advance(&mut self, input: FrameInput, camera: &mut Camera<S>, _space: &S, _dt: f32) {
         self.yaw -= input.mouse_delta.x * FIRST_PERSON_MOUSE_SENSITIVITY;
         self.pitch = (self.pitch - input.mouse_delta.y * FIRST_PERSON_MOUSE_SENSITIVITY)
             .clamp(FIRST_PERSON_MIN_PITCH, FIRST_PERSON_MAX_PITCH);
@@ -276,16 +257,8 @@ pub struct GeodesicFollowController<S: Space> {
     _marker: PhantomData<S>,
 }
 
-impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S>
-    for GeodesicFollowController<S>
-{
-    fn advance(
-        &mut self,
-        _input: FrameInput,
-        _camera: &mut Camera<S>,
-        _space: &S,
-        _dt: f32,
-    ) {
+impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for GeodesicFollowController<S> {
+    fn advance(&mut self, _input: FrameInput, _camera: &mut Camera<S>, _space: &S, _dt: f32) {
         // No-op until PAINCARE's geodesic motion exposes the
         // holonomy-drift problem this is designed to fix. See
         // ROADMAP §3.2 + the comment above.
@@ -366,8 +339,7 @@ mod tests {
     #[test]
     fn first_person_view_is_normalised() {
         let mut camera = Camera::<EuclideanR3>::at_origin();
-        let mut ctrl: FirstPersonController<EuclideanR3> =
-            FirstPersonController::new(0.3, 0.2);
+        let mut ctrl: FirstPersonController<EuclideanR3> = FirstPersonController::new(0.3, 0.2);
         ctrl.advance(FrameInput::default(), &mut camera, &EuclideanR3, 0.0);
         assert!((camera.forward.length() - 1.0).abs() < 1e-5);
         assert!((camera.right.length() - 1.0).abs() < 1e-5);
@@ -391,7 +363,11 @@ mod tests {
         ctrl.distance = 0.4;
         ctrl.advance(FrameInput::default(), &mut camera, &HyperbolicH3, 0.0);
         // Position is inside the Poincaré ball.
-        assert!(camera.position.length() < 1.0, "camera escaped the Poincaré ball: {:?}", camera.position);
+        assert!(
+            camera.position.length() < 1.0,
+            "camera escaped the Poincaré ball: {:?}",
+            camera.position
+        );
         // Frame is finite and unit-ish (some f32 wobble OK; we
         // just rule out NaN / unbounded drift).
         assert!(camera.right.is_finite() && camera.up.is_finite() && camera.forward.is_finite());

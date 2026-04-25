@@ -138,11 +138,7 @@ pub trait App: Sized + 'static {
     /// hands you the surface view; do whatever rendering you
     /// like. The framework calls `frame.present` after this
     /// returns.
-    fn render(
-        &mut self,
-        rd: &RenderDevice,
-        view: &wgpu::TextureView,
-    ) -> anyhow::Result<()>;
+    fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> anyhow::Result<()>;
 
     /// Title bar text. Default returns the static name
     /// `"rye app"`. Override for live FPS / state readouts; the
@@ -509,11 +505,7 @@ impl<A: App> Runner<A> {
         }
 
         // 3. Hot-reload poll.
-        let reload_events = self
-            .watcher
-            .as_mut()
-            .map(|w| w.poll())
-            .unwrap_or_default();
+        let reload_events = self.watcher.as_mut().map(|w| w.poll()).unwrap_or_default();
         if !reload_events.is_empty() {
             if let (Some(app), Some(shader_db), Some(rd)) =
                 (self.app.as_mut(), self.shader_db.as_mut(), self.rd.as_ref())
@@ -563,8 +555,7 @@ impl<A: App> Runner<A> {
                 }
                 wgpu::SurfaceError::Timeout => win.request_redraw(),
                 wgpu::SurfaceError::OutOfMemory => {
-                    self.deferred_error =
-                        Some(anyhow::anyhow!("wgpu surface out of memory"));
+                    self.deferred_error = Some(anyhow::anyhow!("wgpu surface out of memory"));
                     elwt.exit();
                 }
                 wgpu::SurfaceError::Other => {

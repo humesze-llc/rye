@@ -193,8 +193,12 @@ mod tests {
     #[test]
     fn looking_at_target_points_toward_it() {
         let space = EuclideanR3;
-        let cam =
-            Camera::<EuclideanR3>::looking_at(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y, &space);
+        let cam = Camera::<EuclideanR3>::looking_at(
+            Vec3::new(0.0, 0.0, 5.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            &space,
+        );
         // From (0,0,5) looking at origin, forward = -Z.
         close(cam.forward, -Vec3::Z, 1e-6);
         // World up Y should keep `up` ≈ Y.

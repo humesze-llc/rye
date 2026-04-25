@@ -1,0 +1,378 @@
+//! [`CameraController`] — the input-driven logic that mutates a
+//! [`Camera`] each frame. Camera is data, controller is logic; they
+//! live in separate types so a game can swap controllers (orbit →
+//! first-person → geodesic-follow) without reconstructing the
+//! camera state.
+//!
+//! ## Concrete controllers shipped here
+//!
+//! - [`OrbitController`] — spherical-coordinate orbit around a
+//!   target. The current default for SDF-rendering demos.
+//! - [`FirstPersonController`] — yaw/pitch free-look from a
+//!   user-controlled position. Pairs naturally with
+//!   `rye_player::PlayerState` for WASD-style movement.
+//! - [`GeodesicFollowController`] *(stub for now)* — parallel-
+//!   transports the camera frame along the player's polyline so
+//!   it doesn't drift under repeated H³ rotations. Implementation
+//!   lands when PAINCARE needs it; the type already exists so
+//!   downstream code can name it.
+
+use std::f32::consts::FRAC_PI_2;
+use std::marker::PhantomData;
+
+use glam::{Quat, Vec3};
+use rye_input::FrameInput;
+use rye_math::Space;
+
+use crate::Camera;
+
+const ORBIT_RADIANS_PER_PIXEL: f32 = 0.006;
+const ZOOM_LOG_STEP: f32 = 0.12;
+const MIN_DISTANCE: f32 = 1.5;
+const MAX_DISTANCE: f32 = 8.0;
+const INITIAL_HEIGHT: f32 = 0.6;
+const INITIAL_RADIUS: f32 = 3.5;
+const MIN_ORBIT_PITCH: f32 = -1.45;
+const MAX_ORBIT_PITCH: f32 = 1.45;
+
+const FIRST_PERSON_MOUSE_SENSITIVITY: f32 = 0.002;
+const FIRST_PERSON_MIN_PITCH: f32 = -FRAC_PI_2 + 0.02;
+const FIRST_PERSON_MAX_PITCH: f32 = FRAC_PI_2 - 0.02;
+
+/// Drives camera state from per-frame input. Implementations
+/// own their own controller-specific state (orbit angles, etc.)
+/// and write the resulting pose into the [`Camera`] each call.
+pub trait CameraController<S: Space> {
+    /// Read the frame's input, update internal controller state,
+    /// and write the resulting position + tangent frame into
+    /// `camera`. `dt` is the wall-clock seconds since the last
+    /// `advance` call (frame-rate-independent controllers can use
+    /// it; orbit ignores it).
+    fn advance(
+        &mut self,
+        input: FrameInput,
+        camera: &mut Camera<S>,
+        space: &S,
+        dt: f32,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// OrbitController
+// ---------------------------------------------------------------------------
+
+/// Spherical-coordinate orbit camera that circles a target point.
+/// Left-drag orbits; scroll zooms.
+///
+/// In flat space this is the same math as the legacy
+/// [`crate::OrbitCamera`]. In $H^3$ / $S^3$ the camera position is
+/// computed by `Space::exp` from the target along the
+/// orbit-direction tangent vector, and the camera basis parallel-
+/// transports from the target to the camera position so it arrives
+/// orthonormal in any geometry.
+#[derive(Clone, Copy, Debug)]
+pub struct OrbitController<S: Space> {
+    /// Orbit centre in the manifold's coordinates.
+    pub target: S::Point,
+    /// Yaw around `world_up` (tangent direction at `target`).
+    pub yaw: f32,
+    /// Pitch about the right axis. Clamped to `[-1.45, 1.45]` so
+    /// the camera doesn't flip through poles.
+    pub pitch: f32,
+    /// Geodesic distance from `target` to the camera position.
+    pub distance: f32,
+    _marker: PhantomData<S>,
+}
+
+impl<S: Space<Point = Vec3, Vector = Vec3>> Default for OrbitController<S> {
+    fn default() -> Self {
+        let distance =
+            (INITIAL_RADIUS * INITIAL_RADIUS + INITIAL_HEIGHT * INITIAL_HEIGHT).sqrt();
+        let pitch = -(INITIAL_HEIGHT / distance).asin();
+        Self {
+            target: Vec3::ZERO,
+            yaw: FRAC_PI_2,
+            pitch,
+            distance,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S: Space<Point = Vec3, Vector = Vec3>> OrbitController<S> {
+    /// Build an orbit controller around `target` at the default
+    /// pose. `target` is in the Space's own coordinates.
+    pub fn around(target: Vec3) -> Self {
+        Self {
+            target,
+            ..Default::default()
+        }
+    }
+
+    /// Snap to a fixed orbit position. Used by capture / movie
+    /// mode (mirror of the legacy
+    /// [`crate::OrbitCamera::set_orbit`]).
+    pub fn set_orbit(&mut self, distance: f32, pitch: f32) {
+        self.distance = distance.clamp(MIN_DISTANCE, MAX_DISTANCE);
+        self.pitch = pitch.clamp(MIN_ORBIT_PITCH, MAX_ORBIT_PITCH);
+        self.yaw = 0.0;
+    }
+
+    /// Advance yaw by `delta` radians; used by auto-rotate mode.
+    pub fn rotate_yaw(&mut self, delta: f32) {
+        self.yaw += delta;
+    }
+
+    /// Local "back" tangent vector at `target`: the direction
+    /// pointing from `target` toward the camera. Encodes the orbit
+    /// angles in canonical xyz so the same yaw/pitch convention
+    /// works in any Space.
+    fn back_at_target(&self) -> Vec3 {
+        let yaw_q = Quat::from_rotation_y(self.yaw);
+        let pitch_q = Quat::from_rotation_x(self.pitch);
+        (yaw_q * pitch_q) * Vec3::Z
+    }
+
+    fn right_at_target(&self) -> Vec3 {
+        let yaw_q = Quat::from_rotation_y(self.yaw);
+        let pitch_q = Quat::from_rotation_x(self.pitch);
+        (yaw_q * pitch_q) * Vec3::X
+    }
+
+    fn up_at_target(&self) -> Vec3 {
+        let yaw_q = Quat::from_rotation_y(self.yaw);
+        let pitch_q = Quat::from_rotation_x(self.pitch);
+        (yaw_q * pitch_q) * Vec3::Y
+    }
+}
+
+impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for OrbitController<S> {
+    fn advance(
+        &mut self,
+        input: FrameInput,
+        camera: &mut Camera<S>,
+        space: &S,
+        _dt: f32,
+    ) {
+        if input.left_mouse_down {
+            self.yaw -= input.mouse_delta.x * ORBIT_RADIANS_PER_PIXEL;
+            self.pitch = (self.pitch - input.mouse_delta.y * ORBIT_RADIANS_PER_PIXEL)
+                .clamp(MIN_ORBIT_PITCH, MAX_ORBIT_PITCH);
+        }
+        if input.scroll_lines != 0.0 {
+            self.distance = (self.distance * (-input.scroll_lines * ZOOM_LOG_STEP).exp())
+                .clamp(MIN_DISTANCE, MAX_DISTANCE);
+        }
+
+        // Orbit-direction tangent vector at `target`.
+        let back_at_target = self.back_at_target();
+        let right_at_target = self.right_at_target();
+        let up_at_target = self.up_at_target();
+
+        // Camera position is `target` exp'd along that direction
+        // by `distance` units.
+        let cam_pos = space.exp(self.target, back_at_target * self.distance);
+
+        // Parallel-transport the basis from target to camera. In
+        // flat space this is the identity; in H³ / S³ the basis
+        // rotates by the holonomy of the geodesic step.
+        let path = [self.target, cam_pos];
+        let cam_right = space.parallel_transport_along(&path, right_at_target);
+        let cam_up = space.parallel_transport_along(&path, up_at_target);
+        let cam_back = space.parallel_transport_along(&path, back_at_target);
+
+        camera.position = cam_pos;
+        camera.right = cam_right;
+        camera.up = cam_up;
+        camera.forward = -cam_back;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FirstPersonController
+// ---------------------------------------------------------------------------
+
+/// Free-look first-person controller. The caller owns the
+/// position (typically `rye_player::PlayerState`'s `position`);
+/// this controller only manages the look direction.
+///
+/// Use by setting `camera.position` directly each frame (or via
+/// player physics), then calling `advance` to update the basis
+/// from yaw/pitch.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FirstPersonController<S: Space> {
+    pub yaw: f32,
+    pub pitch: f32,
+    _marker: PhantomData<S>,
+}
+
+impl<S: Space<Point = Vec3, Vector = Vec3>> FirstPersonController<S> {
+    pub fn new(yaw: f32, pitch: f32) -> Self {
+        Self {
+            yaw,
+            pitch: pitch.clamp(FIRST_PERSON_MIN_PITCH, FIRST_PERSON_MAX_PITCH),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for FirstPersonController<S> {
+    fn advance(
+        &mut self,
+        input: FrameInput,
+        camera: &mut Camera<S>,
+        _space: &S,
+        _dt: f32,
+    ) {
+        self.yaw -= input.mouse_delta.x * FIRST_PERSON_MOUSE_SENSITIVITY;
+        self.pitch = (self.pitch - input.mouse_delta.y * FIRST_PERSON_MOUSE_SENSITIVITY)
+            .clamp(FIRST_PERSON_MIN_PITCH, FIRST_PERSON_MAX_PITCH);
+
+        let yaw_q = Quat::from_rotation_y(self.yaw);
+        let pitch_q = Quat::from_rotation_x(self.pitch);
+        let rot = yaw_q * pitch_q;
+        // The basis is in T_position M; for the closed-form Spaces
+        // currently supported, we treat the canonical xyz as the
+        // local frame. A future curved-space first-person controller
+        // that wants honest geodesic transport between frames should
+        // use [`GeodesicFollowController`] instead.
+        camera.right = rot * Vec3::X;
+        camera.up = rot * Vec3::Y;
+        camera.forward = rot * -Vec3::Z;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GeodesicFollowController (placeholder; impl lands with PAINCARE)
+// ---------------------------------------------------------------------------
+
+/// Camera-frame controller that parallel-transports the basis
+/// along the *actual path* the camera traversed last frame, using
+/// [`Space::parallel_transport_along`]. Avoids the holonomy drift
+/// you'd get in $H^3$ from chaining "rotate-then-translate"
+/// operations naively.
+///
+/// **Stub:** the type exists so PAINCARE can name it in advance
+/// design notes. Actual `advance` implementation lands when the
+/// PAINCARE prototype hits the holonomy-drift problem; until then
+/// this controller is a no-op.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GeodesicFollowController<S: Space> {
+    _marker: PhantomData<S>,
+}
+
+impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S>
+    for GeodesicFollowController<S>
+{
+    fn advance(
+        &mut self,
+        _input: FrameInput,
+        _camera: &mut Camera<S>,
+        _space: &S,
+        _dt: f32,
+    ) {
+        // No-op until PAINCARE's geodesic motion exposes the
+        // holonomy-drift problem this is designed to fix. See
+        // ROADMAP §3.2 + the comment above.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::Vec2;
+    use rye_math::EuclideanR3;
+
+    fn close(a: Vec3, b: Vec3, tol: f32) {
+        assert!((a - b).length() < tol, "expected {a:?} ≈ {b:?}");
+    }
+
+    #[test]
+    fn orbit_default_in_e3_matches_legacy_pose() {
+        let mut camera = Camera::<EuclideanR3>::at_origin();
+        let mut ctrl: OrbitController<EuclideanR3> = OrbitController::default();
+        ctrl.advance(FrameInput::default(), &mut camera, &EuclideanR3, 0.0);
+        // Same expected pose as the legacy `OrbitCamera::default()`
+        // test in lib.rs: position (3.5, 0.6, 0).
+        close(camera.position, Vec3::new(3.5, 0.6, 0.0), 1e-5);
+        // Frame is orthonormal.
+        assert!((camera.right.length() - 1.0).abs() < 1e-5);
+        assert!((camera.up.length() - 1.0).abs() < 1e-5);
+        assert!((camera.forward.length() - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn orbit_left_drag_moves_camera() {
+        let mut camera = Camera::<EuclideanR3>::at_origin();
+        let mut ctrl: OrbitController<EuclideanR3> = OrbitController::default();
+        ctrl.advance(FrameInput::default(), &mut camera, &EuclideanR3, 0.0);
+        let before = camera.position;
+        ctrl.advance(
+            FrameInput {
+                mouse_delta: Vec2::new(50.0, -20.0),
+                left_mouse_down: true,
+                ..FrameInput::default()
+            },
+            &mut camera,
+            &EuclideanR3,
+            0.0,
+        );
+        assert_ne!(before, camera.position);
+        // Frame stays unit-length after orbit.
+        assert!((camera.forward.length() - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn orbit_scroll_clamps_distance() {
+        let mut ctrl: OrbitController<EuclideanR3> = OrbitController::default();
+        let mut camera = Camera::<EuclideanR3>::at_origin();
+        ctrl.advance(
+            FrameInput {
+                scroll_lines: 100.0,
+                ..FrameInput::default()
+            },
+            &mut camera,
+            &EuclideanR3,
+            0.0,
+        );
+        assert!((ctrl.distance - MIN_DISTANCE).abs() < 1e-5);
+        ctrl.advance(
+            FrameInput {
+                scroll_lines: -100.0,
+                ..FrameInput::default()
+            },
+            &mut camera,
+            &EuclideanR3,
+            0.0,
+        );
+        assert!((ctrl.distance - MAX_DISTANCE).abs() < 1e-5);
+    }
+
+    #[test]
+    fn first_person_view_is_normalised() {
+        let mut camera = Camera::<EuclideanR3>::at_origin();
+        let mut ctrl: FirstPersonController<EuclideanR3> =
+            FirstPersonController::new(0.3, 0.2);
+        ctrl.advance(FrameInput::default(), &mut camera, &EuclideanR3, 0.0);
+        assert!((camera.forward.length() - 1.0).abs() < 1e-5);
+        assert!((camera.right.length() - 1.0).abs() < 1e-5);
+        assert!((camera.up.length() - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn first_person_pitch_clamps() {
+        let mut camera = Camera::<EuclideanR3>::at_origin();
+        let mut ctrl: FirstPersonController<EuclideanR3> = FirstPersonController::default();
+        ctrl.advance(
+            FrameInput {
+                mouse_delta: Vec2::new(0.0, 1e9),
+                ..FrameInput::default()
+            },
+            &mut camera,
+            &EuclideanR3,
+            0.0,
+        );
+        assert!(ctrl.pitch >= FIRST_PERSON_MIN_PITCH);
+        assert!(ctrl.pitch <= FIRST_PERSON_MAX_PITCH);
+    }
+}

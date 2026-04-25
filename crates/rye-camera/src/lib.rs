@@ -1,3 +1,33 @@
+//! Camera abstractions for Rye.
+//!
+//! Two layers, used together:
+//!
+//! 1. [`Camera<S>`] — Space-generic position + tangent frame.
+//!    Pure data; storage agnostic to which controller is driving
+//!    it. Works for any `Space` whose `Point` and `Vector` are
+//!    `glam::Vec3` (i.e. all the closed-form 3D Spaces today).
+//! 2. [`CameraController`] — input-driven logic that mutates a
+//!    `Camera<S>` each frame. Concrete impls:
+//!    [`OrbitController`], [`FirstPersonController`], and the
+//!    soon-to-land [`GeodesicFollowController`].
+//!
+//! ## Legacy Euclidean-only types
+//!
+//! [`OrbitCamera`] and [`FirstPersonCamera`] predate the
+//! Space-generic refactor. They remain exported and unchanged so
+//! existing examples build during incremental migration; new code
+//! should prefer `OrbitController<EuclideanR3>` /
+//! `FirstPersonController<EuclideanR3>`. They will be removed once
+//! every example has migrated.
+
+mod camera;
+mod controller;
+
+pub use camera::Camera;
+pub use controller::{
+    CameraController, FirstPersonController, GeodesicFollowController, OrbitController,
+};
+
 use std::f32::consts::FRAC_PI_2;
 
 use glam::{Quat, Vec3};

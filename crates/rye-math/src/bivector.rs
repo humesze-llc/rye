@@ -447,16 +447,27 @@ impl Bivector4 {
         }
     }
 
-    /// The 1-vector part of `self · v` — the "angular velocity
-    /// contribution at offset `v`" in rigid-body kinematics. Parallels
-    /// `ω × r` in 3D; in 4D the bivector contracted with a vector
-    /// gives a vector directly.
+    /// Linear velocity at offset `v` due to angular velocity `self`
+    /// — the 4D analogue of 3D's `ω × r`. For `B = e_xy` and `v = e_x`
+    /// this returns `+e_y` (rotation in the xy-plane sends `+x` toward
+    /// `+y`), matching the rigid-body convention used elsewhere in
+    /// `rye-physics`.
+    ///
+    /// This is *not* the Clifford left-contraction `B ⌋ v` (which
+    /// would give `−e_y` for the same inputs); it's the negated
+    /// 1-vector part of `B · v`. The flip aligns the formula with the
+    /// physics-side `ω × r` convention so that
+    /// `velocity_at_point = body.velocity + ω.contract_vec(r)`
+    /// produces the right linear velocity at a contact point — and
+    /// in particular keeps it consistent with the angular-impulse
+    /// path (`ω += −wedge(r, n)·j / I`) so PGS contact resolution
+    /// converges instead of blowing up.
     pub fn contract_vec(self, v: Vec4) -> Vec4 {
         Vec4::new(
-            self.xy * v.y + self.xz * v.z + self.xw * v.w,
-            -self.xy * v.x + self.yz * v.z + self.yw * v.w,
-            -self.xz * v.x - self.yz * v.y + self.zw * v.w,
-            -self.xw * v.x - self.yw * v.y - self.zw * v.z,
+            -(self.xy * v.y + self.xz * v.z + self.xw * v.w),
+            -(-self.xy * v.x + self.yz * v.z + self.yw * v.w),
+            -(-self.xz * v.x - self.yz * v.y + self.zw * v.w),
+            -(-self.xw * v.x - self.yw * v.y - self.zw * v.z),
         )
     }
 

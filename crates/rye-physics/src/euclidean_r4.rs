@@ -163,6 +163,79 @@ fn sphere_sphere_r4(
     })
 }
 
+/// Sphere vs 4D half-space: signed distance from sphere center to
+/// the plane gives penetration. Mirrors the 3D path.
+fn sphere_halfspace_r4(
+    a: &RigidBody<EuclideanR4>,
+    b: &RigidBody<EuclideanR4>,
+    _space: &EuclideanR4,
+) -> Option<Contact<EuclideanR4>> {
+    let Collider::Sphere { radius, .. } = a.collider else {
+        return None;
+    };
+    let Collider::HalfSpace4D { normal, offset } = b.collider else {
+        return None;
+    };
+    let signed = a.position.dot(normal) - offset;
+    let penetration = radius - signed;
+    if penetration <= 0.0 {
+        return None;
+    }
+    // A→B normal points *into* the half-space (opposite the
+    // half-space's outward normal); pushing along it separates the
+    // sphere from the wall.
+    let contact_normal = -normal;
+    let point = a.position - normal * radius;
+    Some(Contact {
+        normal: contact_normal,
+        point,
+        penetration,
+        restitution: (a.restitution + b.restitution) * 0.5,
+    })
+}
+
+/// 4D convex polytope vs 4D half-space: deepest-vertex search. The
+/// world-space polytope vertex with the most-negative signed
+/// distance to the plane is the contact point; the 4D normal and
+/// depth read straight off it.
+fn polytope_halfspace_r4(
+    a: &RigidBody<EuclideanR4>,
+    b: &RigidBody<EuclideanR4>,
+    _space: &EuclideanR4,
+) -> Option<Contact<EuclideanR4>> {
+    let Collider::ConvexPolytope4D { vertices: va_local } = &a.collider else {
+        return None;
+    };
+    let Collider::HalfSpace4D {
+        normal: plane_n,
+        offset,
+    } = b.collider
+    else {
+        return None;
+    };
+
+    let mut deepest = Vec4::ZERO;
+    let mut deepest_depth = 0.0_f32;
+    for &v_local in va_local {
+        let v_world = a.orientation.rotation.apply(v_local) + a.position;
+        let signed = v_world.dot(plane_n) - offset;
+        let depth = -signed;
+        if depth > deepest_depth {
+            deepest_depth = depth;
+            deepest = v_world;
+        }
+    }
+    if deepest_depth <= 0.0 {
+        return None;
+    }
+    Some(Contact {
+        normal: -plane_n,
+        point: deepest,
+        penetration: deepest_depth,
+        restitution: (a.restitution + b.restitution) * 0.5,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Polytope narrowphases via 4D GJK + EPA. Same wrapper shape as the R³
 // path: transform body-local vertices to world, build a support-fn
@@ -286,6 +359,11 @@ fn sphere_polytope_r4(
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR4>) {
     np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r4);
     np.register(
+        ColliderKind::Sphere,
+        ColliderKind::HalfSpace4D,
+        sphere_halfspace_r4,
+    );
+    np.register(
         ColliderKind::ConvexPolytope4D,
         ColliderKind::ConvexPolytope4D,
         polytope_polytope_r4,
@@ -294,6 +372,11 @@ pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR4>) {
         ColliderKind::Sphere,
         ColliderKind::ConvexPolytope4D,
         sphere_polytope_r4,
+    );
+    np.register(
+        ColliderKind::ConvexPolytope4D,
+        ColliderKind::HalfSpace4D,
+        polytope_halfspace_r4,
     );
 }
 
@@ -322,6 +405,21 @@ pub fn sphere_body_r4(
         Collider::sphere_at_origin(radius),
         mass,
         ball4_inertia(mass, radius),
+        &EuclideanR4,
+    )
+}
+
+/// Static 4D half-space body — the 4D analogue of a floor or wall.
+/// `normal` is the outward direction (pointing into the empty half);
+/// `offset` places the plane at `dot(p, normal) = offset`. The
+/// produced body has `inv_mass = 0` so gravity and impulses are
+/// inert on it.
+pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> RigidBody<EuclideanR4> {
+    let n = normal.try_normalize().unwrap_or(Vec4::Y);
+    RigidBody::fixed(
+        Vec4::ZERO,
+        Collider::HalfSpace4D { normal: n, offset },
+        1.0,
         &EuclideanR4,
     )
 }
@@ -482,6 +580,79 @@ mod tests {
         assert!(
             (a - b).abs() <= tol,
             "expected {a} close to {b} (tol {tol})"
+        );
+    }
+
+    /// 4D sphere falling onto a 4D `y = 0` half-space settles above
+    /// the ground without tunneling. Exercises the `sphere_halfspace_r4`
+    /// narrowphase end-to-end through the integrator + solver.
+    #[test]
+    fn sphere_settles_on_4d_floor() {
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+        world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
+        let _floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+        let ball = world.push_body(sphere_body_r4(
+            Vec4::new(0.0, 2.0, 0.0, 0.0),
+            Vec4::ZERO,
+            0.5,
+            1.0,
+        ));
+        // 5 seconds — plenty of time to fall, bounce, settle.
+        for _ in 0..300 {
+            world.step(1.0 / 60.0);
+        }
+        let body = &world.bodies[ball];
+        // Lowest sphere point ≈ position.y − radius. Should sit at or
+        // just above the floor (small Baumgarte-corrected penetration).
+        let lowest = body.position.y - 0.5;
+        assert!(
+            lowest >= -0.05,
+            "ball tunneled through 4D floor: y_bottom = {lowest}"
+        );
+        assert!(
+            body.velocity.length() < 0.5,
+            "ball still moving: |v| = {}",
+            body.velocity.length()
+        );
+    }
+
+    /// 4D pentatope falling onto a 4D floor produces a real contact
+    /// (not None from `validate_contact4`) and the body comes to rest
+    /// roughly above the floor. End-to-end test of the
+    /// `polytope_halfspace_r4` narrowphase under gravity.
+    #[test]
+    fn pentatope_settles_on_4d_floor() {
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+        world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
+        let _floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+        let body_id = world.push_body(polytope_body_r4(
+            Vec4::new(0.0, 3.0, 0.0, 0.0),
+            Vec4::ZERO,
+            pentatope_vertices(0.5),
+            1.0,
+        ));
+        for _ in 0..600 {
+            world.step(1.0 / 60.0);
+        }
+        let body = &world.bodies[body_id];
+        // The pentatope should be above (or barely below) the floor —
+        // some downward drift is allowed under the basic contact
+        // resolver, but it shouldn't be free-falling.
+        assert!(
+            body.position.y > -1.0,
+            "pentatope tunneled below 4D floor: y = {}",
+            body.position.y
+        );
+        // And it shouldn't be accelerating away from the floor at
+        // gravity-only speed (which would mean we never made contact).
+        // After 10 s with no contact, |v_y| would be ≈ 98; with
+        // contact + bounce-and-friction, it should be much smaller.
+        assert!(
+            body.velocity.y.abs() < 50.0,
+            "pentatope velocity grew unbounded: v_y = {}",
+            body.velocity.y
         );
     }
 

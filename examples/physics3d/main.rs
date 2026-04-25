@@ -174,6 +174,7 @@ fn collect_gpu_bodies(world: &World<EuclideanR3>) -> (BodyBuffer, u32) {
                 count += 1;
             }
             Collider::HalfSpace { .. }
+            | Collider::HalfSpace4D { .. }
             | Collider::Polygon2D { .. }
             | Collider::Box3 { .. }
             | Collider::ConvexPolytope4D { .. } => {

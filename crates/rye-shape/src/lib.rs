@@ -49,6 +49,13 @@ pub enum Shape {
     /// `HalfSpace`.
     HalfSpace { normal: Vec3, offset: f32 },
 
+    /// 4D half-space: same convention as [`Shape::HalfSpace`] but
+    /// with a `Vec4` normal — used by the 4D physics ground in the
+    /// pentatope-falls demo. Only meaningful on a static body
+    /// (`inv_mass = 0`); a dynamic half-space isn't physically
+    /// sensible.
+    HalfSpace4D { normal: Vec4, offset: f32 },
+
     /// Axis-aligned 3D box, centered at the origin of its local
     /// frame. SDF emits the standard Euclidean-box formula; physics
     /// prefers the equivalent 8-vertex [`Shape::ConvexPolytope3D`]
@@ -77,6 +84,7 @@ impl Shape {
         match self {
             Shape::Sphere { .. } => ShapeKind::Sphere,
             Shape::HalfSpace { .. } => ShapeKind::HalfSpace,
+            Shape::HalfSpace4D { .. } => ShapeKind::HalfSpace4D,
             Shape::Box3 { .. } => ShapeKind::Box3,
             Shape::Polygon2D { .. } => ShapeKind::Polygon2D,
             Shape::ConvexPolytope3D { .. } => ShapeKind::ConvexPolytope3D,
@@ -108,6 +116,7 @@ impl Shape {
 pub enum ShapeKind {
     Sphere,
     HalfSpace,
+    HalfSpace4D,
     Box3,
     Polygon2D,
     ConvexPolytope3D,

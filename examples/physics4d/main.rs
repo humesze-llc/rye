@@ -11,6 +11,9 @@
 //! - **Default** — one pentatope at `y = 5`, gravity along `−y`. Falls
 //!   forever (no floor, no other body), exercising integrator + 4D
 //!   orientation transport on a 4D rigid body.
+//! - **`--floor`** — adds a static 4D half-space at `y = 0` (normal
+//!   along `+y`). The pentatope falls onto this 4D ground and
+//!   settles, exercising the polytope-vs-halfspace 4D narrowphase.
 //! - **`--collide`** — same plus a second pentatope held static at the
 //!   origin. The falling one drops onto it; their first contact (and
 //!   any subsequent ones) prints a line. This exercises the full 4D
@@ -25,16 +28,29 @@
 use glam::Vec4;
 use rye_math::EuclideanR4;
 use rye_physics::{
-    euclidean_r4::{pentatope_vertices, polytope_body_r4, register_default_narrowphase},
+    euclidean_r4::{
+        halfspace4_body_r4, pentatope_vertices, polytope_body_r4, register_default_narrowphase,
+    },
     field::Gravity,
     World,
 };
 
 const DT: f32 = 1.0 / 60.0;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// One pentatope, no floor, no second body — pure free-fall.
+    #[default]
+    Drop,
+    /// Pentatope plus a 4D `y ≥ 0` half-space floor.
+    Floor,
+    /// Pentatope plus a static second pentatope at the origin.
+    Collide,
+}
+
+#[derive(Debug)]
 struct Args {
-    collide: bool,
+    mode: Mode,
     steps: usize,
     print_every: usize,
 }
@@ -42,14 +58,15 @@ struct Args {
 impl Args {
     fn parse() -> Self {
         let mut args = Args {
-            collide: false,
+            mode: Mode::Drop,
             steps: 600,
             print_every: 60,
         };
         let mut iter = std::env::args().skip(1);
         while let Some(arg) = iter.next() {
             match arg.as_str() {
-                "--collide" => args.collide = true,
+                "--floor" => args.mode = Mode::Floor,
+                "--collide" => args.mode = Mode::Collide,
                 "--steps" => {
                     args.steps = iter
                         .next()
@@ -68,6 +85,7 @@ impl Args {
                     println!("Usage: cargo run --example physics4d [options]");
                     println!();
                     println!("Options:");
+                    println!("  --floor                spawn a 4D half-space ground at y = 0");
                     println!(
                         "  --collide              spawn a second static pentatope at the origin"
                     );
@@ -99,36 +117,40 @@ fn main() {
     world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
 
     // Mass 1, unit-circumradius pentatope: a 4D simplex with 5
-    // tetrahedral cells. Always the falling body (id == 0 in default
-    // mode, id == 1 in collide mode).
-    let falling_id = if args.collide {
-        // Static pentatope at origin first so its index is 0 — easier
-        // to talk about "the falling one" as id 1.
-        let mut anchor = polytope_body_r4(Vec4::ZERO, Vec4::ZERO, pentatope_vertices(1.0), 1.0);
-        // Make it static.
-        anchor.inv_mass = 0.0;
-        anchor.mass = 0.0;
-        let _anchor_id = world.push_body(anchor);
+    // tetrahedral cells. The falling body's index is always last, so
+    // it's id 1 in --floor / --collide modes (anchor is id 0) and
+    // id 0 in plain drop mode.
+    match args.mode {
+        Mode::Floor => {
+            // 4D ground: half-space `{ p : p.y ≥ 0 }`. Outward normal
+            // points along +y so the pentatope (above the ground)
+            // stays out of the half-space.
+            let _floor_id = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+        }
+        Mode::Collide => {
+            // Static second pentatope at origin so the falling one
+            // collides with it.
+            let mut anchor = polytope_body_r4(Vec4::ZERO, Vec4::ZERO, pentatope_vertices(1.0), 1.0);
+            anchor.inv_mass = 0.0;
+            anchor.mass = 0.0;
+            let _anchor_id = world.push_body(anchor);
+        }
+        Mode::Drop => {}
+    }
 
-        world.push_body(polytope_body_r4(
-            Vec4::new(0.0, 5.0, 0.0, 0.0),
-            Vec4::ZERO,
-            pentatope_vertices(1.0),
-            1.0,
-        ))
-    } else {
-        world.push_body(polytope_body_r4(
-            Vec4::new(0.0, 5.0, 0.0, 0.0),
-            Vec4::ZERO,
-            pentatope_vertices(1.0),
-            1.0,
-        ))
+    let falling_id = world.push_body(polytope_body_r4(
+        Vec4::new(0.0, 5.0, 0.0, 0.0),
+        Vec4::ZERO,
+        pentatope_vertices(1.0),
+        1.0,
+    ));
+
+    let mode_label = match args.mode {
+        Mode::Drop => "drop",
+        Mode::Floor => "floor",
+        Mode::Collide => "collide",
     };
-
-    println!(
-        "4D physics demo — {} mode",
-        if args.collide { "collide" } else { "drop" }
-    );
+    println!("4D physics demo — {mode_label} mode");
     println!("  gravity:  {}", fmt_v4(Vec4::new(0.0, -9.8, 0.0, 0.0)));
     println!(
         "  bodies:   {} (falling pentatope is id {falling_id})",

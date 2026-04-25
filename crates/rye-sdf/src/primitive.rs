@@ -79,7 +79,8 @@ impl Primitive for Shape {
             ),
             Shape::Polygon2D { .. }
             | Shape::ConvexPolytope3D { .. }
-            | Shape::ConvexPolytope4D { .. } => {
+            | Shape::ConvexPolytope4D { .. }
+            | Shape::HalfSpace4D { .. } => {
                 // No SDF emission today for vertex-list shapes; emit
                 // a far-away-sentinel so they don't break scene
                 // assembly if accidentally included. Rendering these

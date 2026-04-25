@@ -16,9 +16,11 @@
 
 pub mod combinator;
 pub mod primitive;
+pub mod primitive4;
 pub mod scene;
 
 pub use primitive::Primitive;
+pub use primitive4::Primitive4;
 pub use rye_shape::Shape;
 pub use scene::{PrimitiveKind, Scene, SceneNode};
 

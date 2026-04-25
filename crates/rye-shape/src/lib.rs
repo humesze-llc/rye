@@ -72,8 +72,16 @@ pub enum Shape {
     ConvexPolytope3D { vertices: Vec<Vec3> },
 
     /// Convex 4D polytope. Physics 4D narrowphase uses 4D GJK+EPA;
-    /// no SDF emission (no 4D renderer yet).
+    /// SDF emission via `rye_sdf::Primitive4` (max-of-half-spaces).
     ConvexPolytope4D { vertices: Vec<Vec4> },
+
+    /// 4D ball with a local centre and radius — the 4D analogue of
+    /// [`Shape::Sphere`]. SDF: `length(p - center) - radius` in
+    /// `vec4`. Physics narrowphase reuses the `Sphere` path with a
+    /// `Vec4` centre via the body position; this variant is for SDF
+    /// scene authoring (`Scene4`) where pose is encoded in the
+    /// shape rather than a transform combinator.
+    HyperSphere4D { center: Vec4, radius: f32 },
 }
 
 impl Shape {
@@ -89,6 +97,7 @@ impl Shape {
             Shape::Polygon2D { .. } => ShapeKind::Polygon2D,
             Shape::ConvexPolytope3D { .. } => ShapeKind::ConvexPolytope3D,
             Shape::ConvexPolytope4D { .. } => ShapeKind::ConvexPolytope4D,
+            Shape::HyperSphere4D { .. } => ShapeKind::HyperSphere4D,
         }
     }
 
@@ -121,6 +130,7 @@ pub enum ShapeKind {
     Polygon2D,
     ConvexPolytope3D,
     ConvexPolytope4D,
+    HyperSphere4D,
 }
 
 #[cfg(test)]

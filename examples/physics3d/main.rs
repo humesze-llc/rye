@@ -177,7 +177,8 @@ fn collect_gpu_bodies(world: &World<EuclideanR3>) -> (BodyBuffer, u32) {
             | Collider::HalfSpace4D { .. }
             | Collider::Polygon2D { .. }
             | Collider::Box3 { .. }
-            | Collider::ConvexPolytope4D { .. } => {
+            | Collider::ConvexPolytope4D { .. }
+            | Collider::HyperSphere4D { .. } => {
                 // Halfspace is implicit (scene uniforms); 2D polygons
                 // and 4D polytopes shouldn't appear in a 3D world;
                 // Box3 isn't used by this demo (it uses

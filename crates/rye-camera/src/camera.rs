@@ -38,12 +38,17 @@ use crate::CameraView;
 ///
 /// ## Invariants (caller-maintained, not type-enforced)
 ///
-/// - `right`, `up`, `forward` are pairwise-orthogonal unit tangent
-///   vectors at `position`.
+/// - `right`, `up`, `forward` are pairwise-orthogonal **Euclidean-
+///   unit** vectors in the Space's embedding (Cartesian for E³,
+///   Poincaré-ball for H³, unit-3-sphere for S³). The WGSL prelude
+///   handles the actual metric on those Euclidean-unit directions;
+///   storing Riemannian-unit vectors instead would force the
+///   renderer to know about embedding scale factors, which is not
+///   the prelude split's intent.
 /// - Right-handed-camera convention: `forward` points where the
 ///   camera looks, so `right × up = -forward` (the "back"
-///   direction). This matches the legacy [`crate::OrbitCamera`]
-///   and the WGSL prelude expectations.
+///   direction). Matches the legacy [`crate::OrbitCamera`] and the
+///   WGSL prelude expectations.
 /// - Construct via [`Camera::looking_at`] or via a
 ///   [`crate::CameraController`] to keep the frame orthonormal.
 ///   Manually mutating the basis without re-orthonormalising will
@@ -138,10 +143,25 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
         // Use the path-aware primitive over the 2-point polyline so
         // future Spaces with non-trivial geodesic-construction cost
         // can override `parallel_transport_along` and skip the BVP.
+        // Re-normalise the transported basis to Euclidean-unit
+        // length: parallel transport preserves Riemannian length,
+        // but the Poincaré-ball / S³-embedding scales Euclidean
+        // length by a position-dependent factor. The renderer
+        // expects Euclidean-unit directions in the embedding; the
+        // WGSL prelude handles the metric.
         let path = [self.position, new_pos];
-        self.right = space.parallel_transport_along(&path, self.right);
-        self.up = space.parallel_transport_along(&path, self.up);
-        self.forward = space.parallel_transport_along(&path, self.forward);
+        self.right = space
+            .parallel_transport_along(&path, self.right)
+            .try_normalize()
+            .unwrap_or(self.right);
+        self.up = space
+            .parallel_transport_along(&path, self.up)
+            .try_normalize()
+            .unwrap_or(self.up);
+        self.forward = space
+            .parallel_transport_along(&path, self.forward)
+            .try_normalize()
+            .unwrap_or(self.forward);
         self.position = new_pos;
     }
 }

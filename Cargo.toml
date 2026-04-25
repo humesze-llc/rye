@@ -12,6 +12,7 @@ members = [
   "crates/rye-player",
   "crates/rye-collision",
   "crates/rye-physics",
+  "crates/rye-app",
 ]
 resolver = "2"
 

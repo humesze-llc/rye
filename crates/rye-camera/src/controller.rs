@@ -173,13 +173,28 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for OrbitControl
         // by `distance` units.
         let cam_pos = space.exp(self.target, back_at_target * self.distance);
 
-        // Parallel-transport the basis from target to camera. In
-        // flat space this is the identity; in H³ / S³ the basis
-        // rotates by the holonomy of the geodesic step.
+        // Parallel-transport the basis from target to camera, then
+        // normalise. In flat space transport is the identity and
+        // the inputs were already unit; in H³ / S³ the transport
+        // preserves *Riemannian* length, but the Poincaré-ball /
+        // S³-embedding scales Euclidean length by a position-
+        // dependent factor — re-normalising restores the
+        // Euclidean-unit convention the renderer expects (the
+        // WGSL prelude handles the metric on those Euclidean-unit
+        // ray directions).
         let path = [self.target, cam_pos];
-        let cam_right = space.parallel_transport_along(&path, right_at_target);
-        let cam_up = space.parallel_transport_along(&path, up_at_target);
-        let cam_back = space.parallel_transport_along(&path, back_at_target);
+        let cam_right = space
+            .parallel_transport_along(&path, right_at_target)
+            .try_normalize()
+            .unwrap_or(Vec3::X);
+        let cam_up = space
+            .parallel_transport_along(&path, up_at_target)
+            .try_normalize()
+            .unwrap_or(Vec3::Y);
+        let cam_back = space
+            .parallel_transport_along(&path, back_at_target)
+            .try_normalize()
+            .unwrap_or(Vec3::Z);
 
         camera.position = cam_pos;
         camera.right = cam_right;
@@ -357,6 +372,48 @@ mod tests {
         assert!((camera.forward.length() - 1.0).abs() < 1e-5);
         assert!((camera.right.length() - 1.0).abs() < 1e-5);
         assert!((camera.up.length() - 1.0).abs() < 1e-5);
+    }
+
+    /// `OrbitController<S>` should produce valid, finite, unit-
+    /// length frames in any 3D Space. This pins that the generic
+    /// impl actually works against `HyperbolicH3` and `SphericalS3`,
+    /// not just the closed-form-flat path. Catches regressions in
+    /// `Space::exp` / `parallel_transport_along` that would surface
+    /// as NaN frames or out-of-domain points.
+    #[test]
+    fn orbit_in_hyperbolic_h3_produces_valid_frame() {
+        use rye_math::HyperbolicH3;
+        let mut camera = Camera::<HyperbolicH3>::at_origin();
+        let mut ctrl: OrbitController<HyperbolicH3> = OrbitController::around(Vec3::ZERO);
+        // Smaller distance because the Poincaré ball is bounded
+        // by `|p| < 1`; the default 3.5 would push the camera
+        // outside the model.
+        ctrl.distance = 0.4;
+        ctrl.advance(FrameInput::default(), &mut camera, &HyperbolicH3, 0.0);
+        // Position is inside the Poincaré ball.
+        assert!(camera.position.length() < 1.0, "camera escaped the Poincaré ball: {:?}", camera.position);
+        // Frame is finite and unit-ish (some f32 wobble OK; we
+        // just rule out NaN / unbounded drift).
+        assert!(camera.right.is_finite() && camera.up.is_finite() && camera.forward.is_finite());
+        assert!((camera.right.length() - 1.0).abs() < 1e-3);
+        assert!((camera.up.length() - 1.0).abs() < 1e-3);
+        assert!((camera.forward.length() - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn orbit_in_spherical_s3_produces_valid_frame() {
+        use rye_math::SphericalS3;
+        let mut camera = Camera::<SphericalS3>::at_origin();
+        let mut ctrl: OrbitController<SphericalS3> = OrbitController::around(Vec3::ZERO);
+        ctrl.distance = 0.5;
+        ctrl.advance(FrameInput::default(), &mut camera, &SphericalS3, 0.0);
+        // S³ embeds the upper hemisphere with `|p| < 1`; same
+        // domain check as H³.
+        assert!(camera.position.length() < 1.0);
+        assert!(camera.right.is_finite() && camera.up.is_finite() && camera.forward.is_finite());
+        assert!((camera.right.length() - 1.0).abs() < 1e-3);
+        assert!((camera.up.length() - 1.0).abs() < 1e-3);
+        assert!((camera.forward.length() - 1.0).abs() < 1e-3);
     }
 
     #[test]

@@ -153,15 +153,17 @@ fn body_base_color(idx: u32) -> vec3<f32> {
 fn ghost_volume(ro: vec3<f32>, rd: vec3<f32>, body_count: u32, t_max: f32) -> vec4<f32> {
     let r4 = u.radius4;
     let r4_sq = r4 * r4;
-    // Step size and extinction tuned for visually pleasing density:
-    //   * Step too small → fps tank; too large → banding artifacts.
-    //   * Sigma too low → ghosts read as faint smudges; too high → fully
-    //     opaque blobs that hide structure.
-    // Empirically dt = 0.06 with sigma = 0.35 gives smooth shading
-    // without banding for unit-radius balls.
-    let dt = 0.06;
-    let sigma = 0.35;
-    let max_steps = 250;
+    // Step size and extinction. Sigma is high enough that the
+    // visible silhouette matches the body's geometric radius — at
+    // sigma = 1.5 a ray through the centre reaches alpha ≈ 0.99 and
+    // a glancing ray with `p_perp = 0.9·r` still reaches alpha ≈ 0.6,
+    // so the ghost reads as a soft-edged solid ball rather than a
+    // faint smudge. Lower sigma makes ghosts feel "shrunken" because
+    // edge opacity drops below visibility while the geometric radius
+    // is still 1.0.
+    let dt = 0.05;
+    let sigma = 1.5;
+    let max_steps = 300;
 
     var t: f32 = 0.0;
     var accum_rgb: vec3<f32> = vec3<f32>(0.0);

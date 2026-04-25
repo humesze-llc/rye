@@ -447,27 +447,28 @@ impl Bivector4 {
         }
     }
 
-    /// Linear velocity at offset `v` due to angular velocity `self`
-    /// — the 4D analogue of 3D's `ω × r`. For `B = e_xy` and `v = e_x`
-    /// this returns `+e_y` (rotation in the xy-plane sends `+x` toward
-    /// `+y`), matching the rigid-body convention used elsewhere in
-    /// `rye-physics`.
+    /// Clifford left-contraction `B ⌋ v` — the grade-1 part of the
+    /// geometric product `B · v`, with the standard mathematical
+    /// sign convention. For `B = e_xy` and `v = e_x` this returns
+    /// `−e_y` (because `e_xy · e_x = e_x e_y e_x = −e_x e_x e_y =
+    /// −e_y`).
     ///
-    /// This is *not* the Clifford left-contraction `B ⌋ v` (which
-    /// would give `−e_y` for the same inputs); it's the negated
-    /// 1-vector part of `B · v`. The flip aligns the formula with the
-    /// physics-side `ω × r` convention so that
-    /// `velocity_at_point = body.velocity + ω.contract_vec(r)`
-    /// produces the right linear velocity at a contact point — and
-    /// in particular keeps it consistent with the angular-impulse
-    /// path (`ω += −wedge(r, n)·j / I`) so PGS contact resolution
-    /// converges instead of blowing up.
+    /// **Note for physics callers**: rigid-body dynamics wants
+    /// `ω × r` with the *opposite* sign — `e_xy` "applied to" `e_x`
+    /// should give `+e_y`, since rotating in the +xy plane sends the
+    /// +x axis toward +y. Use [`crate::euclidean_r4::omega_cross_r`]
+    /// (or just negate the result of this function) when you want
+    /// the physics convention. Keeping the math primitive
+    /// Clifford-pure means future generic-`N` callers and the
+    /// inevitable `Bivector5`/`Bivector6` get consistent semantics
+    /// across dimensions, instead of a surprise sign flip at one
+    /// specific dimension.
     pub fn contract_vec(self, v: Vec4) -> Vec4 {
         Vec4::new(
-            -(self.xy * v.y + self.xz * v.z + self.xw * v.w),
-            -(-self.xy * v.x + self.yz * v.z + self.yw * v.w),
-            -(-self.xz * v.x - self.yz * v.y + self.zw * v.w),
-            -(-self.xw * v.x - self.yw * v.y - self.zw * v.z),
+            self.xy * v.y + self.xz * v.z + self.xw * v.w,
+            -self.xy * v.x + self.yz * v.z + self.yw * v.w,
+            -self.xz * v.x - self.yz * v.y + self.zw * v.w,
+            -self.xw * v.x - self.yw * v.y - self.zw * v.z,
         )
     }
 
@@ -1487,5 +1488,30 @@ mod tests {
         let rotated = r.apply(Vec4::X);
         let expected = Vec4::new(eps.cos(), eps.sin(), 0.0, 0.0);
         assert_vec4_close_tol(rotated, expected, 1e-5);
+    }
+
+    /// `Bivector4::contract_vec` is the **Clifford left-contraction**
+    /// `B ⌋ v` (grade-1 part of `B · v`), not the physics-side
+    /// `ω × r`. This test pins down the sign convention so the
+    /// future `Bivector5` / `Bivector6` impls inherit consistent
+    /// semantics, and so the deviation a physics caller needs (a
+    /// negation) stays explicit at the call site rather than baked
+    /// into the bivector type itself.
+    #[test]
+    fn bivector4_contract_vec_is_clifford_left_contraction() {
+        // e_xy ⌋ e_x = -e_y (because e_xy · e_x = e_x e_y e_x =
+        // -e_x e_x e_y = -e_y).
+        let b = Bivector4::new(1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        assert_vec4_close_tol(b.contract_vec(Vec4::X), -Vec4::Y, 1e-6);
+        // e_xy ⌋ e_y = +e_x (e_x e_y e_y = e_x).
+        assert_vec4_close_tol(b.contract_vec(Vec4::Y), Vec4::X, 1e-6);
+        // e_zw ⌋ e_z = -e_w; e_zw ⌋ e_w = +e_z.
+        let b = Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        assert_vec4_close_tol(b.contract_vec(Vec4::Z), -Vec4::W, 1e-6);
+        assert_vec4_close_tol(b.contract_vec(Vec4::W), Vec4::Z, 1e-6);
+        // Antisymmetry: B ⌋ v vanishes when v lies outside B's plane.
+        let b = Bivector4::new(1.0, 0.0, 0.0, 0.0, 0.0, 0.0); // e_xy
+        assert_vec4_close_tol(b.contract_vec(Vec4::Z), Vec4::ZERO, 1e-6);
+        assert_vec4_close_tol(b.contract_vec(Vec4::W), Vec4::ZERO, 1e-6);
     }
 }

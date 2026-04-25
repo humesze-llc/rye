@@ -95,10 +95,39 @@ pub use rye_input::FrameInput as Input;
 /// can re-emit shader preludes against the same instance the
 /// renderer is using.
 pub trait App: Sized + 'static {
-    /// Ambient geometry. Apps that don't care about geometry use
-    /// `EuclideanR3`. The bound `WgslSpace` is required because
-    /// the framework runs `ShaderDb::apply_events` against this
-    /// instance during hot-reload.
+    /// **Shader-prelude** geometry. The framework runs
+    /// `ShaderDb::apply_events` against this instance during
+    /// hot-reload, so `rye_distance` / `rye_log` / `rye_exp` etc.
+    /// in WGSL evaluate under this metric. Apps that don't care
+    /// about geometry use `EuclideanR3`.
+    ///
+    /// **This is not a commitment about the camera, the player,
+    /// or the scene.** Those are user-owned types and may use a
+    /// different Space — or no Space at all. Two valid patterns:
+    ///
+    /// - **All-in geometry game** (PAINCARE-style): scene, camera,
+    ///   player, and shader prelude all share one Space. e.g.
+    ///   `App::Space = HyperbolicH3` + `Camera<HyperbolicH3>`. The
+    ///   camera orbits along honest H³ geodesics, the player moves
+    ///   along honest H³ geodesics, the shader applies H³ to
+    ///   distance / fog math.
+    /// - **Hybrid** (fractal-demo-style): scene is Cartesian, camera
+    ///   orbits in flat Euclidean space, but the shader prelude is
+    ///   non-Euclidean to apply a geodesic-fog metric. e.g.
+    ///   `App::Space = HyperbolicH3` + `Camera<EuclideanR3>`. The
+    ///   camera math is Cartesian; the shader applies H³ only to
+    ///   the fog distance.
+    ///
+    /// The conflation hazard: if you write `Camera<Self::Space>`
+    /// without thinking, you commit your scene to live in that
+    /// Space's coordinates. For H³ that means the Poincaré ball;
+    /// orbit distances inherited from a Euclidean default
+    /// (`OrbitController::default()` → `distance ≈ 3.55`) will
+    /// `exp_target` into a tangent vector that lands at
+    /// `tanh(1.78) ≈ 0.94` of the way to the ideal boundary, where
+    /// the metric explodes. If your scene's geometry isn't actually
+    /// in H³, use `Camera<EuclideanR3>` and treat `App::Space`
+    /// purely as the shader-prelude axis.
     type Space: WgslSpace + 'static;
 
     /// One-shot construction after `RenderDevice` and `ShaderDb`

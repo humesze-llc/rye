@@ -18,11 +18,13 @@ pub mod combinator;
 pub mod primitive;
 pub mod primitive4;
 pub mod scene;
+pub mod scene4;
 
 pub use primitive::Primitive;
 pub use primitive4::Primitive4;
 pub use rye_shape::Shape;
 pub use scene::{PrimitiveKind, Scene, SceneNode};
+pub use scene4::{Scene4, SceneNode4};
 
 use std::f32::consts::PI;
 

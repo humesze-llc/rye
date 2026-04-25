@@ -15,7 +15,10 @@
 mod geodesic;
 mod hyperslice4d;
 pub use geodesic::GeodesicRayMarchNode;
-pub use hyperslice4d::{Hyperslice4DNode, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL};
+pub use hyperslice4d::{
+    BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
+    MAX_BODIES,
+};
 
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};

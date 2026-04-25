@@ -537,11 +537,9 @@ impl RenderNode for Hyperslice4DNode {
     }
 
     fn execute(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
-        let mut encoder = rd
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor {
-                label: Some("hyperslice4d encoder"),
-            });
+        let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("hyperslice4d encoder"),
+        });
         {
             let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("hyperslice4d pass"),
@@ -607,7 +605,12 @@ mod tests {
     fn body_uniform_constructors_set_kind() {
         let s = BodyUniform::sphere([0.0; 4], 1.0, [0.5, 0.5, 0.5]);
         assert_eq!(s.kind as i32, BodyKind::Sphere as i32);
-        let p = BodyUniform::polytope([0.0; 4], 0, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.5; 3]);
+        let p = BodyUniform::polytope(
+            [0.0; 4],
+            0,
+            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.5; 3],
+        );
         assert_eq!(p.kind as i32, BodyKind::Polytope as i32);
     }
 

@@ -251,8 +251,7 @@ mod tests {
     #[test]
     fn difference_uses_negation_on_4d() {
         let scene = Scene4::new(
-            SceneNode4::hypersphere(Vec4::ZERO, 0.3)
-                .subtract(SceneNode4::halfspace(Vec4::Y, 0.0)),
+            SceneNode4::hypersphere(Vec4::ZERO, 0.3).subtract(SceneNode4::halfspace(Vec4::Y, 0.0)),
         );
         let wgsl = scene.to_wgsl_4d();
         assert!(wgsl.contains("max("));

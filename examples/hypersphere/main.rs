@@ -42,9 +42,7 @@ use std::borrow::Cow;
 
 use anyhow::Result;
 use glam::{Vec3, Vec4};
-use rye_app::{
-    run_with_config, App, Camera, FrameCtx, OrbitController, RunConfig, SetupCtx,
-};
+use rye_app::{run_with_config, App, Camera, FrameCtx, OrbitController, RunConfig, SetupCtx};
 use rye_math::{EuclideanR3, EuclideanR4};
 use rye_physics::{
     euclidean_r4::{halfspace4_body_r4, register_default_narrowphase, sphere_body_r4},
@@ -151,11 +149,7 @@ impl HypersphereApp {
             .enumerate()
             .map(|(i, &id)| {
                 let p = self.world.bodies[id].position;
-                BodyUniform::sphere(
-                    [p.x, p.y, p.z, p.w],
-                    RADIUS_4D,
-                    PALETTE[i % PALETTE.len()],
-                )
+                BodyUniform::sphere([p.x, p.y, p.z, p.w], RADIUS_4D, PALETTE[i % PALETTE.len()])
             })
             .collect();
         self.node.set_bodies(&bodies);
@@ -179,11 +173,15 @@ impl App for HypersphereApp {
             kernel = HYPERSLICE_KERNEL_WGSL,
             scene = scene.to_hyperslice_wgsl("u.w_slice"),
         );
-        let module = ctx.rd.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("hypersphere shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
-        let node = Hyperslice4DNode::new(&ctx.rd.device, ctx.rd.surface_bundle.config.format, &module);
+        let module = ctx
+            .rd
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("hypersphere shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
+        let node =
+            Hyperslice4DNode::new(&ctx.rd.device, ctx.rd.surface_bundle.config.format, &module);
 
         let (world, ball_ids) = build_world(count);
         Ok(Self {
@@ -236,7 +234,8 @@ impl App for HypersphereApp {
 
         // Camera.
         use rye_camera::CameraController;
-        self.orbit.advance(ctx.input, &mut self.camera, &EuclideanR3, 0.0);
+        self.orbit
+            .advance(ctx.input, &mut self.camera, &EuclideanR3, 0.0);
         let view = self.camera.view();
 
         // Body uniforms — every sphere's current 4D position.

@@ -25,9 +25,12 @@
 //!
 //! - Mouse: orbit camera (left-drag), zoom (scroll).
 //! - **Space**: pause / resume physics.
-//! - **↑ / ↓**: nudge slice offset ±0.05 (disables auto-sweep).
+//! - **↑ / ↓**: hold to slide the cross-section through `w`
+//!   continuously (0.6 units/s, range ±1.5 around the body's
+//!   `w`-position — slide far enough either way and the body
+//!   leaves the slice plane entirely). Disables auto-sweep.
 //! - **A**: toggle automatic offset sweep (cosine-paced, 8 s period,
-//!   range ±0.6).
+//!   range ±1.5).
 //! - **R**: reset — re-spawn the pentatope at `y = 2.5`, offset = 0.
 //! - **0–4**: highlight that pentatope cell (its tinted faces glow
 //!   brighter when visible). **5**: clear highlight.
@@ -73,9 +76,13 @@ fn shader_path() -> PathBuf {
 const TITLE: &str = "Rye — pentatope w-slice (live)";
 const PENTATOPE_RADIUS: f32 = 1.0;
 /// Offset range relative to the body's current `w`-position. The
-/// pentatope's local vertices span ≈ `w ∈ [−0.25, +1.0]`, so a sweep
-/// of ±0.6 cuts through the body without going far past either tip.
-const W_OFFSET_RANGE: f32 = 0.6;
+/// pentatope's local vertices span ≈ `w ∈ [−0.25, +1.0]`, so a range
+/// of ±1.5 lets the user slide the slice plane *entirely past* the
+/// body in either direction (cross-section vanishes), then back.
+const W_OFFSET_RANGE: f32 = 1.5;
+/// Keyboard slider speed: held ↑/↓ moves `w_offset` at this rate
+/// (units of w per second).
+const W_SWEEP_RATE: f32 = 0.6;
 const NO_HIGHLIGHT: f32 = 5.0;
 
 // ---- Custom render uniform -----------------------------------------
@@ -304,6 +311,9 @@ struct App {
     auto_sweep: bool,
     sweep_anchor: Instant,
     highlight: f32,
+    /// Held-key state for the ↑ / ↓ continuous slider.
+    slider_up_held: bool,
+    slider_down_held: bool,
 
     // FPS bookkeeping.
     frame_count: u32,
@@ -346,6 +356,8 @@ impl App {
             auto_sweep: false,
             sweep_anchor: Instant::now(),
             highlight: NO_HIGHLIGHT,
+            slider_up_held: false,
+            slider_down_held: false,
             frame_count: 0,
             last_fps_update: Instant::now(),
             fps: 0.0,
@@ -371,21 +383,33 @@ impl App {
     }
 
     fn handle_keyboard(&mut self, code: PhysicalKey, state: ElementState) {
-        if state != ElementState::Pressed {
-            return;
-        }
         let PhysicalKey::Code(kc) = code else {
             return;
         };
+        let pressed = state == ElementState::Pressed;
+        // ↑ / ↓ behave as a held slider — track press/release so
+        // `advance_slider` can move `w_offset` continuously per tick.
         match kc {
             KeyCode::ArrowUp => {
-                self.auto_sweep = false;
-                self.w_offset = (self.w_offset + 0.05).min(W_OFFSET_RANGE);
+                if pressed && !self.slider_up_held {
+                    self.auto_sweep = false;
+                }
+                self.slider_up_held = pressed;
+                return;
             }
             KeyCode::ArrowDown => {
-                self.auto_sweep = false;
-                self.w_offset = (self.w_offset - 0.05).max(-W_OFFSET_RANGE);
+                if pressed && !self.slider_down_held {
+                    self.auto_sweep = false;
+                }
+                self.slider_down_held = pressed;
+                return;
             }
+            _ => {}
+        }
+        if !pressed {
+            return;
+        }
+        match kc {
             KeyCode::KeyA => {
                 self.auto_sweep = !self.auto_sweep;
                 if self.auto_sweep {
@@ -401,6 +425,15 @@ impl App {
             KeyCode::Digit4 => self.highlight = 4.0,
             KeyCode::Digit5 => self.highlight = NO_HIGHLIGHT,
             _ => {}
+        }
+    }
+
+    /// Advance the held-key slider by `dt` seconds.
+    fn advance_slider(&mut self, dt: f32) {
+        let dir = (self.slider_up_held as i32 - self.slider_down_held as i32) as f32;
+        if dir != 0.0 {
+            self.w_offset =
+                (self.w_offset + dir * W_SWEEP_RATE * dt).clamp(-W_OFFSET_RANGE, W_OFFSET_RANGE);
         }
     }
 
@@ -542,6 +575,10 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) => {
                 self.input.cursor_invalidated();
                 self.input.release_buttons();
+                // Drop held-slider state so the offset doesn't keep
+                // sweeping while the window is unfocused.
+                self.slider_up_held = false;
+                self.slider_down_held = false;
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 self.input.mouse_input(button, state);
@@ -566,6 +603,7 @@ impl ApplicationHandler for App {
                 if n_ticks > 0 {
                     let frame_input = self.input.take_frame();
                     self.camera.advance(frame_input);
+                    self.advance_slider(n_ticks as f32 / 60.0);
                     self.advance_auto_sweep();
                     if !self.paused {
                         // One physics step per fixed tick (60 Hz).

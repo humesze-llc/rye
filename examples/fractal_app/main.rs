@@ -19,18 +19,35 @@
 //!
 //! - `App` trait + framework runner work end to end on a real
 //!   demo scene.
-//! - `Camera<S>` + `OrbitController<S>` produce a renderer-facing
-//!   view that's correct in E³, H³, and S³ via the same code.
+//! - `App::Space` (used for the shader prelude) and the camera's
+//!   own Space are deliberately *decoupled*: this demo runs a
+//!   Euclidean orbit camera around a Euclidean fractal scene
+//!   while the shader prelude uses H³ / S³ only for the
+//!   *geodesic-fog distance metric*. A PAINCARE-style game where
+//!   the camera and physics actually live in H³ would use
+//!   `Camera<HyperbolicH3>` + `OrbitController<HyperbolicH3>`
+//!   end-to-end and orbit along hyperbolic geodesics.
 //! - Hot-reload still works: edit `examples/fractal/fractal.wgsl`,
 //!   the framework calls back into `on_shader_reload`, and the
 //!   `RayMarchNode` rebuilds.
+//!
+//! ## Why a Euclidean camera here, not `Camera<HyperbolicH3>`
+//!
+//! `OrbitController<HyperbolicH3>` orbits along H³ geodesics:
+//! `camera_pos = exp_target(back · distance)` in the Poincaré
+//! ball. With the demo's default distance of 3.5 around the
+//! origin, that lands the camera at `|p| ≈ 0.99` — right at the
+//! ball's ideal boundary, where the metric explodes and rendering
+//! flickers as numerical noise dominates. The legacy
+//! `examples/fractal` demo always used a Euclidean orbit; this
+//! migration preserves that, while leaving the *honest* H³
+//! camera path available for games that actually want it.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
-use glam::Vec3;
 use rye_app::{run_with_config, App, Camera, FrameCtx, OrbitController, RunConfig, SetupCtx};
-use rye_math::{EuclideanR3, HyperbolicH3, Space, SphericalS3, WgslSpace};
+use rye_math::{EuclideanR3, HyperbolicH3, SphericalS3, WgslSpace};
 use rye_render::{
     device::RenderDevice,
     raymarch::{RayMarchNode, RayMarchUniforms},
@@ -54,11 +71,11 @@ const ROTATE_YAW_PER_TICK: f32 = std::f32::consts::TAU / (60.0 * 20.0);
 // Per-Space knobs — same numbers as the legacy example.
 // ---------------------------------------------------------------------------
 
-/// Per-Space tuning constants. The legacy fractal example carries
-/// these as runtime structs; here they're const-generic over the
-/// Space type so each `FractalApp<S>` gets its own compile-time
-/// values.
-trait FractalKnobs: WgslSpace + Default + Space<Point = Vec3, Vector = Vec3> + 'static {
+/// Per-Space tuning constants for the *shader prelude*. The Space
+/// only affects the WGSL prelude (geodesic fog metric); the camera
+/// is always Euclidean. See the crate-level "Why a Euclidean camera"
+/// note for rationale.
+trait FractalKnobs: WgslSpace + Default + 'static {
     const BALL_SCALE: f32;
     const FOG_SCALE: f32;
     const TITLE: &'static str;
@@ -85,9 +102,15 @@ impl FractalKnobs for SphericalS3 {
 // ---------------------------------------------------------------------------
 
 struct FractalApp<S: FractalKnobs> {
+    /// Drives the WGSL prelude (geodesic fog metric for H³ / S³;
+    /// no-op for E³). Independent of the camera's own geometry.
     space: S,
-    camera: Camera<S>,
-    orbit: OrbitController<S>,
+    /// Camera lives in Euclidean 3-space regardless of `S`. The
+    /// shader interprets `camera_pos` as a Poincaré-ball or
+    /// 3-sphere point internally for the fog metric, but the
+    /// orbit math itself is flat. See the crate-level note.
+    camera: Camera<EuclideanR3>,
+    orbit: OrbitController<EuclideanR3>,
     shader_id: ShaderId,
     shader_gen: u64,
     ray_march: RayMarchNode,
@@ -116,7 +139,7 @@ impl<S: FractalKnobs> App for FractalApp<S> {
 
         Ok(Self {
             space,
-            camera: Camera::<S>::at_origin(),
+            camera: Camera::<EuclideanR3>::at_origin(),
             orbit: OrbitController::default(),
             shader_id,
             shader_gen,
@@ -134,8 +157,10 @@ impl<S: FractalKnobs> App for FractalApp<S> {
             self.orbit
                 .rotate_yaw(ROTATE_YAW_PER_TICK * ctx.n_ticks as f32);
         }
+        // Camera always orbits in Euclidean space, even when the
+        // shader prelude is H³ / S³.
         self.orbit
-            .advance_with_input(ctx.input, &mut self.camera, &self.space);
+            .advance_with_input(ctx.input, &mut self.camera, &EuclideanR3);
 
         let view = self.camera.view();
         let cfg = &ctx.rd.surface_bundle.config;
@@ -188,25 +213,23 @@ impl<S: FractalKnobs> App for FractalApp<S> {
     }
 }
 
-// `OrbitController::advance` already exists, but the framework
-// passes `dt` separately and we want to call it from inside
-// `update` where `dt` doesn't naturally appear. Wrap it for clarity
-// at the call site.
-trait OrbitInputExt<S: FractalKnobs> {
+/// Thin wrapper so the `update` call site reads cleanly without
+/// dragging in `CameraController` and a meaningless `dt`.
+trait OrbitInputExt {
     fn advance_with_input(
         &mut self,
         input: rye_input::FrameInput,
-        camera: &mut Camera<S>,
-        space: &S,
+        camera: &mut Camera<EuclideanR3>,
+        space: &EuclideanR3,
     );
 }
 
-impl<S: FractalKnobs> OrbitInputExt<S> for OrbitController<S> {
+impl OrbitInputExt for OrbitController<EuclideanR3> {
     fn advance_with_input(
         &mut self,
         input: rye_input::FrameInput,
-        camera: &mut Camera<S>,
-        space: &S,
+        camera: &mut Camera<EuclideanR3>,
+        space: &EuclideanR3,
     ) {
         use rye_camera::CameraController;
         self.advance(input, camera, space, 0.0);

@@ -59,6 +59,33 @@ fn slice_sdf(p: vec3<f32>, w0: f32) -> SliceHit {
     var any_face: bool = false;
     var dominant_cell: u32 = 5u;
 
+    // First pass: collect every edge-crossing point and average them
+    // for an interior reference. The 4D body-centroid projected to
+    // xyz is *not* reliable here — once the body has rotated, that
+    // point can sit outside the cross-section, flipping face
+    // normals and making the SDF read huge regions as "inside."
+    // Cross-section vertices are always inside the cross-section's
+    // convex hull, so their mean is always interior.
+    var interior_sum: vec3<f32> = vec3<f32>(0.0);
+    var interior_count: i32 = 0;
+    for (var ii: u32 = 0u; ii < 5u; ii = ii + 1u) {
+        for (var jj: u32 = ii + 1u; jj < 5u; jj = jj + 1u) {
+            let va = u.pentatope_v[ii];
+            let vb = u.pentatope_v[jj];
+            let dwa = va.w - w0;
+            let dwb = vb.w - w0;
+            if (dwa * dwb < 0.0) {
+                let t = dwa / (dwa - dwb);
+                interior_sum = interior_sum + mix(va, vb, t).xyz;
+                interior_count = interior_count + 1;
+            }
+        }
+    }
+    if (interior_count < 3) {
+        return SliceHit(1.0e9, 5u);
+    }
+    let interior = interior_sum / f32(interior_count);
+
     for (var ci: u32 = 0u; ci < 5u; ci = ci + 1u) {
         // Cell ci is the tetrahedron of all pentatope vertices except ci.
         var cell_v: array<vec4<f32>, 4>;
@@ -95,18 +122,10 @@ fn slice_sdf(p: vec3<f32>, w0: f32) -> SliceHit {
             let len_sq = dot(n_raw, n_raw);
             if (len_sq > 1.0e-12) {
                 let n_unit = n_raw / sqrt(len_sq);
-                // Orient outward via the body's centroid (uniform-
-                // average of the 5 transformed vertices) — that's an
-                // interior point regardless of w₀, more robust than
-                // assuming the world origin is interior.
-                let centroid = (
-                    u.pentatope_v[0]
-                    + u.pentatope_v[1]
-                    + u.pentatope_v[2]
-                    + u.pentatope_v[3]
-                    + u.pentatope_v[4]
-                ).xyz * 0.2;
-                let to_interior = centroid - verts[0];
+                // Orient outward via the cross-section's own interior
+                // (mean of edge-crossing points), computed in the
+                // first pass above. Robust under any body rotation.
+                let to_interior = interior - verts[0];
                 var outward_normal: vec3<f32>;
                 var face_offset: f32;
                 if (dot(n_unit, to_interior) > 0.0) {

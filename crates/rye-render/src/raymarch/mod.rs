@@ -13,7 +13,12 @@
 //! See [`RayMarchUniforms`] for the layout of bind group 0 / binding 0.
 
 mod geodesic;
+mod hyperslice4d;
 pub use geodesic::GeodesicRayMarchNode;
+pub use hyperslice4d::{
+    BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
+    MAX_BODIES,
+};
 
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};

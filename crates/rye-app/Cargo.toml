@@ -1,0 +1,25 @@
+[package]
+name = "rye-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Rye App: thin trait + event-loop runner that extracts the winit boilerplate every example rewrites."
+
+[dependencies]
+anyhow.workspace = true
+glam.workspace = true
+pollster = "0.3"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+
+rye-asset  = { path = "../rye-asset" }
+rye-camera = { path = "../rye-camera" }
+rye-input  = { path = "../rye-input" }
+rye-math   = { path = "../rye-math" }
+rye-render = { path = "../rye-render" }
+rye-shader = { path = "../rye-shader" }
+rye-time   = { path = "../rye-time" }

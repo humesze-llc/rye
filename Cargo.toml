@@ -12,6 +12,7 @@ members = [
   "crates/rye-player",
   "crates/rye-collision",
   "crates/rye-physics",
+  "crates/rye-app",
 ]
 resolver = "2"
 
@@ -58,6 +59,7 @@ rye-camera    = { path = "crates/rye-camera" }
 rye-player    = { path = "crates/rye-player" }
 rye-collision = { path = "crates/rye-collision" }
 rye-physics   = { path = "crates/rye-physics" }
+rye-app       = { path = "crates/rye-app" }
 
 [features]
 default = []

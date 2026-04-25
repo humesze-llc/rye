@@ -27,9 +27,13 @@ These are tradeoffs to fit a very specific thesis.
 
 ## Status
 
-Phases 1–3 done; Phase 4 about half complete (manifolds + PGS,
-4D physics, unified `Shape`). Still ahead in Phase 4: `BlendedSpace`,
-egui integration, an `App` abstraction. Nothing is sacred yet.
+Phases 1–3 done; Phase 4 in progress. Landed: persistent contact
+manifolds + PGS solver, 4D physics (`Bivector4` / `Rotor4` +
+`EuclideanR4` + 4D GJK/EPA), unified `Shape` enum, Space-generic
+`Camera<S>` + `CameraController<S>`, and the thin `rye-app`
+framework that hides the winit boilerplate. Still ahead:
+`BlendedSpace`, egui dev-tools integration, full migration of
+existing examples to `rye-app`. Nothing is sacred yet.
 
 ### Examples shipped
 
@@ -41,7 +45,15 @@ subsystems.
 
 - **`fractal`** — interactive 3D fractal ray-marcher with shader hot
   reload and orbit camera. The first end-to-end demo of the
-  rendering stack.
+  rendering stack. Includes APNG / GIF capture (`--capture-apng`,
+  `--capture-gif`) for recording clips without an external screen
+  recorder.
+- **`fractal_app`** — same Mandelbulb scene, rebuilt on the
+  `rye-app` framework + `Camera<S>` + `OrbitController<S>`. About
+  half the LOC of the legacy version (the winit
+  `ApplicationHandler`, hot-reload plumbing, FPS bookkeeping, and
+  surface-error recovery all live in `rye-app` now). Proof point
+  for the Phase 4 framework refactor.
 - **`geodesic_spheres`** — three spheres rendered side-by-side in
   E³, H³, and S³ via the `WgslSpace` prelude swap, proving the same
   scene takes on the metric of whichever Space you select.

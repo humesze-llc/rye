@@ -808,9 +808,14 @@ const RYE_BLENDED_X_WIDTH: f32 = {width:?};
 const RYE_BLENDED_RK4_SUB: i32 = 16;
 
 fn rye_blended_clamp_to_ball(p: vec3<f32>) -> vec3<f32> {{
-    // Poincaré-ball safety: f_H3 diverges at |p|=1; keep the
-    // integrator from sampling the boundary. E³ side is
-    // unbounded so this clamp only matters when alpha > 0.
+    // Conditional Poincaré-ball clamp: only enforce when the
+    // blending field has any H³ weight at this point. On the
+    // pure-E³ side (alpha == 0) the chart is flat Euclidean and
+    // |p| > 1 is perfectly valid — clamping there would collapse
+    // the half-space floor to the ball's equator. `f_h3` already
+    // clamps r² internally, so the integrator is safe everywhere
+    // outside the H³ chart region.
+    if rye_blended_alpha(p) <= 0.0 {{ return p; }}
     let r2 = dot(p, p);
     if r2 <= RYE_BLENDED_R2_MAX {{ return p; }}
     return p * (sqrt(RYE_BLENDED_R2_MAX) / sqrt(r2));

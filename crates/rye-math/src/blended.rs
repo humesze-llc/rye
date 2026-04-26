@@ -272,15 +272,34 @@ where
     }
 
     fn parallel_transport(&self, from: Vec3, to: Vec3, v: Vec3) -> Vec3 {
-        let alpha_from = self.field.weight(from);
-        let alpha_to = self.field.weight(to);
-        if alpha_from == 0.0 && alpha_to == 0.0 && self.field.gradient(from) == Vec3::ZERO {
-            return self.a.parallel_transport(from, to, v);
+        // Path-unaware default: build a 2-point polyline and
+        // transport along it. The proper "transport along the
+        // geodesic between from and to" version would first run
+        // `log` to find the geodesic, sample it, and transport
+        // along the sampled polyline — at ~7× the cost. Most
+        // callers (cameras, players) already know the path and
+        // should use `parallel_transport_along` directly.
+        parallel_transport_segment_rk4(
+            self,
+            from,
+            to,
+            v,
+            PARALLEL_TRANSPORT_DEFAULT_STEPS,
+        )
+    }
+
+    fn parallel_transport_along(&self, path: &[Vec3], v: Vec3) -> Vec3 {
+        let mut current = v;
+        for w in path.windows(2) {
+            current = parallel_transport_segment_rk4(
+                self,
+                w[0],
+                w[1],
+                current,
+                PARALLEL_TRANSPORT_DEFAULT_STEPS,
+            );
         }
-        if alpha_from == 1.0 && alpha_to == 1.0 && self.field.gradient(from) == Vec3::ZERO {
-            return self.b.parallel_transport(from, to, v);
-        }
-        unimplemented!("variable-metric parallel transport — sub-task 6")
+        current
     }
 
     fn iso_identity(&self) {}
@@ -371,6 +390,79 @@ pub fn rk4_geodesic<S: ConformallyFlat>(
         }
     }
     (p, vel)
+}
+
+// ---------------------------------------------------------------------------
+// Parallel transport along a polyline
+// ---------------------------------------------------------------------------
+
+/// Default number of RK4 steps per polyline segment for parallel
+/// transport. Empirically: 8 gives ~5 digits of accuracy on
+/// moderately-curved metrics, which is enough that a camera's
+/// frame stays orthonormal-ish over typical gameplay paths
+/// without needing post-step renormalisation.
+pub const PARALLEL_TRANSPORT_DEFAULT_STEPS: u32 = 8;
+
+/// Parallel-transport `v` along a single polyline segment from
+/// `p_from` to `p_to`, parameterised linearly with $t \in [0, 1]$.
+///
+/// For a conformally flat metric $g = e^{2\phi} \delta$, the
+/// parallel-transport ODE collapses to:
+///
+/// $$\dot{V} = -[(\nabla\phi \cdot \dot\gamma) V + (\nabla\phi \cdot V) \dot\gamma - (\dot\gamma \cdot V) \nabla\phi]$$
+///
+/// where $\dot\gamma = p_{\text{to}} - p_{\text{from}}$ is the
+/// (constant) segment direction. RK4 integrates this over `t ∈
+/// [0, 1]` in `n_steps` steps.
+///
+/// In flat space ($\nabla\phi = 0$), all three terms vanish and
+/// transport is the identity.
+pub fn parallel_transport_segment_rk4<S: ConformallyFlat>(
+    space: &S,
+    p_from: Vec3,
+    p_to: Vec3,
+    v: Vec3,
+    n_steps: u32,
+) -> Vec3 {
+    let dgamma = p_to - p_from;
+    if dgamma.length_squared() < 1.0e-14 {
+        return v;
+    }
+    let h = 1.0 / n_steps as f32;
+
+    // ODE RHS as a closure capturing `space` and `dgamma`.
+    let rhs = |gamma_pt: Vec3, v_at_t: Vec3| -> Vec3 {
+        let grad_phi = space.conformal_log_half_gradient(gamma_pt);
+        let term1 = v_at_t * grad_phi.dot(dgamma);
+        let term2 = dgamma * grad_phi.dot(v_at_t);
+        let term3 = grad_phi * dgamma.dot(v_at_t);
+        -(term1 + term2 - term3)
+    };
+
+    let mut v_curr = v;
+    for step in 0..n_steps {
+        let t = step as f32 * h;
+        let p_t = p_from + dgamma * t;
+        let p_t_half = p_from + dgamma * (t + h * 0.5);
+        let p_t_full = p_from + dgamma * (t + h);
+
+        let k1 = rhs(p_t, v_curr);
+        let k2 = rhs(p_t_half, v_curr + k1 * (h * 0.5));
+        let k3 = rhs(p_t_half, v_curr + k2 * (h * 0.5));
+        let k4 = rhs(p_t_full, v_curr + k3 * h);
+
+        let dv = (k1 + 2.0 * k2 + 2.0 * k3 + k4) * (h / 6.0);
+        if dv.is_finite() {
+            v_curr += dv;
+        } else {
+            tracing::warn!(
+                "parallel_transport_segment_rk4: non-finite Δv at step {step}; \
+                 stopping segment"
+            );
+            break;
+        }
+    }
+    v_curr
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,6 +1170,128 @@ mod tests {
         let d = bs.distance(a, b);
         // Pure E³ distance is Euclidean.
         close(d, (b - a).length(), 1e-4);
+    }
+
+    // ------ Parallel transport ------
+
+    /// In pure E³, parallel transport is the identity along any
+    /// path — the Christoffel symbols are zero, so the transport
+    /// ODE has zero RHS and `v` doesn't change.
+    #[test]
+    fn parallel_transport_in_e3_is_identity() {
+        use crate::EuclideanR3;
+        let v = Vec3::new(0.5, -0.3, 0.7);
+        // Single segment.
+        let transported = parallel_transport_segment_rk4(
+            &EuclideanR3,
+            Vec3::ZERO,
+            Vec3::new(2.0, 1.0, -1.0),
+            v,
+            PARALLEL_TRANSPORT_DEFAULT_STEPS,
+        );
+        close((transported - v).length(), 0.0, 1e-6);
+
+        // Multi-segment polyline.
+        use crate::Space;
+        let bs = BlendedSpace::new(EuclideanR3, EuclideanR3, LinearBlendX::new(50.0, 100.0));
+        let path = [
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(2.0, -1.0, 1.0),
+        ];
+        let result = bs.parallel_transport_along(&path, v);
+        close((result - v).length(), 0.0, 1e-5);
+    }
+
+    /// Hyperbolic transport preserves the *Riemannian* (not
+    /// Euclidean) length of the vector. The Riemannian length
+    /// at p is $\sqrt{f(p)} \cdot |v|_E$; check that
+    /// `f(p_to) · |v_to|² ≈ f(p_from) · |v|²`.
+    #[test]
+    fn parallel_transport_in_h3_preserves_riemannian_length() {
+        use crate::HyperbolicH3;
+        let from = Vec3::new(0.1, 0.0, 0.0);
+        let to = Vec3::new(0.3, 0.1, 0.0);
+        let v = Vec3::new(0.2, 0.1, 0.0);
+
+        let transported = parallel_transport_segment_rk4(
+            &HyperbolicH3,
+            from,
+            to,
+            v,
+            PARALLEL_TRANSPORT_DEFAULT_STEPS,
+        );
+
+        let f_from = HyperbolicH3.conformal_factor(from);
+        let f_to = HyperbolicH3.conformal_factor(to);
+        let len_from = f_from.sqrt() * v.length();
+        let len_to = f_to.sqrt() * transported.length();
+        close(len_from, len_to, 5e-3);
+    }
+
+    /// Cross-check: numerical transport on a 2-point polyline in
+    /// pure H³ agrees with the engine's existing closed-form
+    /// `HyperbolicH3::parallel_transport` (gyration formula).
+    /// Note: the closed-form transports along the *geodesic*; our
+    /// RK4 transports along the *Euclidean line segment*. They
+    /// agree only when the points are close (geodesic ≈ line).
+    /// Pin a small-displacement case.
+    #[test]
+    fn parallel_transport_in_h3_matches_closed_form_for_short_paths() {
+        use crate::{HyperbolicH3, Space};
+        // Small displacement near the origin where the geodesic
+        // is essentially a Euclidean line.
+        let from = Vec3::new(0.05, 0.0, 0.0);
+        let to = Vec3::new(0.06, 0.01, 0.0);
+        let v = Vec3::new(0.1, 0.0, 0.0);
+
+        let numerical = parallel_transport_segment_rk4(
+            &HyperbolicH3,
+            from,
+            to,
+            v,
+            PARALLEL_TRANSPORT_DEFAULT_STEPS,
+        );
+        let closed_form = HyperbolicH3.parallel_transport(from, to, v);
+        close((numerical - closed_form).length(), 0.0, 5e-3);
+    }
+
+    /// Closed-loop holonomy test in H³: transport a vector
+    /// around a small triangle and check the final vector
+    /// differs from the original (proving real curvature is
+    /// being integrated). In flat space the loop returns
+    /// exactly to the start; in H³ there's a holonomy rotation
+    /// proportional to the loop's enclosed area.
+    #[test]
+    fn parallel_transport_in_h3_has_nonzero_holonomy() {
+        use crate::{HyperbolicH3, Space};
+        let bs = BlendedSpace::new(
+            HyperbolicH3,
+            HyperbolicH3,
+            LinearBlendX::new(-100.0, -50.0), // alpha ≡ 1 in test region
+        );
+        // Triangle path well inside the ball.
+        let path = [
+            Vec3::new(0.1, 0.0, 0.0),
+            Vec3::new(0.3, 0.0, 0.0),
+            Vec3::new(0.2, 0.2, 0.0),
+            Vec3::new(0.1, 0.0, 0.0), // back to start
+        ];
+        let v = Vec3::new(0.1, 0.0, 0.0);
+        let transported = bs.parallel_transport_along(&path, v);
+        // The transported vector should differ from the
+        // original — H³ has constant negative curvature, so any
+        // non-degenerate loop produces visible holonomy. Also
+        // check the result is finite (no integrator blow-up).
+        assert!(transported.is_finite());
+        let drift = (transported - v).length();
+        assert!(
+            drift > 1e-3,
+            "expected non-zero holonomy in H³, got drift {drift}"
+        );
+        // But not catastrophic — loop is small, holonomy bounded.
+        assert!(drift < 0.5, "holonomy unreasonably large: {drift}");
     }
 
     /// Smoothstep is monotonic non-decreasing across the zone.

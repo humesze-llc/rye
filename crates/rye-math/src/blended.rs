@@ -21,7 +21,310 @@
 //! [`BlendedSpace`] itself (the `Space` impl) lands in subsequent
 //! sub-tasks (the conformal-factor / Christoffel / RK4 work).
 
+use std::marker::PhantomData;
+
 use glam::Vec3;
+
+use crate::space::Space;
+
+// ---------------------------------------------------------------------------
+// ConformallyFlat — extension trait for Spaces with scalar metric
+// ---------------------------------------------------------------------------
+
+/// A [`Space`] whose metric tensor is a scalar multiple of the
+/// identity in its standard chart: $g_{ij}(p) = f(p) \, \delta_{ij}$
+/// for some positive scalar function $f$.
+///
+/// Implemented by every constant-curvature 3-Space currently in
+/// `rye-math`:
+///
+/// - [`crate::EuclideanR3`]: $f \equiv 1$.
+/// - [`crate::HyperbolicH3`] (Poincaré ball model):
+///   $f(p) = 4 / (1 - |p|^2)^2$, valid for $|p| < 1$.
+/// - [`crate::SphericalS3`] (stereographic model):
+///   $f(p) = 4 / (1 + |p|^2)^2$.
+/// - [`HyperbolicH3UpperHalf`] (upper-half-space, *future* —
+///   lands when the BlendedSpace demo needs an *unbounded* E³
+///   side; see [`docs/devlog/BLENDED_SPACE.md`](../../../../docs/devlog/BLENDED_SPACE.md)):
+///   $f(p) = 1 / z^2$, valid for $z > 0$.
+///
+/// **Why a separate trait, not a method on `Space`:** not every
+/// Space is conformally flat. $\text{Sol}^3$ and $\text{Nil}^3$
+/// (two of Thurston's eight 3-geometries) have anisotropic
+/// metrics that aren't scalar-multiples of identity. Confining
+/// the conformal-factor query to its own trait keeps the base
+/// `Space` trait honest about what generalises.
+///
+/// **Why this matters for [`BlendedSpace`]:** when both source
+/// Spaces are conformally flat, the blended metric is *also*
+/// conformally flat (a blend of scalar multiples is a scalar
+/// multiple), and the geodesic ODE collapses to a closed-form
+/// expression in $\nabla \log f$. That's the fast path the
+/// numerical integrator takes. A future non-conformally-flat
+/// blend would need the full Christoffel-symbol machinery.
+pub trait ConformallyFlat: Space {
+    /// Conformal scale factor at `p`: the scalar $f$ such that
+    /// $g_{ij}(p) = f(p) \, \delta_{ij}$.
+    ///
+    /// Must be positive and finite at `p` for `p` inside the
+    /// chart. Boundary points (e.g. Poincaré ideal boundary
+    /// $|p| \to 1$) may diverge to `f32::INFINITY`; the integrator
+    /// detects and clamps.
+    fn conformal_factor(&self, p: Vec3) -> f32;
+
+    /// Logarithm of the conformal factor: $\phi(p) = \frac{1}{2} \ln f(p)$.
+    /// Default impl computes from `conformal_factor`; closed-form
+    /// overrides save a `ln` per evaluation in the hot path.
+    fn conformal_log_half(&self, p: Vec3) -> f32 {
+        0.5 * self.conformal_factor(p).ln()
+    }
+
+    /// Spatial gradient of [`Self::conformal_log_half`]. Default
+    /// impl uses central finite differences; closed-form overrides
+    /// halve cost and avoid finite-difference noise.
+    fn conformal_log_half_gradient(&self, p: Vec3) -> Vec3 {
+        const EPS: f32 = 1.0e-3;
+        let dx = (self.conformal_log_half(p + Vec3::X * EPS)
+            - self.conformal_log_half(p - Vec3::X * EPS))
+            / (2.0 * EPS);
+        let dy = (self.conformal_log_half(p + Vec3::Y * EPS)
+            - self.conformal_log_half(p - Vec3::Y * EPS))
+            / (2.0 * EPS);
+        let dz = (self.conformal_log_half(p + Vec3::Z * EPS)
+            - self.conformal_log_half(p - Vec3::Z * EPS))
+            / (2.0 * EPS);
+        Vec3::new(dx, dy, dz)
+    }
+}
+
+// EuclideanR3: trivial conformally-flat case, $f \equiv 1$.
+impl ConformallyFlat for crate::EuclideanR3 {
+    fn conformal_factor(&self, _p: Vec3) -> f32 {
+        1.0
+    }
+    fn conformal_log_half(&self, _p: Vec3) -> f32 {
+        0.0
+    }
+    fn conformal_log_half_gradient(&self, _p: Vec3) -> Vec3 {
+        Vec3::ZERO
+    }
+}
+
+// HyperbolicH3 (Poincaré ball model): $f(p) = 4 / (1 - |p|^2)^2$
+// for $|p| < 1$. Diverges at the ideal boundary $|p| = 1$;
+// returns `INFINITY` there to flag chart-boundary crossings.
+impl ConformallyFlat for crate::HyperbolicH3 {
+    fn conformal_factor(&self, p: Vec3) -> f32 {
+        let r2 = p.length_squared();
+        let denom = (1.0 - r2).max(0.0);
+        if denom <= 0.0 {
+            return f32::INFINITY;
+        }
+        4.0 / (denom * denom)
+    }
+    fn conformal_log_half(&self, p: Vec3) -> f32 {
+        // (1/2) ln(4 / (1 − |p|²)²) = ln 2 − ln(1 − |p|²).
+        let r2 = p.length_squared();
+        let denom = (1.0 - r2).max(0.0);
+        if denom <= 0.0 {
+            return f32::INFINITY;
+        }
+        std::f32::consts::LN_2 - denom.ln()
+    }
+    fn conformal_log_half_gradient(&self, p: Vec3) -> Vec3 {
+        // ∇φ = ∇[ln 2 − ln(1 − |p|²)] = 2p / (1 − |p|²).
+        let r2 = p.length_squared();
+        let denom = (1.0 - r2).max(0.0);
+        if denom <= 0.0 {
+            return Vec3::ZERO;
+        }
+        p * (2.0 / denom)
+    }
+}
+
+// SphericalS3 (stereographic projection from north pole):
+// $f(p) = 4 / (1 + |p|^2)^2$.
+impl ConformallyFlat for crate::SphericalS3 {
+    fn conformal_factor(&self, p: Vec3) -> f32 {
+        let r2 = p.length_squared();
+        4.0 / (1.0 + r2).powi(2)
+    }
+    fn conformal_log_half(&self, p: Vec3) -> f32 {
+        // (1/2) ln(4 / (1 + |p|²)²) = ln 2 − ln(1 + |p|²).
+        std::f32::consts::LN_2 - (1.0 + p.length_squared()).ln()
+    }
+    fn conformal_log_half_gradient(&self, p: Vec3) -> Vec3 {
+        // ∇φ = -2p / (1 + |p|²).
+        let r2 = p.length_squared();
+        p * (-2.0 / (1.0 + r2))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BlendedSpace — Space whose metric varies smoothly with position
+// ---------------------------------------------------------------------------
+
+/// A `Space` whose metric is the smooth blend of two source
+/// Spaces' metrics, weighted by a [`BlendingField`]:
+///
+/// $$g(p) = (1 - \alpha(p)) \, g_A(p) + \alpha(p) \, g_B(p)$$
+///
+/// At zone extremes the metric reduces to pure $g_A$ or pure
+/// $g_B$. In between it's an honest variable-metric Riemannian
+/// manifold — geodesics curve continuously, parallel transport
+/// is path-dependent, distances vary by region.
+///
+/// **Skeleton today.** This module currently ships the type
+/// itself plus stubbed `Space` trait methods (`exp`, `log`,
+/// `distance`, `parallel_transport`) that compile but are
+/// incomplete — they fall back to the closed-form $A$ /
+/// $B$ behaviour at zone extremes (where the blend is exact)
+/// and `unimplemented!` in the variable-metric interior. The
+/// numerical integrator (RK4 on the geodesic ODE) lands in
+/// sub-task 4 of the Phase 4 implementation plan; see
+/// [`docs/devlog/BLENDED_SPACE.md`](../../../../docs/devlog/BLENDED_SPACE.md).
+///
+/// **Trait bounds:** both source Spaces must use $\mathbb{R}^3$
+/// for points and tangent vectors (every closed-form 3-Space in
+/// `rye-math` does), and both must be [`ConformallyFlat`] (so the
+/// blended metric is also conformally flat — the integrator's
+/// fast path).
+///
+/// **Isometries:** none non-trivial. The variable metric breaks
+/// translation and rotation symmetry by construction (the
+/// blending field $F$ defines a privileged spatial dependence).
+/// `Iso = ()`; `iso_apply` is the identity.
+pub struct BlendedSpace<A, B, F>
+where
+    A: Space<Point = Vec3, Vector = Vec3>,
+    B: Space<Point = Vec3, Vector = Vec3>,
+    F: BlendingField,
+{
+    pub a: A,
+    pub b: B,
+    pub field: F,
+    _marker: PhantomData<(A, B, F)>,
+}
+
+impl<A, B, F> BlendedSpace<A, B, F>
+where
+    A: Space<Point = Vec3, Vector = Vec3>,
+    B: Space<Point = Vec3, Vector = Vec3>,
+    F: BlendingField,
+{
+    pub fn new(a: A, b: B, field: F) -> Self {
+        Self {
+            a,
+            b,
+            field,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<A, B, F> Space for BlendedSpace<A, B, F>
+where
+    A: Space<Point = Vec3, Vector = Vec3> + ConformallyFlat,
+    B: Space<Point = Vec3, Vector = Vec3> + ConformallyFlat,
+    F: BlendingField,
+{
+    type Point = Vec3;
+    type Vector = Vec3;
+    /// No non-trivial isometries; see type-level docs.
+    type Iso = ();
+
+    fn distance(&self, a: Vec3, b: Vec3) -> f32 {
+        // Zone-extreme fast path: when both endpoints are at the
+        // same zone extreme, distance is exactly the source
+        // Space's distance. Useful for tests + visual continuity
+        // at the demo's far ends.
+        let alpha_a = self.field.weight(a);
+        let alpha_b = self.field.weight(b);
+        if alpha_a == 0.0 && alpha_b == 0.0 {
+            return self.a.distance(a, b);
+        }
+        if alpha_a == 1.0 && alpha_b == 1.0 {
+            return self.b.distance(a, b);
+        }
+        // Variable-metric path: lands in sub-task 5 (`log`-based
+        // distance, $|\log_a(b)|_a$ in the metric at $a$).
+        unimplemented!("variable-metric distance — sub-task 5")
+    }
+
+    fn exp(&self, at: Vec3, v: Vec3) -> Vec3 {
+        let alpha_at = self.field.weight(at);
+        if alpha_at == 0.0 && self.field.gradient(at) == Vec3::ZERO {
+            return self.a.exp(at, v);
+        }
+        if alpha_at == 1.0 && self.field.gradient(at) == Vec3::ZERO {
+            return self.b.exp(at, v);
+        }
+        unimplemented!("variable-metric exp — sub-task 4 (RK4 geodesic ODE)")
+    }
+
+    fn log(&self, from: Vec3, to: Vec3) -> Vec3 {
+        let alpha_from = self.field.weight(from);
+        let alpha_to = self.field.weight(to);
+        if alpha_from == 0.0 && alpha_to == 0.0 && self.field.gradient(from) == Vec3::ZERO {
+            return self.a.log(from, to);
+        }
+        if alpha_from == 1.0 && alpha_to == 1.0 && self.field.gradient(from) == Vec3::ZERO {
+            return self.b.log(from, to);
+        }
+        unimplemented!("variable-metric log — sub-task 5 (Gauss-Newton shooting)")
+    }
+
+    fn parallel_transport(&self, from: Vec3, to: Vec3, v: Vec3) -> Vec3 {
+        let alpha_from = self.field.weight(from);
+        let alpha_to = self.field.weight(to);
+        if alpha_from == 0.0 && alpha_to == 0.0 && self.field.gradient(from) == Vec3::ZERO {
+            return self.a.parallel_transport(from, to, v);
+        }
+        if alpha_from == 1.0 && alpha_to == 1.0 && self.field.gradient(from) == Vec3::ZERO {
+            return self.b.parallel_transport(from, to, v);
+        }
+        unimplemented!("variable-metric parallel transport — sub-task 6")
+    }
+
+    fn iso_identity(&self) {}
+    fn iso_compose(&self, _a: (), _b: ()) {}
+    fn iso_inverse(&self, _a: ()) {}
+    fn iso_apply(&self, _iso: (), p: Vec3) -> Vec3 {
+        p
+    }
+    fn iso_transport(&self, _iso: (), _at: Vec3, v: Vec3) -> Vec3 {
+        v
+    }
+}
+
+// `BlendedSpace` is itself conformally flat when both sources are
+// — the blend of scalar multiples of identity is still a scalar
+// multiple of identity. This is the property the integrator
+// exploits.
+impl<A, B, F> ConformallyFlat for BlendedSpace<A, B, F>
+where
+    A: Space<Point = Vec3, Vector = Vec3> + ConformallyFlat,
+    B: Space<Point = Vec3, Vector = Vec3> + ConformallyFlat,
+    F: BlendingField,
+{
+    fn conformal_factor(&self, p: Vec3) -> f32 {
+        let alpha = self.field.weight(p);
+        let f_a = self.a.conformal_factor(p);
+        let f_b = self.b.conformal_factor(p);
+        // Defensive: if either source diverges (`f32::INFINITY`
+        // outside its chart), and we're at the corresponding zone
+        // extreme, the blend takes the *other* Space's value
+        // exactly. Otherwise the divergence propagates — the
+        // chart is invalid here.
+        if alpha <= 0.0 {
+            return f_a;
+        }
+        if alpha >= 1.0 {
+            return f_b;
+        }
+        (1.0 - alpha) * f_a + alpha * f_b
+    }
+}
 
 /// A scalar blending field over $\mathbb{R}^3$.
 ///
@@ -230,6 +533,175 @@ mod tests {
         // After swap, equivalent to `new(-1.0, 1.0)`.
         close(f.weight(Vec3::new(-1.0, 0.0, 0.0)), 0.0, 1e-6);
         close(f.weight(Vec3::new(1.0, 0.0, 0.0)), 1.0, 1e-6);
+    }
+
+    // ------ ConformallyFlat impls ------
+
+    /// EuclideanR3's conformal factor is identically 1; its
+    /// log-half is identically 0; its gradient is identically
+    /// zero. Pin the trivial case.
+    #[test]
+    fn euclidean_r3_conformal_factor_is_unity() {
+        use crate::EuclideanR3;
+        let s = EuclideanR3;
+        for p in [
+            Vec3::ZERO,
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(-100.0, 50.0, 7.0),
+        ] {
+            close(s.conformal_factor(p), 1.0, 0.0);
+            close(s.conformal_log_half(p), 0.0, 0.0);
+            assert_eq!(s.conformal_log_half_gradient(p), Vec3::ZERO);
+        }
+    }
+
+    /// Poincaré-ball HyperbolicH3 conformal factor: $4 / (1 -
+    /// |p|^2)^2$. Pin standard values (origin, halfway out,
+    /// near boundary).
+    #[test]
+    fn hyperbolic_h3_conformal_factor_pin_values() {
+        use crate::HyperbolicH3;
+        let s = HyperbolicH3;
+        // Origin: f(0) = 4 / 1 = 4.
+        close(s.conformal_factor(Vec3::ZERO), 4.0, 1e-6);
+        // Halfway out: |p| = 0.5, |p|² = 0.25, denom = 0.75,
+        // f = 4 / 0.5625 ≈ 7.111.
+        close(
+            s.conformal_factor(Vec3::new(0.5, 0.0, 0.0)),
+            4.0 / 0.5625,
+            1e-5,
+        );
+        // Near boundary: |p|² = 0.99, denom = 0.01, f = 4 /
+        // 0.0001 = 40000.
+        close(
+            s.conformal_factor(Vec3::new(0.0, 0.0, 0.99499f32.sqrt())),
+            4.0 / (1.0 - 0.99499_f32).powi(2),
+            10.0, // huge magnitude — generous tolerance
+        );
+    }
+
+    /// Closed-form `conformal_log_half_gradient` for HyperbolicH3
+    /// agrees with central finite differences. Catches sign /
+    /// scale errors in the analytic gradient.
+    #[test]
+    fn hyperbolic_h3_log_half_gradient_matches_finite_diff() {
+        use crate::HyperbolicH3;
+        let s = HyperbolicH3;
+        const EPS: f32 = 1e-3;
+        let fd = |p: Vec3| -> Vec3 {
+            let dx =
+                (s.conformal_log_half(p + Vec3::X * EPS) - s.conformal_log_half(p - Vec3::X * EPS))
+                    / (2.0 * EPS);
+            let dy =
+                (s.conformal_log_half(p + Vec3::Y * EPS) - s.conformal_log_half(p - Vec3::Y * EPS))
+                    / (2.0 * EPS);
+            let dz =
+                (s.conformal_log_half(p + Vec3::Z * EPS) - s.conformal_log_half(p - Vec3::Z * EPS))
+                    / (2.0 * EPS);
+            Vec3::new(dx, dy, dz)
+        };
+        for p in [
+            Vec3::new(0.1, 0.0, 0.0),
+            Vec3::new(0.3, -0.2, 0.1),
+            Vec3::new(-0.4, 0.5, 0.2),
+        ] {
+            let analytic = s.conformal_log_half_gradient(p);
+            let numeric = fd(p);
+            close(analytic.x, numeric.x, 5e-3);
+            close(analytic.y, numeric.y, 5e-3);
+            close(analytic.z, numeric.z, 5e-3);
+        }
+    }
+
+    /// SphericalS3 conformal factor: $4 / (1 + |p|^2)^2$. Pin
+    /// origin and a generic point.
+    #[test]
+    fn spherical_s3_conformal_factor_pin_values() {
+        use crate::SphericalS3;
+        let s = SphericalS3;
+        close(s.conformal_factor(Vec3::ZERO), 4.0, 1e-6);
+        // |p|² = 1: f = 4 / 4 = 1.
+        close(s.conformal_factor(Vec3::new(1.0, 0.0, 0.0)), 1.0, 1e-6);
+        // |p|² = 3: f = 4 / 16 = 0.25.
+        close(
+            s.conformal_factor(Vec3::new(1.0, 1.0, 1.0)),
+            0.25,
+            1e-6,
+        );
+    }
+
+    // ------ BlendedSpace skeleton ------
+
+    /// At a zone extreme (pure A), `BlendedSpace::distance`
+    /// matches `A::distance`. Pin the fast path that lets the
+    /// demo's far ends be visually identical to pure E³ / pure H³.
+    #[test]
+    fn blended_space_distance_at_alpha_zero_matches_a() {
+        use crate::EuclideanR3;
+        let bs = BlendedSpace::new(
+            EuclideanR3,
+            EuclideanR3, // dummy; alpha=0 means we never see B
+            LinearBlendX::new(10.0, 20.0),
+        );
+        // Both points at x < 10: alpha = 0, fast path to A.
+        let a = Vec3::new(-1.0, 0.0, 0.0);
+        let b = Vec3::new(2.0, 0.0, 0.0);
+        let d_blend = bs.distance(a, b);
+        let d_a = EuclideanR3.distance(a, b);
+        close(d_blend, d_a, 1e-6);
+    }
+
+    /// At a zone extreme (pure B), distance matches `B::distance`.
+    #[test]
+    fn blended_space_distance_at_alpha_one_matches_b() {
+        use crate::EuclideanR3;
+        let bs = BlendedSpace::new(
+            EuclideanR3,
+            EuclideanR3,
+            LinearBlendX::new(-20.0, -10.0),
+        );
+        // Both points at x > -10: alpha = 1, fast path to B.
+        let a = Vec3::new(0.0, 0.0, 0.0);
+        let b = Vec3::new(3.0, 0.0, 0.0);
+        let d_blend = bs.distance(a, b);
+        let d_b = EuclideanR3.distance(a, b);
+        close(d_blend, d_b, 1e-6);
+    }
+
+    /// `BlendedSpace::iso_apply` is the identity (no non-trivial
+    /// isometries; `Iso = ()`). Pin the convention.
+    #[test]
+    fn blended_space_iso_is_trivial() {
+        use crate::EuclideanR3;
+        use crate::Space;
+        let bs = BlendedSpace::new(EuclideanR3, EuclideanR3, LinearBlendX::new(-1.0, 1.0));
+        let p = Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(bs.iso_apply((), p), p);
+        let v = Vec3::new(0.5, -0.5, 0.5);
+        assert_eq!(bs.iso_transport((), p, v), v);
+    }
+
+    /// `BlendedSpace` is itself `ConformallyFlat`: at a zone
+    /// extreme, its conformal factor equals the relevant source
+    /// Space's. In between, it's the linear blend of the two
+    /// sources' factors weighted by alpha.
+    #[test]
+    fn blended_space_conformal_factor_blends_linearly() {
+        use crate::{EuclideanR3, HyperbolicH3};
+        // E³ blends to H³(Poincaré) along x ∈ [-1, 1].
+        let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-1.0, 1.0));
+
+        // At x = -1 (alpha=0): factor = 1 (pure E³).
+        close(bs.conformal_factor(Vec3::new(-1.0, 0.0, 0.0)), 1.0, 1e-6);
+        // At x = 1 (alpha=1): factor = HyperbolicH3 at x=1 — but
+        // x=1 is on the Poincaré boundary so f → ∞. Use a point
+        // *near* x=1 but slightly inside.
+        let p = Vec3::new(0.99, 0.0, 0.0);
+        let alpha = LinearBlendX::new(-1.0, 1.0).weight(p);
+        let f_e = 1.0;
+        let f_h = HyperbolicH3.conformal_factor(p);
+        let expected = (1.0 - alpha) * f_e + alpha * f_h;
+        close(bs.conformal_factor(p), expected, 1e-2);
     }
 
     /// Smoothstep is monotonic non-decreasing across the zone.

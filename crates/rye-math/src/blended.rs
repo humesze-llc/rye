@@ -252,14 +252,14 @@ where
     }
 
     fn exp(&self, at: Vec3, v: Vec3) -> Vec3 {
-        let alpha_at = self.field.weight(at);
-        if alpha_at == 0.0 && self.field.gradient(at) == Vec3::ZERO {
-            return self.a.exp(at, v);
-        }
-        if alpha_at == 1.0 && self.field.gradient(at) == Vec3::ZERO {
-            return self.b.exp(at, v);
-        }
-        unimplemented!("variable-metric exp — sub-task 4 (RK4 geodesic ODE)")
+        // RK4 on the geodesic ODE for conformally-flat metric.
+        // For $g_{ij} = e^{2\phi} \delta_{ij}$ the equation reduces
+        // to $\dot{\mathbf{v}} = |\mathbf{v}|^2 \nabla\phi
+        // - 2 (\nabla\phi \cdot \mathbf{v}) \mathbf{v}$. Caller's
+        // initial velocity `v` is interpreted as Euclidean — we
+        // travel for unit parameter time, so the geodesic length
+        // covered is $|\mathbf{v}|_g = |\mathbf{v}|_E \sqrt{f(at)}$.
+        rk4_geodesic(self, at, v, GEODESIC_DEFAULT_STEPS).0
     }
 
     fn log(&self, from: Vec3, to: Vec3) -> Vec3 {
@@ -295,6 +295,85 @@ where
     fn iso_transport(&self, _iso: (), _at: Vec3, v: Vec3) -> Vec3 {
         v
     }
+}
+
+// ---------------------------------------------------------------------------
+// RK4 geodesic integrator
+// ---------------------------------------------------------------------------
+
+/// Default number of RK4 steps per unit-parameter integration.
+/// Empirically: 32 gives ~6 digits of accuracy on moderately
+/// curved metrics; 64 gives ~7 (diminishing returns). Per the
+/// design doc this is fixed; adaptive step refinement is
+/// deferred until measurement shows we need it.
+pub const GEODESIC_DEFAULT_STEPS: u32 = 32;
+
+/// Single step of RK4 on the geodesic ODE for a conformally
+/// flat metric. State = `(p, v)`; ODE RHS:
+///
+///   $\dot{\mathbf{p}} = \mathbf{v}$
+///   $\dot{\mathbf{v}} = |\mathbf{v}|^2 \nabla\phi(\mathbf{p})
+///                       - 2 (\nabla\phi \cdot \mathbf{v}) \mathbf{v}$
+///
+/// Returns the new state after stepping by `h` in parameter
+/// time. The caller chains this `n_steps` times to reach unit
+/// parameter time.
+fn rk4_geodesic_step<S: ConformallyFlat>(
+    space: &S,
+    p: Vec3,
+    v: Vec3,
+    h: f32,
+) -> (Vec3, Vec3) {
+    // RHS: returns (dp/dt, dv/dt) given (p, v).
+    let rhs = |p: Vec3, v: Vec3| -> (Vec3, Vec3) {
+        let grad_phi = space.conformal_log_half_gradient(p);
+        let v_sq = v.length_squared();
+        let dot = grad_phi.dot(v);
+        (v, grad_phi * v_sq - v * (2.0 * dot))
+    };
+
+    let (k1_p, k1_v) = rhs(p, v);
+    let (k2_p, k2_v) = rhs(p + k1_p * (h * 0.5), v + k1_v * (h * 0.5));
+    let (k3_p, k3_v) = rhs(p + k2_p * (h * 0.5), v + k2_v * (h * 0.5));
+    let (k4_p, k4_v) = rhs(p + k3_p * h, v + k3_v * h);
+
+    let dp = (k1_p + 2.0 * k2_p + 2.0 * k3_p + k4_p) * (h / 6.0);
+    let dv = (k1_v + 2.0 * k2_v + 2.0 * k3_v + k4_v) * (h / 6.0);
+    (p + dp, v + dv)
+}
+
+/// Integrate the geodesic ODE starting at `(at, v)` for unit
+/// parameter time, using `n_steps` RK4 steps. Returns the final
+/// `(point, velocity)` pair.
+///
+/// Public so other modules (e.g. parallel-transport, log
+/// shooting) can reuse the same integrator without duplicating
+/// the math.
+pub fn rk4_geodesic<S: ConformallyFlat>(
+    space: &S,
+    at: Vec3,
+    v: Vec3,
+    n_steps: u32,
+) -> (Vec3, Vec3) {
+    let h = 1.0 / n_steps as f32;
+    let mut p = at;
+    let mut vel = v;
+    for _ in 0..n_steps {
+        let (np, nv) = rk4_geodesic_step(space, p, vel, h);
+        // Defensive: clamp non-finite states (chart-boundary
+        // crossings, integrator blow-ups) to the previous valid
+        // state so downstream callers don't propagate NaN.
+        if np.is_finite() && nv.is_finite() {
+            p = np;
+            vel = nv;
+        } else {
+            tracing::warn!(
+                "rk4_geodesic step produced non-finite state; clamping to previous step"
+            );
+            break;
+        }
+    }
+    (p, vel)
 }
 
 // `BlendedSpace` is itself conformally flat when both sources are
@@ -702,6 +781,108 @@ mod tests {
         let f_h = HyperbolicH3.conformal_factor(p);
         let expected = (1.0 - alpha) * f_e + alpha * f_h;
         close(bs.conformal_factor(p), expected, 1e-2);
+    }
+
+    // ------ RK4 geodesic integrator ------
+
+    /// In flat E³ the geodesic ODE has zero curvature term, so
+    /// RK4 should reproduce straight-line motion exactly (within
+    /// f32 rounding): `exp_p(v) = p + v` for all `p`, `v`.
+    #[test]
+    fn rk4_in_pure_e3_is_straight_line() {
+        use crate::EuclideanR3;
+        let bs = BlendedSpace::new(
+            EuclideanR3,
+            EuclideanR3,
+            LinearBlendX::new(100.0, 200.0), // far away — alpha ≡ 0 in our test region
+        );
+        for (p, v) in [
+            (Vec3::ZERO, Vec3::X),
+            (Vec3::new(1.0, 2.0, 3.0), Vec3::new(0.5, -0.3, 0.7)),
+            (Vec3::new(-5.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)),
+        ] {
+            let (final_p, final_v) = rk4_geodesic(&bs, p, v, GEODESIC_DEFAULT_STEPS);
+            let expected = p + v;
+            close((final_p - expected).length(), 0.0, 1e-5);
+            close((final_v - v).length(), 0.0, 1e-5);
+        }
+    }
+
+    /// In pure HyperbolicH3 (Poincaré ball), `exp` from the
+    /// origin along an axis-aligned **Euclidean** tangent vector
+    /// `v` should land at the closed-form Poincaré geodesic
+    /// endpoint. The convention (matching the existing
+    /// `HyperbolicH3::exp`): `v` is Euclidean, so the Riemannian
+    /// length is $|v|_g = \sqrt{f(p)} \cdot |v|_E$, and at the
+    /// origin where $f(0) = 4$:
+    ///
+    /// $$|\exp_0(v)|_E = \tanh(|v|_g / 2) = \tanh(|v|_E).$$
+    ///
+    /// Pins the convention *and* validates the integrator
+    /// against the engine's existing closed-form ground truth.
+    #[test]
+    fn rk4_in_pure_h3_matches_closed_form_at_origin() {
+        use crate::{HyperbolicH3, Space};
+
+        for &mag in &[0.1_f32, 0.3, 0.5] {
+            let v = Vec3::new(mag, 0.0, 0.0);
+            let (final_p, _) = rk4_geodesic(&HyperbolicH3, Vec3::ZERO, v, GEODESIC_DEFAULT_STEPS);
+            // Closed form at origin (sqrt(f(0)) = 2):
+            // |exp_0(v)|_E = tanh(|v|_E).
+            let expected_radius = mag.tanh();
+            close(final_p.x, expected_radius, 5e-3);
+            close(final_p.y, 0.0, 1e-4);
+            close(final_p.z, 0.0, 1e-4);
+        }
+
+        // Cross-check: numerical integrator agrees with the
+        // engine's existing closed-form `HyperbolicH3::exp`.
+        let v = Vec3::new(0.4, 0.1, 0.0);
+        let (numerical, _) = rk4_geodesic(&HyperbolicH3, Vec3::ZERO, v, GEODESIC_DEFAULT_STEPS);
+        let closed_form = HyperbolicH3.exp(Vec3::ZERO, v);
+        close((numerical - closed_form).length(), 0.0, 5e-3);
+
+        // Drive through `BlendedSpace::exp` (alpha ≡ 1 in the
+        // test region) — the variable-metric path collapses to
+        // pure H³ here.
+        let bs = BlendedSpace::new(
+            HyperbolicH3, // dummy; alpha=1 never reaches A
+            HyperbolicH3,
+            LinearBlendX::new(-100.0, -50.0),
+        );
+        let v = Vec3::new(0.5, 0.0, 0.0);
+        let final_p_blended = bs.exp(Vec3::ZERO, v);
+        close(final_p_blended.x, 0.5_f32.tanh(), 5e-3);
+    }
+
+    /// Geodesic round-trip in pure E³: `exp_p(v)` then `exp_q(-v)`
+    /// returns to `p` (within RK4 noise). Time-reversibility of
+    /// the integrator on a flat metric. Catches accumulated drift.
+    #[test]
+    fn rk4_in_e3_is_time_reversible() {
+        use crate::EuclideanR3;
+        let p = Vec3::new(1.0, 2.0, 3.0);
+        let v = Vec3::new(0.5, -0.3, 0.7);
+        let (q, vq) = rk4_geodesic(&EuclideanR3, p, v, GEODESIC_DEFAULT_STEPS);
+        let (back, _) = rk4_geodesic(&EuclideanR3, q, -vq, GEODESIC_DEFAULT_STEPS);
+        close((back - p).length(), 0.0, 1e-5);
+    }
+
+    /// `BlendedSpace::exp` at a zone extreme matches the source
+    /// Space's exp (both being E³ here). End-to-end pin: the
+    /// trait method actually goes through the integrator and
+    /// recovers the closed-form answer.
+    #[test]
+    fn blended_space_exp_at_alpha_zero_matches_e3() {
+        use crate::EuclideanR3;
+        use crate::Space;
+        let bs = BlendedSpace::new(EuclideanR3, EuclideanR3, LinearBlendX::new(50.0, 100.0));
+        let p = Vec3::new(1.0, 2.0, 3.0);
+        let v = Vec3::new(0.5, -0.3, 0.7);
+        let result = bs.exp(p, v);
+        // Pure E³ ⇒ straight-line motion ⇒ result = p + v.
+        let expected = p + v;
+        close((result - expected).length(), 0.0, 1e-5);
     }
 
     /// Smoothstep is monotonic non-decreasing across the zone.

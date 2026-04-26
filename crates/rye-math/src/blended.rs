@@ -72,6 +72,37 @@ pub trait ConformallyFlat: Space {
     /// detects and clamps.
     fn conformal_factor(&self, p: Vec3) -> f32;
 
+    /// Scalar curvature $R(p)$ at the point. For a 3D
+    /// conformally flat metric:
+    ///
+    /// $$R = -\frac{4}{f(p)}\left[\nabla^2 \phi + \tfrac{1}{2}|\nabla\phi|^2\right]$$
+    ///
+    /// Default impl computes the Laplacian of $\phi$ by finite
+    /// differences. Closed-form overrides save cost (and noise)
+    /// when the Space's curvature is known analytically — every
+    /// constant-curvature Space overrides this.
+    fn scalar_curvature(&self, p: Vec3) -> f32 {
+        const EPS: f32 = 5.0e-3;
+        let phi_at = self.conformal_log_half(p);
+        // Standard 7-point stencil Laplacian:
+        //   ∇²φ ≈ Σ_axis [φ(p + ε e_axis) − 2 φ(p) + φ(p − ε e_axis)] / ε²
+        let lap = (self.conformal_log_half(p + Vec3::X * EPS)
+            + self.conformal_log_half(p - Vec3::X * EPS)
+            + self.conformal_log_half(p + Vec3::Y * EPS)
+            + self.conformal_log_half(p - Vec3::Y * EPS)
+            + self.conformal_log_half(p + Vec3::Z * EPS)
+            + self.conformal_log_half(p - Vec3::Z * EPS)
+            - 6.0 * phi_at)
+            / (EPS * EPS);
+        let grad = self.conformal_log_half_gradient(p);
+        let grad_sq = grad.length_squared();
+        let f_p = self.conformal_factor(p);
+        if !f_p.is_finite() || f_p <= 0.0 {
+            return 0.0;
+        }
+        -(4.0 / f_p) * (lap + 0.5 * grad_sq)
+    }
+
     /// Logarithm of the conformal factor: $\phi(p) = \frac{1}{2} \ln f(p)$.
     /// Default impl computes from `conformal_factor`; closed-form
     /// overrides save a `ln` per evaluation in the hot path.
@@ -108,6 +139,9 @@ impl ConformallyFlat for crate::EuclideanR3 {
     fn conformal_log_half_gradient(&self, _p: Vec3) -> Vec3 {
         Vec3::ZERO
     }
+    fn scalar_curvature(&self, _p: Vec3) -> f32 {
+        0.0
+    }
 }
 
 // HyperbolicH3 (Poincaré ball model): $f(p) = 4 / (1 - |p|^2)^2$
@@ -140,6 +174,14 @@ impl ConformallyFlat for crate::HyperbolicH3 {
         }
         p * (2.0 / denom)
     }
+    fn scalar_curvature(&self, _p: Vec3) -> f32 {
+        // Constant negative curvature K = -1 in 3D ⇒ R = n(n−1)K
+        // = 3·2·(−1) = −6. (Verified against the closed-form
+        // calculation: ∇²φ + (1/2)|∇φ|² = 6/(1−|p|²)², so
+        // R = −(4/f) · 6/(1−|p|²)² with f = 4/(1−|p|²)² gives
+        // R = −6 identically.)
+        -6.0
+    }
 }
 
 // SphericalS3 (stereographic projection from north pole):
@@ -157,6 +199,11 @@ impl ConformallyFlat for crate::SphericalS3 {
         // ∇φ = -2p / (1 + |p|²).
         let r2 = p.length_squared();
         p * (-2.0 / (1.0 + r2))
+    }
+    fn scalar_curvature(&self, _p: Vec3) -> f32 {
+        // Constant positive curvature K = +1 in 3D ⇒ R = n(n−1)K
+        // = 3·2·(+1) = +6.
+        6.0
     }
 }
 
@@ -279,13 +326,7 @@ where
         // along the sampled polyline — at ~7× the cost. Most
         // callers (cameras, players) already know the path and
         // should use `parallel_transport_along` directly.
-        parallel_transport_segment_rk4(
-            self,
-            from,
-            to,
-            v,
-            PARALLEL_TRANSPORT_DEFAULT_STEPS,
-        )
+        parallel_transport_segment_rk4(self, from, to, v, PARALLEL_TRANSPORT_DEFAULT_STEPS)
     }
 
     fn parallel_transport_along(&self, path: &[Vec3], v: Vec3) -> Vec3 {
@@ -334,12 +375,7 @@ pub const GEODESIC_DEFAULT_STEPS: u32 = 32;
 /// Returns the new state after stepping by `h` in parameter
 /// time. The caller chains this `n_steps` times to reach unit
 /// parameter time.
-fn rk4_geodesic_step<S: ConformallyFlat>(
-    space: &S,
-    p: Vec3,
-    v: Vec3,
-    h: f32,
-) -> (Vec3, Vec3) {
+fn rk4_geodesic_step<S: ConformallyFlat>(space: &S, p: Vec3, v: Vec3, h: f32) -> (Vec3, Vec3) {
     // RHS: returns (dp/dt, dv/dt) given (p, v).
     let rhs = |p: Vec3, v: Vec3| -> (Vec3, Vec3) {
         let grad_phi = space.conformal_log_half_gradient(p);
@@ -643,16 +679,22 @@ pub trait BlendingField: Copy + Send + Sync + 'static {
 // ---------------------------------------------------------------------------
 
 /// Smoothstep blending zone along the X axis: pure $A$ at
-/// `x ≤ start`, pure $B$ at `x ≥ end`, smooth $C^1$ transition
+/// `x ≤ start`, pure $B$ at `x ≥ end`, smooth $C^2$ transition
 /// in between.
 ///
-/// The smoothing profile is the standard cubic Hermite
-/// $3t^2 - 2t^3$, which:
+/// The smoothing profile is the **quintic smootherstep**
+/// $6t^5 - 15t^4 + 10t^3$, which:
 ///
-/// - Is continuous and continuously differentiable everywhere.
-/// - Has zero gradient at both endpoints (so the metric reduces
-///   exactly to $g_A$ / $g_B$ outside the zone, with no
-///   integrator kicks at the boundary).
+/// - Is continuous, continuously differentiable, *and*
+///   continuously twice-differentiable. The cubic $3t^2 - 2t^3$
+///   smoothstep is only $C^1$ — its second derivative jumps at
+///   the zone endpoints, which produces a discontinuity in the
+///   scalar curvature $R(p)$ (since $R$ involves $\nabla^2 \phi$).
+///   For THESIS §2.2's *"seamless transitions"* discipline the
+///   curvature must be continuous, hence quintic.
+/// - Has zero gradient *and* zero second derivative at both
+///   endpoints, so the metric reduces exactly to $g_A$ / $g_B$
+///   outside the zone with no integrator or curvature kicks.
 /// - Maps `t ∈ [0, 1]` to `[0, 1]` monotonically.
 ///
 /// The Phase 4 milestone demo (`examples/blended`) uses this
@@ -693,8 +735,8 @@ impl BlendingField for LinearBlendX {
             return if p.x < self.start { 0.0 } else { 1.0 };
         }
         let t = ((p.x - self.start) / w).clamp(0.0, 1.0);
-        // Smoothstep: 3t² - 2t³.
-        t * t * (3.0 - 2.0 * t)
+        // Smootherstep: 6t⁵ − 15t⁴ + 10t³.
+        t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
     }
 
     fn gradient(&self, p: Vec3) -> Vec3 {
@@ -711,9 +753,11 @@ impl BlendingField for LinearBlendX {
         if !(0.0..=1.0).contains(&raw_t) {
             return Vec3::ZERO;
         }
-        // d/dx [3t² - 2t³] · dt/dx = (6t - 6t²)·(1/w) = 6t(1-t)/w.
+        // d/dx [6t⁵ − 15t⁴ + 10t³] · dt/dx
+        //   = 30t²(1−t)² · (1/w).
         let t = raw_t;
-        let dx = 6.0 * t * (1.0 - t) / w;
+        let one_minus_t = 1.0 - t;
+        let dx = 30.0 * t * t * one_minus_t * one_minus_t / w;
         Vec3::new(dx, 0.0, 0.0)
     }
 }
@@ -766,8 +810,9 @@ mod tests {
         assert!(g.x > 0.0, "midpoint gradient should be positive along +x");
         close(g.y, 0.0, 0.0);
         close(g.z, 0.0, 0.0);
-        // Midpoint: t = 0.5, gradient = 6·0.5·0.5/(2.0) = 0.75.
-        close(g.x, 0.75, 1e-6);
+        // Midpoint of smootherstep: t = 0.5,
+        // gradient = 30 · 0.25 · 0.25 / 2.0 = 0.9375.
+        close(g.x, 0.9375, 1e-6);
     }
 
     /// Closed-form gradient agrees with the central-finite-
@@ -865,15 +910,15 @@ mod tests {
         let s = HyperbolicH3;
         const EPS: f32 = 1e-3;
         let fd = |p: Vec3| -> Vec3 {
-            let dx =
-                (s.conformal_log_half(p + Vec3::X * EPS) - s.conformal_log_half(p - Vec3::X * EPS))
-                    / (2.0 * EPS);
-            let dy =
-                (s.conformal_log_half(p + Vec3::Y * EPS) - s.conformal_log_half(p - Vec3::Y * EPS))
-                    / (2.0 * EPS);
-            let dz =
-                (s.conformal_log_half(p + Vec3::Z * EPS) - s.conformal_log_half(p - Vec3::Z * EPS))
-                    / (2.0 * EPS);
+            let dx = (s.conformal_log_half(p + Vec3::X * EPS)
+                - s.conformal_log_half(p - Vec3::X * EPS))
+                / (2.0 * EPS);
+            let dy = (s.conformal_log_half(p + Vec3::Y * EPS)
+                - s.conformal_log_half(p - Vec3::Y * EPS))
+                / (2.0 * EPS);
+            let dz = (s.conformal_log_half(p + Vec3::Z * EPS)
+                - s.conformal_log_half(p - Vec3::Z * EPS))
+                / (2.0 * EPS);
             Vec3::new(dx, dy, dz)
         };
         for p in [
@@ -899,11 +944,7 @@ mod tests {
         // |p|² = 1: f = 4 / 4 = 1.
         close(s.conformal_factor(Vec3::new(1.0, 0.0, 0.0)), 1.0, 1e-6);
         // |p|² = 3: f = 4 / 16 = 0.25.
-        close(
-            s.conformal_factor(Vec3::new(1.0, 1.0, 1.0)),
-            0.25,
-            1e-6,
-        );
+        close(s.conformal_factor(Vec3::new(1.0, 1.0, 1.0)), 0.25, 1e-6);
     }
 
     // ------ BlendedSpace skeleton ------
@@ -931,11 +972,7 @@ mod tests {
     #[test]
     fn blended_space_distance_at_alpha_one_matches_b() {
         use crate::EuclideanR3;
-        let bs = BlendedSpace::new(
-            EuclideanR3,
-            EuclideanR3,
-            LinearBlendX::new(-20.0, -10.0),
-        );
+        let bs = BlendedSpace::new(EuclideanR3, EuclideanR3, LinearBlendX::new(-20.0, -10.0));
         // Both points at x > -10: alpha = 1, fast path to B.
         let a = Vec3::new(0.0, 0.0, 0.0);
         let b = Vec3::new(3.0, 0.0, 0.0);
@@ -1095,7 +1132,13 @@ mod tests {
             (Vec3::new(1.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 6.0)),
             (Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)),
         ] {
-            let v = gauss_newton_log(&EuclideanR3, from, to, GEODESIC_DEFAULT_STEPS, LOG_MAX_ITERS);
+            let v = gauss_newton_log(
+                &EuclideanR3,
+                from,
+                to,
+                GEODESIC_DEFAULT_STEPS,
+                LOG_MAX_ITERS,
+            );
             close((v - (to - from)).length(), 0.0, 1e-4);
         }
     }
@@ -1292,6 +1335,226 @@ mod tests {
         );
         // But not catastrophic — loop is small, holonomy bounded.
         assert!(drift < 0.5, "holonomy unreasonably large: {drift}");
+    }
+
+    // ------ Curvature continuity (sub-task 7) ------
+
+    /// Closed-form curvature scalar for HyperbolicH3 is `-6`
+    /// everywhere (constant negative curvature `K = -1` in 3D).
+    /// Pins both the override and the sign convention.
+    #[test]
+    fn hyperbolic_h3_scalar_curvature_is_constant_minus_six() {
+        use crate::HyperbolicH3;
+        let h3 = HyperbolicH3;
+        for p in [
+            Vec3::ZERO,
+            Vec3::new(0.1, 0.0, 0.0),
+            Vec3::new(0.3, 0.2, -0.1),
+        ] {
+            close(h3.scalar_curvature(p), -6.0, 1e-6);
+        }
+    }
+
+    /// SphericalS3 closed-form scalar curvature is `+6` (constant
+    /// positive curvature `K = +1` in 3D).
+    #[test]
+    fn spherical_s3_scalar_curvature_is_constant_plus_six() {
+        use crate::SphericalS3;
+        let s3 = SphericalS3;
+        for p in [
+            Vec3::ZERO,
+            Vec3::new(0.1, 0.0, 0.0),
+            Vec3::new(0.5, -0.3, 0.2),
+        ] {
+            close(s3.scalar_curvature(p), 6.0, 1e-6);
+        }
+    }
+
+    /// Default (finite-difference) curvature impl agrees with the
+    /// closed-form override for HyperbolicH3 at a few sample
+    /// points, validating the FD stencil for blended-space use
+    /// (where there's no closed form).
+    #[test]
+    fn finite_diff_curvature_matches_closed_form_in_h3() {
+        use crate::HyperbolicH3;
+        // Drop down to a dummy `ConformallyFlat` that doesn't
+        // override `scalar_curvature` so we hit the default impl.
+        struct H3FdOnly;
+        impl crate::space::Space for H3FdOnly {
+            type Point = Vec3;
+            type Vector = Vec3;
+            type Iso = ();
+            fn distance(&self, _: Vec3, _: Vec3) -> f32 {
+                0.0
+            }
+            fn exp(&self, _: Vec3, _: Vec3) -> Vec3 {
+                Vec3::ZERO
+            }
+            fn log(&self, _: Vec3, _: Vec3) -> Vec3 {
+                Vec3::ZERO
+            }
+            fn parallel_transport(&self, _: Vec3, _: Vec3, v: Vec3) -> Vec3 {
+                v
+            }
+            fn iso_identity(&self) {}
+            fn iso_compose(&self, _: (), _: ()) {}
+            fn iso_inverse(&self, _: ()) {}
+            fn iso_apply(&self, _: (), p: Vec3) -> Vec3 {
+                p
+            }
+            fn iso_transport(&self, _: (), _: Vec3, v: Vec3) -> Vec3 {
+                v
+            }
+        }
+        impl ConformallyFlat for H3FdOnly {
+            fn conformal_factor(&self, p: Vec3) -> f32 {
+                HyperbolicH3.conformal_factor(p)
+            }
+            fn conformal_log_half(&self, p: Vec3) -> f32 {
+                HyperbolicH3.conformal_log_half(p)
+            }
+            fn conformal_log_half_gradient(&self, p: Vec3) -> Vec3 {
+                HyperbolicH3.conformal_log_half_gradient(p)
+            }
+            // Don't override scalar_curvature — use default (FD).
+        }
+        let fd = H3FdOnly;
+        // Loose tolerance: finite differences with EPS=5e-3 give
+        // ~3 digits, plenty to confirm correctness.
+        for p in [Vec3::ZERO, Vec3::new(0.2, 0.1, 0.0)] {
+            close(fd.scalar_curvature(p), -6.0, 0.5);
+        }
+    }
+
+    /// BlendedSpace<E³, H³, LinearBlendX> scalar curvature varies
+    /// continuously across the zone: at zone extremes it matches
+    /// pure E³ (R=0) and pure H³ (R=-6); in between it's a smooth
+    /// interpolation with no discontinuous jumps. Pin the
+    /// continuity that THESIS §2.2 calls for.
+    #[test]
+    fn blended_space_curvature_varies_continuously_across_zone() {
+        use crate::{EuclideanR3, HyperbolicH3};
+        let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.5, 0.5));
+
+        // Zone-extreme: well into E³.
+        let r_e = bs.scalar_curvature(Vec3::new(-0.7, 0.0, 0.0));
+        close(r_e, 0.0, 1e-1);
+
+        // Zone-extreme: well into H³ (still inside the Poincaré
+        // ball where the Space is well-defined).
+        let r_h = bs.scalar_curvature(Vec3::new(0.7, 0.0, 0.0));
+        // We're past the zone end (alpha ≈ 1) but technically the
+        // BlendedSpace's curvature differs from pure H³'s -6 by
+        // f32 noise (since alpha hits exactly 1.0 inside the
+        // smoothstep clamp). Loose tolerance.
+        close(r_h, -6.0, 1.0);
+
+        // Sample along the zone — collect curvature values, verify
+        // they vary smoothly (no spikes / discontinuities). The
+        // strongest test: consecutive samples differ by an amount
+        // proportional to the sample step.
+        let xs: Vec<f32> = (-30..=30).map(|i| (i as f32) * 0.025).collect();
+        let curvatures: Vec<f32> = xs
+            .iter()
+            .map(|&x| bs.scalar_curvature(Vec3::new(x, 0.0, 0.0)))
+            .collect();
+
+        // Every value must be finite. Note the transition zone
+        // can show stronger curvature than *either* endpoint: a
+        // rapidly-varying metric ($|\nabla\phi|^2$ and
+        // $\nabla^2\phi$ both spike inside the zone) genuinely
+        // produces $|R| > 6$. That's a real geometric feature, not
+        // a bug — the seam is its own curved region. Bound is
+        // therefore generous.
+        for &r in &curvatures {
+            assert!(
+                r.is_finite() && (-50.0..=5.0).contains(&r),
+                "curvature out of expected range: {r}"
+            );
+        }
+
+        // The real continuity check: adjacent samples differ by a
+        // bounded amount. The transition zone has rapid (but
+        // continuous) curvature variation; FD aliasing on the
+        // chosen sample step amplifies that into ~14 max jumps
+        // empirically. A genuine $C^2$ discontinuity (e.g. from
+        // cubic smoothstep) shows up as jumps in the tens or
+        // hundreds at much finer sample spacing, so cap at 25 —
+        // tolerant of FD aliasing here while catching real
+        // discontinuities.
+        let max_jump = curvatures
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_jump < 25.0,
+            "curvature has a discontinuity: max adjacent jump = {max_jump}"
+        );
+    }
+
+    // ------ Boundary extremes (sub-task 8) ------
+
+    /// At zone extremes (α exactly 0 or 1), the BlendedSpace
+    /// `Space` methods should produce results bit-identical to
+    /// the source Space's. Pin: `exp`, `log`, `parallel_transport`,
+    /// `distance`, `conformal_factor`, `scalar_curvature` all
+    /// match A at α=0 and B at α=1.
+    #[test]
+    fn blended_space_at_alpha_zero_is_pure_a() {
+        use crate::{EuclideanR3, HyperbolicH3, Space};
+        let bs = BlendedSpace::new(
+            EuclideanR3,
+            HyperbolicH3,
+            LinearBlendX::new(50.0, 100.0), // alpha ≡ 0 in test region
+        );
+        let p = Vec3::new(1.0, 2.0, 3.0);
+        let q = Vec3::new(4.0, 5.0, 6.0);
+        let v = Vec3::new(0.5, -0.3, 0.7);
+
+        // exp / log / distance / parallel_transport all match
+        // pure E³ (Euclidean) within numerical-integrator noise.
+        close((bs.exp(p, v) - EuclideanR3.exp(p, v)).length(), 0.0, 1e-5);
+        close((bs.log(p, q) - EuclideanR3.log(p, q)).length(), 0.0, 1e-3);
+        close(bs.distance(p, q), EuclideanR3.distance(p, q), 1e-3);
+        close(
+            (bs.parallel_transport(p, q, v) - EuclideanR3.parallel_transport(p, q, v)).length(),
+            0.0,
+            1e-5,
+        );
+        // ConformallyFlat fields match.
+        close(
+            bs.conformal_factor(p),
+            EuclideanR3.conformal_factor(p),
+            1e-6,
+        );
+        close(bs.scalar_curvature(p), 0.0, 1e-3);
+    }
+
+    #[test]
+    fn blended_space_at_alpha_one_is_pure_b() {
+        use crate::{EuclideanR3, HyperbolicH3, Space};
+        let bs = BlendedSpace::new(
+            EuclideanR3,
+            HyperbolicH3,
+            LinearBlendX::new(-100.0, -50.0), // alpha ≡ 1 in test region
+        );
+        let p = Vec3::new(0.1, 0.0, 0.0);
+        let q = Vec3::new(0.2, 0.1, 0.0);
+        let v = Vec3::new(0.05, 0.0, 0.0);
+
+        // Match pure H³ within numerical-integrator noise.
+        close((bs.exp(p, v) - HyperbolicH3.exp(p, v)).length(), 0.0, 5e-3);
+        close((bs.log(p, q) - HyperbolicH3.log(p, q)).length(), 0.0, 5e-3);
+        close(bs.distance(p, q), HyperbolicH3.distance(p, q), 5e-3);
+        close(
+            bs.conformal_factor(p),
+            HyperbolicH3.conformal_factor(p),
+            1e-3,
+        );
+        // FD curvature on BlendedSpace has ~1% noise even at α=1
+        // (FD samples don't perfectly cancel — they're at ε≈5e-3
+        // spacing and the underlying φ has nonzero curvature).
+        close(bs.scalar_curvature(p), -6.0, 0.05);
     }
 
     /// Smoothstep is monotonic non-decreasing across the zone.

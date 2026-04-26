@@ -281,7 +281,9 @@ mod tests {
     use super::*;
     use bytemuck::{Pod, Zeroable};
     use glam::Vec3;
-    use rye_math::{EuclideanR3, HyperbolicH3, Space, SphericalS3, WgslSpace};
+    use rye_math::{
+        BlendedSpace, EuclideanR3, HyperbolicH3, LinearBlendX, Space, SphericalS3, WgslSpace,
+    };
 
     const ABI_PROBE: &str = r#"
 @compute @workgroup_size(1)
@@ -394,6 +396,21 @@ fn main() {
     fn spherical_geodesic_kernel_validates() {
         let src = assemble_geodesic_probe(&SphericalS3.wgsl_impl());
         validate_wgsl(&src).expect("SphericalS3 + geodesic kernel should validate");
+    }
+
+    #[test]
+    fn blended_e3_h3_prelude_validates_against_abi_probe() {
+        let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-2.0, 2.0));
+        let src = assemble_source(&bs.wgsl_impl(), ABI_PROBE);
+        validate_wgsl(&src).expect("BlendedSpace<E3,H3,LinearBlendX> WGSL prelude should validate");
+    }
+
+    #[test]
+    fn blended_e3_h3_geodesic_kernel_validates() {
+        let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-2.0, 2.0));
+        let src = assemble_geodesic_probe(&bs.wgsl_impl());
+        validate_wgsl(&src)
+            .expect("BlendedSpace<E3,H3,LinearBlendX> + geodesic kernel should validate");
     }
 
     #[repr(C)]

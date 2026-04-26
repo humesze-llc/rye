@@ -21,11 +21,12 @@
 //! [`BlendedSpace`] itself (the `Space` impl) lands in subsequent
 //! sub-tasks (the conformal-factor / Christoffel / RK4 work).
 
+use std::borrow::Cow;
 use std::marker::PhantomData;
 
 use glam::{Mat3, Vec3};
 
-use crate::space::Space;
+use crate::space::{Space, WgslSpace};
 
 // ---------------------------------------------------------------------------
 // ConformallyFlat — extension trait for Spaces with scalar metric
@@ -759,6 +760,200 @@ impl BlendingField for LinearBlendX {
         let one_minus_t = 1.0 - t;
         let dx = 30.0 * t * t * one_minus_t * one_minus_t / w;
         Vec3::new(dx, 0.0, 0.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WGSL emission
+// ---------------------------------------------------------------------------
+
+/// WGSL prelude for the **specific** `BlendedSpace<EuclideanR3,
+/// HyperbolicH3, LinearBlendX>` instantiation used by the Phase 4
+/// blended demo.
+///
+/// **Scope.** This is a hand-rolled, parametric prelude — not a
+/// generic `WgslSpace for BlendedSpace<A, B, F>` impl. The latter
+/// requires a per-`ConformallyFlat`-Space WGSL emission trait
+/// (so $f(p)$, $\nabla\phi(p)$ formulas can be substituted by
+/// type), plus a per-`BlendingField` emission trait. That
+/// architectural lift is deferred until a *second* `BlendedSpace`
+/// instantiation needs WGSL — first-instance lock-in is cheap to
+/// undo, second-instance lock-in is what actually motivates the
+/// generic design. The Rust API is already generic; only the
+/// shader emission is single-instantiation.
+///
+/// **Numerical scheme.** 4 RK4 sub-steps per `rye_exp` call,
+/// 1 RK4 step per `rye_parallel_transport`. The CPU side uses
+/// 32 / 8 — but the geodesic march kernel calls these with very
+/// small step sizes (proportional to the SDF), so 4 sub-steps
+/// per call yields cumulatively many sub-steps along a ray with
+/// far less per-pixel cost.
+///
+/// **`rye_log` / `rye_distance` accuracy.** `rye_log` returns
+/// the Euclidean chart-coordinate difference (the geodesic march
+/// kernel does not call it). `rye_distance` uses the midpoint-rule
+/// chord-metric approximation
+/// `sqrt(f((a+b)/2)) · |a − b|` — first-order accurate for nearby
+/// points (which is the SDF use case). For accurate
+/// arbitrary-pair distances at runtime, use the CPU side.
+fn blended_e3_h3_linearx_wgsl(field: &LinearBlendX) -> String {
+    format!(
+        r#"
+// rye-math :: BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX> (v0 Space WGSL ABI)
+const RYE_MAX_ARC: f32 = 1e9;
+const RYE_BLENDED_R2_MAX: f32 = 0.9999999;
+const RYE_BLENDED_X_START: f32 = {start:?};
+const RYE_BLENDED_X_END:   f32 = {end:?};
+const RYE_BLENDED_X_WIDTH: f32 = {width:?};
+const RYE_BLENDED_RK4_SUB: i32 = 16;
+
+fn rye_blended_alpha(p: vec3<f32>) -> f32 {{
+    let raw_t = (p.x - RYE_BLENDED_X_START) / RYE_BLENDED_X_WIDTH;
+    let t = clamp(raw_t, 0.0, 1.0);
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}}
+
+fn rye_blended_alpha_dx(p: vec3<f32>) -> f32 {{
+    let raw_t = (p.x - RYE_BLENDED_X_START) / RYE_BLENDED_X_WIDTH;
+    if raw_t <= 0.0 || raw_t >= 1.0 {{ return 0.0; }}
+    let t = raw_t;
+    let one_minus_t = 1.0 - t;
+    return 30.0 * t * t * one_minus_t * one_minus_t / RYE_BLENDED_X_WIDTH;
+}}
+
+fn rye_blended_f_h3(p: vec3<f32>) -> f32 {{
+    let r2 = min(dot(p, p), RYE_BLENDED_R2_MAX);
+    let denom = 1.0 - r2;
+    return 4.0 / (denom * denom);
+}}
+
+fn rye_blended_f(p: vec3<f32>) -> f32 {{
+    let alpha = rye_blended_alpha(p);
+    return (1.0 - alpha) + alpha * rye_blended_f_h3(p);
+}}
+
+// $\nabla\phi(p) = \nabla f / (2 f)$, with $f$ the blended factor.
+fn rye_blended_grad_phi(p: vec3<f32>) -> vec3<f32> {{
+    let alpha = rye_blended_alpha(p);
+    let alpha_dx = rye_blended_alpha_dx(p);
+    let f_e3 = 1.0;
+    let f_h3 = rye_blended_f_h3(p);
+
+    // ∂f_H3/∂p_i = 16 p_i / (1 − r²)³
+    let r2 = min(dot(p, p), RYE_BLENDED_R2_MAX);
+    let denom = 1.0 - r2;
+    let grad_f_h3 = (16.0 / (denom * denom * denom)) * p;
+
+    // ∂f/∂x = α' (f_H3 − f_E3) + α · ∂f_H3/∂x
+    // ∂f/∂y = α · ∂f_H3/∂y
+    // ∂f/∂z = α · ∂f_H3/∂z
+    let grad_f = vec3<f32>(
+        alpha_dx * (f_h3 - f_e3) + alpha * grad_f_h3.x,
+        alpha * grad_f_h3.y,
+        alpha * grad_f_h3.z,
+    );
+
+    let f = (1.0 - alpha) * f_e3 + alpha * f_h3;
+    return grad_f / (2.0 * max(f, 1e-12));
+}}
+
+// Geodesic ODE rhs: $\dot p = v$, $\dot v = |v|^2 \nabla\phi - 2(\nabla\phi \cdot v) v$.
+struct RyeBlendedRhs {{ dp: vec3<f32>, dv: vec3<f32> }};
+
+fn rye_blended_rhs(p: vec3<f32>, v: vec3<f32>) -> RyeBlendedRhs {{
+    let g = rye_blended_grad_phi(p);
+    let v_sq = dot(v, v);
+    let g_dot_v = dot(g, v);
+    return RyeBlendedRhs(v, g * v_sq - v * (2.0 * g_dot_v));
+}}
+
+struct RyeBlendedState {{ p: vec3<f32>, v: vec3<f32> }};
+
+fn rye_blended_rk4_step(p0: vec3<f32>, v0: vec3<f32>, h: f32) -> RyeBlendedState {{
+    let k1 = rye_blended_rhs(p0, v0);
+    let p1 = p0 + 0.5 * h * k1.dp;
+    let v1 = v0 + 0.5 * h * k1.dv;
+    let k2 = rye_blended_rhs(p1, v1);
+    let p2 = p0 + 0.5 * h * k2.dp;
+    let v2 = v0 + 0.5 * h * k2.dv;
+    let k3 = rye_blended_rhs(p2, v2);
+    let p3 = p0 + h * k3.dp;
+    let v3 = v0 + h * k3.dv;
+    let k4 = rye_blended_rhs(p3, v3);
+    let p_out = p0 + (h / 6.0) * (k1.dp + 2.0 * k2.dp + 2.0 * k3.dp + k4.dp);
+    let v_out = v0 + (h / 6.0) * (k1.dv + 2.0 * k2.dv + 2.0 * k3.dv + k4.dv);
+    // No position clamp: f_h3 clamps r² internally so the metric
+    // stays bounded for all p. Physically clamping position would
+    // collapse the E³ side's half-space floor to the unit-ball
+    // surface (and create concentric ring artifacts where rays
+    // graze that surface).
+    return RyeBlendedState(p_out, v_out);
+}}
+
+fn rye_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{
+    let n2 = dot(v, v);
+    if n2 < 1e-14 {{ return at; }}
+    var p = at;
+    var vv = v;
+    let h = 1.0 / f32(RYE_BLENDED_RK4_SUB);
+    for (var i: i32 = 0; i < RYE_BLENDED_RK4_SUB; i = i + 1) {{
+        let s = rye_blended_rk4_step(p, vv, h);
+        p = s.p;
+        vv = s.v;
+    }}
+    return p;
+}}
+
+// Parallel transport ODE rhs along a curve $\gamma(t)$:
+// $\dot V = -[(\nabla\phi \cdot \dot\gamma) V + (\nabla\phi \cdot V)\dot\gamma - (\dot\gamma \cdot V)\nabla\phi]$
+fn rye_blended_transport_rhs(p: vec3<f32>, gamma_dot: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{
+    let g = rye_blended_grad_phi(p);
+    let g_dot_gd = dot(g, gamma_dot);
+    let g_dot_v  = dot(g, v);
+    let gd_dot_v = dot(gamma_dot, v);
+    return -(g_dot_gd * v + g_dot_v * gamma_dot - gd_dot_v * g);
+}}
+
+fn rye_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{
+    // Single-step transport along the chart-coordinate straight
+    // line $p_{{from}} \to p_{{to}}$. Match's the kernel's small-step
+    // pattern; the transport error per step is $O(h^2)$ but the
+    // kernel chains many of them so cumulative error stays small.
+    let gamma_dot = p_to - p_from;
+    let p_mid = 0.5 * (p_from + p_to);
+    let dv = rye_blended_transport_rhs(p_mid, gamma_dot, v);
+    return v + dv;
+}}
+
+fn rye_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {{
+    // Midpoint-rule chord-metric: accurate for nearby points,
+    // smooth across the blending zone, cheap per call. This is
+    // what `rye_scene_sdf` callers see.
+    let mid = 0.5 * (a + b);
+    let f_mid = rye_blended_f(mid);
+    return sqrt(max(f_mid, 0.0)) * length(b - a);
+}}
+
+fn rye_origin_distance(p: vec3<f32>) -> f32 {{
+    return rye_distance(vec3<f32>(0.0, 0.0, 0.0), p);
+}}
+
+fn rye_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {{
+    // Chart-coord difference. The geodesic march kernel does not
+    // call this; surfaces that need a true Riemannian log should
+    // compute it on the CPU and pass the result through a uniform.
+    return p_to - p_from;
+}}
+"#,
+        start = field.start,
+        end = field.end,
+        width = (field.end - field.start).max(1e-12),
+    )
+}
+
+impl WgslSpace for BlendedSpace<crate::EuclideanR3, crate::HyperbolicH3, LinearBlendX> {
+    fn wgsl_impl(&self) -> Cow<'static, str> {
+        Cow::Owned(blended_e3_h3_linearx_wgsl(&self.field))
     }
 }
 

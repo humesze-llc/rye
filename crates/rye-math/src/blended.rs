@@ -805,7 +805,7 @@ const RYE_BLENDED_R2_MAX: f32 = 0.9999999;
 const RYE_BLENDED_X_START: f32 = {start:?};
 const RYE_BLENDED_X_END:   f32 = {end:?};
 const RYE_BLENDED_X_WIDTH: f32 = {width:?};
-const RYE_BLENDED_RK4_SUB: i32 = 4;
+const RYE_BLENDED_RK4_SUB: i32 = 16;
 
 fn rye_blended_clamp_to_ball(p: vec3<f32>) -> vec3<f32> {{
     // Poincaré-ball safety: f_H3 diverges at |p|=1; keep the

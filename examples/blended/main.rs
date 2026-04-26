@@ -46,6 +46,11 @@ fn shader_path() -> PathBuf {
 /// Returns WGSL that defines `rye_scene_sdf(p)` — concatenated by
 /// `ShaderDb::load_geodesic_scene` ahead of the geodesic-march
 /// kernel and the user shader.
+///
+/// The scene reads `u.show_spheres` (uniform binding via the
+/// concatenated user shader) to optionally suppress the sphere
+/// row — `--floor-only` mode is a diagnostic for confirming the
+/// floor itself renders cleanly through the variable metric.
 fn scene_module_wgsl() -> &'static str {
     r#"
 const SPHERE_COUNT: i32 = 7;
@@ -53,17 +58,17 @@ fn sphere_x(i: i32) -> f32 { return -2.4 + 0.8 * f32(i); }
 fn sphere_radius(i: i32) -> f32 { return 0.22; }
 
 fn rye_scene_sdf(p: vec3<f32>) -> f32 {
-    // Floor as a chart-coordinate horizontal plane at y=0; the
-    // BlendedSpace's H³ side is the upper half of the Poincaré ball,
-    // so this plane sits at the equator and the ball-clamp keeps
-    // the integrator above it.
+    // Floor as a chart-coordinate horizontal plane at y=0.
     var d = p.y;
 
-    // Row of spheres just above the floor.
-    for (var i: i32 = 0; i < SPHERE_COUNT; i = i + 1) {
-        let center = vec3<f32>(sphere_x(i), 0.6, 0.0);
-        let s = length(p - center) - sphere_radius(i);
-        d = min(d, s);
+    // Row of spheres just above the floor (suppressed in
+    // diagnostic --floor-only mode).
+    if u.show_spheres > 0.5 {
+        for (var i: i32 = 0; i < SPHERE_COUNT; i = i + 1) {
+            let center = vec3<f32>(sphere_x(i), 0.6, 0.0);
+            let s = length(p - center) - sphere_radius(i);
+            d = min(d, s);
+        }
     }
 
     return d;
@@ -78,6 +83,7 @@ struct BlendedApp {
     shader_id: ShaderId,
     shader_gen: u64,
     ray_march: RayMarchNode,
+    show_spheres: f32,
 }
 
 impl App for BlendedApp {
@@ -103,8 +109,15 @@ impl App for BlendedApp {
         }
 
         let mut orbit = OrbitController::default();
-        // Slight downward pitch so the floor reads as a floor, not a wall.
-        orbit.set_orbit(5.0, -0.35);
+        // Strong downward pitch so the floor occupies most of the
+        // lower screen and the spheres sit clearly above it.
+        orbit.set_orbit(5.0, -0.55);
+
+        let show_spheres = if std::env::args().any(|a| a == "--floor-only") {
+            0.0
+        } else {
+            1.0
+        };
 
         Ok(Self {
             space,
@@ -113,6 +126,7 @@ impl App for BlendedApp {
             shader_id,
             shader_gen,
             ray_march,
+            show_spheres,
         })
     }
 
@@ -147,7 +161,7 @@ impl App for BlendedApp {
                 resolution: [cfg.width as f32, cfg.height as f32],
                 time: ctx.time,
                 tick: ctx.tick as f32,
-                params: [0.0, ball_scale, fog_scale, 0.0],
+                params: [0.0, ball_scale, fog_scale, self.show_spheres],
             },
         );
     }

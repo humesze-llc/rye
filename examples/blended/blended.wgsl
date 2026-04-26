@@ -19,11 +19,11 @@ struct Uniforms {
     resolution:     vec2<f32>,
     time:           f32,
     tick:           f32,
-    // params: [reserved, ball_scale, fog_scale, reserved]
-    params0:    f32,
-    ball_scale: f32,
-    fog_scale:  f32,
-    params3:    f32,
+    // params: [reserved, ball_scale, fog_scale, show_spheres]
+    params0:     f32,
+    ball_scale:  f32,
+    fog_scale:   f32,
+    show_spheres: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -68,7 +68,23 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let alpha = rye_blended_alpha(hit_space);
     let e3_color = vec3<f32>(0.40, 0.62, 0.95);
     let h3_color = vec3<f32>(0.95, 0.45, 0.30);
-    let base = mix(e3_color, h3_color, alpha);
+    var base = mix(e3_color, h3_color, alpha);
+
+    // Floor detection: hit normal points up and we're near y=0.
+    // Apply a checkerboard so the floor reads obviously distinct
+    // from the sky and from the spheres' tint.
+    let is_floor = n.y > 0.85 && abs(hit_space.y) < 0.05;
+    if is_floor {
+        let cell = floor(hit_space.xz / 0.15);
+        let parity = (cell.x + cell.y) - 2.0 * floor((cell.x + cell.y) * 0.5);
+        let checker = mix(0.55, 0.95, parity);
+        // Strong yellow-green checker on E³ side, magenta on H³,
+        // so the *floor* shows the metric blend even more starkly
+        // than the spheres.
+        let floor_e3 = vec3<f32>(0.20, 0.85, 0.45);
+        let floor_h3 = vec3<f32>(0.95, 0.30, 0.65);
+        base = mix(floor_e3, floor_h3, alpha) * checker;
+    }
 
     // Geodesic fog under the BlendedSpace metric.
     let cam_dist = rye_distance(u.camera_pos * u.ball_scale, hit_space);

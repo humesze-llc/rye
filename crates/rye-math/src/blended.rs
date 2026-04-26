@@ -807,20 +807,6 @@ const RYE_BLENDED_X_END:   f32 = {end:?};
 const RYE_BLENDED_X_WIDTH: f32 = {width:?};
 const RYE_BLENDED_RK4_SUB: i32 = 16;
 
-fn rye_blended_clamp_to_ball(p: vec3<f32>) -> vec3<f32> {{
-    // Conditional Poincaré-ball clamp: only enforce when the
-    // blending field has any H³ weight at this point. On the
-    // pure-E³ side (alpha == 0) the chart is flat Euclidean and
-    // |p| > 1 is perfectly valid — clamping there would collapse
-    // the half-space floor to the ball's equator. `f_h3` already
-    // clamps r² internally, so the integrator is safe everywhere
-    // outside the H³ chart region.
-    if rye_blended_alpha(p) <= 0.0 {{ return p; }}
-    let r2 = dot(p, p);
-    if r2 <= RYE_BLENDED_R2_MAX {{ return p; }}
-    return p * (sqrt(RYE_BLENDED_R2_MAX) / sqrt(r2));
-}}
-
 fn rye_blended_alpha(p: vec3<f32>) -> f32 {{
     let raw_t = (p.x - RYE_BLENDED_X_START) / RYE_BLENDED_X_WIDTH;
     let t = clamp(raw_t, 0.0, 1.0);
@@ -896,7 +882,12 @@ fn rye_blended_rk4_step(p0: vec3<f32>, v0: vec3<f32>, h: f32) -> RyeBlendedState
     let k4 = rye_blended_rhs(p3, v3);
     let p_out = p0 + (h / 6.0) * (k1.dp + 2.0 * k2.dp + 2.0 * k3.dp + k4.dp);
     let v_out = v0 + (h / 6.0) * (k1.dv + 2.0 * k2.dv + 2.0 * k3.dv + k4.dv);
-    return RyeBlendedState(rye_blended_clamp_to_ball(p_out), v_out);
+    // No position clamp: f_h3 clamps r² internally so the metric
+    // stays bounded for all p. Physically clamping position would
+    // collapse the E³ side's half-space floor to the unit-ball
+    // surface (and create concentric ring artifacts where rays
+    // graze that surface).
+    return RyeBlendedState(p_out, v_out);
 }}
 
 fn rye_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{

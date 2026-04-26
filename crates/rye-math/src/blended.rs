@@ -23,7 +23,7 @@
 
 use std::marker::PhantomData;
 
-use glam::Vec3;
+use glam::{Mat3, Vec3};
 
 use crate::space::Space;
 
@@ -236,8 +236,8 @@ where
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         // Zone-extreme fast path: when both endpoints are at the
         // same zone extreme, distance is exactly the source
-        // Space's distance. Useful for tests + visual continuity
-        // at the demo's far ends.
+        // Space's distance — preserves f32-tight visual
+        // continuity at the demo's far ends.
         let alpha_a = self.field.weight(a);
         let alpha_b = self.field.weight(b);
         if alpha_a == 0.0 && alpha_b == 0.0 {
@@ -246,9 +246,12 @@ where
         if alpha_a == 1.0 && alpha_b == 1.0 {
             return self.b.distance(a, b);
         }
-        // Variable-metric path: lands in sub-task 5 (`log`-based
-        // distance, $|\log_a(b)|_a$ in the metric at $a$).
-        unimplemented!("variable-metric distance — sub-task 5")
+        // Variable-metric path: $|\log_a(b)|_g = \sqrt{f(a)} \,
+        // |\log_a(b)|_E$ — the Riemannian length of the
+        // tangent vector at $a$ that reaches $b$.
+        let log = self.log(a, b);
+        let f_a = self.conformal_factor(a);
+        f_a.sqrt() * log.length()
     }
 
     fn exp(&self, at: Vec3, v: Vec3) -> Vec3 {
@@ -263,15 +266,9 @@ where
     }
 
     fn log(&self, from: Vec3, to: Vec3) -> Vec3 {
-        let alpha_from = self.field.weight(from);
-        let alpha_to = self.field.weight(to);
-        if alpha_from == 0.0 && alpha_to == 0.0 && self.field.gradient(from) == Vec3::ZERO {
-            return self.a.log(from, to);
-        }
-        if alpha_from == 1.0 && alpha_to == 1.0 && self.field.gradient(from) == Vec3::ZERO {
-            return self.b.log(from, to);
-        }
-        unimplemented!("variable-metric log — sub-task 5 (Gauss-Newton shooting)")
+        // Gauss-Newton shooting: find `v` such that
+        // `exp_from(v) ≈ to`. See `gauss_newton_log` for details.
+        gauss_newton_log(self, from, to, GEODESIC_DEFAULT_STEPS, LOG_MAX_ITERS)
     }
 
     fn parallel_transport(&self, from: Vec3, to: Vec3, v: Vec3) -> Vec3 {
@@ -374,6 +371,114 @@ pub fn rk4_geodesic<S: ConformallyFlat>(
         }
     }
     (p, vel)
+}
+
+// ---------------------------------------------------------------------------
+// log: Gauss-Newton shooting
+// ---------------------------------------------------------------------------
+
+/// Maximum Gauss-Newton iterations for `log`. ~5 typically
+/// converges to f32 precision when `from` and `to` are not in
+/// each other's cut locus; we cap at 12 to bound the worst case.
+pub const LOG_MAX_ITERS: u32 = 12;
+
+/// Convergence threshold (Euclidean) for the residual
+/// `|to − exp_from(v)|`. Below this, we declare success.
+pub const LOG_RESIDUAL_TOL: f32 = 1.0e-5;
+
+/// Finite-difference step for the Jacobian of `exp` w.r.t. `v`.
+/// Smaller → more accurate Jacobian but more f32 noise; 1e-3 is
+/// the sweet spot for f32 RK4-of-32-steps.
+const LOG_JACOBIAN_EPS: f32 = 1.0e-3;
+
+/// Find the tangent vector `v` at `from` such that
+/// `exp_from(v) ≈ to`, by Gauss-Newton iteration.
+///
+/// Each iteration:
+///
+/// 1. Forward-evaluate `exp_from(v_k)` to get the current
+///    geodesic endpoint.
+/// 2. Compute residual `r = to − endpoint`. If `|r| <
+///    LOG_RESIDUAL_TOL`, return `v_k`.
+/// 3. Estimate the Jacobian `J[i][j] = ∂exp[i]/∂v[j]` by
+///    finite differences (3 axis-aligned perturbations of
+///    `v_k`, central differences).
+/// 4. Solve `J · δv = r` for the Newton update; set
+///    `v_{k+1} = v_k + δv`.
+///
+/// Returns the best `v` found within `max_iters`. If the system
+/// is singular at any iteration (e.g. `to` in the cut locus of
+/// `from`), returns the current best guess with a `tracing::warn`.
+///
+/// Cost: ~7 forward `exp` evaluations per iteration (1 at the
+/// guess, 6 for the Jacobian). At 32 RK4 steps × 4 RHS evals
+/// each, that's ~900 conformal-factor calls per iteration. For
+/// camera/player use this is fine (per-frame, not per-pixel).
+pub fn gauss_newton_log<S: ConformallyFlat>(
+    space: &S,
+    from: Vec3,
+    to: Vec3,
+    n_steps: u32,
+    max_iters: u32,
+) -> Vec3 {
+    // Trivial case: same point.
+    if (from - to).length() < LOG_RESIDUAL_TOL {
+        return Vec3::ZERO;
+    }
+
+    // Initial guess: Euclidean displacement. For pure E³ this
+    // is exactly correct; for variable-metric it's a starting
+    // point the Newton iteration corrects toward the true
+    // tangent vector.
+    let mut v = to - from;
+
+    for iter in 0..max_iters {
+        let endpoint = rk4_geodesic(space, from, v, n_steps).0;
+        let residual = to - endpoint;
+        if residual.length() < LOG_RESIDUAL_TOL {
+            return v;
+        }
+
+        // Jacobian via central finite differences. Each column
+        // is `(exp(v + ε e_j) − exp(v − ε e_j)) / (2ε)`.
+        let two_eps = 2.0 * LOG_JACOBIAN_EPS;
+        let mut jac = Mat3::ZERO;
+        for j in 0..3 {
+            let mut e = Vec3::ZERO;
+            e[j] = LOG_JACOBIAN_EPS;
+            let plus = rk4_geodesic(space, from, v + e, n_steps).0;
+            let minus = rk4_geodesic(space, from, v - e, n_steps).0;
+            let col = (plus - minus) / two_eps;
+            jac.col_mut(j).x = col.x;
+            jac.col_mut(j).y = col.y;
+            jac.col_mut(j).z = col.z;
+        }
+
+        let det = jac.determinant();
+        if det.abs() < 1.0e-8 {
+            tracing::warn!(
+                "gauss_newton_log: singular Jacobian at iter {iter} (det = {det:e}); \
+                 returning best guess. `to` may be in the cut locus of `from`."
+            );
+            return v;
+        }
+
+        let delta = jac.inverse() * residual;
+        if !delta.is_finite() {
+            tracing::warn!(
+                "gauss_newton_log: non-finite Newton update at iter {iter}; \
+                 returning best guess."
+            );
+            return v;
+        }
+        v += delta;
+    }
+
+    tracing::warn!(
+        "gauss_newton_log: did not converge in {max_iters} iters; \
+         residual remained > {LOG_RESIDUAL_TOL}. Returning best guess."
+    );
+    v
 }
 
 // `BlendedSpace` is itself conformally flat when both sources are
@@ -883,6 +988,96 @@ mod tests {
         // Pure E³ ⇒ straight-line motion ⇒ result = p + v.
         let expected = p + v;
         close((result - expected).length(), 0.0, 1e-5);
+    }
+
+    // ------ log via Gauss-Newton shooting ------
+
+    /// In pure E³, `log_from(to) = to − from` exactly. The
+    /// Gauss-Newton iteration should converge in 1 step (the
+    /// initial guess is already correct).
+    #[test]
+    fn log_in_pure_e3_is_euclidean_displacement() {
+        use crate::EuclideanR3;
+        for (from, to) in [
+            (Vec3::ZERO, Vec3::X),
+            (Vec3::new(1.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 6.0)),
+            (Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)),
+        ] {
+            let v = gauss_newton_log(&EuclideanR3, from, to, GEODESIC_DEFAULT_STEPS, LOG_MAX_ITERS);
+            close((v - (to - from)).length(), 0.0, 1e-4);
+        }
+    }
+
+    /// Round-trip: `exp_from(log_from(to)) ≈ to`. The defining
+    /// property of `log`. Test in pure H³ (where the integrator
+    /// is doing real work, not just identity).
+    #[test]
+    fn exp_log_round_trip_in_pure_h3() {
+        use crate::HyperbolicH3;
+        for (from, to) in [
+            (Vec3::ZERO, Vec3::new(0.3, 0.0, 0.0)),
+            (Vec3::ZERO, Vec3::new(0.2, 0.1, -0.1)),
+            (Vec3::new(0.1, 0.1, 0.0), Vec3::new(-0.1, 0.2, 0.1)),
+        ] {
+            let v = gauss_newton_log(
+                &HyperbolicH3,
+                from,
+                to,
+                GEODESIC_DEFAULT_STEPS,
+                LOG_MAX_ITERS,
+            );
+            let endpoint = rk4_geodesic(&HyperbolicH3, from, v, GEODESIC_DEFAULT_STEPS).0;
+            close((endpoint - to).length(), 0.0, 5e-4);
+        }
+    }
+
+    /// `log` matches the engine's existing closed-form
+    /// `HyperbolicH3::log` on representative points. Validates
+    /// the numerical inversion against an independent ground
+    /// truth.
+    #[test]
+    fn log_in_pure_h3_matches_closed_form() {
+        use crate::{HyperbolicH3, Space};
+        for (from, to) in [
+            (Vec3::ZERO, Vec3::new(0.3, 0.0, 0.0)),
+            (Vec3::ZERO, Vec3::new(0.2, 0.1, 0.0)),
+            (Vec3::new(0.1, 0.0, 0.0), Vec3::new(0.3, 0.2, 0.0)),
+        ] {
+            let numerical = gauss_newton_log(
+                &HyperbolicH3,
+                from,
+                to,
+                GEODESIC_DEFAULT_STEPS,
+                LOG_MAX_ITERS,
+            );
+            let closed_form = HyperbolicH3.log(from, to);
+            close((numerical - closed_form).length(), 0.0, 5e-3);
+        }
+    }
+
+    /// `log_p(p) = 0` (zero tangent vector). Pin the trivial
+    /// case explicitly — the shooting routine special-cases it
+    /// to avoid the Jacobian blowing up at zero residual.
+    #[test]
+    fn log_of_self_is_zero() {
+        use crate::HyperbolicH3;
+        let p = Vec3::new(0.2, 0.1, 0.0);
+        let v = gauss_newton_log(&HyperbolicH3, p, p, GEODESIC_DEFAULT_STEPS, LOG_MAX_ITERS);
+        close(v.length(), 0.0, 1e-5);
+    }
+
+    /// `BlendedSpace::distance` matches the source Space's
+    /// distance at zone extremes (pure E³ here).
+    #[test]
+    fn blended_space_distance_at_alpha_zero_uses_log() {
+        use crate::{EuclideanR3, Space};
+        let bs = BlendedSpace::new(EuclideanR3, EuclideanR3, LinearBlendX::new(50.0, 100.0));
+        // Both points well inside the alpha=0 region.
+        let a = Vec3::new(1.0, 2.0, 3.0);
+        let b = Vec3::new(4.0, 5.0, 6.0);
+        let d = bs.distance(a, b);
+        // Pure E³ distance is Euclidean.
+        close(d, (b - a).length(), 1e-4);
     }
 
     /// Smoothstep is monotonic non-decreasing across the zone.

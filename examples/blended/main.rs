@@ -1,26 +1,37 @@
 //! `blended` — Phase 4 BlendedSpace milestone demo.
 //!
-//! Renders a row of spheres above a horizontal floor under
-//! `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>`.
-//! The X axis carries a smooth metric transition: pure Euclidean for
-//! `x ≤ −1`, pure Poincaré-H³ for `x ≥ 1`, with a quintic-smootherstep
-//! interpolation between. The shading tints surfaces blue→red by
-//! blending alpha so the seam is visible.
+//! Renders a row of spheres above a checkerboard floor under
+//! `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>`. The X
+//! axis carries a smooth metric transition: pure Euclidean for
+//! `x ≤ −0.3`, pure Poincaré-H³ for `x ≥ +0.3`, smootherstep blend
+//! between. The H³ chart only exists inside `|p| < 1`, so the
+//! pure-H³ region of the scene fits inside that ball.
 //!
-//! What the rendered image proves:
-//! - The geodesic march kernel runs against a non-trivial WGSL prelude
-//!   (RK4 integrator inlined per `rye_exp` call, 4 sub-steps per call).
-//! - Sphere silhouettes curve in the transition zone — straight lines
-//!   bend through the variable metric.
-//! - On the H³ side, spheres further from the origin appear smaller
-//!   (the chart compresses toward the Poincaré boundary).
+//! ## What you should see
 //!
-//! Controls: left-drag orbit, scroll zoom, R reset orbit, Esc exit.
+//! - **Left third of view (x < −0.3):** flat E³ region. Spheres are
+//!   round, floor checker is regular, light rays straight.
+//! - **Middle third (−0.3 ≤ x ≤ +0.3):** transition zone. Sphere
+//!   silhouettes distort smoothly; checker cells warp.
+//! - **Right third (x > +0.3, inside `|p| < 1`):** pure H³. The
+//!   floor at `y = 0` becomes a hyperbolic plane — appears as a
+//!   spherical cap in Poincaré chart coordinates. Spheres visibly
+//!   compress toward the ball boundary. **This is correct.**
+//!
+//! ## Controls
+//!
+//! - **WASD** — move forward/back/strafe along the camera basis.
+//! - **Space / Shift** — rise / sink along world Y.
+//! - **Left-mouse-drag** — look around (yaw + pitch).
+//! - **`--floor-only`** — suppress the spheres so only the floor renders.
+//! - **Esc** — exit.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
-use rye_app::{run_with_config, App, Camera, FrameCtx, OrbitController, RunConfig, SetupCtx};
+use glam::Vec3;
+use rye_app::{run_with_config, App, Camera, FirstPersonController, FrameCtx, RunConfig, SetupCtx};
+use rye_camera::CameraController;
 use rye_math::{BlendedSpace, EuclideanR3, HyperbolicH3, LinearBlendX};
 use rye_render::{
     device::RenderDevice,
@@ -38,35 +49,29 @@ fn shader_path() -> PathBuf {
     shader_dir().join("blended.wgsl")
 }
 
-/// Scene SDF: floor at y=0 plus a row of spheres at y=0.6
-/// spaced along x ∈ [−2.4, 2.4]. Sphere radius shrinks slightly
-/// going right so the H³ chart compression is visible without
-/// being confused with the actual scene scale.
-///
-/// Returns WGSL that defines `rye_scene_sdf(p)` — concatenated by
-/// `ShaderDb::load_geodesic_scene` ahead of the geodesic-march
-/// kernel and the user shader.
-///
-/// The scene reads `u.show_spheres` (uniform binding via the
-/// concatenated user shader) to optionally suppress the sphere
-/// row — `--floor-only` mode is a diagnostic for confirming the
-/// floor itself renders cleanly through the variable metric.
+/// Scene SDF: floor at y=0 plus a row of small spheres at
+/// y=0.12 spaced along x ∈ [−0.7, +0.7]. With `ball_scale = 1.0`
+/// every coordinate here is also a shader coordinate, so the
+/// blending zone in `LinearBlendX` ([−0.3, +0.3]) and the sphere
+/// positions agree.
 fn scene_module_wgsl() -> &'static str {
     r#"
-const SPHERE_COUNT: i32 = 7;
-fn sphere_x(i: i32) -> f32 { return -2.4 + 0.8 * f32(i); }
-fn sphere_radius(i: i32) -> f32 { return 0.22; }
+const SPHERE_COUNT: i32 = 8;
+fn sphere_x(i: i32) -> f32 { return -0.7 + 0.2 * f32(i); }
+const SPHERE_Y: f32 = 0.12;
+const SPHERE_R: f32 = 0.06;
 
 fn rye_scene_sdf(p: vec3<f32>) -> f32 {
-    // Floor as a chart-coordinate horizontal plane at y=0.
+    // Floor as a chart-coordinate horizontal plane at y=0. On the
+    // pure-H³ side this is a hyperbolic plane and renders as a
+    // spherical cap in Poincaré coordinates — that's geometrically
+    // correct, not an artifact.
     var d = p.y;
 
-    // Row of spheres just above the floor (suppressed in
-    // diagnostic --floor-only mode).
     if u.show_spheres > 0.5 {
         for (var i: i32 = 0; i < SPHERE_COUNT; i = i + 1) {
-            let center = vec3<f32>(sphere_x(i), 0.6, 0.0);
-            let s = length(p - center) - sphere_radius(i);
+            let center = vec3<f32>(sphere_x(i), SPHERE_Y, 0.0);
+            let s = length(p - center) - SPHERE_R;
             d = min(d, s);
         }
     }
@@ -79,20 +84,35 @@ fn rye_scene_sdf(p: vec3<f32>) -> f32 {
 struct BlendedApp {
     space: DemoSpace,
     camera: Camera<EuclideanR3>,
-    orbit: OrbitController<EuclideanR3>,
+    look: FirstPersonController<EuclideanR3>,
     shader_id: ShaderId,
     shader_gen: u64,
     ray_march: RayMarchNode,
     show_spheres: f32,
 }
 
+impl BlendedApp {
+    /// World-units per second of WASD/Space/Shift movement.
+    /// Scene spans roughly ±0.7 along X; this lets the user fly
+    /// the full width in ~3 seconds.
+    const MOVE_SPEED: f32 = 0.5;
+
+    /// Effective dt for the camera-position update. The framework
+    /// runs `update` once per frame after all the frame's ticks;
+    /// we use `n_ticks / fixed_hz` so movement is independent of
+    /// frame rate.
+    fn dt(ctx: &FrameCtx<'_>, fixed_hz: u32) -> f32 {
+        ctx.n_ticks as f32 / fixed_hz as f32
+    }
+}
+
 impl App for BlendedApp {
     type Space = DemoSpace;
 
     fn setup(ctx: &mut SetupCtx<'_>) -> Result<Self> {
-        // Zone width 2.0 centred on origin: pure E³ for x ≤ −1,
-        // pure H³ for x ≥ +1, smootherstep between.
-        let space = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-1.0, 1.0));
+        // Zone width 0.6 centred on origin. Pure E³ at x ≤ −0.3,
+        // pure H³ at x ≥ +0.3 inside the Poincaré ball.
+        let space = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.3, 0.3));
 
         let shader_id =
             ctx.shader_db
@@ -108,10 +128,20 @@ impl App for BlendedApp {
             watcher.watch(shader_dir())?;
         }
 
-        let mut orbit = OrbitController::default();
-        // Strong downward pitch so the floor occupies most of the
-        // lower screen and the spheres sit clearly above it.
-        orbit.set_orbit(5.0, -0.55);
+        // Start outside the unit ball, off to the E³ side so the
+        // first frame shows clean flat geometry on the left and
+        // the curved H³ region on the right simultaneously.
+        let mut camera = Camera::<EuclideanR3>::at_origin();
+        camera.position = Vec3::new(-1.2, 0.4, 1.5);
+        let look = FirstPersonController::new(-0.50, -0.20);
+        // Re-derive the basis from the initial yaw/pitch.
+        let mut look = look;
+        look.advance(
+            rye_input::FrameInput::default(),
+            &mut camera,
+            &EuclideanR3,
+            0.0,
+        );
 
         let show_spheres = if std::env::args().any(|a| a == "--floor-only") {
             0.0
@@ -121,8 +151,8 @@ impl App for BlendedApp {
 
         Ok(Self {
             space,
-            camera: Camera::<EuclideanR3>::at_origin(),
-            orbit,
+            camera,
+            look,
             shader_id,
             shader_gen,
             ray_march,
@@ -135,18 +165,38 @@ impl App for BlendedApp {
     }
 
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
-        use rye_camera::CameraController;
-        self.orbit
-            .advance(ctx.input, &mut self.camera, &EuclideanR3, 0.0);
+        // Look only while left mouse is dragged — otherwise the
+        // cursor escaping the window would flick the camera.
+        let look_input = if ctx.input.left_mouse_down {
+            ctx.input
+        } else {
+            rye_input::FrameInput {
+                mouse_delta: glam::Vec2::ZERO,
+                ..ctx.input
+            }
+        };
+        self.look
+            .advance(look_input, &mut self.camera, &EuclideanR3, 0.0);
+
+        // Position update along the camera basis. World-Y for
+        // Space/Shift so vertical motion stays intuitive even when
+        // the camera is pitched.
+        let dt = Self::dt(ctx, 60);
+        let move_world = self.camera.right * ctx.input.move_right
+            + Vec3::Y * ctx.input.move_up
+            + self.camera.forward * ctx.input.move_forward;
+        if move_world.length_squared() > 0.0 {
+            self.camera.position += move_world.normalize() * Self::MOVE_SPEED * dt;
+        }
 
         let view = self.camera.view();
         let cfg = &ctx.rd.surface_bundle.config;
-        // ball_scale: chart coordinates × ball_scale must keep the camera
-        // and scene inside the Poincaré ball |p| < 1 on the H³ side.
-        // Camera is ~5 units out in chart coords; 0.18 keeps it at
-        // ~0.9 ball radius — safely inside.
-        let ball_scale = 0.18;
-        let fog_scale = 2.4;
+        // ball_scale = 1.0 makes shader coords identical to world
+        // coords. The blending zone, sphere positions, floor plane,
+        // and camera all live in the same coordinate system, so
+        // there's no place for shader-vs-world confusion.
+        let ball_scale = 1.0;
+        let fog_scale = 4.0;
         self.ray_march.set_uniforms(
             &ctx.rd.queue,
             RayMarchUniforms {

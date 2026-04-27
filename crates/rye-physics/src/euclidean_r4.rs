@@ -432,12 +432,14 @@ pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR4>) {
 // Convenience constructors.
 // ---------------------------------------------------------------------------
 
-/// Solid-ball moment of inertia in 4D: `I = (2/n)·m·r² = m·r² / 2`
-/// for a uniform 4-ball about its center. Same form as 3D's
-/// `(2/5)·m·r²` but with the 4D scaling; for prototypes this is
-/// "isotropic inertia of the right order of magnitude" and suffices.
+/// Solid-ball moment of inertia in 4D about a 2-plane through its
+/// center: `I = (2/(n+2))·m·r² = m·r²/3` for n=4. Reduces to the
+/// familiar `(2/5)·m·r²` for the 3-ball (n=3). Derivation: by
+/// symmetry, `∫ x²dV / V = (1/n)·∫ ρ²dV / V = r²/(n+2)`, and the
+/// squared distance from the rotation 2-plane is two such integrals
+/// summed.
 pub fn ball4_inertia(mass: f32, radius: f32) -> f32 {
-    0.5 * mass * radius * radius
+    mass * radius * radius / 3.0
 }
 
 /// Dynamic sphere body in R⁴.
@@ -473,10 +475,11 @@ pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> RigidBody<EuclideanR4> {
 }
 
 /// Dynamic 4D convex-polytope body. Inertia uses the bounding-
-/// sphere approximation `(2/n)·m·r²` with `n = 4`; same pragmatic
-/// trade as the 3D path — correct for sphere-like polytopes, in the
-/// right order of magnitude for cube-like ones, replaced by a full
-/// 6×6 bivector-inertia tensor when a game actually needs it.
+/// sphere approximation: same formula as `ball4_inertia` applied to
+/// the polytope's circumradius. Same pragmatic trade as the 3D path,
+/// correct for sphere-like polytopes, in the right order of magnitude
+/// for cube-like ones, replaced by a full 6x6 bivector-inertia tensor
+/// when a game actually needs it.
 pub fn polytope_body_r4(
     position: Vec4,
     velocity: Vec4,
@@ -487,7 +490,7 @@ pub fn polytope_body_r4(
         .iter()
         .map(|v| v.length_squared())
         .fold(0.0, f32::max);
-    let inertia = 0.5 * mass * bounding_r_sq;
+    let inertia = mass * bounding_r_sq / 3.0;
     RigidBody::new(
         position,
         velocity,
@@ -629,6 +632,29 @@ mod tests {
             (a - b).abs() <= tol,
             "expected {a} close to {b} (tol {tol})"
         );
+    }
+
+    /// Pin `ball4_inertia` at the closed-form `m·r²/3` and check the
+    /// 3D-vs-4D inequality `1/3 < 2/5`. Derivation lives on the
+    /// function itself.
+    #[test]
+    fn ball4_inertia_matches_uniform_n_ball_formula() {
+        assert_close(ball4_inertia(1.0, 1.0), 1.0 / 3.0, 1e-6);
+        assert_close(ball4_inertia(2.0, 0.5), 2.0 * 0.25 / 3.0, 1e-6);
+        assert_close(ball4_inertia(10.0, 3.0), 10.0 * 9.0 / 3.0, 1e-5);
+        let three_d = crate::euclidean_r3::sphere_inertia(1.0, 1.0);
+        let four_d = ball4_inertia(1.0, 1.0);
+        assert!(four_d < three_d);
+    }
+
+    /// `polytope_body_r4` derives its inertia from the same n-ball
+    /// formula via the bounding-sphere radius. Pin that the wrapper
+    /// agrees with `ball4_inertia` for a unit-circumradius vertex
+    /// set so a future regression in either path surfaces here too.
+    #[test]
+    fn polytope_body_r4_inertia_matches_ball4_inertia() {
+        let body = polytope_body_r4(Vec4::ZERO, Vec4::ZERO, pentatope_vertices(1.0), 2.5);
+        assert_close(body.inertia, ball4_inertia(2.5, 1.0), 1e-5);
     }
 
     /// 4D sphere falling onto a 4D `y = 0` half-space settles above

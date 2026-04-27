@@ -10,7 +10,6 @@ members = [
   "crates/rye-input",
   "crates/rye-camera",
   "crates/rye-player",
-  "crates/rye-collision",
   "crates/rye-physics",
   "crates/rye-app",
   "crates/rye-text",
@@ -58,7 +57,6 @@ rye-asset     = { path = "crates/rye-asset" }
 rye-input     = { path = "crates/rye-input" }
 rye-camera    = { path = "crates/rye-camera" }
 rye-player    = { path = "crates/rye-player" }
-rye-collision = { path = "crates/rye-collision" }
 rye-physics   = { path = "crates/rye-physics" }
 rye-app       = { path = "crates/rye-app" }
 rye-text      = { path = "crates/rye-text" }

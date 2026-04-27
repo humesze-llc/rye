@@ -42,7 +42,7 @@ const EPA_MAX_VERTICES: usize = 96;
 #[derive(Clone, Copy, Debug)]
 pub struct ContactInfo {
     /// Unit vector from A toward B in world coordinates. Matches the
-    /// `Contact::normal` convention expected by `resolve_contact`.
+    /// `Contact::normal` convention the PGS solver expects.
     pub normal: Vec3,
     /// How far the shapes overlap along `normal`.
     pub penetration: f32,

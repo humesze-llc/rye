@@ -73,21 +73,26 @@ pub const MAX_BODIES: usize = 32;
 /// |  0 | 16 | `position` (`vec4<f32>`) |
 /// | 16 |  4 | `kind` (`f32`: 0 = sphere, 1 = polytope) |
 /// | 20 |  4 | `radius_or_shape` (sphere radius / polytope shape index) |
-/// | 24 |  8 | `_pad0` |
+/// | 24 |  4 | `polytope_size` (polytope circumradius; ignored when kind = sphere) |
+/// | 28 |  4 | `_pad0` |
 /// | 32 | 12 | `color` (`vec3<f32>`) |
 /// | 44 |  4 | `_pad1` |
-/// | 48 | 32 | `rotor` (8 × f32; Rotor4: scalar, 6 bivector, pseudoscalar) |
+/// | 48 | 32 | `rotor` (8 × f32packed as 2 × `vec4<f32>` — `rotor_lo` then `rotor_hi`; Rotor4 ordering: scalar, xy, xz, xw, yz, yw, zw, pseudoscalar) |
 ///
-/// The `rotor` slot is identity-valued for sphere bodies; it's
-/// loaded from the body's `RigidBody::orientation.rotation` for
-/// polytope bodies.
+/// The rotor lives in two `vec4<f32>` slots in the WGSL struct so
+/// the std140 alignment matches Rust's tightly-packed `[f32; 8]`
+/// (an `array<f32, 8>` in a uniform buffer would pad each element
+/// to 16 bytes, blowing the slot to 128 bytes). The `rotor` slot is
+/// identity-valued for sphere bodies; it's loaded from the body's
+/// `RigidBody::orientation.rotation` for polytope bodies.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BodyUniform {
     pub position: [f32; 4],
     pub kind: f32,
     pub radius_or_shape: f32,
-    pub _pad0: [f32; 2],
+    pub polytope_size: f32,
+    pub _pad0: f32,
     pub color: [f32; 3],
     pub _pad1: f32,
     pub rotor: [f32; 8],
@@ -99,7 +104,8 @@ impl Default for BodyUniform {
             position: [0.0; 4],
             kind: BodyKind::Sphere as i32 as f32,
             radius_or_shape: 0.0,
-            _pad0: [0.0; 2],
+            polytope_size: 0.0,
+            _pad0: 0.0,
             color: [0.7, 0.7, 0.7],
             _pad1: 0.0,
             // Identity Rotor4: scalar=1, bivector=0, pseudoscalar=0.
@@ -137,12 +143,14 @@ impl BodyUniform {
     }
 
     /// Build a polytope body. `shape_index` references the kernel's
-    /// shape table (0 = pentatope, 1 = tesseract, ...). `rotor` is
-    /// the body's Rotor4 orientation as `[s, b_xy, b_xz, b_xw,
-    /// b_yz, b_yw, b_zw, ps]`.
+    /// shape table (0 = pentatope, 1 = tesseract, ...). `size` is
+    /// the polytope's circumradius in world coords. `rotor` is the
+    /// body's Rotor4 orientation as `[s, b_xy, b_xz, b_xw, b_yz,
+    /// b_yw, b_zw, ps]`.
     pub fn polytope(
         position: [f32; 4],
         shape_index: u32,
+        size: f32,
         rotor: [f32; 8],
         color: [f32; 3],
     ) -> Self {
@@ -150,6 +158,7 @@ impl BodyUniform {
             position,
             kind: BodyKind::Polytope as i32 as f32,
             radius_or_shape: shape_index as f32,
+            polytope_size: size,
             color,
             rotor,
             ..Self::default()
@@ -231,10 +240,16 @@ struct BodyUniform {
     position: vec4<f32>,
     kind: f32,
     radius_or_shape: f32,
-    _pad0: vec2<f32>,
+    polytope_size: f32,
+    _pad0: f32,
     color: vec3<f32>,
     _pad1: f32,
-    rotor: array<f32, 8>,
+    // Rotor4 packed as 2 × vec4<f32> so the std140 stride matches
+    // Rust's tightly-packed `[f32; 8]` (an `array<f32, 8>` here
+    // would pad each element to 16 bytes -> 128-byte slot, breaking
+    // the 80-byte total). Order: [s, xy, xz, xw, yz, yw, zw, xyzw].
+    rotor_lo: vec4<f32>,
+    rotor_hi: vec4<f32>,
 };
 
 struct Uniforms {
@@ -257,10 +272,127 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
 // SDF of a single sphere body in 4D, evaluated at `p4`.
-// Returns +infinity for non-sphere bodies; the polytope path is
-// added in the next kernel iteration.
 fn body_sphere_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
     return length(p4 - b.position) - b.radius_or_shape;
+}
+
+// ---- Rotor4 sandwich (inverse rotation: world -> body local) ----
+//
+// `Rotor4::apply` (CPU) computes the forward sandwich `R̃ · v · R`,
+// rotating a body-local vector into world coordinates. To go the
+// other way (world -> body local) we flip the bivector signs of `R`
+// to get its reverse `R̃`, then run the same formula with R̃ as the
+// "rotor". That equals `R · v · R̃`, the inverse rotation.
+//
+// Component order matches `Rotor4` { s, xy, xz, xw, yz, yw, zw, xyzw }
+// packed into rotor_lo (s, xy, xz, xw) and rotor_hi (yz, yw, zw, xyzw).
+fn rotor4_inverse_apply(rotor_lo: vec4<f32>, rotor_hi: vec4<f32>, v: vec4<f32>) -> vec4<f32> {
+    let rs  = rotor_lo.x;
+    // Bivector signs flipped (reverse of R).
+    let rxy = -rotor_lo.y;
+    let rxz = -rotor_lo.z;
+    let rxw = -rotor_lo.w;
+    let ryz = -rotor_hi.x;
+    let ryw = -rotor_hi.y;
+    let rzw = -rotor_hi.z;
+    // Pseudoscalar unchanged on reverse.
+    let r_i = rotor_hi.w;
+
+    let vx = v.x; let vy = v.y; let vz = v.z; let vw = v.w;
+
+    // Stage 1: R̃ · v. R̃ for the inner rotor here re-flips the
+    // bivector signs (back to original R's bivector signs); the
+    // formula below is the direct port of `Rotor4::apply` Stage 1
+    // with bivector terms using positive r{xy,...} — but since we
+    // already inverted the signs above, this works out to using the
+    // negated values. Keeping the formula identical to the CPU
+    // implementation:
+    let p1 = rs * vx - rxy * vy - rxz * vz - rxw * vw;
+    let p2 = rs * vy + rxy * vx - ryz * vz - ryw * vw;
+    let p3 = rs * vz + rxz * vx + ryz * vy - rzw * vw;
+    let p4 = rs * vw + rxw * vx + ryw * vy + rzw * vz;
+
+    // 3-vector part of R̃ · v in basis (e123, e124, e134, e234).
+    let t123 = -rxy * vz + rxz * vy - ryz * vx + r_i * vw;
+    let t124 = -rxy * vw + rxw * vy - ryw * vx - r_i * vz;
+    let t134 = -rxz * vw + rxw * vz - rzw * vx + r_i * vy;
+    let t234 = -ryz * vw + ryw * vz - rzw * vy - r_i * vx;
+
+    // Stage 2: (1-vec + 3-vec) · R, extract the 1-vec output.
+    let q1 = rs * p1 - rxy * p2 - rxz * p3 - rxw * p4
+           - ryz * t123 - ryw * t124 - rzw * t134 + r_i * t234;
+    let q2 = rs * p2 + rxy * p1 - ryz * p3 - ryw * p4
+           + rxz * t123 + rxw * t124 - rzw * t234 - r_i * t134;
+    let q3 = rs * p3 + rxz * p1 + ryz * p2 - rzw * p4
+           - rxy * t123 + rxw * t134 + ryw * t234 + r_i * t124;
+    let q4 = rs * p4 + rxw * p1 + ryw * p2 + rzw * p3
+           - rxy * t124 - rxz * t134 - ryz * t234 - r_i * t123;
+
+    return vec4<f32>(q1, q2, q3, q4);
+}
+
+// ---- Convex polytope SDFs (body-local, unit circumradius) ----
+//
+// Per-shape SDFs assume the polytope is centered at the origin and
+// oriented in its canonical frame. The dispatcher transforms world
+// coordinates into body-local coordinates first (translate +
+// inverse-rotor), then scales the result by the body's circumradius.
+
+// Pentatope (5-cell, 4D simplex) at unit circumradius. Five face
+// hyperplanes; signed distance is the max plane distance.
+//
+// Vertex set (matching `rye_physics::euclidean_r4::pentatope_vertices(1.0)`):
+//   v0 = (0, 0, 0, 1)
+//   v1 = (t, t, t, -0.25), v2 = (t, -t, -t, -0.25),
+//   v3 = (-t, t, -t, -0.25), v4 = (-t, -t, t, -0.25)
+// where t = sqrt(15) / (4 * sqrt(3)) = sqrt(5) / 4 ≈ 0.55901699.
+//
+// Face i is opposite vertex i; outward normal is -v_i (since |v_i|
+// = 1 for unit-circumradius). Inradius for an n-simplex is R/n; for
+// pentatope (n=4) at R=1 the inradius is 0.25.
+fn pentatope_sdf_local(p: vec4<f32>) -> f32 {
+    let t  = 0.55901699437;  // sqrt(5) / 4
+    let n0 = vec4<f32>(0.0, 0.0, 0.0, -1.0);
+    let n1 = vec4<f32>(-t, -t, -t, 0.25);
+    let n2 = vec4<f32>(-t,  t,  t, 0.25);
+    let n3 = vec4<f32>( t, -t,  t, 0.25);
+    let n4 = vec4<f32>( t,  t, -t, 0.25);
+    let r = 0.25;
+    var d: f32 = dot(n0, p) - r;
+    d = max(d, dot(n1, p) - r);
+    d = max(d, dot(n2, p) - r);
+    d = max(d, dot(n3, p) - r);
+    d = max(d, dot(n4, p) - r);
+    return d;
+}
+
+// Tesseract (8-cell / hypercube) at unit circumradius. Vertices at
+// (±0.5, ±0.5, ±0.5, ±0.5); faces at ±0.5 along each axis. SDF is
+// the standard infinity-norm box form.
+fn tesseract_sdf_local(p: vec4<f32>) -> f32 {
+    let q = abs(p) - vec4<f32>(0.5, 0.5, 0.5, 0.5);
+    let outside = length(max(q, vec4<f32>(0.0, 0.0, 0.0, 0.0)));
+    let inside = min(max(max(q.x, q.y), max(q.z, q.w)), 0.0);
+    return outside + inside;
+}
+
+// Dispatcher: world-space `p4` against polytope body `b`. Translates
+// to body origin, applies the inverse rotor (world -> body local),
+// scales by 1/size to evaluate the unit-circumradius shape, then
+// rescales the resulting SDF.
+fn body_polytope_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
+    let size = max(b.polytope_size, 1.0e-6);
+    let world_v = p4 - b.position;
+    let local_v = rotor4_inverse_apply(b.rotor_lo, b.rotor_hi, world_v);
+    let unit_p = local_v / size;
+    let shape = u32(b.radius_or_shape + 0.5);
+    var d: f32 = 1.0e9;
+    if (shape == 0u) {
+        d = pentatope_sdf_local(unit_p);
+    } else if (shape == 1u) {
+        d = tesseract_sdf_local(unit_p);
+    }
+    return d * size;
 }
 
 // SDF of all dynamic bodies at `p3`, evaluated at the slicing
@@ -275,8 +407,9 @@ fn rye_dynamic_bodies_sdf(p3: vec3<f32>) -> f32 {
         let kind = u32(b.kind + 0.5);
         if (kind == BODY_KIND_SPHERE) {
             sdf = min(sdf, body_sphere_sdf_4d(p4, b));
+        } else if (kind == BODY_KIND_POLYTOPE) {
+            sdf = min(sdf, body_polytope_sdf_4d(p4, b));
         }
-        // Polytope kind handled in the polytope-rendering chunk.
     }
     return sdf;
 }
@@ -306,6 +439,8 @@ fn rye_total_sdf(p3: vec3<f32>) -> HitInfo {
         var d: f32 = 1.0e9;
         if (kind == BODY_KIND_SPHERE) {
             d = body_sphere_sdf_4d(p4, b);
+        } else if (kind == BODY_KIND_POLYTOPE) {
+            d = body_polytope_sdf_4d(p4, b);
         }
         if (d < dyn_d) {
             dyn_d = d;
@@ -590,6 +725,11 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_dynamic_bodies_sdf"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_SPHERE"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_POLYTOPE"));
+        // Polytope-rendering chunk is now in the kernel.
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("body_polytope_sdf_4d"));
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("pentatope_sdf_local"));
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("tesseract_sdf_local"));
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("rotor4_inverse_apply"));
     }
 
     /// `BodyUniform` is exactly 80 bytes — the std140-aligned
@@ -608,10 +748,12 @@ mod tests {
         let p = BodyUniform::polytope(
             [0.0; 4],
             0,
+            1.0,
             [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             [0.5; 3],
         );
         assert_eq!(p.kind as i32, BodyKind::Polytope as i32);
+        assert_eq!(p.polytope_size, 1.0);
     }
 
     /// Default body is an identity-rotor sphere — safe to leave in

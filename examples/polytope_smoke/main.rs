@@ -361,7 +361,7 @@ impl App for PolytopeSmokeApp {
                 line,
                 [16.0, bottom + i as f32 * line_h],
                 help_size,
-                [0.85, 0.85, 0.95, 0.7],
+                [0.05, 0.10, 0.45, 1.0],
             );
         }
 

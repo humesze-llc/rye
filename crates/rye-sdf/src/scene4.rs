@@ -38,7 +38,7 @@
 //! // vec4(p, u.w_slice). The `u.w_slice` uniform is supplied by
 //! // the render node.
 //! let wgsl_hs = scene.to_hyperslice_wgsl("u.w_slice");
-//! assert!(wgsl_hs.contains("fn rye_scene_sdf(p: vec3<f32>) -> f32"));
+//! assert!(wgsl_hs.contains("fn rye_scene_sdf(p3: vec3<f32>) -> f32"));
 //! assert!(wgsl_hs.contains("u.w_slice"));
 //! ```
 
@@ -146,12 +146,17 @@ impl Scene4 {
         let mut body = String::new();
         let mut counter = 0u32;
         let result_var = emit_node_4d(&self.root, &mut counter, &mut helpers, &mut body);
+        // Use a distinct parameter name `p3` and an inner `let p`
+        // for the 4D point. WGSL forbids declaring a `let` with the
+        // same name as the function parameter (no shadowing); naming
+        // the parameter `p3` keeps the helper-emit convention (which
+        // calls `sdfN_pK(p)`) intact while sidestepping the
+        // collision.
         format!(
             "// ---- rye-sdf scene4 (hyperslice at w = {w_slice_expr}) ----\n\
              {helpers}\
-             fn rye_scene_sdf(p: vec3<f32>) -> f32 {{\n\
-             \tlet p4 = vec4<f32>(p, {w_slice_expr});\n\
-             \tlet p = p4;\n\
+             fn rye_scene_sdf(p3: vec3<f32>) -> f32 {{\n\
+             \tlet p = vec4<f32>(p3, {w_slice_expr});\n\
              {body}\
              \treturn {result_var};\n\
              }}\n"
@@ -227,12 +232,13 @@ mod tests {
     fn hyperslice_wraps_4d_with_w_slice() {
         let scene = Scene4::new(SceneNode4::hypersphere(Vec4::ZERO, 0.5));
         let wgsl = scene.to_hyperslice_wgsl("u.w_slice");
-        assert!(wgsl.contains("fn rye_scene_sdf(p: vec3<f32>) -> f32"));
-        assert!(wgsl.contains("let p4 = vec4<f32>(p, u.w_slice)"));
+        // Parameter is `p3` to avoid colliding with the inner `let
+        // p` 4D point — WGSL doesn't allow declaring a let with the
+        // same name as a function parameter.
+        assert!(wgsl.contains("fn rye_scene_sdf(p3: vec3<f32>) -> f32"));
+        assert!(wgsl.contains("let p = vec4<f32>(p3, u.w_slice)"));
         // The hyperslice emit reuses the 4D SDF helpers, so the
-        // sphere's `length(p - ...)` body is still present and the
-        // `let p = p4` shadow lets the helpers' `p` parameter
-        // resolve to the 4D point.
+        // sphere's `length(p - ...)` body is still present.
         assert!(wgsl.contains("length(p"));
     }
 

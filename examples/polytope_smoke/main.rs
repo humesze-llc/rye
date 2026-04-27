@@ -19,7 +19,12 @@
 //!
 //! - **Mouse left-drag**: orbit camera.
 //! - **↑ / ↓**: scrub `w`-slice (0.5 u/s).
-//! - **R**: reset slice to 0.
+//! - **T**: toggle 4D rotation of the tesseract (xw-plane spin at
+//!   ~0.3 rev/s). The classic "tesseract through 3D" visual — you
+//!   should see the cube cross-section grow / shrink / vanish /
+//!   reappear as the hidden xw-rotation pulls different w-coords
+//!   into the slice plane.
+//! - **R**: reset slice + rotation.
 //! - **Esc**: exit.
 
 use anyhow::Result;
@@ -46,6 +51,20 @@ const W_RANGE: f32 = 1.5;
 
 const IDENTITY_ROTOR: [f32; 8] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
+/// Tesseract xw-plane rotation rate when --rotate is on (rad/s).
+const XW_ROTATION_RATE: f32 = std::f32::consts::TAU * 0.3;
+
+/// Build a Rotor4 representing rotation by `angle` radians in the
+/// xw plane. Rotor4 components are `[s, xy, xz, xw, yz, yw, zw, xyzw]`
+/// — the xw bivector is index 3.
+///
+/// `R = exp(angle/2 * e_xw) = cos(angle/2) + sin(angle/2) * e_xw`.
+fn xw_rotor(angle: f32) -> [f32; 8] {
+    let half = angle * 0.5;
+    let (s, c) = (half.sin(), half.cos());
+    [c, 0.0, 0.0, s, 0.0, 0.0, 0.0, 0.0]
+}
+
 struct PolytopeSmokeApp {
     space: EuclideanR3,
     camera: Camera<EuclideanR3>,
@@ -55,6 +74,8 @@ struct PolytopeSmokeApp {
     w_slice: f32,
     slider_up_held: bool,
     slider_down_held: bool,
+    rotate: bool,
+    rot_angle: f32,
 }
 
 impl App for PolytopeSmokeApp {
@@ -111,6 +132,8 @@ impl App for PolytopeSmokeApp {
             w_slice: 0.0,
             slider_up_held: false,
             slider_down_held: false,
+            rotate: false,
+            rot_angle: 0.0,
         })
     }
 
@@ -119,11 +142,28 @@ impl App for PolytopeSmokeApp {
     }
 
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
+        let dt_secs = ctx.n_ticks as f32 / 60.0;
+
         // Slice scrub.
         let dir = (self.slider_up_held as i32 - self.slider_down_held as i32) as f32;
         if dir != 0.0 {
-            let dt_secs = ctx.n_ticks as f32 / 60.0;
             self.w_slice = (self.w_slice + dir * W_SCRUB_RATE * dt_secs).clamp(-W_RANGE, W_RANGE);
+        }
+
+        // 4D rotation animation. Only the tesseract spins (slot 1);
+        // the pentatope (slot 0) stays static so the user has a
+        // fixed reference shape.
+        if self.rotate {
+            self.rot_angle =
+                (self.rot_angle + XW_ROTATION_RATE * dt_secs).rem_euclid(std::f32::consts::TAU);
+            let tesseract = BodyUniform::polytope(
+                [1.6, 0.5, 0.0, 0.0],
+                SHAPE_TESSERACT,
+                0.9,
+                xw_rotor(self.rot_angle),
+                [0.30, 0.55, 0.95],
+            );
+            self.node.set_body(1, tesseract);
         }
 
         use rye_camera::CameraController;
@@ -160,7 +200,35 @@ impl App for PolytopeSmokeApp {
         match kc {
             KeyCode::ArrowUp => self.slider_up_held = pressed,
             KeyCode::ArrowDown => self.slider_down_held = pressed,
-            KeyCode::KeyR if pressed => self.w_slice = 0.0,
+            KeyCode::KeyR if pressed => {
+                self.w_slice = 0.0;
+                self.rot_angle = 0.0;
+                // Re-set both bodies to identity orientation.
+                let tesseract = BodyUniform::polytope(
+                    [1.6, 0.5, 0.0, 0.0],
+                    SHAPE_TESSERACT,
+                    0.9,
+                    IDENTITY_ROTOR,
+                    [0.30, 0.55, 0.95],
+                );
+                self.node.set_body(1, tesseract);
+            }
+            KeyCode::KeyT if pressed => {
+                self.rotate = !self.rotate;
+                if !self.rotate {
+                    // Stop spinning: snap back to identity so a
+                    // resumed scrub session sees the canonical cube.
+                    self.rot_angle = 0.0;
+                    let tesseract = BodyUniform::polytope(
+                        [1.6, 0.5, 0.0, 0.0],
+                        SHAPE_TESSERACT,
+                        0.9,
+                        IDENTITY_ROTOR,
+                        [0.30, 0.55, 0.95],
+                    );
+                    self.node.set_body(1, tesseract);
+                }
+            }
             _ => {}
         }
     }
@@ -170,8 +238,13 @@ impl App for PolytopeSmokeApp {
     }
 
     fn title(&self, fps: f32) -> std::borrow::Cow<'static, str> {
+        let rot_label = if self.rotate {
+            format!(" | xw spin {:+.2} rad", self.rot_angle)
+        } else {
+            String::new()
+        };
         std::borrow::Cow::Owned(format!(
-            "polytope smoke | {fps:.0} fps | w_slice = {:+.3}",
+            "polytope smoke | {fps:.0} fps | w_slice = {:+.3}{rot_label}",
             self.w_slice
         ))
     }

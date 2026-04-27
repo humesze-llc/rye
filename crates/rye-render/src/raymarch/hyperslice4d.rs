@@ -376,6 +376,43 @@ fn tesseract_sdf_local(p: vec4<f32>) -> f32 {
     return outside + inside;
 }
 
+// 16-cell (cross-polytope / hexadecachoron) at unit circumradius.
+// Vertices at ±e_x, ±e_y, ±e_z, ±e_w. Face normals are the 16
+// unit vectors `(±1, ±1, ±1, ±1) / 2`; each face is at perpendicular
+// distance 0.5 from origin (inradius). The max-over-faces signed
+// plane distance reduces in any octant to:
+//
+//     (|p.x| + |p.y| + |p.z| + |p.w| - 1) / 2
+//
+// The `/ 2` is the unit-normal normalisation — without it the
+// function returns the L1 distance (twice the Euclidean), which
+// over-estimates the true SDF and causes sphere-tracing tunneling
+// (rays step past the surface, surface appears to "disappear" or
+// shift when the camera orbits).
+fn cell16_sdf_local(p: vec4<f32>) -> f32 {
+    let q = abs(p);
+    return (q.x + q.y + q.z + q.w - 1.0) * 0.5;
+}
+
+// 24-cell (icositetrachoron) at unit circumradius. The 24-cell is
+// the intersection of a tesseract scaled to 1/sqrt(2) (so its
+// vertices land at distance 1) with a 16-cell scaled to sqrt(2)
+// (so its faces tangent the same sphere). The intersection's
+// vertices are the 24 permutations of (±1/sqrt(2), ±1/sqrt(2), 0, 0)
+// — the canonical 24-cell vertex set.
+//
+// Intersection of two convex shapes: SDF = max(sdf_a, sdf_b).
+// The cross-polytope component carries the same `/ 2` correction
+// as `cell16_sdf_local`.
+fn cell24_sdf_local(p: vec4<f32>) -> f32 {
+    let inv_sqrt2: f32 = 0.70710678;
+    let sqrt2:     f32 = 1.41421356;
+    let q = abs(p);
+    let tess  = max(max(q.x, q.y), max(q.z, q.w)) - inv_sqrt2;
+    let cross = (q.x + q.y + q.z + q.w - sqrt2) * 0.5;
+    return max(tess, cross);
+}
+
 // Dispatcher: world-space `p4` against polytope body `b`. Translates
 // to body origin, applies the inverse rotor (world -> body local),
 // scales by 1/size to evaluate the unit-circumradius shape, then
@@ -391,6 +428,10 @@ fn body_polytope_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
         d = pentatope_sdf_local(unit_p);
     } else if (shape == 1u) {
         d = tesseract_sdf_local(unit_p);
+    } else if (shape == 2u) {
+        d = cell16_sdf_local(unit_p);
+    } else if (shape == 3u) {
+        d = cell24_sdf_local(unit_p);
     }
     return d * size;
 }
@@ -729,6 +770,8 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("body_polytope_sdf_4d"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("pentatope_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("tesseract_sdf_local"));
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("cell16_sdf_local"));
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("cell24_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rotor4_inverse_apply"));
     }
 

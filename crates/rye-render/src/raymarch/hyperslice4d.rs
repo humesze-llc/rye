@@ -58,8 +58,8 @@ use crate::graph::RenderNode;
 /// Hard cap because the uniform layout is fixed-size; raising it
 /// is a recompile, not a runtime knob. 32 is generous for the
 /// demos we know about (`hypersphere`'s `-n N` is already capped
-/// at 32; pentatope-pile scenes for Simplex 4D top out around 20
-/// active polytopes).
+/// at 32; pentatope-pile scenes top out around 20 active
+/// polytopes).
 pub const MAX_BODIES: usize = 32;
 
 /// One dynamic-body slot. Discriminated record covering both

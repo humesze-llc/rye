@@ -29,8 +29,8 @@ pub enum AssetEventKind {
 /// drains the channel non-blockingly and deduplicates events per path
 /// within one poll cycle. That means editor saves that produce a burst
 /// of raw events (remove temp → create target → modify) collapse to a
-/// single `Modified` or `Created` event per file, the usual thing a
-/// shader cache wants.
+/// single `Modified` or `Created` event per file. That's the usual
+/// shape a shader cache wants.
 ///
 /// Not `Sync`, own one per app. `Send` is fine.
 pub struct AssetWatcher {

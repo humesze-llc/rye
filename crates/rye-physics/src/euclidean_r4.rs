@@ -512,8 +512,7 @@ pub fn polytope_body_r4(
 // ---------------------------------------------------------------------------
 
 /// **5-cell / pentatope** (4D simplex): 5 vertices, 10 edges, 10 faces,
-/// 5 tetrahedral cells. The 4D analogue of the tetrahedron, the
-/// centerpiece of the Simplex-4D game concept.
+/// 5 tetrahedral cells. The 4D analogue of the tetrahedron.
 ///
 /// Construction: take the five permutations-by-symmetry of `(1,1,1,1,−4)/√20`
 /// embedded in 5D and drop the "equalized" component. The result sits

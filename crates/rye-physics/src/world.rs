@@ -60,8 +60,8 @@ pub struct World<S: PhysicsSpace> {
     ///
     /// `BTreeMap` (not `HashMap`) for deterministic iteration order:
     /// PGS convergence is sensitive to the order in which constraints
-    /// are visited, and per ROADMAP principle #8 sim-path data
-    /// structures must not iterate in hash order.
+    /// are visited, and sim-path data structures must not iterate in
+    /// hash order (determinism is a Tier-0 invariant).
     pub manifolds: BTreeMap<PairKey, Manifold<S>>,
     /// Number of PGS iterations per step. Defaults to
     /// [`DEFAULT_PGS_ITERS`]; raise for stiff stacks, lower for cheap

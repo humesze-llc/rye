@@ -104,8 +104,8 @@ pub trait App: Sized + 'static {
     /// or the scene.** Those are user-owned types and may use a
     /// different Space, or no Space at all. Two valid patterns:
     ///
-    /// - **All-in geometry game** (PAINCARE-style): scene, camera,
-    ///   player, and shader prelude all share one Space. e.g.
+    /// - **All-in geometry**: scene, camera, player, and shader
+    ///   prelude all share one Space. e.g.
     ///   `App::Space = HyperbolicH3` + `Camera<HyperbolicH3>`. The
     ///   camera orbits along honest H³ geodesics, the player moves
     ///   along honest H³ geodesics, the shader applies H³ to
@@ -372,8 +372,8 @@ impl<A: App> ApplicationHandler for Runner<A> {
 
         let mut shader_db = ShaderDb::new(rd.device.clone());
 
-        // AssetWatcher init failure isn't fatal, apps still work,
-        // just without hot-reload. Log and proceed.
+        // AssetWatcher init failure isn't fatal: apps still work
+        // without hot-reload. Log and proceed.
         let mut watcher = match AssetWatcher::new() {
             Ok(w) => Some(w),
             Err(e) => {

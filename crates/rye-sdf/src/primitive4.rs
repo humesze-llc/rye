@@ -78,7 +78,7 @@ impl Primitive4 for Shape {
             // runtime, which gets gnarly in WGSL.
             //
             // For the demos that actually render polytopes today
-            // (`pentatope_slice`, future Simplex 4D), the body's
+            // (`pentatope_slice` and follow-on 4D scenes), the body's
             // pose changes per frame, so the natural design is:
             //   * CPU computes face hyperplanes from the world-
             //     transformed vertices and ships them to the GPU

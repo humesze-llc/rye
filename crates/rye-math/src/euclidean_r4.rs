@@ -7,7 +7,7 @@
 //! Intentionally distinct from [`crate::spherical::Iso4`], that type
 //! is an SO(4) matrix used to embed `S³` in 4D ambient space. The
 //! flat Iso here is for rigid motions of `R⁴` itself, the setting
-//! in which Simplex-4D and any 4D physics simulation live.
+//! in which 4D physics simulations live.
 
 use std::borrow::Cow;
 
@@ -133,8 +133,8 @@ impl WgslSpace for EuclideanR4 {
 // geodesic-march kernel for R⁴ or anything above it. This prelude
 // exists so `rye-shader`'s ABI probe can validate the Space's WGSL
 // contract against the same test harness used by the 3D spaces, and
-// so future 4D renderers (e.g. a Simplex-4D slice view) start from a
-// concrete shape rather than a blank file.
+// so future 4D renderers start from a concrete shape rather than a
+// blank file.
 const WGSL_IMPL: &str = r#"
 // rye-math :: EuclideanR4 (v0 Space WGSL ABI)
 const RYE_MAX_ARC: f32 = 1e9;

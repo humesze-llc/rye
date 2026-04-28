@@ -235,8 +235,7 @@ mod tests {
     #[test]
     fn line_segment_outside_origin_projects_to_endpoint() {
         // Segment entirely on positive x-axis: origin projects onto
-        // the nearer endpoint (−1, 0, …) wait, both are positive,
-        // so projects onto the one closest to origin (x = 1).
+        // the endpoint closest to it, which is x = 1.
         let c = closest_to_origin(&[Vec4::new(1.0, 0.0, 0.0, 0.0), Vec4::new(2.0, 0.0, 0.0, 0.0)]);
         assert_close(c.point.x, 1.0, 1e-4);
         assert_eq!(c.kept, vec![0]);

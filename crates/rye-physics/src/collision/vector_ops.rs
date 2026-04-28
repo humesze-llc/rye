@@ -3,9 +3,8 @@
 //! GJK walks the Minkowski difference of two shapes using nothing but
 //! vector algebra and dot products, no cross products, no bivectors,
 //! no dimension-specific machinery. This trait captures exactly that
-//! surface area, so the same GJK loop can run on `Vec3` (3D physics,
-//! Simplex 3D phase) and `Vec4` (4D physics, Simplex 4D phase) when the
-//! time comes.
+//! surface area, so the same GJK loop can run on `Vec3` (3D physics)
+//! and `Vec4` (4D physics) without per-dimension forks.
 //!
 //! EPA's face-normal reconstruction is dimension-specific (cross
 //! product in 3D, generalized cross in 4D+) and lives outside this

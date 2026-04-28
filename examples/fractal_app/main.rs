@@ -23,8 +23,8 @@
 //!   own Space are deliberately *decoupled*: this demo runs a
 //!   Euclidean orbit camera around a Euclidean fractal scene
 //!   while the shader prelude uses H³ / S³ only for the
-//!   *geodesic-fog distance metric*. A PAINCARE-style game where
-//!   the camera and physics actually live in H³ would use
+//!   *geodesic-fog distance metric*. A game whose camera and
+//!   physics actually live in H³ would use
 //!   `Camera<HyperbolicH3>` + `OrbitController<HyperbolicH3>`
 //!   end-to-end and orbit along hyperbolic geodesics.
 //! - Hot-reload still works: edit `examples/fractal/fractal.wgsl`,

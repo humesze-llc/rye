@@ -121,11 +121,12 @@ struct ShapeEntry {
 ///
 /// The "Platonic-solid analogue" set the user tends to want is
 /// `tetrahedron, cube, octahedron, dodecahedron, icosahedron`,
-/// matching the Simplex 4D ladder. Tetrahedron / cube / octahedron
-/// are already wired (5-cell / tesseract / 16-cell). Dodecahedron
-/// (120-cell) and icosahedron (600-cell) need their face-hyperplane
-/// tables built; they're tracked for a follow-up branch and
-/// produce a friendly error today if requested by name.
+/// matching the regular convex 4-polytope ladder. Tetrahedron /
+/// cube / octahedron are already wired (5-cell / tesseract /
+/// 16-cell). Dodecahedron (120-cell) and icosahedron (600-cell)
+/// need their face-hyperplane tables built; they're tracked for a
+/// follow-up branch and produce a friendly error today if
+/// requested by name.
 const DEFAULT_ROW: &[ShapeEntry] = &[
     ShapeEntry {
         shape: SHAPE_PENTATOPE,

@@ -100,9 +100,16 @@ pub struct BodyUniform {
 
 impl Default for BodyUniform {
     fn default() -> Self {
+        // Default to `Invalid` so that a slot left untouched after
+        // construction contributes +inf to the SDF instead of a
+        // degenerate zero-radius sphere at the origin (which the
+        // ray-march kernel would happily render as a singular point).
+        // The kernel's `if (kind == SPHERE) ... else if (kind ==
+        // POLYTOPE) ...` chain has no matching branch for `Invalid`,
+        // so SDF stays at the `1.0e9` initial value.
         Self {
             position: [0.0; 4],
-            kind: BodyKind::Sphere as i32 as f32,
+            kind: BodyKind::Invalid as i32 as f32,
             radius_or_shape: 0.0,
             polytope_size: 0.0,
             _pad0: 0.0,
@@ -126,6 +133,12 @@ pub enum BodyKind {
     /// index, 0 = pentatope, 1 = tesseract, etc.). Lands in the
     /// polytope-rendering chunk.
     Polytope = 1,
+    /// Sentinel for slots the kernel must skip. The dispatch chain
+    /// in `rye_dynamic_bodies_sdf` matches neither sphere nor polytope
+    /// branches, so the slot contributes nothing to the SDF.
+    /// `BodyUniform::default()` produces this kind so that uninitialised
+    /// slots in `Hyperslice4DUniforms::bodies` are inert.
+    Invalid = 255,
 }
 
 impl BodyUniform {
@@ -235,6 +248,10 @@ const MAX_BODIES: u32 = 32u;
 
 const BODY_KIND_SPHERE: u32 = 0u;
 const BODY_KIND_POLYTOPE: u32 = 1u;
+// 255 is the inert sentinel matching `BodyKind::Invalid` on the CPU
+// side. Slots default to this kind; the dispatch below has no matching
+// branch, so the slot contributes nothing to the SDF.
+const BODY_KIND_INVALID: u32 = 255u;
 
 struct BodyUniform {
     position: vec4<f32>,
@@ -766,6 +783,7 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_dynamic_bodies_sdf"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_SPHERE"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_POLYTOPE"));
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_INVALID"));
         // Polytope-rendering chunk is now in the kernel.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("body_polytope_sdf_4d"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("pentatope_sdf_local"));
@@ -799,14 +817,17 @@ mod tests {
         assert_eq!(p.polytope_size, 1.0);
     }
 
-    /// Default body is an identity-rotor sphere, safe to leave in
-    /// unused slots (`set_body_count` excludes them but they're
-    /// still read into the uniform buffer).
+    /// Default body is inert (`kind = Invalid`) so an unused slot
+    /// in `Hyperslice4DUniforms::bodies` can't accidentally render.
+    /// The kernel's dispatch chain has no branch for `Invalid`, so
+    /// the slot contributes nothing to the SDF.
     #[test]
-    fn default_body_is_identity() {
+    fn default_body_is_inert_invalid_kind() {
         let b = BodyUniform::default();
-        // Identity rotor: scalar = 1, everything else = 0.
+        assert_eq!(b.kind as i32, BodyKind::Invalid as i32);
+        // Identity rotor preserved so a downstream caller that flips
+        // the slot to Sphere/Polytope without resetting `rotor` still
+        // gets sane orientation.
         assert_eq!(b.rotor, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-        assert_eq!(b.kind as i32, BodyKind::Sphere as i32);
     }
 }

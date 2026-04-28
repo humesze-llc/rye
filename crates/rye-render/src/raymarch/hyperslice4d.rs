@@ -100,8 +100,9 @@ pub struct BodyUniform {
 
 impl Default for BodyUniform {
     fn default() -> Self {
-        // `Invalid` has no kernel dispatch branch; uninitialised slots
-        // contribute +inf rather than a zero-radius sphere at the origin.
+        // `Invalid` has no kernel dispatch branch; the SDF accumulator
+        // stays at its 1e9 initial value for this slot rather than
+        // collapsing to a zero-radius sphere at the origin.
         Self {
             position: [0.0; 4],
             kind: BodyKind::Invalid as i32 as f32,
@@ -128,11 +129,16 @@ pub enum BodyKind {
     /// index, 0 = pentatope, 1 = tesseract, etc.). Lands in the
     /// polytope-rendering chunk.
     Polytope = 1,
-    /// Sentinel for slots the kernel must skip. The dispatch chain
-    /// in `rye_dynamic_bodies_sdf` matches neither sphere nor polytope
-    /// branches, so the slot contributes nothing to the SDF.
-    /// `BodyUniform::default()` produces this kind so that uninitialised
-    /// slots in `Hyperslice4DUniforms::bodies` are inert.
+    /// Sentinel for slots the kernel must skip. The dispatch chain in
+    /// `rye_dynamic_bodies_sdf` matches neither sphere nor polytope
+    /// branches, so the SDF accumulator keeps its 1e9 initial value
+    /// for this slot. `BodyUniform::default()` produces this kind so
+    /// uninitialised slots in `Hyperslice4DUniforms::bodies` are inert.
+    ///
+    /// `255` is chosen as `u8::MAX`: a value that's both far outside
+    /// the live discriminator range (today {0, 1}) and that round-trips
+    /// cleanly through the `f32`-typed `BodyUniform::kind` field
+    /// (every integer in `[-2^24, 2^24]` is exactly representable).
     Invalid = 255,
 }
 
@@ -244,9 +250,11 @@ const MAX_BODIES: u32 = 32u;
 const BODY_KIND_SPHERE: u32 = 0u;
 const BODY_KIND_POLYTOPE: u32 = 1u;
 // Mirrors `BodyKind::Invalid` (CPU). Intentionally absent from the
-// dispatch chain in `rye_dynamic_bodies_sdf` and `rye_total_sdf` below,
-// the dispatch falls through and the slot contributes nothing to the
-// SDF. Do NOT delete: `BodyUniform::default()` produces this kind so
+// dispatch chain in `rye_dynamic_bodies_sdf` and `rye_total_sdf` below:
+// neither the sphere nor the polytope branch matches, so the SDF
+// accumulator keeps its 1e9 initial value for that slot. `255` is the
+// CPU-side `u8::MAX` sentinel, far outside the live discriminator
+// range. Do NOT delete: `BodyUniform::default()` produces this kind so
 // uninitialised slots are inert. CPU/GPU protocol breaks if removed.
 const BODY_KIND_INVALID: u32 = 255u;
 
@@ -816,15 +824,23 @@ mod tests {
 
     /// Default body is inert (`kind = Invalid`) so an unused slot
     /// in `Hyperslice4DUniforms::bodies` can't accidentally render.
-    /// The kernel's dispatch chain has no branch for `Invalid`, so
-    /// the slot contributes nothing to the SDF.
     #[test]
     fn default_body_is_inert_invalid_kind() {
         let b = BodyUniform::default();
         assert_eq!(b.kind as i32, BodyKind::Invalid as i32);
-        // Identity rotor preserved so a downstream caller that flips
-        // the slot to Sphere/Polytope without resetting `rotor` still
-        // gets sane orientation.
-        assert_eq!(b.rotor, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    /// `BODY_KIND_INVALID` must not appear in either dispatch chain.
+    /// The whole point of the sentinel is that no branch matches it,
+    /// so the SDF accumulator passes through unchanged. If a future
+    /// edit adds an `if (kind == BODY_KIND_INVALID)` branch, the
+    /// "inert default" guarantee is broken.
+    #[test]
+    fn invalid_kind_has_no_kernel_dispatch_branch() {
+        assert!(
+            !HYPERSLICE_KERNEL_WGSL.contains("kind == BODY_KIND_INVALID"),
+            "BODY_KIND_INVALID must remain unreferenced in dispatch \
+             so default-constructed bodies stay inert",
+        );
     }
 }

@@ -444,6 +444,115 @@ fn main() {
             .expect("BlendedSpace<E3,H3,LinearBlendX> + geodesic kernel should validate");
     }
 
+    // ---- CPU port of `rye_march_geodesic` for hit-point tests --------
+    //
+    // Mirrors `kernel.wgsl::rye_march_geodesic` line-for-line. Used by
+    // the `cpu_march_*` tests below to assert the algorithm produces
+    // the right hit point against a known SDF without needing a GPU
+    // adapter (the existing GPU probes are `#[ignore]`d locally and
+    // run via lavapipe in CI).
+    //
+    // The kernel reads `RYE_MAX_ARC` from the Space prelude as a WGSL
+    // constant; here it's an explicit parameter so the test pins which
+    // value it's exercising.
+    fn march_geodesic_cpu<S: Space<Point = Vec3, Vector = Vec3>>(
+        space: &S,
+        sdf: impl Fn(Vec3) -> f32,
+        ro: Vec3,
+        rd: Vec3,
+        ball_scale: f32,
+        rye_max_arc: f32,
+    ) -> Option<(Vec3, f32)> {
+        let scale = ball_scale.max(1e-5);
+        let mut p = ro * scale;
+
+        let rd_unit = rd.try_normalize().unwrap_or(Vec3::new(0.0, 0.0, -1.0));
+        let probe_eps = 1e-4_f32;
+        let probed = space.exp(p, rd_unit * probe_eps);
+        let riem_norm = space.distance(p, probed) / probe_eps;
+        let mut v = rd_unit / riem_norm.max(1e-7);
+
+        let mut t_scene = 0.0_f32;
+        let mut t_arc = 0.0_f32;
+        let hit_eps = 0.001 * scale;
+        let min_step = 0.0001 * scale;
+
+        for _ in 0..256 {
+            // `rye_origin_distance(p)` in the kernel; for every Space
+            // currently shipped, equivalent to the Riemannian distance
+            // from origin to p.
+            if space.distance(Vec3::ZERO, p) > rye_max_arc * 0.92 {
+                return None;
+            }
+            let d = sdf(p);
+            if d < hit_eps {
+                return Some((p, t_scene));
+            }
+            if t_scene > 40.0 || t_arc > rye_max_arc {
+                return None;
+            }
+            let step = (d * 0.85).max(min_step);
+            let next_p = space.exp(p, v * step);
+            let next_v = space.parallel_transport(p, next_p, v);
+            p = next_p;
+            if next_v.length_squared() > 1e-12 {
+                v = next_v;
+            }
+            t_scene += step / scale;
+            t_arc += step;
+        }
+        None
+    }
+
+    /// Sphere-trace a unit ray against a sphere centered at the
+    /// origin in EuclideanR3. The hit point should land on the
+    /// sphere's surface within the kernel's `hit_eps`, and the
+    /// reported `t_scene` should equal the camera-space distance
+    /// from the ray origin to the surface.
+    #[test]
+    fn cpu_march_hits_centered_sphere_in_euclidean_r3() {
+        let space = EuclideanR3;
+        let sphere_radius = 0.5_f32;
+        let sdf = |p: Vec3| p.length() - sphere_radius;
+        let ro = Vec3::new(0.0, 0.0, 2.0);
+        let rd = Vec3::new(0.0, 0.0, -1.0);
+        let (hit, t) = march_geodesic_cpu(&space, sdf, ro, rd, 1.0, 1.0e9)
+            .expect("ray should hit centered sphere");
+
+        // Expected hit: front of the sphere along -Z, i.e. (0, 0, 0.5).
+        let expected = Vec3::new(0.0, 0.0, sphere_radius);
+        let position_drift = (hit - expected).length();
+        assert!(
+            position_drift < 5e-3,
+            "hit {hit:?} should be within hit_eps of expected {expected:?} (drift {position_drift})",
+        );
+
+        // Expected t_scene = 1.5 (camera-space distance ro.z - radius).
+        // Tolerance covers the kernel's last-step overshoot of up to one
+        // hit_eps (0.001) plus float-stepping noise.
+        let expected_t = 1.5_f32;
+        assert!(
+            (t - expected_t).abs() < 5e-3,
+            "t_scene {t} should be ~{expected_t} (within last-step overshoot)",
+        );
+    }
+
+    /// A ray pointing away from the only object in the scene must
+    /// miss. The kernel exits when `t_scene > 40.0` or after 256
+    /// iterations; either path returns the `w = -1.0` miss sentinel.
+    #[test]
+    fn cpu_march_misses_when_ray_points_away_in_euclidean_r3() {
+        let space = EuclideanR3;
+        let sdf = |p: Vec3| p.length() - 0.5;
+        let ro = Vec3::new(0.0, 0.0, 2.0);
+        let rd = Vec3::new(0.0, 0.0, 1.0); // away from sphere
+        let result = march_geodesic_cpu(&space, sdf, ro, rd, 1.0, 1.0e9);
+        assert!(
+            result.is_none(),
+            "ray pointing away from sphere should miss; got {result:?}",
+        );
+    }
+
     #[repr(C)]
     #[derive(Copy, Clone, Debug, Pod, Zeroable)]
     struct GpuCase {

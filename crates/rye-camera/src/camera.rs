@@ -22,8 +22,8 @@
 //! [`Camera::view`] produces a [`CameraView`] with `Vec3` basis
 //! vectors suitable for direct shader-uniform upload. Available
 //! today for any Space whose `Point` and `Vector` are both
-//! `glam::Vec3`; the 4D camera will get its own type when
-//! `phase4-4d-render` lands.
+//! `glam::Vec3`; the 4D camera will get its own type when the
+//! 4D render path lands.
 
 use glam::Vec3;
 use rye_math::Space;

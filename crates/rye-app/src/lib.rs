@@ -25,8 +25,8 @@
 //!   inside `App::update`. The framework only hands them the
 //!   drained input.
 //!
-//! Per ROADMAP §Phase 4: *"Designed for a small ergonomic gain;
-//! explicitly not an ECS or scene graph."*
+//! Designed for a small ergonomic gain; explicitly not an ECS or
+//! scene graph.
 //!
 //! ## Lifecycle
 //!

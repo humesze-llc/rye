@@ -64,13 +64,13 @@ pub trait Space {
     /// **Implementations choose the path.** Parallel transport is
     /// path-dependent in any non-flat geometry, and this signature
     /// does not name a path. Closed-form constant-curvature Spaces
-    /// ($\mathbb{E}^3$, $H^3$, $S^3$ away from antipodes,
-    /// $\mathbb{E}^4$) transport along the unique minimizing
-    /// geodesic. Variable-metric Spaces (`BlendedSpace`, future
-    /// numerical-only Spaces) may transport along a cheaper path,
-    /// typically the chart-coordinate straight line, when the cost
-    /// of solving the geodesic boundary-value problem outweighs the
-    /// accuracy gain. Each implementation documents its choice.
+    /// (E³, H³, S³ away from antipodes, E⁴) transport along the
+    /// unique minimizing geodesic. Variable-metric Spaces
+    /// (`BlendedSpace`, future numerical-only Spaces) may transport
+    /// along a cheaper path, typically the chart-coordinate
+    /// straight line, when the cost of solving the geodesic
+    /// boundary-value problem outweighs the accuracy gain. Each
+    /// implementation documents its choice.
     ///
     /// Callers that need transport along a *specific* path (a
     /// camera's polyline over the last few frames, a player's

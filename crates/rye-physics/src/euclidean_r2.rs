@@ -869,8 +869,8 @@ mod tests {
         // returns one contact per pair per frame; persistent manifolds
         // accumulate corner contacts over frames as the stack settles,
         // but for fast-loading tall stacks the top boxes can drift off
-        // before manifolds populate. SAT clipping is on the Phase 4
-        // list for after this milestone lands.
+        // before manifolds populate. SAT clipping (Sutherland-Hodgman
+        // edge-to-face) is on the follow-up list.
         let mut world = World::new(EuclideanR2);
         register_default_narrowphase(&mut world.narrowphase);
 

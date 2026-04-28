@@ -1,4 +1,4 @@
-//! `blended` — Phase 4 BlendedSpace milestone demo.
+//! `blended` — BlendedSpace milestone demo.
 //!
 //! Renders a row of spheres above a checkerboard floor under
 //! `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>`. The X

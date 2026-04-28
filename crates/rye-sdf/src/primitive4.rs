@@ -1,5 +1,5 @@
 //! `Primitive4` — 4D-SDF emit for the [`rye_shape::Shape`] variants
-//! that live in $\mathbb{R}^4$.
+//! that live in ℝ⁴.
 //!
 //! Mirrors [`crate::Primitive`] for the 3D path, but operates on 4D
 //! points and emits WGSL functions with the signature

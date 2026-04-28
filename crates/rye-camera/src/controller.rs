@@ -53,7 +53,7 @@ pub trait CameraController<S: Space> {
 /// Left-drag orbits; scroll zooms.
 ///
 /// In flat space this is the same math as the legacy
-/// [`crate::OrbitCamera`]. In $H^3$ / $S^3$ the camera position is
+/// [`crate::OrbitCamera`]. In H³ / S³ the camera position is
 /// computed by `Space::exp` from the target along the
 /// orbit-direction tangent vector, and the camera basis parallel-
 /// transports from the target to the camera position so it arrives

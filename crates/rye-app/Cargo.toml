@@ -15,6 +15,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+png = "0.17"
+gif = "0.13"
 
 rye-asset  = { path = "../rye-asset" }
 rye-camera = { path = "../rye-camera" }

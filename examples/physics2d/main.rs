@@ -13,7 +13,7 @@ use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 use rye_app::{run_with_config, App, FrameCtx, RunConfig, SetupCtx, TickCtx};
-use rye_math::EuclideanR3;
+use rye_math::{EuclideanR2, EuclideanR3};
 use rye_physics::{
     euclidean_r2::{polygon_body, register_default_narrowphase, sphere_body, static_wall},
     field::Gravity,
@@ -107,8 +107,6 @@ fn build_world() -> World<EuclideanR2> {
 
     world
 }
-
-use rye_math::EuclideanR2;
 
 fn collect_gpu_bodies(world: &World<EuclideanR2>) -> (BodyBuffer, u32) {
     let mut buf = BodyBuffer([GpuBody::default(); MAX_BODIES]);

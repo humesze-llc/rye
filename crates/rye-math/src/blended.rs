@@ -308,13 +308,14 @@ where
     }
 
     fn parallel_transport(&self, from: Vec3, to: Vec3, v: Vec3) -> Vec3 {
-        // Path-unaware default: build a 2-point polyline and
-        // transport along it. The proper "transport along the
-        // geodesic between from and to" version would first run
-        // `log` to find the geodesic, sample it, and transport
-        // along the sampled polyline — at ~7× the cost. Most
-        // callers (cameras, players) already know the path and
-        // should use `parallel_transport_along` directly.
+        // Per `Space::parallel_transport`'s contract, implementations
+        // pick the path. `BlendedSpace` picks the chart-coordinate
+        // straight line from `from` to `to`. Sampling the actual
+        // geodesic would require running `log` to find the initial
+        // tangent, integrating `exp` to sample it, and transporting
+        // along the sampled polyline, at ~7x the cost. Callers that
+        // need transport along a known path (camera, player) should
+        // call `parallel_transport_along` with the polyline directly.
         parallel_transport_segment_rk4(self, from, to, v, PARALLEL_TRANSPORT_DEFAULT_STEPS)
     }
 

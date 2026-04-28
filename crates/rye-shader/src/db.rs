@@ -694,6 +694,77 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
+    /// CPU/GPU parity for `BlendedSpace<EuclideanR3, HyperbolicH3,
+    /// LinearBlendX>`, restricted to `rye_exp` only.
+    ///
+    /// The other ABI methods are intentionally divergent here:
+    /// - `rye_log` returns the chart-coordinate difference; CPU
+    ///   runs Gauss-Newton shooting. The geodesic march kernel
+    ///   does not call it.
+    /// - `rye_distance` uses the midpoint chord-metric
+    ///   `sqrt(f((a+b)/2)) * |a-b|`; CPU computes the full
+    ///   Riemannian distance via `log` length scaled by the
+    ///   conformal factor at `a`.
+    /// - `rye_parallel_transport` is a single midpoint-Euler step
+    ///   along the chart-coordinate line; CPU uses 8 RK4 sub-steps
+    ///   along the same line. The kernel does not call it.
+    ///
+    /// Only `rye_exp` is on the kernel's hot path (per geodesic
+    /// march sub-step), so CPU/GPU agreement on `exp` is the
+    /// load-bearing parity claim for this `BlendedSpace`
+    /// instantiation.
+    ///
+    /// Tolerance: GPU uses 16 RK4 sub-steps, CPU uses 32. Both
+    /// are 4th-order so per-step truncation scales as h^5;
+    /// halving sub-steps increases per-step error by 32x and
+    /// halves the step count, so cumulative error grows by ~16x.
+    /// For the smooth conformal factor in this instantiation, the
+    /// absolute drift stays under 5e-3 across the test sample
+    /// (small `v` magnitudes well inside the H3 Poincare ball).
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run manually when changing BlendedSpace WGSL"]
+    fn blended_e3_h3_gpu_probe_exp_matches_cpu() {
+        let space = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.5, 0.5));
+        let cases = [
+            // Pure E3 region (alpha = 0): straight-line motion
+            // expected; tightest tolerance.
+            gpu_case(
+                Vec3::new(-1.0, 0.05, 0.0),
+                Vec3::new(-0.8, 0.05, 0.0),
+                Vec3::new(0.1, 0.0, 0.0),
+            ),
+            // Mid-zone (alpha ~ 0.5): variable-metric integration
+            // exercises the conformal factor's gradient throughout
+            // the geodesic step.
+            gpu_case(
+                Vec3::new(0.0, 0.05, 0.0),
+                Vec3::new(0.1, 0.05, 0.0),
+                Vec3::new(0.05, 0.0, 0.0),
+            ),
+            // Pure H3 region (alpha = 1) at moderate radius;
+            // metric factor is ~7x identity, geodesic is non-linear.
+            gpu_case(
+                Vec3::new(0.7, 0.0, 0.0),
+                Vec3::new(0.71, 0.05, 0.0),
+                Vec3::new(0.02, 0.02, 0.0),
+            ),
+        ];
+        let out =
+            pollster::block_on(run_gpu_probe(&space, &cases)).expect("BlendedSpace GPU probe");
+
+        for (case, row) in cases.iter().zip(&out) {
+            let a = Vec3::from_array([case.a[0], case.a[1], case.a[2]]);
+            let v = Vec3::from_array([case.v[0], case.v[1], case.v[2]]);
+            let cpu = space.exp(a, v);
+            let gpu = Vec3::new(row.exp_point[0], row.exp_point[1], row.exp_point[2]);
+            let diff = (cpu - gpu).length();
+            assert!(
+                diff < 5e-3,
+                "BlendedSpace exp parity failed at a={a:?} v={v:?}: cpu={cpu:?} gpu={gpu:?} diff={diff}",
+            );
+        }
+    }
+
     fn assert_vec3_near(actual: [f32; 4], expected: Vec3, eps: f32) {
         assert_near(actual[0], expected.x, eps);
         assert_near(actual[1], expected.y, eps);

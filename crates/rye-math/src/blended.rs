@@ -1026,8 +1026,8 @@ mod tests {
 
     /// Outside the zone, the field is constant (0 or 1) and the
     /// gradient is exactly zero. This is what makes the metric
-    /// reduce to pure $A$ / pure $B$ at the extremes, the
-    /// integrator sees no Christoffel kick.
+    /// reduce to pure A / pure B at the extremes; the integrator
+    /// sees no Christoffel kick.
     #[test]
     fn linear_blend_x_is_constant_outside_zone() {
         let f = LinearBlendX::new(-1.0, 1.0);
@@ -1178,8 +1178,8 @@ mod tests {
         }
     }
 
-    /// SphericalS3 conformal factor: $4 / (1 + |p|^2)^2$. Pin
-    /// origin and a generic point.
+    /// SphericalS3 conformal factor: 4/(1+|p|²)². Pin origin and
+    /// a generic point.
     #[test]
     fn spherical_s3_conformal_factor_pin_values() {
         use crate::SphericalS3;

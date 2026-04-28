@@ -1,4 +1,4 @@
-//! `rye-time` — deterministic fixed-timestep scheduling for Rye.
+//! `rye-time`: deterministic fixed-timestep scheduling for Rye.
 //!
 //! This crate answers one question: given wall-clock time has advanced by
 //! some amount, how many fixed-duration simulation ticks should run?
@@ -12,7 +12,7 @@
 //! ```
 //!
 //! It must be bit-reproducible given the same inputs. It does NOT consult
-//! wall-clock time — time only enters as the tick number.
+//! wall-clock time, time only enters as the tick number.
 //!
 //! This crate is the wall-clock-to-tick-count *adapter* that the local
 //! render loop uses. Replays and rollback netcode drive the sim directly

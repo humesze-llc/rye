@@ -81,7 +81,7 @@ impl FixedTimestep {
     /// and returns an empty range (no elapsed time to account for yet).
     ///
     /// If the sim has fallen further than `max_catch_up` ticks behind
-    /// wall-clock time, the excess is dropped rather than queued — the
+    /// wall-clock time, the excess is dropped rather than queued, the
     /// render loop recovers to real-time at the cost of a visual jump.
     pub fn advance(&mut self, now: Instant) -> Range<u64> {
         let last = match self.last_instant.replace(now) {

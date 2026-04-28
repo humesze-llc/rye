@@ -1,4 +1,4 @@
-//! [`World<S>`] — top-level container. Owns bodies, force fields,
+//! [`World<S>`], top-level container. Owns bodies, force fields,
 //! narrowphase dispatch, and persistent contact manifolds; runs one
 //! simulation tick per [`World::step`].
 //!
@@ -6,22 +6,22 @@
 //!
 //! Each tick runs phases in a fixed order:
 //!
-//! 1. **Apply forces** — sample every [`ForceField`] at each body's
+//! 1. **Apply forces**: sample every [`ForceField`] at each body's
 //!    position, accumulate `F·dt/m` into velocities.
-//! 2. **Integrate** — advance position and orientation via
+//! 2. **Integrate**: advance position and orientation via
 //!    [`crate::integrate_body`]. Position uses `space.exp`, velocity
 //!    parallel-transports, orientation integrates per the space's rule.
-//! 3. **Broadphase** — O(n²) all-pairs for now. Grid / BVH come in
+//! 3. **Broadphase**: O(n²) all-pairs for now. Grid / BVH come in
 //!    when body counts demand it.
-//! 4. **Narrowphase** — dispatch through [`crate::Narrowphase`] for
+//! 4. **Narrowphase**: dispatch through [`crate::Narrowphase`] for
 //!    each candidate pair. New contacts are merged into the
 //!    persistent [`crate::Manifold`] for that pair.
-//! 5. **Manifold maintenance** — drop manifolds whose pair didn't
+//! 5. **Manifold maintenance**: drop manifolds whose pair didn't
 //!    generate a contact this frame.
-//! 6. **Warm start** — re-apply each cached contact's previous-frame
+//! 6. **Warm start**: re-apply each cached contact's previous-frame
 //!    accumulated impulses to the bodies. The PGS loop then converges
 //!    in a handful of iterations.
-//! 7. **PGS solve** — `pgs_iters` passes of normal-then-tangent
+//! 7. **PGS solve**: `pgs_iters` passes of normal-then-tangent
 //!    impulses per contact, with accumulated-impulse clamping
 //!    (`jn ≥ 0`, `|jt| ≤ μ·jn`) and a Baumgarte velocity bias for
 //!    positional correction.
@@ -60,8 +60,8 @@ pub struct World<S: PhysicsSpace> {
     ///
     /// `BTreeMap` (not `HashMap`) for deterministic iteration order:
     /// PGS convergence is sensitive to the order in which constraints
-    /// are visited, and per ROADMAP principle #8 sim-path data
-    /// structures must not iterate in hash order.
+    /// are visited, and sim-path data structures must not iterate in
+    /// hash order (determinism is a Tier-0 invariant).
     pub manifolds: BTreeMap<PairKey, Manifold<S>>,
     /// Number of PGS iterations per step. Defaults to
     /// [`DEFAULT_PGS_ITERS`]; raise for stiff stacks, lower for cheap
@@ -236,7 +236,7 @@ impl<S: PhysicsSpace> World<S> {
     /// manifold, applying clamped incremental normal-then-tangent
     /// impulses. The pre-snapshotted `velocity_bias` on each contact
     /// drives both restitution and positional correction, so this
-    /// loop never recomputes either — it just chases the fixed target.
+    /// loop never recomputes either, it just chases the fixed target.
     fn solve(&mut self)
     where
         S::Vector: VectorOps,

@@ -1,9 +1,9 @@
-//! `impl PhysicsSpace for EuclideanR3` — 3D Euclidean rigid-body physics.
+//! `impl PhysicsSpace for EuclideanR3`, 3D Euclidean rigid-body physics.
 //!
 //! Angular velocity is a [`Bivector3`] (3 independent rotation-plane
 //! components); inertia is the scalar moment for isotropic bodies
 //! (spheres, the regular polyhedra). Non-isotropic inertia tensors land
-//! when a game actually needs them — a full 3×3 `Inertia` type is a
+//! when a game actually needs them, a full 3×3 `Inertia` type is a
 //! structural change to the trait and can happen later.
 //!
 //! Orientation integration bridges `Bivector3` → `Rotor3` → `Quat` (the
@@ -214,7 +214,7 @@ fn sphere_halfspace_r3(
 
 // ---------------------------------------------------------------------------
 // Polytope narrowphases via GJK + EPA. All three pairs use the same
-// generic machinery from `crate::collision` — only the `SupportFn`
+// generic machinery from `crate::collision`; only the `SupportFn`
 // wrappers differ per collider kind.
 // ---------------------------------------------------------------------------
 
@@ -231,7 +231,7 @@ fn world_vertices(local: &[Vec3], pos: Vec3, rot: Quat) -> Vec<Vec3> {
 const MIN_POLYTOPE_PENETRATION: f32 = 1e-4;
 /// Upper bound on penetration depth we accept. Any deeper is almost
 /// certainly an EPA iteration-cap fallback on a numerically wild
-/// input — applying an impulse scaled by that depth would detonate
+/// input, applying an impulse scaled by that depth would detonate
 /// body velocities.
 const MAX_POLYTOPE_PENETRATION: f32 = 5.0;
 
@@ -261,7 +261,7 @@ fn validate_contact(
 }
 
 /// Conservative bounding-sphere radius of a polytope about its
-/// centroid. Used as a cheap pre-cull before running GJK — if the
+/// centroid. Used as a cheap pre-cull before running GJK, if the
 /// bounding spheres don't overlap, the polytopes can't overlap either.
 fn polytope_bounding_radius(local_vertices: &[Vec3]) -> f32 {
     local_vertices
@@ -454,7 +454,7 @@ pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> RigidBody<EuclideanR3> {
 }
 
 // ---------------------------------------------------------------------------
-// Polytope builders. Inertia is computed as isotropic (scalar) — for a
+// Polytope builders. Inertia is computed as isotropic (scalar), for a
 // prototype this is a reasonable approximation for roughly cube-ish or
 // regular shapes. A full 3×3 inertia tensor is a structural change to
 // `PhysicsSpace::Inertia` and lands when a game actually needs non-
@@ -534,7 +534,7 @@ pub fn polytope_body(
 // ---------------------------------------------------------------------------
 // Platonic solid vertex generators. Each centered at origin, scaled so
 // the bounding-sphere (circumradius) radius = 1.0. Callers scale by
-// their desired radius. All vertex lists are convex hulls — GJK doesn't
+// their desired radius. All vertex lists are convex hulls, GJK doesn't
 // care about face winding.
 // ---------------------------------------------------------------------------
 
@@ -683,7 +683,7 @@ mod tests {
             world.step(1.0 / 120.0);
         }
         // No angular velocity should develop from an axis-aligned
-        // sphere-sphere impact — they touch along their shared line of
+        // sphere-sphere impact, they touch along their shared line of
         // centers, so the contact point lies on each body's axis and
         // r × n = 0 for the normal impulse. There's also no tangential
         // relative velocity for friction to act on.
@@ -716,7 +716,7 @@ mod tests {
             1.0,
         ));
 
-        // 120 ticks at 1/240 s = 0.5 s — enough for the projectile
+        // 120 ticks at 1/240 s = 0.5 s, enough for the projectile
         // (5 m/s) to close the ~1.3 m horizontal gap to contact.
         for _ in 0..120 {
             world.step(1.0 / 240.0);

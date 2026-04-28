@@ -59,7 +59,7 @@ impl<S: PhysicsSpace> Narrowphase<S> {
         if let Some(&f) = self.dispatch.get(&key) {
             return f(a, b, space);
         }
-        // Try the reversed order — symmetry lets us register only one
+        // Try the reversed order, symmetry lets us register only one
         // direction per pair if the function handles both.
         let reversed = (b.collider.kind(), a.collider.kind());
         if let Some(&f) = self.dispatch.get(&reversed) {

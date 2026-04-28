@@ -1,4 +1,4 @@
-//! Bivectors and rotors — the N-dim rotation primitive.
+//! Bivectors and rotors, the N-dim rotation primitive.
 //!
 //! A **bivector** represents an oriented plane of rotation plus a magnitude.
 //! Its exponential is a **rotor**, which acts on vectors via the sandwich
@@ -33,7 +33,7 @@ pub trait Bivector: Copy + Add<Output = Self> + Mul<f32, Output = Self> {
     /// Zero bivector. `zero().exp()` is the identity rotor.
     fn zero() -> Self;
 
-    /// Exponential map: `exp(B) = sum_k B^k / k!` — closed-form per
+    /// Exponential map: `exp(B) = sum_k B^k / k!`, closed-form per
     /// dimension. Rotates by the bivector's magnitude in its plane.
     fn exp(self) -> Self::Rotor;
 }
@@ -120,7 +120,7 @@ impl Default for Rotor2 {
 
 impl Mul for Rotor2 {
     type Output = Self;
-    /// Complex multiplication — equivalent to Clifford product in 2D.
+    /// Complex multiplication, equivalent to Clifford product in 2D.
     fn mul(self, rhs: Self) -> Self {
         Self {
             a: self.a * rhs.a - self.b * rhs.b,
@@ -171,11 +171,11 @@ impl Rotor for Rotor2 {
 /// planes `e1∧e2`, `e2∧e3`, `e3∧e1`. Magnitude encodes rotation angle.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Bivector3 {
-    /// Coefficient on `e1∧e2` — rotation in the xy plane.
+    /// Coefficient on `e1∧e2`, rotation in the xy plane.
     pub xy: f32,
-    /// Coefficient on `e2∧e3` — rotation in the yz plane.
+    /// Coefficient on `e2∧e3`, rotation in the yz plane.
     pub yz: f32,
-    /// Coefficient on `e3∧e1` — rotation in the zx plane.
+    /// Coefficient on `e3∧e1`, rotation in the zx plane.
     pub zx: f32,
 }
 
@@ -190,7 +190,7 @@ impl Bivector3 {
         Self { xy, yz, zx }
     }
 
-    /// Magnitude of the bivector — the rotation angle when used as a
+    /// Magnitude of the bivector, the rotation angle when used as a
     /// rotor generator.
     pub fn magnitude(self) -> f32 {
         (self.xy * self.xy + self.yz * self.yz + self.zx * self.zx).sqrt()
@@ -228,7 +228,7 @@ impl Bivector for Bivector3 {
 
     /// Exponential map. For a bivector `B` of magnitude `θ`,
     /// `exp(B/2) = cos(θ/2) + sin(θ/2)·B̂`. In 3D every bivector is
-    /// simple (single plane), so the closed form is direct — no
+    /// simple (single plane), so the closed form is direct, no
     /// decomposition needed (unlike 4D).
     fn exp(self) -> Rotor3 {
         let mag_sq = self.xy * self.xy + self.yz * self.yz + self.zx * self.zx;
@@ -364,15 +364,15 @@ impl Rotor for Rotor3 {
 // the even-graded element of G(4,0): one scalar + six bivectors + one
 // pseudoscalar, eight components.
 //
-// The interesting math vs 3D: in 4D a generic bivector is **not simple**
-// — it cannot be written as a single wedge `a ∧ b`. Instead it splits
+// The interesting math vs 3D: in 4D a generic bivector is **not simple**;
+// it cannot be written as a single wedge `a ∧ b`. Instead it splits
 // uniquely into two orthogonal simple bivectors B = B_a + B_b that live
 // in complementary 2-planes. Each part exponentiates via the 3D-style
 // closed form; the overall rotor is their product. When `B ∧ B = 0` the
 // bivector is simple and the decomposition is trivial.
 // ---------------------------------------------------------------------------
 
-/// 4D bivector with six components — one per basis plane
+/// 4D bivector with six components, one per basis plane
 /// `e_i ∧ e_j` for `i < j`. Magnitude encodes rotation angle(s).
 ///
 /// Unlike [`Bivector3`], a 4D bivector can describe a **double rotation**
@@ -448,14 +448,14 @@ impl Bivector4 {
         }
     }
 
-    /// Clifford left-contraction `B ⌋ v` — the grade-1 part of the
+    /// Clifford left-contraction `B ⌋ v`, the grade-1 part of the
     /// geometric product `B · v`, with the standard mathematical
     /// sign convention. For `B = e_xy` and `v = e_x` this returns
     /// `−e_y` (because `e_xy · e_x = e_x e_y e_x = −e_x e_x e_y =
     /// −e_y`).
     ///
     /// **Note for physics callers**: rigid-body dynamics wants
-    /// `ω × r` with the *opposite* sign — `e_xy` "applied to" `e_x`
+    /// `ω × r` with the *opposite* sign, `e_xy` "applied to" `e_x`
     /// should give `+e_y`, since rotating in the +xy plane sends the
     /// +x axis toward +y. Use [`crate::euclidean_r4::omega_cross_r`]
     /// (or just negate the result of this function) when you want
@@ -616,7 +616,7 @@ impl Bivector for Bivector4 {
         let s2 = half2.sin();
 
         // `s1/t1` is `sinc(t1/2)/2`; safe to divide since t1 > 0 here.
-        // `s2/t2` likewise — t2 may be negative but is nonzero.
+        // `s2/t2` likewise, t2 may be negative but is nonzero.
         let s1_t1 = s1 / t1;
         let s2_t2 = s2 / t2;
 
@@ -720,7 +720,7 @@ impl Mul for Rotor4 {
     /// Geometric product of two 4D rotors, expanded in the even-graded
     /// basis `{1, e12, e13, e14, e23, e24, e34, I}`. The product of
     /// each pair of basis elements is worked out by direct Clifford
-    /// reduction — e.g. `e12·e13 = −e23` (swap `e2·e1 = −e1·e2`,
+    /// reduction, e.g. `e12·e13 = −e23` (swap `e2·e1 = −e1·e2`,
     /// then `e1·e1 = 1`), `e12·e34 = I`, `e12·I = −e34`, etc.
     fn mul(self, rhs: Self) -> Self {
         let (a0, a12, a13, a14, a23, a24, a34, a_i) = (
@@ -1024,7 +1024,7 @@ mod tests {
 
     #[test]
     fn full_turn_is_identity_up_to_sign() {
-        // exp(B·τ/2) is the negative identity rotor (−1 + 0·e12) — still
+        // exp(B·τ/2) is the negative identity rotor (−1 + 0·e12), still
         // acts as identity on vectors (sandwich squares the sign out).
         let r = Bivector2(TAU).exp();
         assert_vec2_close(r.apply(Vec2::X), Vec2::X);
@@ -1140,8 +1140,8 @@ mod tests {
     #[test]
     fn rotor3_composition_matches_sequential_apply() {
         // With the `v' = R̃·v·R` sandwich, multiplication order equals
-        // application order: `(ra · rb).apply(v) = rb.apply(ra.apply(v))`
-        // — i.e. `ra` is applied first, then `rb`.
+        // application order: `(ra · rb).apply(v) = rb.apply(ra.apply(v))`,
+        // i.e. `ra` is applied first, then `rb`.
         let ra = Bivector3::new(0.4, 0.0, 0.0).exp();
         let rb = Bivector3::new(0.0, 0.5, 0.0).exp();
         let composed = ra * rb;
@@ -1182,8 +1182,8 @@ mod tests {
 
     #[test]
     fn rotor3_matches_glam_quat_for_axis_rotation() {
-        // Same rotation (axis + angle) computed two ways — Rye's rotor
-        // and glam's Quat — must agree on the acted-upon vector. This
+        // Same rotation (axis + angle) computed two ways, Rye's rotor
+        // and glam's Quat, must agree on the acted-upon vector. This
         // cross-checks the sign convention.
         use glam::Quat;
 
@@ -1276,7 +1276,7 @@ mod tests {
         assert_vec4_close(r.apply(Vec4::W), -Vec4::Z);
     }
 
-    /// A simple bivector (one plane only) has `B ∧ B = 0` — this test
+    /// A simple bivector (one plane only) has `B ∧ B = 0`, this test
     /// locks the wedge-coefficient helper against that invariant.
     #[test]
     fn simple_bivector_has_zero_wedge_self() {
@@ -1292,7 +1292,7 @@ mod tests {
     /// A "double rotation" uses two complementary planes simultaneously.
     /// Rotating by π/2 in both xy and zw: x → y, y → −x, z → w,
     /// w → −z. The pseudoscalar component of the rotor is nonzero
-    /// here — that's the fingerprint of the compound decomposition.
+    /// here, that's the fingerprint of the compound decomposition.
     #[test]
     fn bivector4_double_rotation_xy_plus_zw() {
         let theta = FRAC_PI_2;
@@ -1361,7 +1361,7 @@ mod tests {
             // Compound double-rotation.
             Bivector4::new(0.7, 0.0, 0.0, 0.0, 0.0, 0.5),
             // General bivector (both simple planes non-orthogonal in
-            // the naive sense — requires the decomposition).
+            // the naive sense, requires the decomposition).
             Bivector4::new(0.3, -0.2, 0.4, 0.1, -0.5, 0.25),
         ] {
             let r = b.exp();
@@ -1395,7 +1395,7 @@ mod tests {
     #[test]
     fn rotor4_composition_matches_sequential_apply() {
         // With the `v' = R̃·v·R` sandwich, `(ra·rb).apply(v)` equals
-        // `rb.apply(ra.apply(v))` — ra applied first.
+        // `rb.apply(ra.apply(v))`, ra applied first.
         let ra = Bivector4::new(0.4, 0.0, 0.0, 0.0, 0.0, 0.0).exp();
         let rb = Bivector4::new(0.0, 0.0, 0.0, 0.5, 0.0, 0.0).exp();
         let composed = ra * rb;

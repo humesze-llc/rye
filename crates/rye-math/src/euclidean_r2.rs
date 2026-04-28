@@ -1,9 +1,9 @@
-//! Euclidean R² — the 2D flat-space [`Space`] impl.
+//! Euclidean R², the 2D flat-space [`Space`] impl.
 //!
 //! Parallel to [`EuclideanR3`](crate::euclidean::EuclideanR3), but with
 //! `Point = Vec2` and orientation represented by [`Rotor2`] (a unit complex
-//! number) rather than a quaternion. Used by Simplex 2D and any other 2D
-//! drop-in physics work.
+//! number) rather than a quaternion. Used by 2D physics demos and any
+//! drop-in 2D simulation.
 
 use glam::Vec2;
 use serde::{Deserialize, Serialize};

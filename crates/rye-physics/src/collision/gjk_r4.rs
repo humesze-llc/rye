@@ -82,13 +82,13 @@ pub fn minkowski_support_r4<A: SupportFn4, B: SupportFn4>(
     }
 }
 
-/// GJK result: either the shapes overlap — in which case we hand the
-/// final simplex plus its surviving sub-simplex to EPA — or they
+/// GJK result: either the shapes overlap, in which case we hand the
+/// final simplex plus its surviving sub-simplex to EPA, or they
 /// don't. In 4D the enclosing simplex always has 5 vertices; EPA
 /// receives exactly that.
 ///
 /// The variants are asymmetric in size (an inline `[MinkowskiPoint4; 5]`
-/// is ~240 bytes; `Separated` is 0). We keep it inline — the enum is
+/// is ~240 bytes; `Separated` is 0). We keep it inline, the enum is
 /// a short-lived stack return from narrowphase, not a stored field,
 /// so the size asymmetry doesn't matter in practice.
 #[derive(Debug)]
@@ -162,7 +162,7 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
             ..
         } = closest_to_origin(&points);
         if closest.length_squared() < GJK_EPS {
-            // Origin is in the current hull — enter growth phase.
+            // Origin is in the current hull, enter growth phase.
             let pruned: Vec<MinkowskiPoint4> = kept.iter().map(|&i| simplex[i]).collect();
             simplex = pruned;
             break;
@@ -174,10 +174,10 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
 
     // ---- Phase 2: grow the (already-enclosing) simplex to 5 points.
     // Each iteration picks a direction orthogonal to the current
-    // simplex's affine hull and adds the support point there — either
+    // simplex's affine hull and adds the support point there, either
     // it's a genuine new hull vertex (simplex grows) or it's
     // co-located with an existing vertex (polytope is too thin along
-    // that axis — try the opposite sign, then bail).
+    // that axis, try the opposite sign, then bail).
     let mut tried: Vec<Vec4> = Vec::new();
     while simplex.len() < 5 {
         let Some(probe) = orthogonal_to_hull(&simplex, &tried) else {
@@ -320,7 +320,7 @@ mod tests {
         let va: Vec<Vec4> = tesseract_vertices(1.0);
         // Shift less than 1 so they overlap well past a single-corner
         // touch. (Exact-touch at `(1,1,1,1)` is a boundary case GJK
-        // handles probabilistically — dropped as a test case.)
+        // handles probabilistically, dropped as a test case.)
         let vb: Vec<Vec4> = tesseract_vertices(1.0)
             .into_iter()
             .map(|v| v + Vec4::new(0.6, 0.6, 0.6, 0.6))
@@ -337,7 +337,7 @@ mod tests {
     fn deeply_overlapping_pentatopes() {
         use crate::euclidean_r4::pentatope_vertices;
         let va: Vec<Vec4> = pentatope_vertices(1.0);
-        // Pentatope at origin vs pentatope shifted by a small vector —
+        // Pentatope at origin vs pentatope shifted by a small vector,
         // they should overlap substantially.
         let vb: Vec<Vec4> = pentatope_vertices(1.0)
             .into_iter()

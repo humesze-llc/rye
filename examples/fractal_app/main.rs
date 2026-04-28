@@ -1,4 +1,4 @@
-//! `fractal_app` — Mandelbulb raymarcher rebuilt on the `rye-app`
+//! `fractal_app`: Mandelbulb raymarcher rebuilt on the `rye-app`
 //! framework. Same shader and same gameplay as
 //! [`examples/fractal`](../fractal/main.rs); the difference is that
 //! the winit `ApplicationHandler` impl, hot-reload plumbing, FPS
@@ -7,9 +7,9 @@
 //!
 //! ## Flags
 //!
-//! - `--hyperbolic`  — swap `WgslSpace` prelude to `HyperbolicH3`.
-//! - `--spherical`   — swap `WgslSpace` prelude to `SphericalS3`.
-//! - `--rotate`      — auto-rotate camera at 1 rev / 20 s.
+//! - `--hyperbolic`: swap `WgslSpace` prelude to `HyperbolicH3`.
+//! - `--spherical`: swap `WgslSpace` prelude to `SphericalS3`.
+//! - `--rotate`: auto-rotate camera at 1 rev / 20 s.
 //!
 //! Capture-to-APNG/GIF lives in [`examples/fractal`](../fractal)
 //! and is not yet plumbed into the `rye-app` framework. When a
@@ -23,8 +23,8 @@
 //!   own Space are deliberately *decoupled*: this demo runs a
 //!   Euclidean orbit camera around a Euclidean fractal scene
 //!   while the shader prelude uses H³ / S³ only for the
-//!   *geodesic-fog distance metric*. A PAINCARE-style game where
-//!   the camera and physics actually live in H³ would use
+//!   *geodesic-fog distance metric*. A game whose camera and
+//!   physics actually live in H³ would use
 //!   `Camera<HyperbolicH3>` + `OrbitController<HyperbolicH3>`
 //!   end-to-end and orbit along hyperbolic geodesics.
 //! - Hot-reload still works: edit `examples/fractal/fractal.wgsl`,
@@ -36,7 +36,7 @@
 //! `OrbitController<HyperbolicH3>` orbits along H³ geodesics:
 //! `camera_pos = exp_target(back · distance)` in the Poincaré
 //! ball. With the demo's default distance of 3.5 around the
-//! origin, that lands the camera at `|p| ≈ 0.99` — right at the
+//! origin, that lands the camera at `|p| ≈ 0.99`, right at the
 //! ball's ideal boundary, where the metric explodes and rendering
 //! flickers as numerical noise dominates. The legacy
 //! `examples/fractal` demo always used a Euclidean orbit; this
@@ -68,7 +68,7 @@ fn shader_path() -> PathBuf {
 const ROTATE_YAW_PER_TICK: f32 = std::f32::consts::TAU / (60.0 * 20.0);
 
 // ---------------------------------------------------------------------------
-// Per-Space knobs — same numbers as the legacy example.
+// Per-Space knobs, same numbers as the legacy example.
 // ---------------------------------------------------------------------------
 
 /// Per-Space tuning constants for the *shader prelude*. The Space
@@ -84,17 +84,17 @@ trait FractalKnobs: WgslSpace + Default + 'static {
 impl FractalKnobs for EuclideanR3 {
     const BALL_SCALE: f32 = 1.0;
     const FOG_SCALE: f32 = 12.0;
-    const TITLE: &'static str = "Rye — Mandelbulb (rye-app)";
+    const TITLE: &'static str = "Rye - Mandelbulb (rye-app)";
 }
 impl FractalKnobs for HyperbolicH3 {
     const BALL_SCALE: f32 = 0.2;
     const FOG_SCALE: f32 = 4.0;
-    const TITLE: &'static str = "Rye — Mandelbulb H³ (rye-app)";
+    const TITLE: &'static str = "Rye - Mandelbulb H³ (rye-app)";
 }
 impl FractalKnobs for SphericalS3 {
     const BALL_SCALE: f32 = 0.15;
     const FOG_SCALE: f32 = 2.5;
-    const TITLE: &'static str = "Rye — Mandelbulb S³ (rye-app)";
+    const TITLE: &'static str = "Rye - Mandelbulb S³ (rye-app)";
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +237,7 @@ impl OrbitInputExt for OrbitController<EuclideanR3> {
 }
 
 // ---------------------------------------------------------------------------
-// Entry point — pick the Space at runtime; the App impl is
+// Entry point, pick the Space at runtime; the App impl is
 // monomorphised per-Space at compile time.
 // ---------------------------------------------------------------------------
 
@@ -248,7 +248,7 @@ fn main() -> Result<()> {
 
     let config = RunConfig {
         window: WindowAttributes::default()
-            .with_title("Rye — Mandelbulb (rye-app)")
+            .with_title("Rye - Mandelbulb (rye-app)")
             .with_visible(false),
         ..RunConfig::default()
     };

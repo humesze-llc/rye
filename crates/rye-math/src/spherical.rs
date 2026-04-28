@@ -1,4 +1,4 @@
-//! Spherical 3-space (S³) — the third constant-curvature `Space`.
+//! Spherical 3-space (S³), the third constant-curvature `Space`.
 //!
 //! ## Dual representation
 //!
@@ -184,7 +184,7 @@ impl Space for SphericalS3 {
         let qf = to_sphere(clamp_to_hemisphere(from));
         let qt = to_sphere(clamp_to_hemisphere(to));
         let d_dot = qf.dot(qt).clamp(-1.0, 1.0);
-        // Component of qt perpendicular to qf — points along the geodesic.
+        // Component of qt perpendicular to qf, points along the geodesic.
         let perp4 = qt - d_dot * qf;
         let n = perp4.length();
         if n < 1e-7 {
@@ -192,7 +192,7 @@ impl Space for SphericalS3 {
         }
         let half_chord = (qt - qf).length() * 0.5;
         let d = 2.0 * half_chord.clamp(0.0, 1.0).asin();
-        // 4D tangent: perp4 * (d / n). Return xyz — w is implied by the
+        // 4D tangent: perp4 * (d / n). Return xyz, w is implied by the
         // tangent constraint and recovered in exp.
         perp4.truncate() * (d / n)
     }

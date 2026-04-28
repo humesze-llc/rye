@@ -7,12 +7,12 @@
 //!
 //! ## Flags
 //!
-//! `--hyperbolic`  — swap Space prelude to HyperbolicH3
-//! `--spherical`   — swap Space prelude to SphericalS3
-//! `--rotate`      — auto-rotate camera; interactive at 1 rev/20 s
-//! `--capture-apng PATH`  — render N frames, save looping APNG, exit
-//! `--capture-frames N`   — frame count (default 300 = 10 s @ 30 fps)
-//! `--capture-fps N`      — playback fps baked into APNG (default 30)
+//! `--hyperbolic` : swap Space prelude to HyperbolicH3
+//! `--spherical`  : swap Space prelude to SphericalS3
+//! `--rotate`     : auto-rotate camera; interactive at 1 rev/20 s
+//! `--capture-apng PATH` : render N frames, save looping APNG, exit
+//! `--capture-frames N`  : frame count (default 300 = 10 s @ 30 fps)
+//! `--capture-fps N`     : playback fps baked into APNG (default 30)
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -370,7 +370,7 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                                 let total = self.capture_args.frames;
                                 if n % 30 == 0 || n == total as usize {
                                     win.set_title(&format!(
-                                        "{} — capturing {n}/{total}",
+                                        "{} - capturing {n}/{total}",
                                         self.app.knobs.title
                                     ));
                                 }

@@ -1,4 +1,4 @@
-//! 3D physics demo — spheres fall onto an infinite floor under gravity,
+//! 3D physics demo, spheres fall onto an infinite floor under gravity,
 //! bounce off each other off-center, and tumble via friction-induced
 //! angular velocity.
 //!
@@ -129,7 +129,7 @@ fn collect_gpu_bodies(world: &World<EuclideanR3>) -> (BodyBuffer, u32) {
         if count as usize >= MAX_BODIES {
             break;
         }
-        // Skip bodies whose state went non-finite — feeding NaN
+        // Skip bodies whose state went non-finite, feeding NaN
         // positions/quats to wgpu triggers validation panics that
         // look unrelated to the physics bug that produced them.
         if !body.position.is_finite() {
@@ -254,7 +254,7 @@ impl App {
             // Wrap the physics step in `catch_unwind` to surface any
             // Rust panic explicitly (diagnostic for the "no backtrace
             // on crash" mystery). If the crash is a non-Rust event
-            // (stack overflow, driver abort), this won't catch it —
+            // (stack overflow, driver abort), this won't catch it,
             // but seeing the panic message here would tell us it's a
             // Rust issue.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -337,7 +337,7 @@ impl ApplicationHandler for App {
         let win = Arc::new(
             elwt.create_window(
                 WindowAttributes::default()
-                    .with_title("Rye — 3D Physics")
+                    .with_title("Rye - 3D Physics")
                     .with_inner_size(winit::dpi::LogicalSize::new(900.0, 720.0))
                     .with_visible(false),
             )
@@ -502,7 +502,7 @@ impl ApplicationHandler for App {
                         .filter(|b| b.inv_mass > 0.0)
                         .count();
                     win.set_title(&format!(
-                        "Rye — 3D Physics | {fps:.0} fps | {dynamic_count} bodies | sim {:.1}s (R: reset, drag: orbit, scroll: zoom)",
+                        "Rye - 3D Physics | {fps:.0} fps | {dynamic_count} bodies | sim {:.1}s (R: reset, drag: orbit, scroll: zoom)",
                         self.sim_time
                     ));
                 }
@@ -600,8 +600,8 @@ fn main() -> Result<()> {
 
     // Force RUST_BACKTRACE=1 so a panic in the physics step produces
     // an actual stack trace even if the user didn't set the env var.
-    // Also install a hook that flushes stderr before the process dies
-    // — panics on the main/event-loop thread don't always get a chance
+    // Also install a hook that flushes stderr before the process dies:
+    // panics on the main/event-loop thread don't always get a chance
     // to print through the default hook when winit unwinds weirdly.
     std::env::set_var("RUST_BACKTRACE", "1");
     let default_hook = std::panic::take_hook();

@@ -1,4 +1,4 @@
-//! `rye-math` — geometric primitives for Rye.
+//! `rye-math`: geometric primitives for Rye.
 //!
 //! The central abstraction is the [`Space`] trait. Every other crate that
 //! cares about *where things are* (scene graph, physics, render, shaders)
@@ -8,7 +8,7 @@
 //! [`WgslSpace`] is a separate subtrait for the GPU half of the contract;
 //! CPU-only consumers never need to implement it.
 //!
-//! [`Tangent`] bundles a tangent vector with its base point — the
+//! [`Tangent`] bundles a tangent vector with its base point, the
 //! recommended holder outside tight numerical kernels.
 //!
 //! ## Determinism

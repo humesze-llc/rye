@@ -1,4 +1,4 @@
-//! [`RigidBody<S>`] — the physical object a [`crate::World`] simulates.
+//! [`RigidBody<S>`], the physical object a [`crate::World`] simulates.
 
 use rye_math::Bivector;
 
@@ -6,7 +6,7 @@ use crate::collider::Collider;
 use crate::integrator::PhysicsSpace;
 
 /// A rigid body in some [`PhysicsSpace`]. Public-fields struct so the
-/// solver and user code can read and write components directly — this
+/// solver and user code can read and write components directly, this
 /// crate doesn't hide state, it just provides the rules for advancing
 /// it.
 ///

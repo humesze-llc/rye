@@ -1,9 +1,9 @@
-//! `impl PhysicsSpace for EuclideanR4` — 4D Euclidean rigid-body physics.
+//! `impl PhysicsSpace for EuclideanR4`, 4D Euclidean rigid-body physics.
 //!
 //! Angular velocity is a [`Bivector4`] (six rotation-plane components);
 //! inertia is the scalar moment for isotropic bodies, same pragmatic
 //! simplification made in 3D. A full 4D inertia tensor is a 6×6
-//! bivector-to-bivector map — it doesn't land until an actual anisotropic
+//! bivector-to-bivector map, it doesn't land until an actual anisotropic
 //! 4D body demands it.
 //!
 //! Orientation integration uses [`Rotor4`] directly. The Clifford-rotor
@@ -29,7 +29,7 @@ use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
 /// Linear velocity at offset `r` due to angular velocity bivector
-/// `omega` — the 4D analogue of 3D's `ω × r`. For `ω = e_xy` and
+/// `omega`, the 4D analogue of 3D's `ω × r`. For `ω = e_xy` and
 /// `r = e_x` this returns `+e_y` (rotation in the +xy plane sends
 /// the +x axis toward +y), matching the rigid-body convention used
 /// throughout `rye-physics`.
@@ -63,7 +63,7 @@ impl PhysicsSpace for EuclideanR4 {
 
     fn integrate_orientation(&self, iso: Iso4Flat, omega: Bivector4, dt: f32) -> Iso4Flat {
         // Guard against NaN/infinite angular velocity leaking into
-        // the orientation — same defense in depth as the 3D path.
+        // the orientation, same defense in depth as the 3D path.
         if !(omega.xy.is_finite()
             && omega.xz.is_finite()
             && omega.xw.is_finite()
@@ -94,7 +94,7 @@ impl PhysicsSpace for EuclideanR4 {
     }
 
     fn velocity_at_point(&self, body: &RigidBody<EuclideanR4>, p: Vec4) -> Vec4 {
-        // `v(r) = v_linear + ω × r` — `omega_cross_r` is the
+        // `v(r) = v_linear + ω × r`, `omega_cross_r` is the
         // physics-convention version of the bivector contraction (the
         // negated Clifford left-contraction `ω⌋r`); see its doc for
         // why the negation lives here rather than in `Bivector4`.
@@ -259,7 +259,7 @@ fn polytope_halfspace_r4(
 // ---------------------------------------------------------------------------
 
 /// Conservative bounding-sphere radius of a 4D polytope about its
-/// centroid. Cheap pre-cull for narrowphase — if bounding spheres
+/// centroid. Cheap pre-cull for narrowphase, if bounding spheres
 /// don't overlap, the polytopes can't either.
 fn polytope4_bounding_radius(local_vertices: &[Vec4]) -> f32 {
     local_vertices
@@ -457,7 +457,7 @@ pub fn sphere_body_r4(
     )
 }
 
-/// Static 4D half-space body — the 4D analogue of a floor or wall.
+/// Static 4D half-space body, the 4D analogue of a floor or wall.
 /// `normal` is the outward direction (pointing into the empty half);
 /// `offset` places the plane at `dot(p, normal) = offset`. The
 /// produced body has `inv_mass = 0` so gravity and impulses are
@@ -502,7 +502,7 @@ pub fn polytope_body_r4(
 // ---------------------------------------------------------------------------
 // 4D regular polytopes. Six exist in 4D (five analogues of the Platonic
 // solids plus the 24-cell which has no 3D counterpart). The four most
-// physically useful for games — 5-cell, tesseract, 16-cell, 24-cell —
+// physically useful for games, 5-cell, tesseract, 16-cell, 24-cell,
 // are generated here. The 120-cell (600 vertices) and 600-cell (120
 // vertices) land when a demo actually needs them.
 //
@@ -512,8 +512,7 @@ pub fn polytope_body_r4(
 // ---------------------------------------------------------------------------
 
 /// **5-cell / pentatope** (4D simplex): 5 vertices, 10 edges, 10 faces,
-/// 5 tetrahedral cells. The 4D analogue of the tetrahedron — the
-/// centerpiece of the Simplex-4D game concept.
+/// 5 tetrahedral cells. The 4D analogue of the tetrahedron.
 ///
 /// Construction: take the five permutations-by-symmetry of `(1,1,1,1,−4)/√20`
 /// embedded in 5D and drop the "equalized" component. The result sits
@@ -591,7 +590,7 @@ pub fn cell16_vertices(r: f32) -> Vec<Vec4> {
 }
 
 /// **24-cell / icositetrachoron**: 24 vertices, 96 edges, 96 triangle
-/// faces, 24 octahedral cells. Unique to 4D — it has no 3D analogue
+/// faces, 24 octahedral cells. Unique to 4D, it has no 3D analogue
 /// because 3D symmetry groups don't support it. Its vertex set is
 /// the union of a 16-cell and a tesseract (appropriately scaled), so
 /// it tiles R⁴ like the hexagon tiles R².
@@ -602,7 +601,7 @@ pub fn cell16_vertices(r: f32) -> Vec<Vec4> {
 pub fn cell24_vertices(r: f32) -> Vec<Vec4> {
     let k = r / 2.0_f32.sqrt();
     let mut v = Vec::with_capacity(24);
-    // Pairs of axes (0=x, 1=y, 2=z, 3=w) — C(4, 2) = 6 pairs, each
+    // Pairs of axes (0=x, 1=y, 2=z, 3=w), C(4, 2) = 6 pairs, each
     // contributing 4 sign combinations = 24 vertices.
     for i in 0..4 {
         for j in (i + 1)..4 {
@@ -670,7 +669,7 @@ mod tests {
             0.5,
             1.0,
         ));
-        // 5 seconds — plenty of time to fall, bounce, settle.
+        // 5 seconds, plenty of time to fall, bounce, settle.
         for _ in 0..300 {
             world.step(1.0 / 60.0);
         }
@@ -700,7 +699,7 @@ mod tests {
     /// - Sign errors in `Bivector4::contract_vec` /
     ///   `Bivector4::wedge` that inject energy at off-center contacts
     ///   (such bugs typically blow `|v|` past 10 m/s within 60 frames
-    ///   and the body rebounds violently — the original Clifford-vs-
+    ///   and the body rebounds violently, the original Clifford-vs-
     ///   physics-convention bug had the pentatope reach +107 m/s).
     /// - Failure to populate manifolds at 4D contacts (body free-
     ///   falls past the floor).
@@ -993,7 +992,7 @@ mod tests {
     }
 
     /// The 24-cell vertex set equals 16-cell ∪ (rescaled) tesseract
-    /// vertex set — the property that makes it self-dual and
+    /// vertex set, the property that makes it self-dual and
     /// space-filling. Check the count matches and each 24-cell vertex
     /// either matches a 16-cell point or a tesseract corner.
     #[test]
@@ -1008,7 +1007,7 @@ mod tests {
         // magnitude `k√2 = 1` would form a 16-cell at `r = 1`; the
         // 24-cell uses coordinates of magnitude `k` instead, so it
         // contains both the 8 axis-aligned-pair points and the 8
-        // all-corners-scaled-by-k points — but actually all 24 have
+        // all-corners-scaled-by-k points, but actually all 24 have
         // two nonzero entries at `±k`, so verify that shape.
         for v in &c24 {
             let nz = [v.x, v.y, v.z, v.w]
@@ -1026,7 +1025,7 @@ mod tests {
 
     /// Narrowphase integration: a sphere deeply inside a tesseract
     /// should produce a contact with a sensible normal and finite
-    /// penetration — this exercises the sphere-polytope 4D GJK+EPA
+    /// penetration, this exercises the sphere-polytope 4D GJK+EPA
     /// path end-to-end, with bounding-sphere cull included.
     #[test]
     fn sphere_inside_tesseract_produces_contact() {

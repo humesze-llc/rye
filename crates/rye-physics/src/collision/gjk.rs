@@ -50,7 +50,7 @@ impl<'a> SupportFn for ConvexHull<'a> {
     }
 }
 
-/// Sphere support — centre + radius·direction̂.
+/// Sphere support: centre + radius · normalized(direction).
 pub struct Sphere {
     pub center: Vec3,
     pub radius: f32,
@@ -130,7 +130,7 @@ pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
     dir = -simplex[0].point;
 
     for _ in 0..GJK_MAX_ITERATIONS {
-        // Reject if the new support doesn't cross the origin — the
+        // Reject if the new support doesn't cross the origin, the
         // shapes are fully separated along `dir`.
         let new_point = minkowski_support(a, b, dir);
         if new_point.point.dot(dir) < 0.0 {
@@ -148,7 +148,7 @@ pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
         if new_dir.length_squared() < GJK_EPS {
             // Degenerate: origin sits on a boundary face / edge, or
             // the simplex collapsed. Only return Intersecting if we
-            // have a full 4-point tetrahedron — EPA can't operate on
+            // have a full 4-point tetrahedron, EPA can't operate on
             // anything less. Otherwise report Separated; missing a
             // grazing touch is much safer than crashing EPA with a
             // degenerate simplex.
@@ -162,7 +162,7 @@ pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
 
     // Iteration cap hit without convergence. This is almost always
     // numerical thrashing at a tangent boundary; the simplex probably
-    // doesn't genuinely enclose the origin. Report Separated — better
+    // doesn't genuinely enclose the origin. Report Separated, better
     // to lose a marginal contact than to feed EPA a bad tetrahedron.
     GjkResult::Separated
 }
@@ -200,10 +200,11 @@ fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
         // perpendicular to AB, pointing toward origin.
         let dir = triple_product(ab, ao, ab);
         if dir.length_squared() < 1e-10 {
-            // Degenerate: origin lies on the line A–B. Pick any vector
-            // perpendicular to AB and recurse along that — the next
-            // support will either exit the line (→ triangle) or
-            // confirm containment along a different axis.
+            // Degenerate: origin lies on the line A-B. Pick any vector
+            // perpendicular to AB and recurse along that; the next
+            // support will either exit the line (and grow the simplex
+            // to a triangle) or confirm containment along a different
+            // axis.
             (false, 2, any_perpendicular(ab))
         } else {
             (false, 2, dir)
@@ -269,11 +270,11 @@ fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
 
     // Above or below the triangle.
     if abc.dot(ao) > 0.0 {
-        // Origin is on the "abc" side — keep winding [c, b, a],
+        // Origin is on the "abc" side, keep winding [c, b, a],
         // search normal is +abc.
         (false, 3, abc)
     } else {
-        // Origin is on the other side — flip winding by swapping b
+        // Origin is on the other side, flip winding by swapping b
         // and c, search normal is -abc.
         simplex.swap(0, 1);
         (false, 3, -abc)
@@ -290,7 +291,7 @@ fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
 /// path through `do_triangle` (specifically the swap branch produces
 /// an inverted winding). Rather than patch the winding invariant
 /// everywhere, we explicitly orient each face normal using the
-/// opposite vertex of the tetrahedron — pointing away from that
+/// opposite vertex of the tetrahedron, pointing away from that
 /// vertex is always outward.
 fn do_tetrahedron(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let a = simplex[3].point;
@@ -346,7 +347,7 @@ fn do_tetrahedron(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     (true, 4, Vec3::ZERO)
 }
 
-/// Vector triple product `(a × b) × c` — appears repeatedly in the
+/// Vector triple product `(a × b) × c`, appears repeatedly in the
 /// edge-region search direction formulas. In 3D this simplifies to
 /// `b·(a·c) − a·(b·c)` (the "BAC-CAB" identity) but the direct form
 /// reads more clearly here.

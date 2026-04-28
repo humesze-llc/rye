@@ -1,4 +1,4 @@
-//! Typed 4D scene tree — the 4D analogue of [`crate::scene::Scene`].
+//! Typed 4D scene tree, the 4D analogue of [`crate::scene::Scene`].
 //!
 //! Build a [`Scene4`] from [`SceneNode4`] combinators and emit
 //! WGSL for either:
@@ -7,7 +7,7 @@
 //!   useful for full 4D ray-march renderers (future).
 //! - **Hyperslice**: `fn rye_scene_sdf(p: vec3<f32>) -> f32` that
 //!   evaluates the 4D SDF at `vec4(p, w_slice)`, where `w_slice`
-//!   is a uniform. This is the production path today —
+//!   is a uniform. This is the production path today,
 //!   `Hyperslice4DNode` consumes it as the SDF for a 3D ray march.
 //!
 //! See [`docs/devlog/4D_RENDERING.md`](../../../../docs/devlog/4D_RENDERING.md)
@@ -101,7 +101,7 @@ impl SceneNode4 {
     }
 }
 
-/// A complete 4D SDF scene — a single root [`SceneNode4`] that
+/// A complete 4D SDF scene, a single root [`SceneNode4`] that
 /// emits either `rye_scene_sdf_4d(p: vec4<f32>) -> f32` (full 4D)
 /// or `rye_scene_sdf(p: vec3<f32>) -> f32` (hyperslice at the
 /// `w_slice` uniform).
@@ -138,7 +138,7 @@ impl Scene4 {
     /// that evaluates this scene's 4D SDF at `vec4(p, w_slice_expr)`.
     ///
     /// `w_slice_expr` is the WGSL expression the kernel uses to
-    /// reach its `w_slice` uniform — typically `"u.w_slice"` when
+    /// reach its `w_slice` uniform, typically `"u.w_slice"` when
     /// the node binds a single uniform struct named `u`. Passing a
     /// literal (e.g. `"0.0"`) is also valid for static-slice tests.
     pub fn to_hyperslice_wgsl(&self, w_slice_expr: &str) -> String {
@@ -233,7 +233,7 @@ mod tests {
         let scene = Scene4::new(SceneNode4::hypersphere(Vec4::ZERO, 0.5));
         let wgsl = scene.to_hyperslice_wgsl("u.w_slice");
         // Parameter is `p3` to avoid colliding with the inner `let
-        // p` 4D point — WGSL doesn't allow declaring a let with the
+        // p` 4D point, WGSL doesn't allow declaring a let with the
         // same name as a function parameter.
         assert!(wgsl.contains("fn rye_scene_sdf(p3: vec3<f32>) -> f32"));
         assert!(wgsl.contains("let p = vec4<f32>(p3, u.w_slice)"));

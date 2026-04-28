@@ -1,7 +1,4 @@
-//! `rye-physics` — Space-generic rigid-body physics for Rye.
-//!
-//! See `docs/devlog/PHASE_2_3_PLAN.md` §3.6a for the architecture and the
-//! design rationale (in particular, why no `rapier2d`).
+//! `rye-physics`: Space-generic rigid-body physics for Rye.
 //!
 //! ## Shape of the crate
 //!

@@ -1,4 +1,4 @@
-//! `rye-text` — screen-space text rendering for game HUDs and overlays.
+//! `rye-text`: screen-space text rendering for game HUDs and overlays.
 //!
 //! Library-composition API with no global state and no `App`-trait
 //! coupling. Apps construct a [`TextRenderer`] in `setup`, queue text

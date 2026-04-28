@@ -1,4 +1,4 @@
-//! `rye-asset` — filesystem watching and hot-reload events for Rye.
+//! `rye-asset`: filesystem watching and hot-reload events for Rye.
 //!
 //! The core type is [`AssetWatcher`]. Downstream crates (currently
 //! `rye-shader`, eventually meshes / textures / scripts) poll it each

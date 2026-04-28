@@ -5,12 +5,12 @@
 //!
 //! ## Flags
 //!
-//! `--hyperbolic`  — swap Space prelude to HyperbolicH3 (geodesic fog)
-//! `--spherical`   — swap Space prelude to SphericalS3
-//! `--rotate`      — auto-rotate camera; interactive at 1 rev/20 s
-//! `--capture-apng PATH`   — render N frames, save looping APNG, exit
-//! `--capture-frames N`    — frame count for APNG (default 300 = 10 s @ 30 fps)
-//! `--capture-fps N`       — playback fps baked into APNG (default 30)
+//! `--hyperbolic` : swap Space prelude to HyperbolicH3 (geodesic fog)
+//! `--spherical`  : swap Space prelude to SphericalS3
+//! `--rotate`     : auto-rotate camera; interactive at 1 rev/20 s
+//! `--capture-apng PATH`  : render N frames, save looping APNG, exit
+//! `--capture-frames N`   : frame count for APNG (default 300 = 10 s @ 30 fps)
+//! `--capture-fps N`      : playback fps baked into APNG (default 30)
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -73,21 +73,21 @@ struct ShaderKnobs {
 const EUCLIDEAN_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: 1.0,
     fog_scale: 12.0,
-    title: "Rye — Mandelbulb",
+    title: "Rye - Mandelbulb",
     capture_distance: 4.0,
 };
 
 const HYPERBOLIC_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: 0.2,
     fog_scale: 4.0,
-    title: "Rye — Mandelbulb (H³ fog)",
+    title: "Rye - Mandelbulb (H³ fog)",
     capture_distance: 4.0,
 };
 
 const SPHERICAL_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: 0.15,
     fog_scale: 2.5,
-    title: "Rye — Mandelbulb (S³ fog)",
+    title: "Rye - Mandelbulb (S³ fog)",
     capture_distance: 4.0,
 };
 
@@ -405,7 +405,7 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                                 let total = self.capture_args.frames;
                                 if n % 30 == 0 || n == total as usize {
                                     win.set_title(&format!(
-                                        "{} — capturing {n}/{total}",
+                                        "{} - capturing {n}/{total}",
                                         self.app.knobs.title
                                     ));
                                 }

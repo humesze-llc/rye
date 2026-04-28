@@ -1,15 +1,14 @@
-//! `VectorOps` — the abstraction GJK and EPA share across dimensions.
+//! `VectorOps`: the abstraction GJK and EPA share across dimensions.
 //!
 //! GJK walks the Minkowski difference of two shapes using nothing but
-//! vector algebra and dot products — no cross products, no bivectors,
+//! vector algebra and dot products, no cross products, no bivectors,
 //! no dimension-specific machinery. This trait captures exactly that
-//! surface area, so the same GJK loop can run on `Vec3` (3D physics,
-//! Simplex 3D phase) and `Vec4` (4D physics, Simplex 4D phase) when the
-//! time comes.
+//! surface area, so the same GJK loop can run on `Vec3` (3D physics)
+//! and `Vec4` (4D physics) without per-dimension forks.
 //!
 //! EPA's face-normal reconstruction is dimension-specific (cross
 //! product in 3D, generalized cross in 4D+) and lives outside this
-//! trait — each dimension has its own EPA helper that uses
+//! trait, each dimension has its own EPA helper that uses
 //! `VectorOps` for the bulk of the math and a per-dimension function
 //! for the normal reconstruction step.
 
@@ -21,10 +20,10 @@ use glam::{Vec2, Vec3, Vec4};
 /// dimensions.
 ///
 /// GJK walks the Minkowski difference of two shapes using nothing but
-/// vector algebra and dot products — no cross products, no bivectors,
+/// vector algebra and dot products, no cross products, no bivectors,
 /// no dimension-specific machinery. EPA's face-normal reconstruction
 /// is dimension-specific (cross product in 3D, generalized cross in
-/// 4D+) and lives outside this trait — each dimension has its own
+/// 4D+) and lives outside this trait, each dimension has its own
 /// EPA helper that uses `VectorOps` for the bulk of the math.
 ///
 /// The PGS solver also uses `VectorOps` for the dimension-agnostic

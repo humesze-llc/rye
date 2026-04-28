@@ -106,7 +106,7 @@ impl GeodesicSpheresScene {
 ///
 /// Floor, ceiling, and side walls are Euclidean-coordinate planes in the
 /// active Space chart (`p.y + H`, `H - p.y`, `p.x + W`, `W - p.x`). They
-/// are *not* geodesic surfaces — and that is the point. With geodesic ray
+/// are *not* geodesic surfaces, and that is the point. With geodesic ray
 /// marching, the rays bend according to the metric, so the same axis-aligned
 /// planes appear flat in E³, bowed outward in H³ (parallel geodesics diverge),
 /// and converging in S³ (parallel geodesics meet).
@@ -161,7 +161,7 @@ impl CorridorScene {
     ///
     /// Walls are Euclidean-coordinate planes (space-agnostic emission); pillars
     /// are geodesic spheres (`rye_distance`). This is geometrically the same
-    /// as the prior hand-written WGSL — the difference is now type-checked.
+    /// as the prior hand-written WGSL, the difference is now type-checked.
     pub fn to_scene(&self) -> Scene {
         assert!(
             self.pillars_per_row % 2 == 1,
@@ -297,7 +297,7 @@ mod tests {
         let e3 = s.to_wgsl(&EuclideanR3, "sdf_0");
         let h3 = s.to_wgsl(&HyperbolicH3, "sdf_0");
         let s3 = s.to_wgsl(&SphericalS3, "sdf_0");
-        // The emitted body must be identical across spaces — only
+        // The emitted body must be identical across spaces, only
         // rye_distance differs at prelude link time, not in the
         // emitted text.
         assert_eq!(e3, h3);

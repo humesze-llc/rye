@@ -1,11 +1,11 @@
-//! EPA — Expanding Polytope Algorithm.
+//! EPA: Expanding Polytope Algorithm.
 //!
 //! Given the tetrahedron simplex produced by [`super::gjk_intersect`]
 //! when two shapes overlap, EPA expands that simplex into a convex
 //! polytope whose surface matches (locally) the boundary of the
 //! Minkowski difference `A ⊖ B`. The point on that surface closest to
 //! the origin gives the **minimum translation** needed to separate the
-//! shapes — i.e. the contact normal and penetration depth.
+//! shapes, i.e. the contact normal and penetration depth.
 //!
 //! Contact point reconstruction uses the barycentric coordinates of
 //! the closest point on the terminating face, applied to the original
@@ -16,7 +16,7 @@
 //! 1. Find the face of the current polytope closest to the origin.
 //! 2. Query a new support point along that face's outward normal.
 //! 3. If the support's distance from the origin ≈ the face's distance,
-//!    the face is on the Minkowski boundary — we're done.
+//!    the face is on the Minkowski boundary, we're done.
 //! 4. Otherwise, add the support to the polytope: remove every face
 //!    whose outward normal "sees" the new point, then stitch a fan of
 //!    new triangles from each horizon edge to the new vertex.
@@ -33,11 +33,11 @@ use super::gjk::{minkowski_support, MinkowskiPoint, SupportFn};
 
 const EPA_MAX_ITERATIONS: u32 = 48;
 const EPA_TOLERANCE: f32 = 1e-4;
-/// Sanity cap — a well-formed EPA typically finishes with < 30 vertices.
+/// Sanity cap, a well-formed EPA typically finishes with < 30 vertices.
 /// If we blow through this we're likely in a degenerate stall.
 const EPA_MAX_VERTICES: usize = 96;
 
-/// Output of [`epa`] — the resolved contact info, ready to plug into
+/// Output of [`epa`], the resolved contact info, ready to plug into
 /// a [`crate::Contact`].
 #[derive(Clone, Copy, Debug)]
 pub struct ContactInfo {
@@ -70,7 +70,7 @@ struct Polytope {
     faces: Vec<Face>,
     /// Centroid of the seed tetrahedron. Stays interior to the
     /// polytope for all subsequent (convex) expansions, so it's the
-    /// reliable reference for orienting new faces outward — much more
+    /// reliable reference for orienting new faces outward, much more
     /// robust than "pick any old vertex," which can happen to lie on
     /// a degenerate-face plane and produce an inward orientation that
     /// cascades into a corrupted polytope.
@@ -136,8 +136,8 @@ impl Polytope {
         self.faces = keep;
 
         // Stitch new faces from each horizon edge to the new vertex.
-        // Orientation uses `self.interior` — the seed tetrahedron's
-        // centroid — as a guaranteed interior reference. Using an
+        // Orientation uses `self.interior`, the seed tetrahedron's
+        // centroid, as a guaranteed interior reference. Using an
         // arbitrary old vertex was the source of the "polytope face
         // count explodes" bug: when an old vertex happens to lie on
         // the plane of a new face, the sign test is ambiguous, the
@@ -152,7 +152,7 @@ impl Polytope {
 }
 
 /// Build a face with outward normal, orienting it away from
-/// `interior_point` — which the caller guarantees is inside the
+/// `interior_point`, which the caller guarantees is inside the
 /// polytope (the seed tetrahedron's centroid satisfies this).
 fn build_face_vs_point(
     verts: &[MinkowskiPoint],
@@ -242,7 +242,7 @@ pub fn epa<A: SupportFn, B: SupportFn>(
     // (nearly) coplanar, the tetrahedron has ~zero volume and EPA
     // cannot produce meaningful outward normals. The signed volume is
     // det([p1-p0, p2-p0, p3-p0])/6, and sign flips depending on
-    // handedness — we only care about magnitude.
+    // handedness, we only care about magnitude.
     let p0 = initial_simplex[0].point;
     let p1 = initial_simplex[1].point;
     let p2 = initial_simplex[2].point;
@@ -265,7 +265,7 @@ pub fn epa<A: SupportFn, B: SupportFn>(
         let new_distance = support.point.dot(face.normal);
 
         // Guard: if the support query produced non-finite values, the
-        // Minkowski diff has pathological inputs — bail rather than
+        // Minkowski diff has pathological inputs, bail rather than
         // feed bad data back into `expand()` and grow the polytope
         // with NaN vertices.
         if !new_distance.is_finite() || !support.point.is_finite() {
@@ -273,7 +273,7 @@ pub fn epa<A: SupportFn, B: SupportFn>(
         }
 
         if (new_distance - face.distance).abs() < EPA_TOLERANCE {
-            // Face is on the Minkowski boundary — terminate.
+            // Face is on the Minkowski boundary, terminate.
             return contact_from_face(&polytope, face);
         }
 
@@ -284,7 +284,7 @@ pub fn epa<A: SupportFn, B: SupportFn>(
         }
     }
 
-    // Iteration cap — return the current best estimate rather than
+    // Iteration cap, return the current best estimate rather than
     // failing outright. Happens only for nearly-degenerate inputs.
     let face_idx = polytope.closest_face()?;
     contact_from_face(&polytope, polytope.faces[face_idx])

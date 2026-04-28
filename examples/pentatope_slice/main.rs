@@ -1,4 +1,4 @@
-//! Pentatope `w`-slice viewer — live physics edition.
+//! Pentatope `w`-slice viewer, live physics edition.
 //!
 //! A 4D pentatope falls under gravity onto a 4D `y = 0` floor; the
 //! 3D viewport renders the cross-section of the whole 4D scene at
@@ -27,11 +27,11 @@
 //! - **Space**: pause / resume physics.
 //! - **↑ / ↓**: hold to slide the cross-section through `w`
 //!   continuously (0.6 units/s, range ±1.5 around the body's
-//!   `w`-position — slide far enough either way and the body
+//!   `w`-position, slide far enough either way and the body
 //!   leaves the slice plane entirely). Disables auto-sweep.
 //! - **A**: toggle automatic offset sweep (cosine-paced, 8 s period,
 //!   range ±1.5).
-//! - **R**: reset — re-spawn the pentatope at `y = 2.5`, offset = 0.
+//! - **R**: reset, re-spawn the pentatope at `y = 2.5`, offset = 0.
 //! - **0–4**: highlight that pentatope cell (its tinted faces glow
 //!   brighter when visible). **5**: clear highlight.
 //! - **Esc**: exit.
@@ -73,7 +73,7 @@ fn shader_path() -> PathBuf {
     shader_dir().join("pentatope_slice.wgsl")
 }
 
-const TITLE: &str = "Rye — pentatope w-slice (live)";
+const TITLE: &str = "Rye - pentatope w-slice (live)";
 const PENTATOPE_RADIUS: f32 = 1.0;
 /// Offset range relative to the body's current `w`-position. The
 /// pentatope's local vertices span ≈ `w ∈ [−0.25, +1.0]`, so a range
@@ -305,7 +305,7 @@ struct App {
 
     // Slice. `w_slice` is computed each frame as
     // `body.position.w + w_offset` so the slice plane tracks the body
-    // through 4D — without this the body drifts in `w` post-impact and
+    // through 4D, without this the body drifts in `w` post-impact and
     // the cross-section disappears off-screen within a second.
     w_offset: f32,
     auto_sweep: bool,
@@ -341,7 +341,7 @@ impl App {
                 // Pull back and **up** so the pentatope falling onto
                 // `y = 0` is framed from above. `OrbitCamera` uses
                 // negative pitch for "look down" (positive pitch tilts
-                // the camera below the floor — the SDF then reads the
+                // the camera below the floor, the SDF then reads the
                 // origin as inside the ground half-space and the
                 // viewport floods with checker).
                 c.set_orbit(8.0, -0.35);
@@ -387,7 +387,7 @@ impl App {
             return;
         };
         let pressed = state == ElementState::Pressed;
-        // ↑ / ↓ behave as a held slider — track press/release so
+        // ↑ / ↓ behave as a held slider, track press/release so
         // `advance_slider` can move `w_offset` continuously per tick.
         match kc {
             KeyCode::ArrowUp => {

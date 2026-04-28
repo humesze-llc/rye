@@ -1,4 +1,4 @@
-//! `blended` — BlendedSpace milestone demo.
+//! `blended`: BlendedSpace milestone demo.
 //!
 //! Renders a row of spheres above a checkerboard floor under
 //! `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>`. The X
@@ -14,17 +14,17 @@
 //! - **Middle third (−0.3 ≤ x ≤ +0.3):** transition zone. Sphere
 //!   silhouettes distort smoothly; checker cells warp.
 //! - **Right third (x > +0.3, inside `|p| < 1`):** pure H³. The
-//!   floor at `y = 0` becomes a hyperbolic plane — appears as a
+//!   floor at `y = 0` becomes a hyperbolic plane, appears as a
 //!   spherical cap in Poincaré chart coordinates. Spheres visibly
 //!   compress toward the ball boundary. **This is correct.**
 //!
 //! ## Controls
 //!
-//! - **WASD** — move forward/back/strafe along the camera basis.
-//! - **Space / Shift** — rise / sink along world Y.
-//! - **Left-mouse-drag** — look around (yaw + pitch).
-//! - **`--floor-only`** — suppress the spheres so only the floor renders.
-//! - **Esc** — exit.
+//! - **WASD**: move forward/back/strafe along the camera basis.
+//! - **Space / Shift**: rise / sink along world Y.
+//! - **Left-mouse-drag**: look around (yaw + pitch).
+//! - **`--floor-only`**: suppress the spheres so only the floor renders.
+//! - **Esc**: exit.
 
 use std::path::PathBuf;
 
@@ -64,7 +64,7 @@ const SPHERE_R: f32 = 0.06;
 fn rye_scene_sdf(p: vec3<f32>) -> f32 {
     // Floor as a chart-coordinate horizontal plane at y=0. On the
     // pure-H³ side this is a hyperbolic plane and renders as a
-    // spherical cap in Poincaré coordinates — that's geometrically
+    // spherical cap in Poincaré coordinates, that's geometrically
     // correct, not an artifact.
     var d = p.y;
 
@@ -165,7 +165,7 @@ impl App for BlendedApp {
     }
 
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
-        // Look only while left mouse is dragged — otherwise the
+        // Look only while left mouse is dragged, otherwise the
         // cursor escaping the window would flick the camera.
         let look_input = if ctx.input.left_mouse_down {
             ctx.input
@@ -237,7 +237,7 @@ impl App for BlendedApp {
     fn title(&self, fps: f32) -> std::borrow::Cow<'static, str> {
         let p = self.camera.view().position;
         std::borrow::Cow::Owned(format!(
-            "Rye — BlendedSpace<E3,H3> | {fps:.0} fps | pos ({:.2}, {:.2}, {:.2})",
+            "Rye - BlendedSpace<E3,H3> | {fps:.0} fps | pos ({:.2}, {:.2}, {:.2})",
             p.x, p.y, p.z
         ))
     }
@@ -246,7 +246,7 @@ impl App for BlendedApp {
 fn main() -> Result<()> {
     let config = RunConfig {
         window: WindowAttributes::default()
-            .with_title("Rye — BlendedSpace<E3,H3>")
+            .with_title("Rye - BlendedSpace<E3,H3>")
             .with_visible(false),
         ..RunConfig::default()
     };

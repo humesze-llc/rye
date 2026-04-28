@@ -1,4 +1,4 @@
-//! [`Hyperslice4DNode`] — render node for 4D scenes via
+//! [`Hyperslice4DNode`], render node for 4D scenes via
 //! hyperslicing.
 //!
 //! Designed to pair with `rye_sdf::Scene4` but takes a
@@ -9,10 +9,10 @@
 //!
 //! The user assembles the WGSL by concatenating:
 //!
-//! 1. [`HYPERSLICE_KERNEL_WGSL`] — uniform layout, fullscreen-
+//! 1. [`HYPERSLICE_KERNEL_WGSL`], uniform layout, fullscreen-
 //!    triangle vertex stage, ray-march fragment stage. Calls
 //!    `rye_scene_sdf` from the scene module.
-//! 2. `Scene4::to_hyperslice_wgsl("u.w_slice")` — defines
+//! 2. `Scene4::to_hyperslice_wgsl("u.w_slice")`, defines
 //!    `rye_scene_sdf` as `4D_SDF(vec4(p, u.w_slice))`.
 //!
 //! ```ignore
@@ -63,7 +63,7 @@ use crate::graph::RenderNode;
 pub const MAX_BODIES: usize = 32;
 
 /// One dynamic-body slot. Discriminated record covering both
-/// hypersphere and polytope cases — `kind` selects which fields
+/// hypersphere and polytope cases, `kind` selects which fields
 /// are read by the shader.
 ///
 /// Layout (std140-aligned, 80 bytes total):
@@ -77,7 +77,7 @@ pub const MAX_BODIES: usize = 32;
 /// | 28 |  4 | `_pad0` |
 /// | 32 | 12 | `color` (`vec3<f32>`) |
 /// | 44 |  4 | `_pad1` |
-/// | 48 | 32 | `rotor` (8 × f32packed as 2 × `vec4<f32>` — `rotor_lo` then `rotor_hi`; Rotor4 ordering: scalar, xy, xz, xw, yz, yw, zw, pseudoscalar) |
+/// | 48 | 32 | `rotor` (8 × f32packed as 2 × `vec4<f32>`, `rotor_lo` then `rotor_hi`; Rotor4 ordering: scalar, xy, xz, xw, yz, yw, zw, pseudoscalar) |
 ///
 /// The rotor lives in two `vec4<f32>` slots in the WGSL struct so
 /// the std140 alignment matches Rust's tightly-packed `[f32; 8]`
@@ -123,7 +123,7 @@ pub enum BodyKind {
     Sphere = 0,
     /// `ConvexPolytope4D`. Reads `position` (body origin in 4D),
     /// `rotor` (orientation), and `radius_or_shape` (shape table
-    /// index — 0 = pentatope, 1 = tesseract, etc.). Lands in the
+    /// index, 0 = pentatope, 1 = tesseract, etc.). Lands in the
     /// polytope-rendering chunk.
     Polytope = 1,
 }
@@ -303,7 +303,7 @@ fn rotor4_inverse_apply(rotor_lo: vec4<f32>, rotor_hi: vec4<f32>, v: vec4<f32>) 
     // Stage 1: R̃ · v. R̃ for the inner rotor here re-flips the
     // bivector signs (back to original R's bivector signs); the
     // formula below is the direct port of `Rotor4::apply` Stage 1
-    // with bivector terms using positive r{xy,...} — but since we
+    // with bivector terms using positive r{xy,...}, but since we
     // already inverted the signs above, this works out to using the
     // negated values. Keeping the formula identical to the CPU
     // implementation:
@@ -384,7 +384,7 @@ fn tesseract_sdf_local(p: vec4<f32>) -> f32 {
 //
 //     (|p.x| + |p.y| + |p.z| + |p.w| - 1) / 2
 //
-// The `/ 2` is the unit-normal normalisation — without it the
+// The `/ 2` is the unit-normal normalisation, without it the
 // function returns the L1 distance (twice the Euclidean), which
 // over-estimates the true SDF and causes sphere-tracing tunneling
 // (rays step past the surface, surface appears to "disappear" or
@@ -398,8 +398,8 @@ fn cell16_sdf_local(p: vec4<f32>) -> f32 {
 // the intersection of a tesseract scaled to 1/sqrt(2) (so its
 // vertices land at distance 1) with a 16-cell scaled to sqrt(2)
 // (so its faces tangent the same sphere). The intersection's
-// vertices are the 24 permutations of (±1/sqrt(2), ±1/sqrt(2), 0, 0)
-// — the canonical 24-cell vertex set.
+// vertices are the 24 permutations of (±1/sqrt(2), ±1/sqrt(2), 0, 0):
+// the canonical 24-cell vertex set.
 //
 // Intersection of two convex shapes: SDF = max(sdf_a, sdf_b).
 // The cross-polytope component carries the same `/ 2` correction
@@ -759,7 +759,7 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("struct Uniforms"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("@group(0) @binding(0)"));
         // The scene's `rye_scene_sdf` is the contract the kernel
-        // expects — the scene module must define it.
+        // expects, the scene module must define it.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_scene_sdf("));
         // Dynamic-body machinery.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BodyUniform"));
@@ -775,7 +775,7 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rotor4_inverse_apply"));
     }
 
-    /// `BodyUniform` is exactly 80 bytes — the std140-aligned
+    /// `BodyUniform` is exactly 80 bytes, the std140-aligned
     /// layout the kernel's `BodyUniform` struct expects. Off-by-
     /// padding bugs would surface here as a different size.
     #[test]
@@ -799,7 +799,7 @@ mod tests {
         assert_eq!(p.polytope_size, 1.0);
     }
 
-    /// Default body is an identity-rotor sphere — safe to leave in
+    /// Default body is an identity-rotor sphere, safe to leave in
     /// unused slots (`set_body_count` excludes them but they're
     /// still read into the uniform buffer).
     #[test]

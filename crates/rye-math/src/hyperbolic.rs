@@ -1,4 +1,4 @@
-//! Hyperbolic 3-space (H³) — the first non-trivial implementation of
+//! Hyperbolic 3-space (H³), the first non-trivial implementation of
 //! [`Space`].
 //!
 //! ## Dual representation
@@ -9,7 +9,7 @@
 //! plumbing.
 //!
 //! Isometries live as 4×4 Lorentz matrices acting on the **hyperboloid**
-//! model — composition is matmul, which the GPU and existing transform
+//! model, composition is matmul, which the GPU and existing transform
 //! graphs are already good at. See [`Iso3H`].
 //!
 //! Applying an isometry to a point projects Poincaré → hyperboloid →
@@ -25,7 +25,7 @@
 //! ## Domain constraint
 //!
 //! Poincaré points must satisfy `|p| < 1`. The boundary sphere is the
-//! "point at infinity" — geodesic distances diverge there. Methods do
+//! "point at infinity", geodesic distances diverge there. Methods do
 //! not panic on out-of-domain input; they clamp internally and return
 //! degraded-but-finite results. Callers are responsible for keeping
 //! points interior. The fractal example's `--hyperbolic` mode rescales
@@ -143,7 +143,7 @@ impl Space for HyperbolicH3 {
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         // Use the Möbius (artanh) form rather than the acosh form. They
         // are mathematically equivalent, but acosh of `1 + δ` for tiny
-        // δ collapses to f32's representable gap near 1.0 — small
+        // δ collapses to f32's representable gap near 1.0, small
         // distances quantize visibly. Möbius is well-conditioned at
         // both ends inside the ball.
         let a = clamp_to_ball(a);
@@ -226,7 +226,7 @@ impl Space for HyperbolicH3 {
     fn iso_transport(&self, iso: Iso3H, at: Vec3, v: Vec3) -> Vec3 {
         // Push v through the isometry's differential by the geodesic
         // round-trip identity:  M_*v = log(M·at, M·exp(at, v)).
-        // Exact because M is an isometry — magnitudes and the geodesic
+        // Exact because M is an isometry, magnitudes and the geodesic
         // structure are preserved.
         let target = self.exp(at, v);
         let m_at = self.iso_apply(iso, at);
@@ -336,7 +336,7 @@ fn artanh(x: f32) -> f32 {
 }
 
 /// Möbius addition `a ⊕ b` in the Poincaré ball, K = -1. Non-associative
-/// in general — the failure of associativity is the gyration.
+/// in general, the failure of associativity is the gyration.
 fn mobius_add(a: Vec3, b: Vec3) -> Vec3 {
     let ab = a.dot(b);
     let aa = a.length_squared();
@@ -350,7 +350,7 @@ fn mobius_add(a: Vec3, b: Vec3) -> Vec3 {
     }
 }
 
-/// Möbius gyration `gyr[a, b] v` — the rotation produced when Möbius
+/// Möbius gyration `gyr[a, b] v`, the rotation produced when Möbius
 /// addition fails to be associative. Used for parallel transport.
 fn gyr_apply(a: Vec3, b: Vec3, v: Vec3) -> Vec3 {
     let ab = mobius_add(a, b);

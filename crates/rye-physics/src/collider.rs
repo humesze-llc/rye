@@ -1,4 +1,4 @@
-//! Collider types. Re-exports from [`rye_shape`] — `Collider` is
+//! Collider types. Re-exports from [`rye_shape`], `Collider` is
 //! just an alias for the canonical [`rye_shape::Shape`] enum, and
 //! `ColliderKind` aliases [`rye_shape::ShapeKind`]. This is the
 //! consolidation that resolves the "`rye-sdf::PrimitiveKind` and

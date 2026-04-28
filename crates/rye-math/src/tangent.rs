@@ -1,9 +1,9 @@
-//! [`Tangent`] — a tangent vector bundled with the point it lives at.
+//! [`Tangent`], a tangent vector bundled with the point it lives at.
 //!
 //! In curved geometry, a tangent vector without its base point is
 //! geometrically meaningless. The [`Space`] trait permits bare
 //! `Self::Vector` for performance, but mistakes there produce *silently*
-//! wrong physics rather than crashes — the worst kind of bug. `Tangent`
+//! wrong physics rather than crashes, the worst kind of bug. `Tangent`
 //! is the recommended holder outside tight numerical kernels.
 
 use std::ops::Mul;

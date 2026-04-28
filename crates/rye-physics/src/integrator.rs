@@ -2,8 +2,8 @@
 //!
 //! `PhysicsSpace` extends [`rye_math::Space`] with what physics needs on
 //! top of kinematics: an angular-velocity type, an inertia type, and an
-//! orientation-integration rule. Everything else — position integration,
-//! velocity transport, gravity, collision — is written against the
+//! orientation-integration rule. Everything else, position integration,
+//! velocity transport, gravity, collision, is written against the
 //! `Space` trait and works unchanged across E², E³, H³, S³, etc.
 
 use std::ops::Mul;
@@ -26,7 +26,7 @@ pub trait PhysicsSpace: Space {
     type AngVel: Bivector;
 
     /// Inertia representation. Scalar in 2D; a 3×3 symmetric matrix in
-    /// 3D; a 6×6 bivector-to-bivector map in 4D. Kept opaque here — the
+    /// 3D; a 6×6 bivector-to-bivector map in 4D. Kept opaque here, the
     /// implementor decides the layout.
     type Inertia: Copy;
 
@@ -85,7 +85,7 @@ pub trait PhysicsSpace: Space {
 /// parallel-transport velocity to the new tangent space, and integrate
 /// orientation.
 ///
-/// This is the Space-generic integration loop — it calls only
+/// This is the Space-generic integration loop, it calls only
 /// [`rye_math::Space::exp`], [`rye_math::Space::parallel_transport`],
 /// and [`PhysicsSpace::integrate_orientation`].
 pub fn integrate_body<S>(space: &S, body: &mut RigidBody<S>, dt: f32)

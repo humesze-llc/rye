@@ -159,7 +159,7 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for OrbitControl
         // the inputs were already unit; in H³ / S³ the transport
         // preserves *Riemannian* length, but the Poincaré-ball /
         // S³-embedding scales Euclidean length by a position-
-        // dependent factor — re-normalising restores the
+        // dependent factor, re-normalising restores the
         // Euclidean-unit convention the renderer expects (the
         // WGSL prelude handles the metric on those Euclidean-unit
         // ray directions).
@@ -360,7 +360,7 @@ mod tests {
     }
 
     /// Per-Space `OrbitController::advance` timing. `#[ignore]` by
-    /// default — run on demand via
+    /// default, run on demand via
     ///
     /// ```text
     /// cargo test --release --package rye-camera \

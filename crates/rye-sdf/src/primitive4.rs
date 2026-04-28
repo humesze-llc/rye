@@ -1,4 +1,4 @@
-//! `Primitive4` — 4D-SDF emit for the [`rye_shape::Shape`] variants
+//! `Primitive4`, 4D-SDF emit for the [`rye_shape::Shape`] variants
 //! that live in ℝ⁴.
 //!
 //! Mirrors [`crate::Primitive`] for the 3D path, but operates on 4D
@@ -25,7 +25,7 @@
 //! | All 3D-only variants (`Sphere`, `Box3`, `HalfSpace`, ...) | sentinel | `1e9` (no emit; they shouldn't appear in `Scene4`) |
 //!
 //! The polytope emit currently builds the half-spaces inside the
-//! function on every call — fine for static scenes (5 to 24
+//! function on every call, fine for static scenes (5 to 24
 //! vertices), expensive for arbitrary user polytopes. When perf
 //! pressure shows up, the half-space derivation moves to the CPU
 //! side and the WGSL emit becomes a max-over-static-array.
@@ -111,7 +111,7 @@ impl Primitive4 for Shape {
             | Shape::Polygon2D { .. }
             | Shape::ConvexPolytope3D { .. } => format!(
                 "fn {name}(_p: vec4<f32>) -> f32 {{\n\
-                \t// 3D-only Shape variant in a 4D scene — sentinel.\n\
+                \t// 3D-only Shape variant in a 4D scene, sentinel.\n\
                 \treturn 1e9;\n\
                 }}\n",
             ),
@@ -167,7 +167,7 @@ mod tests {
     }
 
     /// 3D-only variants accidentally included in a 4D scene emit
-    /// the sentinel, not a 3D-shaped function — keeps the
+    /// the sentinel, not a 3D-shaped function, keeps the
     /// `Primitive4` trait exhaustive without silently producing
     /// type-mismatched WGSL.
     #[test]

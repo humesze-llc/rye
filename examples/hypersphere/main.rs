@@ -1,4 +1,4 @@
-//! Hypersphere `w`-slice viewer — drop one or many 4D balls onto
+//! Hypersphere `w`-slice viewer, drop one or many 4D balls onto
 //! a 4D floor, render their 3D cross-sections at user-controlled
 //! `w₀`.
 //!
@@ -21,8 +21,8 @@
 //!
 //! ## CLI
 //!
-//! - `-n N` / `--count N` — N hyperspheres (default 1, max 32).
-//! - `--legacy` — switch to the bespoke-shader implementation.
+//! - `-n N` / `--count N`, N hyperspheres (default 1, max 32).
+//! - `--legacy`, switch to the bespoke-shader implementation.
 //!
 //! ## Controls (framework path)
 //!
@@ -58,7 +58,7 @@ use rye_sdf::{Scene4, SceneNode4};
 use winit::window::WindowAttributes;
 
 const RADIUS_4D: f32 = 1.0;
-/// Offset range relative to body[0]'s `w` — same as legacy.
+/// Offset range relative to body[0]'s `w`, same as legacy.
 const W_OFFSET_RANGE: f32 = 1.5;
 const W_SWEEP_RATE: f32 = 0.6;
 
@@ -112,7 +112,7 @@ fn build_world(count: usize) -> (World<EuclideanR4>, Vec<usize>) {
 }
 
 // ---------------------------------------------------------------------------
-// HypersphereApp — the framework path
+// HypersphereApp: the framework path
 // ---------------------------------------------------------------------------
 
 struct HypersphereApp {
@@ -238,7 +238,7 @@ impl App for HypersphereApp {
             .advance(ctx.input, &mut self.camera, &EuclideanR3, 0.0);
         let view = self.camera.view();
 
-        // Body uniforms — every sphere's current 4D position.
+        // Body uniforms, every sphere's current 4D position.
         self.write_bodies();
 
         // Camera + slice-w + resolution into the node uniform.
@@ -313,7 +313,7 @@ impl App for HypersphereApp {
         let mode = if self.auto_sweep { "auto" } else { "manual" };
         let w_eff = p.w + self.w_offset;
         Cow::Owned(format!(
-            "Rye — hypersphere (rye-app) | {fps:.0} fps | n={n} | offset={:+.2} ({mode}) w₀={:+.2}{pause} | pos[0].y={:+.2} pos[0].w={:+.2}",
+            "Rye - hypersphere (rye-app) | {fps:.0} fps | n={n} | offset={:+.2} ({mode}) w₀={:+.2}{pause} | pos[0].y={:+.2} pos[0].w={:+.2}",
             self.w_offset, w_eff, p.y, p.w
         ))
     }
@@ -332,7 +332,7 @@ fn parse_count() -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// Entry point — dispatch on --legacy
+// Entry point, dispatch on --legacy
 // ---------------------------------------------------------------------------
 
 fn main() -> Result<()> {
@@ -343,7 +343,7 @@ fn main() -> Result<()> {
     let count = parse_count();
     let config = RunConfig {
         window: WindowAttributes::default()
-            .with_title("Rye — hypersphere (rye-app)")
+            .with_title("Rye - hypersphere (rye-app)")
             .with_visible(false),
         ..RunConfig::default()
     };

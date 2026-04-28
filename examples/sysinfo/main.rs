@@ -18,7 +18,7 @@ fn main() {
         let features = adapter.features();
 
         println!(
-            "[{i}] {} — {:?} ({:?})",
+            "[{i}] {} - {:?} ({:?})",
             info.name, info.backend, info.device_type
         );
         println!("    driver:       {} [{}]", info.driver, info.driver_info);

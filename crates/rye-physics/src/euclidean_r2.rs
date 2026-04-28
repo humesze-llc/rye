@@ -1,4 +1,4 @@
-//! `impl PhysicsSpace for EuclideanR2` — 2D Euclidean rigid-body physics.
+//! `impl PhysicsSpace for EuclideanR2`, 2D Euclidean rigid-body physics.
 //!
 //! Angular velocity is a scalar ([`Bivector2`]); inertia is the scalar
 //! moment of inertia. Orientation integrates by composing a rotor
@@ -284,7 +284,7 @@ fn polygon_polygon_r2(
     // Contact-point heuristic: find the deepest-penetrating vertex of
     // each polygon (projected along the contact normal), then pick
     // whichever actually lies inside the other polygon. In a vertex-
-    // face contact only one side has a penetrating vertex — that vertex
+    // face contact only one side has a penetrating vertex, that vertex
     // IS the contact point. For edge-edge (both inside) or grazing
     // (neither strictly inside), fall back to the midpoint of the two
     // candidates. Imperfect; replace with a full Sutherland-Hodgman
@@ -385,7 +385,7 @@ fn sphere_polygon_r2(
     let (closest, dist) = closest_on_polygon_boundary(&vb, center);
 
     if point_in_convex_ccw(&vb, center) {
-        // Sphere center is inside the polygon — maximal penetration.
+        // Sphere center is inside the polygon, maximal penetration.
         // Push the sphere out along (center - closest) = toward the
         // nearest edge. Normal A→B is from sphere toward polygon =
         // (closest - center) direction, but since the center is inside
@@ -509,7 +509,7 @@ pub fn static_wall(center: Vec2, half_extents: Vec2) -> RigidBody<EuclideanR2> {
         Collider::Polygon2D {
             vertices: rectangle_vertices(half_extents),
         },
-        // Any finite value is fine — the solver gates angular response
+        // Any finite value is fine, the solver gates angular response
         // on `inv_mass > 0`, so static walls never actually rotate.
         1.0,
         &EuclideanR2,
@@ -890,13 +890,13 @@ mod tests {
             world.push_body(body);
         }
         // Tall stacks need more iterations than the default to
-        // converge — impulses propagate one box per iteration through
+        // converge, impulses propagate one box per iteration through
         // the chain of contacts.
         world.pgs_iters = 16;
 
         world.push_field(Box::new(crate::field::Gravity::new(Vec2::new(0.0, -9.8))));
 
-        // Run for 5 seconds at 60 Hz — plenty of time to settle.
+        // Run for 5 seconds at 60 Hz, plenty of time to settle.
         for _ in 0..300 {
             world.step(1.0 / 60.0);
         }

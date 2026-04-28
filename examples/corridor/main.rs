@@ -1,4 +1,4 @@
-//! Corridor raymarch demo — the README hero image.
+//! Corridor raymarch demo, the README hero image.
 //!
 //! A rectangular hallway with pillars along both walls, rendered with
 //! geodesic ray marching in E³, H³, or S³. Same scene, same shader,
@@ -13,13 +13,13 @@
 //!
 //! ## Flags
 //!
-//! `--hyperbolic`         — swap Space prelude to HyperbolicH3
-//! `--spherical`          — swap Space prelude to SphericalS3
-//! `--rotate`             — auto-rotate camera; interactive at 1 rev/20 s
-//! `--capture-apng PATH`  — render N frames, save looping APNG, exit
-//! `--capture-gif  PATH`  — render N frames, save looping GIF, exit
-//! `--capture-frames N`   — frame count (default 300 = 10 s @ 30 fps)
-//! `--capture-fps N`      — playback fps baked into APNG (default 30)
+//! `--hyperbolic`        , swap Space prelude to HyperbolicH3
+//! `--spherical`         , swap Space prelude to SphericalS3
+//! `--rotate`            , auto-rotate camera; interactive at 1 rev/20 s
+//! `--capture-apng PATH` , render N frames, save looping APNG, exit
+//! `--capture-gif  PATH` , render N frames, save looping GIF, exit
+//! `--capture-frames N`  , frame count (default 300 = 10 s @ 30 fps)
+//! `--capture-fps N`     , playback fps baked into APNG (default 30)
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -83,13 +83,13 @@ struct ShaderKnobs {
 // The corridor walls sit at Space x = ±0.55 and y = ±0.40. The camera
 // must stay inside the Poincaré ball for H³/S³ (|p| < 1), so
 // capture_distance × ball_scale must be < 1.0 and also less than the
-// corridor half-widths. 1.5 × 0.2 = 0.30 — safely inside the hall.
+// corridor half-widths. 1.5 × 0.2 = 0.30, safely inside the hall.
 const CORRIDOR_BALL_SCALE: f32 = 0.2;
 
 const EUCLIDEAN_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: CORRIDOR_BALL_SCALE,
     fog_scale: 2.8,
-    title: "Rye — Corridor (E³)",
+    title: "Rye - Corridor (E³)",
     capture_distance: 1.5,
     capture_pitch: -0.12,
 };
@@ -97,7 +97,7 @@ const EUCLIDEAN_KNOBS: ShaderKnobs = ShaderKnobs {
 const HYPERBOLIC_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: CORRIDOR_BALL_SCALE,
     fog_scale: 2.2,
-    title: "Rye — Corridor (H³ geodesics)",
+    title: "Rye - Corridor (H³ geodesics)",
     capture_distance: 1.5,
     capture_pitch: -0.12,
 };
@@ -105,7 +105,7 @@ const HYPERBOLIC_KNOBS: ShaderKnobs = ShaderKnobs {
 const SPHERICAL_KNOBS: ShaderKnobs = ShaderKnobs {
     ball_scale: CORRIDOR_BALL_SCALE,
     fog_scale: 2.4,
-    title: "Rye — Corridor (S³ geodesics)",
+    title: "Rye - Corridor (S³ geodesics)",
     capture_distance: 1.5,
     capture_pitch: -0.12,
 };
@@ -390,7 +390,7 @@ impl<S: WgslSpace + 'static> ApplicationHandler for AppRunner<S> {
                                 let total = self.capture_args.frames;
                                 if n % 30 == 0 || n == total as usize {
                                     win.set_title(&format!(
-                                        "{} — capturing {n}/{total}",
+                                        "{} - capturing {n}/{total}",
                                         self.app.knobs.title
                                     ));
                                 }

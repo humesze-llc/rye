@@ -1,4 +1,4 @@
-//! Euclidean R³ — the sanity-check implementation of [`Space`].
+//! Euclidean R³, the sanity-check implementation of [`Space`].
 //!
 //! Exists primarily so the [`Space`] contract has a concrete witness with
 //! obviously-correct behavior. Hyperbolic and spherical impls can compare
@@ -13,7 +13,7 @@ use crate::space::{Space, WgslSpace};
 
 /// A rigid motion of R³: a rotation followed by a translation.
 ///
-/// Pure isometry — scale and shear are excluded by construction.
+/// Pure isometry, scale and shear are excluded by construction.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3 {
     pub rotation: Quat,
@@ -44,7 +44,7 @@ impl Iso3 {
 /// Euclidean R³ with the standard metric.
 ///
 /// Stateless: a unit struct that monomorphizes away. Construct via
-/// `EuclideanR3` directly — there is only one R³.
+/// `EuclideanR3` directly, there is only one R³.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EuclideanR3;
 
@@ -115,7 +115,7 @@ impl WgslSpace for EuclideanR3 {
 //   - Function-name mangling when multiple Space impls coexist in one
 //     shader module (e.g. a portal between R3 and H3 in the fractal
 //     ray-marcher).
-//   - How `iso_apply` / `iso_transport` are exposed to user WGSL — free
+//   - How `iso_apply` / `iso_transport` are exposed to user WGSL, free
 //     functions, struct methods, or a uniform-buffer-bound operator
 //     pattern.
 //

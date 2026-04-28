@@ -1,4 +1,4 @@
-//! 4D physics demo — drop one or two pentatopes (4-simplices) under
+//! 4D physics demo, drop one or two pentatopes (4-simplices) under
 //! gravity and dump per-tick state to stdout.
 //!
 //! There's no rendering: `rye-render` is 3D-only, and a real 4D viewer
@@ -8,13 +8,13 @@
 //!
 //! Modes:
 //!
-//! - **Default** — one pentatope at `y = 5`, gravity along `−y`. Falls
+//! - **Default**: one pentatope at `y = 5`, gravity along `−y`. Falls
 //!   forever (no floor, no other body), exercising integrator + 4D
 //!   orientation transport on a 4D rigid body.
-//! - **`--floor`** — adds a static 4D half-space at `y = 0` (normal
+//! - **`--floor`**: adds a static 4D half-space at `y = 0` (normal
 //!   along `+y`). The pentatope falls onto this 4D ground and
 //!   settles, exercising the polytope-vs-halfspace 4D narrowphase.
-//! - **`--collide`** — same plus a second pentatope held static at the
+//! - **`--collide`**: same plus a second pentatope held static at the
 //!   origin. The falling one drops onto it; their first contact (and
 //!   any subsequent ones) prints a line. This exercises the full 4D
 //!   collision pipeline: GJK in 4D, EPA penetration depth, the new
@@ -22,8 +22,8 @@
 //!
 //! Other CLI flags:
 //!
-//! - `--steps N` — total sim ticks (default 600 ≈ 10 s at 60 Hz).
-//! - `--print-every N` — print state every N ticks (default 60).
+//! - `--steps N`, total sim ticks (default 600 ≈ 10 s at 60 Hz).
+//! - `--print-every N`, print state every N ticks (default 60).
 
 use glam::Vec4;
 use rye_math::EuclideanR4;
@@ -39,7 +39,7 @@ const DT: f32 = 1.0 / 60.0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    /// One pentatope, no floor, no second body — pure free-fall.
+    /// One pentatope, no floor, no second body, pure free-fall.
     #[default]
     Drop,
     /// Pentatope plus a 4D `y ≥ 0` half-space floor.
@@ -150,7 +150,7 @@ fn main() {
         Mode::Floor => "floor",
         Mode::Collide => "collide",
     };
-    println!("4D physics demo — {mode_label} mode");
+    println!("4D physics demo - {mode_label} mode");
     println!("  gravity:  {}", fmt_v4(Vec4::new(0.0, -9.8, 0.0, 0.0)));
     println!(
         "  bodies:   {} (falling pentatope is id {falling_id})",

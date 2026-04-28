@@ -1,6 +1,6 @@
 //! WGSL emission for [`rye_shape::Shape`].
 //!
-//! The shape data model lives in `rye-shape` — that's where `Sphere`,
+//! The shape data model lives in `rye-shape`, that's where `Sphere`,
 //! `HalfSpace`, `Box3`, and the polytope variants are defined so that
 //! `rye-physics` and `rye-sdf` share one canonical type. This module
 //! is the rendering half: it implements the [`Primitive`] extension
@@ -9,22 +9,22 @@
 //!
 //! ## Variants and their SDFs
 //!
-//! - [`Shape::Sphere`] — `rye_distance(p, center) − radius`. The
+//! - [`Shape::Sphere`], `rye_distance(p, center) − radius`. The
 //!   center is part of the shape (unlike physics, where the body's
 //!   position is the center); SDF scenes use it to place spheres
 //!   without a transform combinator.
-//! - [`Shape::HalfSpace`] — Euclidean `dot(p, n) − offset`. Exact in
+//! - [`Shape::HalfSpace`], Euclidean `dot(p, n) − offset`. Exact in
 //!   E³; in H³/S³ this is the Euclidean-coordinate half-space as
 //!   embedded in the Space's chart, matching the corridor/lattice
 //!   demos' convention. Geodesic-plane formulas will land in a
 //!   follow-up.
-//! - [`Shape::Box3`] — standard Euclidean box SDF (`max(abs(p) − b, 0)`
+//! - [`Shape::Box3`], standard Euclidean box SDF (`max(abs(p) − b, 0)`
 //!   and the negative-interior correction). Axis-aligned, centered at
 //!   the local frame's origin.
 //!
 //! Variants without a WGSL emission today (`Polygon2D`,
 //! `ConvexPolytope3D`, `ConvexPolytope4D`) return a stub SDF that
-//! evaluates to `+infinity` — they're skipped in scene emission.
+//! evaluates to `+infinity`, they're skipped in scene emission.
 
 use rye_math::WgslSpace;
 use rye_shape::Shape;
@@ -34,8 +34,8 @@ use rye_shape::Shape;
 ///
 /// The emitted function has signature
 /// `fn {name}(p: vec3<f32>) -> f32` and must call only `rye_*`
-/// functions from the Space prelude — never raw coordinate
-/// arithmetic — so that correctness is preserved across E³, H³, and
+/// functions from the Space prelude, never raw coordinate
+/// arithmetic, so that correctness is preserved across E³, H³, and
 /// S³.
 pub trait Primitive {
     /// Emit a WGSL function named `name` that returns the signed
@@ -86,7 +86,7 @@ impl Primitive for Shape {
                 // a far-away-sentinel so they don't break scene
                 // assembly if accidentally included. Rendering these
                 // properly needs either a compiled mesh-SDF bake or
-                // a runtime convex-hull SDF kernel — both follow-ups.
+                // a runtime convex-hull SDF kernel, both follow-ups.
                 format!("fn {name}(_p: vec3<f32>) -> f32 {{\n\treturn 1e9;\n}}\n",)
             }
         }

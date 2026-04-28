@@ -2,7 +2,7 @@
 //!
 //! In 3D the GJK simplex logic uses explicit Voronoi-region analysis
 //! (line/triangle/tetrahedron) with hand-tuned cross products. That
-//! approach doesn't generalize cleanly to 4D — a triangle's "normal"
+//! approach doesn't generalize cleanly to 4D, a triangle's "normal"
 //! is now a 2D space, a tetrahedron's is a 1D line, and a 4-simplex
 //! is the first volume-enclosing case.
 //!
@@ -30,7 +30,7 @@ pub struct Closest {
     /// `kept` are exactly zero. Weights in `kept` are ≥ 0 and sum to
     /// 1 within f32 tolerance.
     pub weights: Vec<f32>,
-    /// Indices of the simplex vertices whose weights are non-zero —
+    /// Indices of the simplex vertices whose weights are non-zero,
     /// the sub-simplex GJK should carry forward into the next iter.
     pub kept: Vec<usize>,
 }
@@ -172,7 +172,7 @@ fn solve_spd_system(g: &mut [[f32; 4]; 4], b: &mut [f32; 4], k: usize) -> Option
         b[i] *= inv_piv;
 
         // Eliminate other rows. `g[i]` is `[f32; 4]` (Copy), so cache
-        // it locally — that frees the borrow checker to mutate other
+        // it locally, that frees the borrow checker to mutate other
         // rows of `g` without splitting the outer borrow.
         let pivot_row = g[i];
         let pivot_b = b[i];
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn line_segment_outside_origin_projects_to_endpoint() {
         // Segment entirely on positive x-axis: origin projects onto
-        // the nearer endpoint (−1, 0, …) wait — both are positive —
+        // the nearer endpoint (−1, 0, …) wait, both are positive,
         // so projects onto the one closest to origin (x = 1).
         let c = closest_to_origin(&[Vec4::new(1.0, 0.0, 0.0, 0.0), Vec4::new(2.0, 0.0, 0.0, 0.0)]);
         assert_close(c.point.x, 1.0, 1e-4);
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn pentatope_containing_origin() {
         // 5-simplex in 4D enclosing origin. Using the 16-cell's
-        // vertex set minus a few — actually easier: use 5 vertices
+        // vertex set minus a few, actually easier: use 5 vertices
         // of a symmetric 4-simplex.
         let c = closest_to_origin(&[
             Vec4::new(1.0, 1.0, 1.0, -1.0 / 5.0_f32.sqrt()),

@@ -1,6 +1,6 @@
 //! Smoke test for `rye-text`. Opens a window with a colored
 //! background and renders a few text labels at different sizes and
-//! colors. Visual verification only — no assertion.
+//! colors. Visual verification only, no assertion.
 //!
 //! Font discovery: tries a small set of well-known system font
 //! locations. On Windows, Arial is reliably present.

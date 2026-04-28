@@ -148,7 +148,7 @@ impl ShaderDb {
         &self
             .entries
             .get(&id)
-            .expect("unknown ShaderId — was it loaded by this ShaderDb?")
+            .expect("unknown ShaderId - was it loaded by this ShaderDb?")
             .module
     }
 
@@ -229,7 +229,7 @@ fn canonicalize(path: &Path) -> Result<PathBuf> {
 
 /// Concatenate the Space's WGSL prelude with the user shader source.
 ///
-/// Extracted for testability — this is the hot-reloadable logic that
+/// Extracted for testability, this is the hot-reloadable logic that
 /// doesn't require a wgpu Device.
 #[cfg(test)]
 pub(crate) fn assemble_source(space_wgsl: &str, user_source: &str) -> String {

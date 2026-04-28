@@ -1,4 +1,4 @@
-//! Force fields — plug-in trait for anything that produces a tangent
+//! Force fields, plug-in trait for anything that produces a tangent
 //! vector at a body's position.
 //!
 //! Register any number of force fields on a [`crate::World`]. Each
@@ -17,7 +17,7 @@ pub trait ForceField<S: PhysicsSpace>: Send + Sync {
 }
 
 /// Constant downward (or arbitrary-direction) gravity. Force is
-/// independent of time and body state — scales linearly with mass so
+/// independent of time and body state, scales linearly with mass so
 /// all objects fall at the same rate regardless of mass.
 pub struct Gravity<S: PhysicsSpace> {
     pub acceleration: S::Vector,

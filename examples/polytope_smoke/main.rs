@@ -1,6 +1,6 @@
 //! Smoke test for the polytope path in `Hyperslice4DNode`. Renders
-//! the first four convex regular polychora — 5-cell, tesseract,
-//! 16-cell, 24-cell — in a row on a 4D `y = 0` floor, with
+//! the first four convex regular polychora, 5-cell, tesseract,
+//! 16-cell, 24-cell, in a row on a 4D `y = 0` floor, with
 //! user-controllable `w`-slice scrubbing and a per-plane toggle
 //! UI for arbitrary 4D rotations. The user composes their own
 //! motion by toggling individual rotation planes (1..6 → xy, xz,
@@ -12,10 +12,10 @@
 //!
 //! (120-cell and 600-cell are the remaining two regular polychora;
 //! their face-hyperplane sets are large enough to want a Rust-side
-//! generator before they go into the kernel — deferred until the
+//! generator before they go into the kernel, deferred until the
 //! demo or game needs them.)
 //!
-//! Doubles as the integration showcase for `rye-text` — all live
+//! Doubles as the integration showcase for `rye-text`, all live
 //! state and the controls help are drawn in-window via the text
 //! crate, no window-title stuffing.
 //!
@@ -26,7 +26,7 @@
 //! - Pentatope cross-sections morph through the 5-cell's slice
 //!   shapes as `w_slice` scrubs.
 //! - The Rotor4 inverse-sandwich path correctly transforms world
-//!   points into body-local for evaluating the polytope SDF —
+//!   points into body-local for evaluating the polytope SDF,
 //!   single-plane and compound 4D rotations both produce coherent
 //!   slice morphs.
 //! - `rye-text` renders ASCII glyphs over a hyperslice scene
@@ -38,7 +38,7 @@
 //! - **Mouse left-drag**: orbit camera.
 //! - **↑ / ↓**: scrub `w`-slice (0.5 u/s).
 //! - **T**: toggle 4D rotation (pause/resume freezes orientation
-//!   in place — does NOT snap back to identity).
+//!   in place, does NOT snap back to identity).
 //! - **1..6**: toggle the corresponding rotation plane on/off.
 //!   The mapping is `1=xy, 2=xz, 3=xw, 4=yz, 5=yw, 6=zw`. Active
 //!   planes' bivectors sum into the angular velocity. Famous
@@ -47,19 +47,19 @@
 //!   SO(4). Pure-3D combinations (`1+2+4`) just rotate the
 //!   cross-section as a rigid 3D shape.
 //! - **+ / −**: adjust the global rotation rate.
-//! - **R**: full reset — slice, rate, all toggles off, AND
+//! - **R**: full reset, slice, rate, all toggles off, AND
 //!   orientation back to canonical pose.
 //! - **Esc**: exit.
 //!
 //! ## CLI
 //!
-//! - `--shapes name1 name2 ...` — choose the polytopes to render
+//! - `--shapes name1 name2 ...`, choose the polytopes to render
 //!   in left-to-right order. Names accepted include the math form
 //!   (`5-cell`, `tesseract`, `16-cell`, `24-cell`) and Platonic-
 //!   slice aliases (`tetrahedron`, `cube`, `octahedron`,
 //!   `cuboctahedron`). The `dodecahedron` (120-cell) and
 //!   `icosahedron` (600-cell) names produce an explanatory error
-//!   today — their face-hyperplane tables ship in a follow-up
+//!   today, their face-hyperplane tables ship in a follow-up
 //!   branch.
 
 use std::path::Path;
@@ -82,7 +82,7 @@ const SHAPE_TESSERACT: u32 = 1;
 const SHAPE_16CELL: u32 = 2;
 const SHAPE_24CELL: u32 = 3;
 // Placeholders for the dodecahedron/icosahedron Platonic-slice
-// shapes — real SDFs deferred to a follow-up branch (see
+// shapes, real SDFs deferred to a follow-up branch (see
 // `parse_shape_name` for the friendly-error message users see if
 // they request them by name today).
 const _SHAPE_120CELL: u32 = 4;
@@ -102,7 +102,7 @@ const BASE_ROTATION_RATE: f32 = std::f32::consts::TAU * 0.3;
 /// column without overlap during animation.
 const BODY_X_SPACING: f32 = 1.8;
 /// Per-body circumradius. Smaller than the `[-2, +2]` first row of
-/// shapes was at — letting four shapes fit in view at once.
+/// shapes was at, letting four shapes fit in view at once.
 const BODY_SIZE: f32 = 0.7;
 /// Center-y for all bodies; floor is at y=0.
 const BODY_Y: f32 = 0.9;
@@ -120,7 +120,7 @@ struct ShapeEntry {
 /// shapes whose SDFs are currently in the kernel.
 ///
 /// The "Platonic-solid analogue" set the user tends to want is
-/// `tetrahedron, cube, octahedron, dodecahedron, icosahedron` —
+/// `tetrahedron, cube, octahedron, dodecahedron, icosahedron`,
 /// matching the Simplex 4D ladder. Tetrahedron / cube / octahedron
 /// are already wired (5-cell / tesseract / 16-cell). Dodecahedron
 /// (120-cell) and icosahedron (600-cell) need their face-hyperplane
@@ -228,7 +228,7 @@ fn body_position(slot: usize, n: usize) -> [f32; 4] {
 /// per-frame angular-velocity bivector; multiple planes sum.
 ///
 /// Sum-of-bivectors composition is **commutative** (vector space
-/// addition), so toggle order doesn't matter — only the active
+/// addition), so toggle order doesn't matter, only the active
 /// set does. That sidesteps the "cycle mode produces unpredictable
 /// results because rotor multiplication is non-commutative"
 /// problem of an earlier sequential-composition design.
@@ -294,7 +294,7 @@ fn angular_velocity(active: &[bool; 6], rate_scale: f32) -> Bivector4 {
 }
 
 /// Name a recognizable combination of active planes. Indices match
-/// `PLANES`: `0=xy 1=xz 2=xw 3=yz 4=yw 5=zw`. Order-independent —
+/// `PLANES`: `0=xy 1=xz 2=xw 3=yz 4=yw 5=zw`. Order-independent,
 /// only the active *set* matters.
 ///
 /// Curated entries cover common 4D-geometry classics: single
@@ -321,25 +321,25 @@ fn combo_name(active: &[bool; 6]) -> Option<&'static str> {
     let m = mask;
     Some(match m {
         0 => return None,
-        // Single planes — three w-stretchers and three pure-3D rotations.
+        // Single planes, three w-stretchers and three pure-3D rotations.
         x if x == xw => "x-into-w stretch",
         x if x == yw => "y-into-w stretch",
         x if x == zw => "z-into-w stretch",
         x if x == xy => "xy spin (3D only)",
         x if x == xz => "xz spin (3D only)",
         x if x == yz => "yz spin (3D only)",
-        // Perpendicular-pair isoclinics — the only commuting
+        // Perpendicular-pair isoclinics, the only commuting
         // bivector pairs in 4D.
         x if x == xw | yz => "isoclinic xw+yz",
         x if x == xz | yw => "isoclinic xz+yw",
         x if x == xy | zw => "isoclinic xy+zw",
-        // Pure-3D combos — equivalent to standard 3D rotations.
+        // Pure-3D combos, equivalent to standard 3D rotations.
         x if x == xy | xz | yz => "full 3D spin",
-        // The famous "all w-planes" — pulls every visible axis
+        // The famous "all w-planes", pulls every visible axis
         // into w simultaneously, drives the tesseract through its
         // main-diagonal cross-section (max-volume octahedron).
         x if x == xw | yw | zw => "main-diagonal spin (all-w)",
-        // Maximally compound — every plane active.
+        // Maximally compound, every plane active.
         x if x == xy | xz | xw | yz | yw | zw => "chaotic SO(4) drift",
         _ => "compound",
     })
@@ -408,7 +408,7 @@ struct PolytopeSmokeApp {
 }
 
 impl PolytopeSmokeApp {
-    /// Drive every body in the row with the same rotor — lets the
+    /// Drive every body in the row with the same rotor, lets the
     /// user directly compare slice signatures under identical 4D motion.
     fn write_all(&mut self, rotor: [f32; 8]) {
         let n = self.row.len();
@@ -517,7 +517,7 @@ impl App for PolytopeSmokeApp {
         // so the user can directly compare their slice signatures
         // under identical 4D motion. Rotor accumulates per-frame
         // (delta = exp(ω · dt)) so pause naturally freezes
-        // orientation in place — see KeyT handler.
+        // orientation in place, see KeyT handler.
         if self.rotate {
             self.rot_time += dt_secs;
             let omega = angular_velocity(&self.active, self.rate_scale) * dt_secs;
@@ -551,7 +551,7 @@ impl App for PolytopeSmokeApp {
         }
         self.node.flush_uniforms(&ctx.rd.queue);
 
-        // Text overlay — built fresh each frame; rye-text resets
+        // Text overlay, built fresh each frame; rye-text resets
         // its queue on render so leftover labels don't accumulate.
         let w = cfg.width as f32;
         let h = cfg.height as f32;
@@ -616,7 +616,7 @@ impl App for PolytopeSmokeApp {
 
         // Top-right: named combo (when the active set matches a
         // recognized composition). Right-edge alignment is by
-        // character-count estimate — rye-text doesn't ship a
+        // character-count estimate, rye-text doesn't ship a
         // measurement helper yet, so use ~0.5 × size px per char
         // as a serviceable approximation for the chosen Latin font.
         if let Some(name) = combo_name(&self.active) {
@@ -647,7 +647,7 @@ impl App for PolytopeSmokeApp {
             );
         }
 
-        // Bottom-right: window size — handy when sizing for
+        // Bottom-right: window size, handy when sizing for
         // screenshots.
         self.text.queue(
             &format!("{w:.0}x{h:.0}"),
@@ -681,14 +681,14 @@ impl App for PolytopeSmokeApp {
                 self.write_all(IDENTITY_ROTOR);
             }
             KeyCode::KeyT if pressed => {
-                // Pause / resume only — DO NOT touch rot_state. The
+                // Pause / resume only, DO NOT touch rot_state. The
                 // bodies keep their current orientation when paused
                 // and resume from there when toggled back on.
                 self.rotate = !self.rotate;
             }
             // Plane toggles. Sum-of-bivectors composition is
             // commutative, so the order in which planes are toggled
-            // doesn't affect the resulting motion — only the active
+            // doesn't affect the resulting motion, only the active
             // set matters.
             KeyCode::Digit1 | KeyCode::Numpad1 if pressed => self.active[0] = !self.active[0],
             KeyCode::Digit2 | KeyCode::Numpad2 if pressed => self.active[1] = !self.active[1],
@@ -723,7 +723,7 @@ impl App for PolytopeSmokeApp {
     }
 
     fn title(&self, _fps: f32) -> std::borrow::Cow<'static, str> {
-        // Window title is now decorative — all live state is in the
+        // Window title is now decorative, all live state is in the
         // overlay. Keep the title static so OS task switchers show
         // a stable label.
         std::borrow::Cow::Borrowed("polytope smoke")

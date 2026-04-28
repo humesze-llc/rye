@@ -1,9 +1,9 @@
-//! 2D physics demo — spawns a bucket and a handful of random shapes
+//! 2D physics demo, spawns a bucket and a handful of random shapes
 //! (circles, triangles, squares, pentagons, hexagons) and lets them
 //! fall under gravity, collide, and settle.
 //!
 //! Visualization: each body's SDF is evaluated per fragment by
-//! `physics2d.wgsl`. No raymarching — this is flat 2D.
+//! `physics2d.wgsl`. No raymarching, this is flat 2D.
 //!
 //! Press Esc or close the window to exit. Press R to reset.
 
@@ -252,7 +252,7 @@ impl ApplicationHandler for App {
         let win = Arc::new(
             elwt.create_window(
                 WindowAttributes::default()
-                    .with_title("Rye — 2D Physics")
+                    .with_title("Rye - 2D Physics")
                     .with_inner_size(winit::dpi::LogicalSize::new(900.0, 720.0))
                     .with_visible(false),
             )
@@ -398,7 +398,7 @@ impl ApplicationHandler for App {
                             .filter(|b| b.inv_mass > 0.0)
                             .count();
                         w.set_title(&format!(
-                            "Rye — 2D Physics | {fps:.0} fps | {dynamic_count} bodies | sim {:.1}s (R: reset)",
+                            "Rye - 2D Physics | {fps:.0} fps | {dynamic_count} bodies | sim {:.1}s (R: reset)",
                             self.sim_time
                         ));
                     }

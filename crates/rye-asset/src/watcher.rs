@@ -29,10 +29,10 @@ pub enum AssetEventKind {
 /// drains the channel non-blockingly and deduplicates events per path
 /// within one poll cycle. That means editor saves that produce a burst
 /// of raw events (remove temp → create target → modify) collapse to a
-/// single `Modified` or `Created` event per file — the usual thing a
+/// single `Modified` or `Created` event per file, the usual thing a
 /// shader cache wants.
 ///
-/// Not `Sync` — own one per app. `Send` is fine.
+/// Not `Sync`, own one per app. `Send` is fine.
 pub struct AssetWatcher {
     watcher: RecommendedWatcher,
     rx: Receiver<notify::Result<notify::Event>>,
@@ -109,7 +109,7 @@ impl AssetWatcher {
 
 /// Merge two events for the same path within a single poll cycle.
 ///
-/// `Created` is preserved across a subsequent `Modified` — on Windows,
+/// `Created` is preserved across a subsequent `Modified`, on Windows,
 /// `fs::write` on a fresh file emits Create+Modify, and downstream
 /// consumers expect "new file" to look different from "existing file
 /// changed." Otherwise the later event wins, which correctly handles

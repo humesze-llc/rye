@@ -1,10 +1,10 @@
-//! Euclidean R⁴ — flat 4D space with a [`Rotor4`]-based isometry.
+//! Euclidean R⁴, flat 4D space with a [`Rotor4`]-based isometry.
 //!
 //! Parallels [`crate::euclidean::EuclideanR3`] but in one higher
 //! dimension: [`Vec4`] points, [`Vec4`] tangent vectors, and an
 //! `Iso4Flat` that carries a `Rotor4` rotation + `Vec4` translation.
 //!
-//! Intentionally distinct from [`crate::spherical::Iso4`] — that type
+//! Intentionally distinct from [`crate::spherical::Iso4`], that type
 //! is an SO(4) matrix used to embed `S³` in 4D ambient space. The
 //! flat Iso here is for rigid motions of `R⁴` itself, the setting
 //! in which Simplex-4D and any 4D physics simulation live.
@@ -19,7 +19,7 @@ use crate::space::{Space, WgslSpace};
 
 /// Rigid motion of R⁴: a rotor-rotation followed by a translation.
 ///
-/// Pure isometry — scale and shear are excluded by construction. The
+/// Pure isometry, scale and shear are excluded by construction. The
 /// rotor is normalized on construction from `Space::iso_compose` /
 /// `iso_inverse` only when numerical drift warrants it; per-call
 /// renormalization would regress determinism on the fast path.
@@ -58,7 +58,7 @@ impl Default for Iso4Flat {
 
 /// Euclidean R⁴ with the standard metric `‖x‖² = x₁² + x₂² + x₃² + x₄²`.
 ///
-/// Stateless unit struct — there is only one R⁴. `Space` methods
+/// Stateless unit struct, there is only one R⁴. `Space` methods
 /// monomorphize to the bare arithmetic.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EuclideanR4;
@@ -94,7 +94,7 @@ impl Space for EuclideanR4 {
         // multiplication convention is "left operand applied first"
         // (verified by `rotor4_composition_matches_sequential_apply`),
         // so the composed rotor that applies `b_rot` then `a_rot`
-        // is `b.rotation · a.rotation` — opposite to `Quat`'s
+        // is `b.rotation · a.rotation`, opposite to `Quat`'s
         // convention, which is why this differs from `Iso3::compose`.
         Iso4Flat {
             rotation: b.rotation * a.rotation,
@@ -129,7 +129,7 @@ impl WgslSpace for EuclideanR4 {
     }
 }
 
-// 4D rendering isn't wired into `rye-render` yet — there is no
+// 4D rendering isn't wired into `rye-render` yet, there is no
 // geodesic-march kernel for R⁴ or anything above it. This prelude
 // exists so `rye-shader`'s ABI probe can validate the Space's WGSL
 // contract against the same test harness used by the 3D spaces, and

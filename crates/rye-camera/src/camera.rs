@@ -5,7 +5,7 @@
 //!
 //! [`Camera<S>`] stores a `position: S::Point` plus three tangent
 //! basis vectors at that point: `right`, `up`, `forward`. This is
-//! the orthonormal-frame-bundle representation of a camera — the
+//! the orthonormal-frame-bundle representation of a camera, the
 //! same way differential geometry treats observers in any
 //! Riemannian manifold. There is no separate "rotation" field; the
 //! frame *is* the orientation.
@@ -88,7 +88,7 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
     /// with `world_up` as the up-direction hint. Resolves into an
     /// orthonormal frame in the tangent space at `position`. For
     /// curved Spaces, "look toward `target`" means: the forward
-    /// direction is `Space::log(position, target)` normalised —
+    /// direction is `Space::log(position, target)` normalised,
     /// the initial geodesic velocity that would carry you from
     /// `position` to `target`.
     pub fn looking_at(position: Vec3, target: Vec3, world_up: Vec3, space: &S) -> Self {
@@ -111,8 +111,8 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
 
     /// Compute the renderer-facing view basis. All four components
     /// land in the same coordinate system the shader expects (the
-    /// Space's chosen embedding — Cartesian for E³, Poincaré-ball
-    /// for H³, unit-3-sphere for S³ — with the WGSL prelude
+    /// Space's chosen embedding, Cartesian for E³, Poincaré-ball
+    /// for H³, unit-3-sphere for S³, with the WGSL prelude
     /// handling the metric).
     pub fn view(&self) -> CameraView {
         CameraView {

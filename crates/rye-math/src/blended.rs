@@ -1,4 +1,4 @@
-//! `BlendedSpace<A, B, F>` — a `Space` whose metric smoothly
+//! `BlendedSpace<A, B, F>`: a `Space` whose metric smoothly
 //! interpolates between two source Spaces A and B via a
 //! blending field F: ℝ³ → [0, 1].
 //!
@@ -6,7 +6,7 @@
 //! geometries, not camera tricks."*
 //!
 //! See [`docs/devlog/BLENDED_SPACE.md`](../../../../docs/devlog/BLENDED_SPACE.md)
-//! for the full design — math foundation, numerical scheme,
+//! for the full design, math foundation, numerical scheme,
 //! validation strategy, and lock-in audit.
 //!
 //! ## What ships
@@ -27,7 +27,7 @@ use glam::{Mat3, Vec3};
 use crate::space::{Space, WgslSpace};
 
 // ---------------------------------------------------------------------------
-// ConformallyFlat — extension trait for Spaces with scalar metric
+// ConformallyFlat: extension trait for Spaces with scalar metric
 // ---------------------------------------------------------------------------
 
 /// A [`Space`] whose metric tensor is a scalar multiple of the
@@ -42,7 +42,7 @@ use crate::space::{Space, WgslSpace};
 ///   f(p) = 4/(1-|p|²)², valid for |p| < 1.
 /// - [`crate::SphericalS3`] (stereographic model):
 ///   f(p) = 4/(1+|p|²)².
-/// - [`HyperbolicH3UpperHalf`] (upper-half-space, *future* —
+/// - [`HyperbolicH3UpperHalf`] (upper-half-space, *future*,
 ///   lands when the BlendedSpace demo needs an *unbounded* E³
 ///   side; see [`docs/devlog/BLENDED_SPACE.md`](../../../../docs/devlog/BLENDED_SPACE.md)):
 ///   f(p) = 1/z², valid for z > 0.
@@ -78,7 +78,7 @@ pub trait ConformallyFlat: Space {
     ///
     /// Default impl computes the Laplacian of φ by finite
     /// differences. Closed-form overrides save cost (and noise)
-    /// when the Space's curvature is known analytically — every
+    /// when the Space's curvature is known analytically, every
     /// constant-curvature Space overrides this.
     fn scalar_curvature(&self, p: Vec3) -> f32 {
         const EPS: f32 = 5.0e-3;
@@ -207,7 +207,7 @@ impl ConformallyFlat for crate::SphericalS3 {
 }
 
 // ---------------------------------------------------------------------------
-// BlendedSpace — Space whose metric varies smoothly with position
+// BlendedSpace: Space whose metric varies smoothly with position
 // ---------------------------------------------------------------------------
 
 /// A `Space` whose metric is the smooth blend of two source
@@ -217,13 +217,13 @@ impl ConformallyFlat for crate::SphericalS3 {
 ///
 /// At zone extremes the metric reduces to pure g_A or pure g_B.
 /// In between it's an honest variable-metric Riemannian
-/// manifold — geodesics curve continuously, parallel transport
+/// manifold, geodesics curve continuously, parallel transport
 /// is path-dependent, distances vary by region.
 ///
 /// **Trait bounds:** both source Spaces must use ℝ³ for points
 /// and tangent vectors (every closed-form 3-Space in `rye-math`
 /// does), and both must be [`ConformallyFlat`] (so the blended
-/// metric is also conformally flat — the integrator's fast
+/// metric is also conformally flat, the integrator's fast
 /// path).
 ///
 /// **Isometries:** none non-trivial. The variable metric breaks
@@ -272,7 +272,7 @@ where
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         // Zone-extreme fast path: when both endpoints are at the
         // same zone extreme, distance is exactly the source
-        // Space's distance — preserves f32-tight visual
+        // Space's distance, preserves f32-tight visual
         // continuity at the demo's far ends.
         let alpha_a = self.field.weight(a);
         let alpha_b = self.field.weight(b);
@@ -283,7 +283,7 @@ where
             return self.b.distance(a, b);
         }
         // Variable-metric path: |log_a(b)|_g = √f(a)·|log_a(b)|_E
-        // — the Riemannian length of the tangent vector at a
+        // is the Riemannian length of the tangent vector at a
         // that reaches b.
         let log = self.log(a, b);
         let f_a = self.conformal_factor(a);
@@ -295,7 +295,7 @@ where
         // For g_ij = e^(2φ)·δ_ij the equation reduces to
         //   v̇ = |v|²·∇φ - 2·(∇φ·v)·v
         // Caller's initial velocity `v` is interpreted as
-        // Euclidean — we travel for unit parameter time, so the
+        // Euclidean; we travel for unit parameter time, so the
         // geodesic length covered is |v|_g = |v|_E·√f(at).
         rk4_geodesic(self, at, v, GEODESIC_DEFAULT_STEPS).0
     }
@@ -596,8 +596,8 @@ pub fn gauss_newton_log<S: ConformallyFlat>(
     v
 }
 
-// `BlendedSpace` is itself conformally flat when both sources are
-// — the blend of scalar multiples of identity is still a scalar
+// `BlendedSpace` is itself conformally flat when both sources are:
+// the blend of scalar multiples of identity is still a scalar
 // multiple of identity. This is the property the integrator
 // exploits.
 impl<A, B, F> ConformallyFlat for BlendedSpace<A, B, F>
@@ -722,7 +722,7 @@ pub trait BlendingField: Copy + Send + Sync + 'static {
 }
 
 // ---------------------------------------------------------------------------
-// LinearBlendX — axis-aligned smoothstep zone
+// LinearBlendX: axis-aligned smoothstep zone
 // ---------------------------------------------------------------------------
 
 /// Smoothstep blending zone along the X axis: pure A at
@@ -734,7 +734,7 @@ pub trait BlendingField: Copy + Send + Sync + 'static {
 ///
 /// - Is continuous, continuously differentiable, *and*
 ///   continuously twice-differentiable. The cubic 3t² - 2t³
-///   smoothstep is only C¹ — its second derivative jumps at
+///   smoothstep is only C¹, its second derivative jumps at
 ///   the zone endpoints, which produces a discontinuity in the
 ///   scalar curvature R(p) (since R involves ∇²φ). For THESIS
 ///   §2.2's *"seamless transitions"* discipline the curvature
@@ -789,7 +789,7 @@ impl BlendingField for LinearBlendX {
     fn gradient(&self, p: Vec3) -> Vec3 {
         let w = self.width();
         if w <= 0.0 {
-            // Degenerate step function — zero gradient
+            // Degenerate step function, zero gradient
             // everywhere except the point of discontinuity, which
             // we treat as zero (the integrator avoids it).
             return Vec3::ZERO;
@@ -817,13 +817,13 @@ impl BlendingField for LinearBlendX {
 /// HyperbolicH3, LinearBlendX>` instantiation used by the
 /// `examples/blended` demo.
 ///
-/// **Scope.** This is a hand-rolled, parametric prelude — not a
+/// **Scope.** This is a hand-rolled, parametric prelude, not a
 /// generic `WgslSpace for BlendedSpace<A, B, F>` impl. The latter
 /// requires a per-`ConformallyFlat`-Space WGSL emission trait
 /// (so f(p), ∇φ(p) formulas can be substituted by type), plus a
 /// per-`BlendingField` emission trait. That
 /// architectural lift is deferred until a *second* `BlendedSpace`
-/// instantiation needs WGSL — first-instance lock-in is cheap to
+/// instantiation needs WGSL, first-instance lock-in is cheap to
 /// undo, second-instance lock-in is what actually motivates the
 /// generic design. The Rust API is already generic; only the
 /// shader emission is single-instantiation.
@@ -842,7 +842,7 @@ impl BlendingField for LinearBlendX {
 /// the Euclidean chart-coordinate difference (the geodesic march
 /// kernel does not call it). `rye_distance` uses the midpoint-rule
 /// chord-metric approximation
-/// `sqrt(f((a+b)/2)) · |a − b|` — first-order accurate for nearby
+/// `sqrt(f((a+b)/2)) · |a − b|`, first-order accurate for nearby
 /// points (which is the SDF use case). For accurate
 /// arbitrary-pair distances at runtime, use the CPU side.
 fn blended_e3_h3_linearx_wgsl(field: &LinearBlendX) -> String {
@@ -1026,7 +1026,7 @@ mod tests {
 
     /// Outside the zone, the field is constant (0 or 1) and the
     /// gradient is exactly zero. This is what makes the metric
-    /// reduce to pure $A$ / pure $B$ at the extremes — the
+    /// reduce to pure $A$ / pure $B$ at the extremes, the
     /// integrator sees no Christoffel kick.
     #[test]
     fn linear_blend_x_is_constant_outside_zone() {
@@ -1038,7 +1038,7 @@ mod tests {
         close(f.weight(Vec3::new(100.0, 0.0, 0.0)), 1.0, 0.0);
         assert_eq!(f.gradient(Vec3::new(100.0, 0.0, 0.0)), Vec3::ZERO);
         // Just at the boundary points (smoothstep gradient is 0
-        // there too — that's the whole point of using smoothstep
+        // there too, that's the whole point of using smoothstep
         // over a linear ramp).
         close(f.gradient(Vec3::new(-1.0, 0.0, 0.0)).x, 0.0, 1e-6);
         close(f.gradient(Vec3::new(1.0, 0.0, 0.0)).x, 0.0, 1e-6);
@@ -1141,7 +1141,7 @@ mod tests {
         close(
             s.conformal_factor(Vec3::new(0.0, 0.0, 0.99499f32.sqrt())),
             4.0 / (1.0 - 0.99499_f32).powi(2),
-            10.0, // huge magnitude — generous tolerance
+            10.0, // huge magnitude, generous tolerance
         );
     }
 
@@ -1334,7 +1334,7 @@ mod tests {
 
         // At x = -1 (alpha=0): factor = 1 (pure E³).
         close(bs.conformal_factor(Vec3::new(-1.0, 0.0, 0.0)), 1.0, 1e-6);
-        // At x = 1 (alpha=1): factor = HyperbolicH3 at x=1 — but
+        // At x = 1 (alpha=1): factor = HyperbolicH3 at x=1, but
         // x=1 is on the Poincaré boundary so f → ∞. Use a point
         // *near* x=1 but slightly inside.
         let p = Vec3::new(0.99, 0.0, 0.0);
@@ -1356,7 +1356,7 @@ mod tests {
         let bs = BlendedSpace::new(
             EuclideanR3,
             EuclideanR3,
-            LinearBlendX::new(100.0, 200.0), // far away — alpha ≡ 0 in our test region
+            LinearBlendX::new(100.0, 200.0), // far away, alpha ≡ 0 in our test region
         );
         for (p, v) in [
             (Vec3::ZERO, Vec3::X),
@@ -1405,7 +1405,7 @@ mod tests {
         close((numerical - closed_form).length(), 0.0, 5e-3);
 
         // Drive through `BlendedSpace::exp` (alpha ≡ 1 in the
-        // test region) — the variable-metric path collapses to
+        // test region), the variable-metric path collapses to
         // pure H³ here.
         let bs = BlendedSpace::new(
             HyperbolicH3, // dummy; alpha=1 never reaches A
@@ -1519,7 +1519,7 @@ mod tests {
     }
 
     /// `log_p(p) = 0` (zero tangent vector). Pin the trivial
-    /// case explicitly — the shooting routine special-cases it
+    /// case explicitly, the shooting routine special-cases it
     /// to avoid the Jacobian blowing up at zero residual.
     #[test]
     fn log_of_self_is_zero() {
@@ -1546,7 +1546,7 @@ mod tests {
     // ------ Parallel transport ------
 
     /// In pure E³, parallel transport is the identity along any
-    /// path — the Christoffel symbols are zero, so the transport
+    /// path, the Christoffel symbols are zero, so the transport
     /// ODE has zero RHS and `v` doesn't change.
     #[test]
     fn parallel_transport_in_e3_is_identity() {
@@ -1652,7 +1652,7 @@ mod tests {
         let v = Vec3::new(0.1, 0.0, 0.0);
         let transported = bs.parallel_transport_along(&path, v);
         // The transported vector should differ from the
-        // original — H³ has constant negative curvature, so any
+        // original, H³ has constant negative curvature, so any
         // non-degenerate loop produces visible holonomy. Also
         // check the result is finite (no integrator blow-up).
         assert!(transported.is_finite());
@@ -1661,7 +1661,7 @@ mod tests {
             drift > 1e-3,
             "expected non-zero holonomy in H³, got drift {drift}"
         );
-        // But not catastrophic — loop is small, holonomy bounded.
+        // But not catastrophic, loop is small, holonomy bounded.
         assert!(drift < 0.5, "holonomy unreasonably large: {drift}");
     }
 
@@ -1744,7 +1744,7 @@ mod tests {
             fn conformal_log_half_gradient(&self, p: Vec3) -> Vec3 {
                 HyperbolicH3.conformal_log_half_gradient(p)
             }
-            // Don't override scalar_curvature — use default (FD).
+            // Don't override scalar_curvature, use default (FD).
         }
         let fd = H3FdOnly;
         // Loose tolerance: finite differences with EPS=5e-3 give
@@ -1777,7 +1777,7 @@ mod tests {
         // smoothstep clamp). Loose tolerance.
         close(r_h, -6.0, 1.0);
 
-        // Sample along the zone — collect curvature values, verify
+        // Sample along the zone, collect curvature values, verify
         // they vary smoothly (no spikes / discontinuities). The
         // strongest test: consecutive samples differ by an amount
         // proportional to the sample step.
@@ -1791,7 +1791,7 @@ mod tests {
         // can show stronger curvature than *either* endpoint: a
         // rapidly-varying metric (|∇φ|² and ∇²φ both spike inside
         // the zone) genuinely produces |R| > 6. That's a real
-        // geometric feature, not a bug — the seam is its own
+        // geometric feature, not a bug, the seam is its own
         // curved region. Bound is therefore generous.
         for &r in &curvatures {
             assert!(
@@ -1806,7 +1806,7 @@ mod tests {
         // chosen sample step amplifies that into ~14 max jumps
         // empirically. A genuine C² discontinuity (e.g. from
         // cubic smoothstep) shows up as jumps in the tens or
-        // hundreds at much finer sample spacing, so cap at 25 —
+        // hundreds at much finer sample spacing, so cap at 25,
         // tolerant of FD aliasing here while catching real
         // discontinuities.
         let max_jump = curvatures
@@ -1879,7 +1879,7 @@ mod tests {
             1e-3,
         );
         // FD curvature on BlendedSpace has ~1% noise even at α=1
-        // (FD samples don't perfectly cancel — they're at ε≈5e-3
+        // (FD samples don't perfectly cancel, they're at ε≈5e-3
         // spacing and the underlying φ has nonzero curvature).
         close(bs.scalar_curvature(p), -6.0, 0.05);
     }

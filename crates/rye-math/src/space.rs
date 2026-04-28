@@ -1,4 +1,4 @@
-//! The [`Space`] trait — Rye's interface to geometry.
+//! The [`Space`] trait, Rye's interface to geometry.
 //!
 //! A `Space` is a Riemannian manifold equipped with an isometry group.
 //! Every concrete geometry (Euclidean R³, hyperbolic H³, spherical S³,
@@ -7,13 +7,13 @@
 //! generic.
 //!
 //! The GPU-facing half of the contract lives on [`WgslSpace`], a separate
-//! subtrait — see its docs for the rationale.
+//! subtrait; see its docs for the rationale.
 //!
 //! ## Why methods take `&self`
 //!
 //! Stateless geometries like [`crate::EuclideanR3`] carry no data and
-//! monomorphize to direct calls. Parametric geometries — hyperbolic with a
-//! curvature scalar, spherical with a radius — need somewhere to store
+//! monomorphize to direct calls. Parametric geometries (hyperbolic with a
+//! curvature scalar, spherical with a radius) need somewhere to store
 //! that parameter. `&self` gives them that without forcing stateless impls
 //! to pay a runtime cost.
 //!
@@ -125,7 +125,7 @@ pub trait Space {
     /// The identity isometry.
     fn iso_identity(&self) -> Self::Iso;
 
-    /// `a ∘ b` — apply `b` first, then `a`.
+    /// `a ∘ b`, apply `b` first, then `a`.
     fn iso_compose(&self, a: Self::Iso, b: Self::Iso) -> Self::Iso;
 
     /// Inverse isometry: `iso_compose(a, iso_inverse(a)) == iso_identity()`.
@@ -143,7 +143,7 @@ pub trait Space {
 /// inlining into shaders by `rye-shader`.
 ///
 /// Split from [`Space`] deliberately. The math trait is the most stable
-/// surface in the engine; the shader ABI is the least — it will evolve
+/// surface in the engine; the shader ABI is the least, it will evolve
 /// with every render-graph revision. Coupling them would marry their
 /// release cadences and break Rye's stability-discipline goal.
 ///

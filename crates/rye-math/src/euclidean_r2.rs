@@ -1,4 +1,4 @@
-//! Euclidean R² — the 2D flat-space [`Space`] impl.
+//! Euclidean R², the 2D flat-space [`Space`] impl.
 //!
 //! Parallel to [`EuclideanR3`](crate::euclidean::EuclideanR3), but with
 //! `Point = Vec2` and orientation represented by [`Rotor2`] (a unit complex

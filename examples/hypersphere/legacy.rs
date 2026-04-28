@@ -1,4 +1,4 @@
-//! Hypersphere `w`-slice viewer — drop one or many 4D balls onto a
+//! Hypersphere `w`-slice viewer, drop one or many 4D balls onto a
 //! 4D floor and render their 3D cross-sections at user-controlled
 //! `w₀`.
 //!
@@ -11,7 +11,7 @@
 //! are slicing a 4D object through three dimensions."
 //!
 //! Visually this is simpler than the pentatope viewer (a 4-ball has
-//! no rotation degrees of freedom worth distinguishing — its
+//! no rotation degrees of freedom worth distinguishing, its
 //! cross-section is always a 3-ball) but it pins down the basic
 //! 4D-physics-with-3D-rendering pipeline cleanly: drop bodies, watch
 //! them collide and settle, scrub `w` to confirm they're really 4-
@@ -19,17 +19,17 @@
 //!
 //! ## CLI
 //!
-//! - `-n N` / `--count N` — spawn N hyperspheres (default 1, max 32).
+//! - `-n N` / `--count N`, spawn N hyperspheres (default 1, max 32).
 //!   For `N > 1` the bodies are placed in a small lattice with
 //!   staggered `y` and `w` so they fall, collide with each other, and
 //!   settle as a 4D pile on the floor.
 //!
 //! ## Viewing modes
 //!
-//! - **Slice mode** (default) — render the 3D cross-section of the
+//! - **Slice mode** (default), render the 3D cross-section of the
 //!   bodies at the current `w₀`. Scrub `w₀` with ↑/↓ to peer at
 //!   different cells; bodies outside the slice plane vanish.
-//! - **Ghost mode** (toggle with **G**) — render the bodies' full 4D
+//! - **Ghost mode** (toggle with **G**), render the bodies' full 4D
 //!   extent simultaneously as a translucent volume. Each point in 3D
 //!   gets opacity proportional to the body's `w`-extent through that
 //!   xyz column (`2·√(r² − |xyz − c.xyz|²)` for points inside the
@@ -47,7 +47,7 @@
 //!   only; 0.6 u/s, range ±1.5 around the first body's `w`).
 //! - **A**: toggle automatic offset sweep (slice mode only).
 //! - **G**: toggle ghost / slice viewing mode.
-//! - **R**: reset — re-spawn all bodies, offset = 0.
+//! - **R**: reset, re-spawn all bodies, offset = 0.
 //! - **Esc**: exit.
 
 use std::path::PathBuf;
@@ -85,7 +85,7 @@ fn shader_path() -> PathBuf {
     shader_dir().join("hypersphere.wgsl")
 }
 
-const TITLE: &str = "Rye — hypersphere w-slice (live)";
+const TITLE: &str = "Rye - hypersphere w-slice (live)";
 const RADIUS_4D: f32 = 1.0;
 /// Offset range: ±1.5 covers the full ball (radius 1) plus margin so
 /// the user can scrub past the poles and watch the cross-section
@@ -493,7 +493,7 @@ impl App {
     /// Reference body for the slice plane. Always the first
     /// hypersphere; multi-body mode picks the *first* spawned body so
     /// the ↑/↓ slider has a stable anchor (other bodies have varied
-    /// `w` offsets — see `spawn_position`).
+    /// `w` offsets, see `spawn_position`).
     fn anchor_body_w(&self) -> f32 {
         self.world.bodies[self.ball_ids[0]].position.w
     }

@@ -1,4 +1,4 @@
-//! EPA in R⁴ — Expanding Polytope for 4D penetration depth.
+//! EPA in R⁴, Expanding Polytope for 4D penetration depth.
 //!
 //! Parallel to [`super::epa`] (3D) with three dimensionality changes:
 //!
@@ -6,7 +6,7 @@
 //!    triangles.
 //! 2. **Face normals** come from the Hodge dual of the trivector
 //!    `(b−a) ∧ (c−a) ∧ (d−a)`. Concretely this is the 4D
-//!    "generalized cross product" — four signed 3×3 determinants of
+//!    "generalized cross product", four signed 3×3 determinants of
 //!    the 3-row matrix `[b−a; c−a; d−a]`. The result is perpendicular
 //!    to all three edge vectors.
 //! 3. **Horizon** of a polytope expansion: triangles shared between
@@ -50,7 +50,7 @@ struct Polytope4 {
     /// Centroid of the seed 5-simplex. Guaranteed interior to the
     /// polytope for all subsequent convex expansions, so it's a
     /// reliable tiebreaker when the origin itself sits on a face
-    /// plane (common for symmetric Minkowski differences — the
+    /// plane (common for symmetric Minkowski differences, the
     /// origin lies on an edge of the seed simplex and multiple
     /// initial faces pass through it).
     centroid: Vec4,
@@ -68,7 +68,7 @@ impl Polytope4 {
 
         // Five tetrahedral faces of the 4-simplex: each one is the
         // tetra of all vertices except the `l`-th. Orientation uses
-        // a hybrid "origin-first, centroid-fallback" rule — see
+        // a hybrid "origin-first, centroid-fallback" rule, see
         // `build_face`.
         let mut faces = Vec::with_capacity(5);
         for l in 0..5 {
@@ -101,7 +101,7 @@ impl Polytope4 {
     /// Minkowski boundary.
     ///
     /// Strategy: if the polytope has any **strictly positive-
-    /// distance** face, prefer the smallest of those — they're real
+    /// distance** face, prefer the smallest of those, they're real
     /// boundary candidates. Only fall back to a distance-0 face when
     /// no positive face exists (the boundary genuinely touches the
     /// origin, e.g. tangent shapes; or the seed simplex is so
@@ -150,7 +150,7 @@ impl Polytope4 {
         self.faces = keep;
 
         // Each horizon triangle + new vertex → new tetrahedral face.
-        // Re-uses the seed centroid as the interior reference —
+        // Re-uses the seed centroid as the interior reference,
         // still inside the (only-expanding) polytope by convexity.
         let centroid = self.centroid;
         for tri in &horizon {
@@ -163,7 +163,7 @@ impl Polytope4 {
 
 /// Threshold below which the origin's signed distance to a face
 /// plane is considered "on the plane" and the seed centroid is used
-/// as the interior reference instead. Empirical — larger than f32
+/// as the interior reference instead. Empirical, larger than f32
 /// noise (~1e-7 for unit-scale geometry) but much smaller than any
 /// real penetration depth.
 const ORIGIN_ON_PLANE_EPS: f32 = 1e-4;
@@ -172,7 +172,7 @@ const ORIGIN_ON_PLANE_EPS: f32 = 1e-4;
 type Triangle = (usize, usize, usize);
 
 /// The four triangular faces of a tetrahedron `(a, b, c, d)`. Winding
-/// is kept consistent with the tetrahedron's — each triangle excludes
+/// is kept consistent with the tetrahedron's, each triangle excludes
 /// one vertex in the rotation `(a, b, c, d)`.
 fn tet_triangles(tet: &[usize; 4]) -> [Triangle; 4] {
     // The opposite-vertex-excluded triangles:
@@ -216,7 +216,7 @@ fn sort_triangle(t: Triangle) -> (usize, usize, usize) {
 /// centroid are interior points. The outward normal should put both
 /// on the same (negative-distance) side of the face plane. Usually
 /// they agree; the tricky case is when **the origin lies on a face
-/// plane** — common for symmetric Minkowski differences where the
+/// plane**: common for symmetric Minkowski differences where the
 /// seed 5-simplex has an edge passing through origin. Then the
 /// origin-based test gives no signal, and we fall back to the seed
 /// centroid (guaranteed off-plane except for contrived full-symmetry
@@ -355,7 +355,7 @@ pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
         }
     }
 
-    // Iteration cap — return best-estimate contact from current
+    // Iteration cap, return best-estimate contact from current
     // closest face rather than failing.
     let face_idx = polytope.closest_face()?;
     contact_from_face(&polytope, polytope.faces[face_idx])

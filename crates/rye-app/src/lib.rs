@@ -1,4 +1,4 @@
-//! `rye-app` — thin App trait + event-loop runner that extracts
+//! `rye-app`: thin App trait + event-loop runner that extracts
 //! the winit boilerplate every Rye example currently rewrites.
 //!
 //! ## What this crate is, and isn't
@@ -102,7 +102,7 @@ pub trait App: Sized + 'static {
     ///
     /// **This is not a commitment about the camera, the player,
     /// or the scene.** Those are user-owned types and may use a
-    /// different Space — or no Space at all. Two valid patterns:
+    /// different Space, or no Space at all. Two valid patterns:
     ///
     /// - **All-in geometry game** (PAINCARE-style): scene, camera,
     ///   player, and shader prelude all share one Space. e.g.
@@ -282,7 +282,7 @@ pub fn run_with_config<A: App>(config: RunConfig) -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Runner — internal `ApplicationHandler` impl
+// Runner: internal `ApplicationHandler` impl
 // ---------------------------------------------------------------------------
 
 struct Runner<A: App> {
@@ -372,7 +372,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
 
         let mut shader_db = ShaderDb::new(rd.device.clone());
 
-        // AssetWatcher init failure isn't fatal — apps still work,
+        // AssetWatcher init failure isn't fatal, apps still work,
         // just without hot-reload. Log and proceed.
         let mut watcher = match AssetWatcher::new() {
             Ok(w) => Some(w),
@@ -420,7 +420,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
             return;
         };
 
-        // Esc / close — exit cleanly.
+        // Esc / close, exit cleanly.
         match &ev {
             WindowEvent::CloseRequested => {
                 elwt.exit();

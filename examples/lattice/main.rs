@@ -1,4 +1,4 @@
-//! Geodesic lattice — side-by-side E³ / H³ / S³ comparison demo.
+//! Geodesic lattice, side-by-side E³ / H³ / S³ comparison demo.
 //!
 //! Renders three panels into a single window: left E³, centre H³, right S³.
 //! The same camera orbits the same lattice of spheres; the only difference
@@ -6,17 +6,17 @@
 //! (evenly-spaced grid vs. tanh-compressed vs. sin-wrapped) is the engine's
 //! geometric thesis made visible.
 //!
-//! `lattice.wgsl` is compiled three times — once per Space — using
+//! `lattice.wgsl` is compiled three times, once per Space, using
 //! `WgslSpace::wgsl_impl()` assembled directly (no ShaderDb hot-reload,
 //! since the three shaders share a path and ShaderDb is single-path-keyed).
 //!
 //! ## Flags
 //!
-//! `--rotate`               — auto-rotate camera
-//! `--capture-apng PATH`    — render N frames, save looping APNG, exit
-//! `--capture-gif  PATH`    — render N frames, save looping GIF, exit
-//! `--capture-frames N`     — frame count (default 300)
-//! `--capture-fps N`        — playback fps (default 30)
+//! `--rotate`              , auto-rotate camera
+//! `--capture-apng PATH`   , render N frames, save looping APNG, exit
+//! `--capture-gif  PATH`   , render N frames, save looping GIF, exit
+//! `--capture-frames N`    , frame count (default 300)
+//! `--capture-fps N`       , playback fps (default 30)
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -172,7 +172,7 @@ impl ApplicationHandler for AppRunner {
         let win = Arc::new(
             elwt.create_window(
                 WindowAttributes::default()
-                    .with_title("Rye — Geodesic Lattice (E³ / H³ / S³)")
+                    .with_title("Rye - Geodesic Lattice (E³ / H³ / S³)")
                     .with_visible(false),
             )
             .expect("create window"),
@@ -197,7 +197,7 @@ impl ApplicationHandler for AppRunner {
             app.camera.set_orbit(CAPTURE_DISTANCE, CAPTURE_PITCH);
         }
 
-        // Build lattice scene modules — centers are computed per-Space in Rust.
+        // Build lattice scene modules, centers are computed per-Space in Rust.
         let lattice = LatticeSphereScene::default();
         let scene_e3 = lattice.to_wgsl(&EuclideanR3);
         let scene_h3 = lattice.to_wgsl(&HyperbolicH3);
@@ -351,7 +351,7 @@ impl ApplicationHandler for AppRunner {
                                 let total = self.capture_args.frames;
                                 if n % 30 == 0 || n == total as usize {
                                     win.set_title(&format!(
-                                        "Rye — Geodesic Lattice — capturing {n}/{total}"
+                                        "Rye - Geodesic Lattice - capturing {n}/{total}"
                                     ));
                                 }
                             }

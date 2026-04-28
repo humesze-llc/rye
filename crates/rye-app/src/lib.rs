@@ -24,6 +24,12 @@
 //!   [`CameraController<S>`] in their `App` struct, advanced from
 //!   inside `App::update`. The framework only hands them the
 //!   drained input.
+//! - A frame-capture pipeline. Use OBS or another external screen
+//!   recorder. (TODO: revisit if a built-in capture knob becomes
+//!   load-bearing for CI / regression-image generation. The future
+//!   shape: GIF-preferred output, separate from any rotation flag.
+//!   Capture and auto-rotate are independent concerns and coupling
+//!   them was a 2026-04-28 mistake; see issue tracker.)
 //!
 //! Designed for a small ergonomic gain; explicitly not an ECS or
 //! scene graph.

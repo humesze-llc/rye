@@ -542,6 +542,18 @@ fn sky(rd: vec3<f32>) -> vec3<f32> {
     return mix(vec3<f32>(0.04, 0.05, 0.10), vec3<f32>(0.10, 0.13, 0.22), t);
 }
 
+// Soft 1m-square checkerboard. Used by `fs_main` to shade static-scene
+// hits with a near-vertical normal (i.e. y=0 floors), which is the
+// common case for the 4D demos. Helps depth perception against an
+// otherwise flat grey plane.
+fn ground_color(p: vec3<f32>) -> vec3<f32> {
+    let g = floor(p.x) + floor(p.z);
+    let alt = abs(g - 2.0 * floor(g * 0.5));
+    let dark = vec3<f32>(0.18, 0.20, 0.24);
+    let light = vec3<f32>(0.30, 0.32, 0.36);
+    return mix(dark, light, alt);
+}
+
 @fragment
 fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = (frag_pos.xy / u.resolution) * 2.0 - vec2<f32>(1.0, 1.0);
@@ -579,13 +591,16 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     let light_dir = normalize(vec3<f32>(0.5, 0.85, 0.3));
     let lambert = max(dot(n, light_dir), 0.0);
     let ambient = 0.20;
-    // Color: per-body color if a body was hit, neutral grey for
-    // the static scene. Demos that need richer shading override
-    // by writing their own fragment shader against this kernel's
-    // uniform layout.
+    // Color: per-body color if a body was hit; for the static scene,
+    // checker for floor-like surfaces (normal close to +Y) and a
+    // neutral grey otherwise. Demos that need richer shading still
+    // override by writing their own fragment shader against this
+    // kernel's uniform layout.
     var base = vec3<f32>(0.65, 0.65, 0.72);
     if (hit_idx < MAX_BODIES) {
         base = u.bodies[hit_idx].color;
+    } else if (n.y > 0.95) {
+        base = ground_color(p_hit);
     }
     let lit = base * (ambient + lambert * 0.85);
     let fog = 1.0 - exp(-t * 0.05);
@@ -789,6 +804,8 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_SPHERE"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_POLYTOPE"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_INVALID"));
+        // Floor-checker helper used for static-scene shading.
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("fn ground_color"));
         // Polytope-rendering chunk is now in the kernel.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("body_polytope_sdf_4d"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("pentatope_sdf_local"));

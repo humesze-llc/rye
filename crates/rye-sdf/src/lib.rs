@@ -37,10 +37,10 @@ use rye_math::{EuclideanR3, Space, WgslSpace};
 /// - six orbit spheres around the center
 ///
 /// Optionally, a Euclidean-y slab (floor / ceiling planes) can be
-/// enabled as a visual cage. Note: half-space SDF emission currently
-/// returns the `+1e9` sentinel (see [`Primitive`]), so the slab
-/// renders invisible until a closed-form geodesic-plane SDF lands.
-/// The geodesic spheres themselves render correctly in every Space.
+/// enabled as a visual cage. The slab renders honestly via
+/// chart-coord `dot(p, n) - d` in `EuclideanR3` (the Space this
+/// helper compiles against); per [`Primitive::HalfSpace`], it would
+/// sentinel in H³ / S³ until geodesic-plane SDFs land.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GeodesicSpheresScene {
     pub sphere_radius: f32,
@@ -111,14 +111,13 @@ impl GeodesicSpheresScene {
 ///
 /// Pillars use `rye_distance` so they are space-aware (perfect
 /// spheres in every metric, with the curvature carried by ray
-/// bending). Floor, ceiling, and side walls were originally
-/// Euclidean-coordinate planes (`p.y + H`, `H - p.y`, etc.)
-/// chosen specifically to visualise the chart-vs-geodesic
-/// difference. That emission has since been gated to the `+1e9`
-/// sentinel (see [`Primitive`]), so the walls currently render
-/// invisible. The pillars still tell the curvature story; the
-/// surrounding cage is dormant pending a closed-form
-/// geodesic-plane SDF.
+/// bending). Floor, ceiling, and side walls are chart-coordinate
+/// planes (`p.y + H`, `H - p.y`, etc.) chosen specifically to
+/// visualise the chart-vs-geodesic difference. `corridor_demo_wgsl`
+/// compiles against `EuclideanR3` (flat), so those wall planes
+/// emit honestly via `dot(p, n) - d`. A future
+/// `corridor_demo_wgsl_<S>` for H³ / S³ would sentinel them via
+/// [`Primitive::HalfSpace`] until geodesic-plane SDFs land.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CorridorScene {
     /// Half-width of the corridor along the Space X axis.
@@ -162,13 +161,12 @@ impl Default for CorridorScene {
 impl CorridorScene {
     /// Build the typed scene tree for the corridor.
     ///
-    /// Walls are constructed as `SceneNode::plane(...)` leaves, but
-    /// `Primitive::to_wgsl` currently sentinels half-space emission
-    /// (the chart-coord `dot(p, n) - d` form was a doc lie in
-    /// curved Spaces); the walls render invisible until a
-    /// closed-form geodesic-plane SDF replaces the sentinel.
-    /// Pillars are geodesic spheres (`rye_distance`) and render
-    /// honestly in every Space.
+    /// Walls are `SceneNode::plane(...)` leaves; pillars are
+    /// `SceneNode::sphere(...)` leaves wrapped in a union. The
+    /// emitted SDF for the walls depends on the Space the scene
+    /// is later compiled against: `dot(p, n) - d` in flat charts
+    /// (E³), sentinel in curved charts (H³ / S³). See
+    /// [`Primitive::HalfSpace`] for the `is_chart_flat` gate.
     pub fn to_scene(&self) -> Scene {
         assert!(
             self.pillars_per_row % 2 == 1,
@@ -311,25 +309,42 @@ mod tests {
         assert_eq!(h3, s3);
     }
 
-    /// `HalfSpace` no longer emits a chart-coordinate `dot(p, n) -
-    /// d`: the trait rule forbids raw coordinate arithmetic, and the
-    /// chart-coord form rendered visibly wrong floors in H³ / S³.
-    /// Until a closed-form geodesic-plane SDF lands, the variant
-    /// emits the `+1e9` invisible-far-away sentinel. Pinned here so
-    /// a future regression that re-enables raw `dot()` fails loud.
+    /// `HalfSpace`'s emission gates on `WgslSpace::is_chart_flat`.
+    /// EuclideanR3 reports flat, so the chart-coord `dot(p, n) - d`
+    /// formula is honest and gets emitted. Curved Spaces fall
+    /// through to the sentinel arm (covered separately).
     #[test]
-    fn halfspace_emits_sentinel_sdf() {
+    fn halfspace_emits_dot_in_flat_chart() {
         use rye_math::EuclideanR3;
         let p = Shape::HalfSpace {
             normal: Vec3::Y,
             offset: -0.5,
         };
         let src = p.to_wgsl(&EuclideanR3, "sdf_floor");
+        assert!(src.contains("fn sdf_floor(p: vec3<f32>) -> f32"));
+        assert!(src.contains("dot(p,"));
+        // Floor at y = -0.5: normal = (0, 1, 0), offset = -0.5.
+        assert!(src.contains("-0.500000"));
+    }
+
+    /// `HalfSpace` in a curved Space has no honest closed-form SDF
+    /// today, so it sentinels until artanh-of-Möbius (H³) /
+    /// chord-distance (S³) implementations land. Pinned here so a
+    /// future regression that re-enables raw `dot()` in curved
+    /// Spaces fails loud.
+    #[test]
+    fn halfspace_sentinels_in_curved_chart() {
+        use rye_math::HyperbolicH3;
+        let p = Shape::HalfSpace {
+            normal: Vec3::Y,
+            offset: -0.5,
+        };
+        let src = p.to_wgsl(&HyperbolicH3, "sdf_floor");
         assert!(src.contains("fn sdf_floor(_p: vec3<f32>) -> f32"));
         assert!(src.contains("return 1e9"));
         assert!(
             !src.contains("dot(p,"),
-            "HalfSpace must not emit raw chart-coord dot product",
+            "HalfSpace must not emit raw chart-coord dot product in curved Spaces",
         );
     }
 
@@ -376,28 +391,20 @@ mod tests {
         assert!(!src.contains("RYE_SCENE_CEILING_Y"));
     }
 
-    /// Slab planes (floor + ceiling) currently sentinel through
-    /// `Primitive::HalfSpace`, so the floor / ceiling literals
-    /// no longer appear in the emitted WGSL. The slab still
-    /// participates in the typed scene tree (a future
-    /// geodesic-plane SDF will re-enable the rendering); the
-    /// scene assembly just doesn't carry the chart-coord values
-    /// through any longer.
+    /// Slab planes (floor + ceiling) emit the chart-coord
+    /// `dot(p, n) - d` formula, since `GeodesicSpheresScene::to_wgsl`
+    /// uses `EuclideanR3` (which reports `is_chart_flat == true`).
+    /// The literal floor / ceiling values appear in the WGSL.
     #[test]
-    fn slab_scene_emits_sentinel_for_planes_without_floor_constants() {
+    fn slab_scene_emits_floor_and_ceiling_values() {
         let src = GeodesicSpheresScene::default()
             .with_slab(-0.5, 0.8)
             .to_wgsl();
         assert!(src.contains("fn rye_scene_sdf"));
-        assert!(src.contains("rye_distance")); // spheres still emit honestly
-        assert!(
-            !src.contains("-0.500000"),
-            "floor_y must not leak as a chart-coord literal while HalfSpace sentinels",
-        );
-        assert!(
-            src.contains("return 1e9"),
-            "slab planes should resolve to the +1e9 sentinel SDF",
-        );
+        assert!(src.contains("rye_distance")); // spheres
+        assert!(src.contains("dot(p,")); // slab planes
+        assert!(src.contains("-0.500000")); // floor_y
+        assert!(src.contains("-0.800000")); // -ceiling_y (negated in plane construction)
     }
 
     #[test]
@@ -423,24 +430,18 @@ mod tests {
         assert!(src.contains("0.500000, 0.000000, 0.000000"));
     }
 
-    /// Corridor walls currently sentinel through
-    /// `Primitive::HalfSpace`; only the pillar spheres emit
-    /// honest geometry. The half-width / half-height literals
-    /// no longer surface in the WGSL because they were used only
-    /// to construct the wall plane normals.
+    /// `corridor_demo_wgsl` uses `EuclideanR3`, so the wall
+    /// half-spaces emit chart-coord `dot()` formulas (honest in
+    /// flat space). Pillars use `rye_distance`. Both the
+    /// half-width / half-height literals and the dot calls appear.
     #[test]
-    fn corridor_scene_emits_required_entrypoint_with_sentinel_walls() {
+    fn corridor_scene_emits_required_entrypoint() {
         let src = corridor_demo_wgsl();
         assert!(src.contains("fn rye_scene_sdf"));
-        assert!(src.contains("rye_distance")); // pillars still honest
-        assert!(
-            src.contains("return 1e9"),
-            "corridor walls should resolve to the +1e9 sentinel SDF",
-        );
-        assert!(
-            !src.contains("0.550000"),
-            "half_width must not leak as a chart-coord literal while HalfSpace sentinels",
-        );
+        assert!(src.contains("rye_distance")); // pillars
+        assert!(src.contains("dot(p,")); // walls
+        assert!(src.contains("0.550000")); // half_width
+        assert!(src.contains("0.400000")); // half_height
     }
 
     #[test]

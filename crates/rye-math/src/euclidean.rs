@@ -105,6 +105,11 @@ impl WgslSpace for EuclideanR3 {
     fn wgsl_impl(&self) -> Cow<'static, str> {
         Cow::Borrowed(WGSL_IMPL)
     }
+    /// ℝ³ is globally flat: chart-coord SDFs (planes, axis-aligned
+    /// boxes) are mathematically correct.
+    fn is_chart_flat(&self) -> bool {
+        true
+    }
 }
 
 // TODO(rye-shader): distance / exp / log / parallel_transport are the

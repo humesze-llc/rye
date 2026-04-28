@@ -50,7 +50,7 @@ The engine is pre-1.0. The `Space` and `WgslSpace` trait surfaces are stable and
 | `physics4d` | Headless 4D demo (`--floor` / `--collide` / free-fall). 4D GJK + EPA + orientation transport. Prints per-tick state to stdout. |
 | `physics2d` | 2D rigid bodies under gravity with polygon SAT, friction, and the manifold + PGS solver. The reference for stack settling. |
 | `text_smoke` | Smoke test for `rye-text` (ab_glyph-backed screen-space HUD overlay). Renders ASCII labels at multiple sizes and colors over a clear-color background. |
-| `sysinfo` | System info probe (CPU, OS, wgpu surface caps). |
+| `sysinfo` | Enumerates every wgpu adapter the host can see, with backend, device type, driver, vendor/device IDs, and selected limits. Useful for bug reports and first-run sanity checks. |
 
 `examples/capture.rs` is a frame-capture utility module (APNG / GIF), pulled in by demos that opt into recording rather than run as a standalone example.
 

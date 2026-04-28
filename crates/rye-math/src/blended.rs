@@ -9,17 +9,15 @@
 //! for the full design — math foundation, numerical scheme,
 //! validation strategy, and lock-in audit.
 //!
-//! ## Module status
+//! ## What ships
 //!
-//! Phase 4 deliverable, in progress. This file currently ships:
-//!
-//! 1. The [`BlendingField`] trait — the only mandatory user
-//!    extension point.
-//! 2. [`LinearBlendX`] — a smooth-step axis-aligned zone, the v0
-//!    concrete blending field used by the demo.
-//!
-//! [`BlendedSpace`] itself (the `Space` impl) lands in subsequent
-//! sub-tasks (the conformal-factor / Christoffel / RK4 work).
+//! - [`BlendingField`] trait + [`LinearBlendX`] (axis-aligned smooth-step zone).
+//! - [`ConformallyFlat`] trait + impls for `EuclideanR3`, `HyperbolicH3`,
+//!   `SphericalS3`.
+//! - [`BlendedSpace<A, B, F>`] implementing `Space` via RK4 geodesic
+//!   integration, Gauss-Newton `log` shooting, and RK4 parallel
+//!   transport for the conformally-flat fast path.
+//! - WGSL emit (specific to `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>`).
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -221,16 +219,6 @@ impl ConformallyFlat for crate::SphericalS3 {
 /// $g_B$. In between it's an honest variable-metric Riemannian
 /// manifold — geodesics curve continuously, parallel transport
 /// is path-dependent, distances vary by region.
-///
-/// **Skeleton today.** This module currently ships the type
-/// itself plus stubbed `Space` trait methods (`exp`, `log`,
-/// `distance`, `parallel_transport`) that compile but are
-/// incomplete — they fall back to the closed-form $A$ /
-/// $B$ behaviour at zone extremes (where the blend is exact)
-/// and `unimplemented!` in the variable-metric interior. The
-/// numerical integrator (RK4 on the geodesic ODE) lands in
-/// sub-task 4 of the Phase 4 implementation plan; see
-/// [`docs/devlog/BLENDED_SPACE.md`](../../../../docs/devlog/BLENDED_SPACE.md).
 ///
 /// **Trait bounds:** both source Spaces must use $\mathbb{R}^3$
 /// for points and tangent vectors (every closed-form 3-Space in
@@ -782,12 +770,15 @@ impl BlendingField for LinearBlendX {
 /// generic design. The Rust API is already generic; only the
 /// shader emission is single-instantiation.
 ///
-/// **Numerical scheme.** 4 RK4 sub-steps per `rye_exp` call,
-/// 1 RK4 step per `rye_parallel_transport`. The CPU side uses
-/// 32 / 8 — but the geodesic march kernel calls these with very
-/// small step sizes (proportional to the SDF), so 4 sub-steps
-/// per call yields cumulatively many sub-steps along a ray with
-/// far less per-pixel cost.
+/// **Numerical scheme.** 16 RK4 sub-steps per `rye_exp` call
+/// (controlled by `RYE_BLENDED_RK4_SUB`). `rye_parallel_transport`
+/// is a single midpoint-Euler step along the chart-coordinate line
+/// from `p_from` to `p_to`. The CPU side uses 32 RK4 sub-steps for
+/// `exp` and 8 RK4 sub-steps for transport, so the GPU transport is
+/// strictly less accurate than CPU; the kernel does not currently
+/// call `rye_parallel_transport`, and the function exists only to
+/// satisfy the WGSL prelude shape downstream Spaces share. CPU/GPU
+/// parity test for `BlendedSpace` is a known gap.
 ///
 /// **`rye_log` / `rye_distance` accuracy.** `rye_log` returns
 /// the Euclidean chart-coordinate difference (the geodesic march

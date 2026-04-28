@@ -6,12 +6,13 @@
 //!
 //! This module exposes two traits ([`Bivector`], [`Rotor`]) so physics and
 //! other consumers can be written generically over dimension. Concrete
-//! implementations ship per-N — [`Bivector2`] / [`Rotor2`] here,
-//! [`Bivector3`] / [`Rotor3`] to follow when Simplex 3D needs them,
-//! [`Bivector4`] / [`Rotor4`] for Simplex 4D.
+//! implementations ship per-N: [`Bivector2`] / [`Rotor2`],
+//! [`Bivector3`] / [`Rotor3`], [`Bivector4`] / [`Rotor4`].
 //!
-//! See `docs/devlog/PHASE_2_3_PLAN.md` §3.4 for why we use handwritten
-//! per-N impls rather than `generic_const_exprs`.
+//! Per-N hand-rolled impls (rather than `generic_const_exprs`) because
+//! the Clifford multiplication tables are dimension-specific anyway and
+//! the closed-form exp/log derivations differ qualitatively (3D is
+//! always single-plane; 4D needs invariant decomposition).
 //!
 //! ## Convention
 //!

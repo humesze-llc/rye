@@ -11,12 +11,11 @@
 //! `glam::Quat`'s "right first"), so the composed orientation after a
 //! timestep is `rotation_new = rotation_current * delta_rotor`.
 //!
-//! ## Scope
+//! ## Narrowphase coverage
 //!
-//! First cut is **sphere-sphere only** — enough to prove the integration
-//! loop and collision resolution work in 4D. Polytope narrowphase (GJK
-//! already works generically; EPA needs a 4D face-normal reconstruction)
-//! lands in a follow-up commit.
+//! Sphere-sphere, sphere-halfspace, polytope-polytope (4D GJK + EPA),
+//! sphere-polytope, and polytope-halfspace all ship in this file. See
+//! `register_default_narrowphase`.
 
 use glam::Vec4;
 
@@ -143,8 +142,7 @@ impl PhysicsSpace for EuclideanR4 {
 }
 
 // ---------------------------------------------------------------------------
-// Narrowphase: sphere-sphere only at first cut. Polytope GJK+EPA for 4D
-// lands in the next commit.
+// Narrowphases for EuclideanR4 colliders.
 // ---------------------------------------------------------------------------
 
 fn sphere_sphere_r4(

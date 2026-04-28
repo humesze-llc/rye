@@ -143,10 +143,7 @@ impl PhysicsSpace for EuclideanR3 {
 }
 
 // ---------------------------------------------------------------------------
-// Narrowphase: sphere-sphere only for now. Polyhedron SAT (boxes →
-// Platonic solids) is deferred — sphere contact alone proves the 3D
-// integration loop, angular response, and friction, which is what
-// Simplex's phase-2 prototype actually needs validated.
+// Narrowphases for EuclideanR3 colliders.
 // ---------------------------------------------------------------------------
 
 fn sphere_sphere_r3(

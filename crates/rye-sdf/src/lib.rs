@@ -1,6 +1,4 @@
-//! `rye-sdf` — signed-distance field primitives and scene builders for Rye.
-//!
-//! # Phase 2 additions
+//! `rye-sdf`: signed-distance field primitives and scene builders for Rye.
 //!
 //! [`Primitive`] is the typed abstraction for geometric objects. Every
 //! primitive emits a WGSL function `fn {name}(p: vec3<f32>) -> f32` that
@@ -10,9 +8,10 @@
 //! [`combinator`] provides Space-agnostic combinators (union, intersection,
 //! smooth-min) that operate on the scalar distances returned by primitive SDFs.
 //!
-//! The legacy scene builders ([`GeodesicSpheresScene`], [`CorridorScene`],
-//! [`LatticeSphereScene`]) remain for existing demos. They will be rewritten
-//! on top of the typed primitive layer in Phase 2 step 6.
+//! [`GeodesicSpheresScene`], [`CorridorScene`], and [`LatticeSphereScene`]
+//! are demo-shaped scene builders consumed by the corresponding examples.
+//! They are constructed on top of the typed primitive layer (each has a
+//! `to_scene` method that returns a [`scene::Scene`]).
 
 pub mod combinator;
 pub mod primitive;

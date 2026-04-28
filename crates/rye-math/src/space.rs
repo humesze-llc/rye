@@ -92,9 +92,9 @@ pub trait Space {
     /// **Why this is the path-aware primitive.** Parallel transport
     /// is path-dependent in any non-flat geometry; "transport from
     /// `a` to `b`" is only well-defined once a path is chosen. This
-    /// method lets the caller pin down the *macro* path — the
+    /// method lets the caller pin down the *macro* path (the
     /// polyline a camera or player traversed over the last few
-    /// frames — so the integrated result no longer depends on
+    /// frames), so the integrated result no longer depends on
     /// whether the caller batched the journey into one
     /// [`Self::parallel_transport`] call or many. Per-segment path
     /// choice still belongs to the implementation (see the default

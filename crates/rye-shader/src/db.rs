@@ -742,7 +742,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 Vec3::new(0.05, 0.0, 0.0),
             ),
             // Pure H3 region (alpha = 1) at moderate radius;
-            // metric factor is ~7x identity, geodesic is non-linear.
+            // f(p) = 4/(1-|p|^2)^2 ~ 15.4x identity at r=0.7,
+            // so the geodesic is non-linear in chart coords.
             gpu_case(
                 Vec3::new(0.7, 0.0, 0.0),
                 Vec3::new(0.71, 0.05, 0.0),

@@ -72,6 +72,13 @@ impl SceneNode4 {
         SceneNode4::Leaf(Shape::HyperSphere4D { center, radius })
     }
 
+    /// Half-space (hyperplane) leaf. The shape is canonical (also
+    /// used by `rye-physics` for 4D collision walls), but the
+    /// `Primitive4` emission currently returns the `+1e9` sentinel
+    /// so a future `BlendedSpace4` can't get rendered with a
+    /// chart-coord hyperplane that would silently break. Until a
+    /// closed-form geodesic-hyperplane SDF lands, half-space leaves
+    /// render invisible. See [`crate::Primitive4`].
     pub fn halfspace(normal: Vec4, offset: f32) -> Self {
         SceneNode4::Leaf(Shape::HalfSpace4D { normal, offset })
     }

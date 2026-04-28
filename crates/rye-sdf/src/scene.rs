@@ -62,6 +62,12 @@ impl SceneNode {
         SceneNode::Leaf(PrimitiveKind::Sphere { center, radius })
     }
 
+    /// Half-space leaf. The shape is canonical (also used by
+    /// `rye-physics` for collision walls), but the SDF emission
+    /// currently returns the `+1e9` sentinel to avoid drawing a
+    /// chart-coord plane in H³ / S³ where it would render visibly
+    /// wrong. Until a closed-form geodesic-plane SDF lands, half-
+    /// space leaves render invisible. See [`crate::Primitive`].
     pub fn plane(normal: Vec3, offset: f32) -> Self {
         SceneNode::Leaf(PrimitiveKind::HalfSpace { normal, offset })
     }

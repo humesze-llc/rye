@@ -12,11 +12,11 @@
 //!
 //! ## Flags
 //!
-//! `--rotate`              , auto-rotate camera
-//! `--capture-apng PATH`   , render N frames, save looping APNG, exit
-//! `--capture-gif  PATH`   , render N frames, save looping GIF, exit
-//! `--capture-frames N`    , frame count (default 300)
-//! `--capture-fps N`       , playback fps (default 30)
+//! `--rotate`              : auto-rotate camera
+//! `--capture-apng PATH`   : render N frames, save looping APNG, exit
+//! `--capture-gif  PATH`   : render N frames, save looping GIF, exit
+//! `--capture-frames N`    : frame count (default 300)
+//! `--capture-fps N`       : playback fps (default 30)
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -53,7 +53,7 @@
 //!
 //! ## CLI
 //!
-//! - `--shapes name1 name2 ...`, choose the polytopes to render
+//! - `--shapes name1 name2 ...`: choose the polytopes to render
 //!   in left-to-right order. Names accepted include the math form
 //!   (`5-cell`, `tesseract`, `16-cell`, `24-cell`) and Platonic-
 //!   slice aliases (`tetrahedron`, `cube`, `octahedron`,

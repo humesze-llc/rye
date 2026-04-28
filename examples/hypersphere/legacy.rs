@@ -19,7 +19,7 @@
 //!
 //! ## CLI
 //!
-//! - `-n N` / `--count N`, spawn N hyperspheres (default 1, max 32).
+//! - `-n N` / `--count N`: spawn N hyperspheres (default 1, max 32).
 //!   For `N > 1` the bodies are placed in a small lattice with
 //!   staggered `y` and `w` so they fall, collide with each other, and
 //!   settle as a 4D pile on the floor.

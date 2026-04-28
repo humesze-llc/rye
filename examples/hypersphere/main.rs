@@ -21,8 +21,8 @@
 //!
 //! ## CLI
 //!
-//! - `-n N` / `--count N`, N hyperspheres (default 1, max 32).
-//! - `--legacy`, switch to the bespoke-shader implementation.
+//! - `-n N` / `--count N`: N hyperspheres (default 1, max 32).
+//! - `--legacy`: switch to the bespoke-shader implementation.
 //!
 //! ## Controls (framework path)
 //!

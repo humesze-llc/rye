@@ -200,10 +200,11 @@ fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
         // perpendicular to AB, pointing toward origin.
         let dir = triple_product(ab, ao, ab);
         if dir.length_squared() < 1e-10 {
-            // Degenerate: origin lies on the line A–B. Pick any vector
-            // perpendicular to AB and recurse along that, the next
-            // support will either exit the line (→ triangle) or
-            // confirm containment along a different axis.
+            // Degenerate: origin lies on the line A-B. Pick any vector
+            // perpendicular to AB and recurse along that; the next
+            // support will either exit the line (and grow the simplex
+            // to a triangle) or confirm containment along a different
+            // axis.
             (false, 2, any_perpendicular(ab))
         } else {
             (false, 2, dir)

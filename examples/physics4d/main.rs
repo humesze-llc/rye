@@ -22,8 +22,8 @@
 //!
 //! Other CLI flags:
 //!
-//! - `--steps N`, total sim ticks (default 600 ≈ 10 s at 60 Hz).
-//! - `--print-every N`, print state every N ticks (default 60).
+//! - `--steps N`: total sim ticks (default 600 ≈ 10 s at 60 Hz).
+//! - `--print-every N`: print state every N ticks (default 60).
 
 use glam::Vec4;
 use rye_math::EuclideanR4;

@@ -615,8 +615,8 @@ where
         // Defensive: if either source diverges (`f32::INFINITY`
         // outside its chart), and we're at the corresponding zone
         // extreme, the blend takes the *other* Space's value
-        // exactly. Otherwise the divergence propagates — the
-        // chart is invalid here.
+        // exactly. Otherwise the divergence propagates; the chart
+        // is invalid here.
         if alpha <= 0.0 {
             return f_a;
         }
@@ -624,6 +624,68 @@ where
             return f_b;
         }
         (1.0 - alpha) * f_a + alpha * f_b
+    }
+
+    /// Analytical chain-rule gradient of $\phi = \tfrac{1}{2} \ln f$
+    /// for the blended factor $f = (1-\alpha) f_A + \alpha f_B$.
+    ///
+    /// $$
+    /// \nabla f = \nabla\alpha \, (f_B - f_A)
+    ///          + 2 (1-\alpha) f_A \nabla\phi_A
+    ///          + 2 \alpha f_B \nabla\phi_B
+    /// $$
+    ///
+    /// using $\nabla f_X = 2 f_X \nabla\phi_X$ from
+    /// $\phi_X = \tfrac{1}{2} \ln f_X$. Then $\nabla\phi = \nabla f / (2 f)$.
+    ///
+    /// Replaces the trait's default finite-difference path so the
+    /// CPU side runs the same analytical formula the WGSL emit
+    /// already uses (`rye_blended_grad_phi` for the
+    /// `<E3, H3, LinearBlendX>` instantiation). The unit test
+    /// pins this against a central-difference of `conformal_log_half`
+    /// at three sample points. CPU/GPU parity for the blended
+    /// emit is not yet pinned at the test level; the existing
+    /// E3/S3/H3 GPU probes in `rye-shader/db.rs` are the template
+    /// a future BlendedSpace probe should follow. Removes FD
+    /// truncation noise and saves six `conformal_factor`
+    /// evaluations per gradient call.
+    fn conformal_log_half_gradient(&self, p: Vec3) -> Vec3 {
+        let alpha = self.field.weight(p);
+        // Zone-extreme fast paths, mirroring `conformal_factor`
+        // above. Without these, `0 * INFINITY` from an off-chart
+        // source factor (e.g. H3 outside its Poincaré ball)
+        // poisons the blended `f` with NaN even when alpha=0
+        // means the off-chart source contributes nothing.
+        if alpha <= 0.0 {
+            return self.a.conformal_log_half_gradient(p);
+        }
+        if alpha >= 1.0 {
+            return self.b.conformal_log_half_gradient(p);
+        }
+        let f_a = self.a.conformal_factor(p);
+        let f_b = self.b.conformal_factor(p);
+        let f = (1.0 - alpha) * f_a + alpha * f_b;
+        // Inside the blending zone both sources contribute, so a
+        // non-finite or non-positive `f` means a source is
+        // diverging where the chart is supposed to be valid.
+        // Loud in debug. In release, return Vec3::NAN rather than
+        // Vec3::ZERO so the geodesic integrator's `is_finite` guard
+        // trips and surfaces the bug (a silent zero would let the
+        // integrator proceed with wrong dynamics).
+        debug_assert!(
+            f.is_finite() && f > 0.0,
+            "BlendedSpace conformal factor invalid: f = {f}, alpha = {alpha}, f_a = {f_a}, f_b = {f_b}, p = {p:?}"
+        );
+        if !f.is_finite() || f <= 0.0 {
+            return Vec3::NAN;
+        }
+        let grad_alpha = self.field.gradient(p);
+        let grad_phi_a = self.a.conformal_log_half_gradient(p);
+        let grad_phi_b = self.b.conformal_log_half_gradient(p);
+        let grad_f = grad_alpha * (f_b - f_a)
+            + grad_phi_a * (2.0 * (1.0 - alpha) * f_a)
+            + grad_phi_b * (2.0 * alpha * f_b);
+        grad_f / (2.0 * f)
     }
 }
 
@@ -1131,6 +1193,90 @@ mod tests {
         close(s.conformal_factor(Vec3::new(1.0, 0.0, 0.0)), 1.0, 1e-6);
         // |p|² = 3: f = 4 / 16 = 0.25.
         close(s.conformal_factor(Vec3::new(1.0, 1.0, 1.0)), 0.25, 1e-6);
+    }
+
+    // ------ BlendedSpace conformally-flat overrides ------
+
+    /// `BlendedSpace::conformal_log_half_gradient` analytical
+    /// override agrees with central finite differences on the
+    /// blended `conformal_log_half`. Pins the chain rule against
+    /// the trait's default FD path so a future regression in
+    /// either one trips here.
+    ///
+    /// Tolerance choice: central differences with `EPS = 1e-3`
+    /// have leading truncation `O(EPS² · f''') ≈ 1e-6` for the
+    /// smooth conformal factor here, plus f32 roundoff `O(1/EPS) ·
+    /// eps_machine ≈ 1e-4`. Bound at `5e-3` leaves ~50x headroom
+    /// over both, tight enough to catch a sign error or missing
+    /// chain-rule term but loose enough that the H3 Poincaré
+    /// factor's `(1−r²)` denominator at the |r|≈0.7 sample point
+    /// (the `(−0.7, 0.05, 0.0)` row below) doesn't trip on the
+    /// noise floor.
+    #[test]
+    fn blended_space_log_half_gradient_matches_finite_diff() {
+        use crate::{EuclideanR3, HyperbolicH3};
+        let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.5, 0.5));
+        let fd = |p: Vec3| -> Vec3 {
+            const EPS: f32 = 1e-3;
+            let dx = (bs.conformal_log_half(p + Vec3::X * EPS)
+                - bs.conformal_log_half(p - Vec3::X * EPS))
+                / (2.0 * EPS);
+            let dy = (bs.conformal_log_half(p + Vec3::Y * EPS)
+                - bs.conformal_log_half(p - Vec3::Y * EPS))
+                / (2.0 * EPS);
+            let dz = (bs.conformal_log_half(p + Vec3::Z * EPS)
+                - bs.conformal_log_half(p - Vec3::Z * EPS))
+                / (2.0 * EPS);
+            Vec3::new(dx, dy, dz)
+        };
+        // Sample three regimes: well inside the alpha=0 region,
+        // mid-zone (where both sources contribute), and well into
+        // the alpha=1 region but inside the H3 Poincaré ball.
+        for p in [
+            Vec3::new(-0.7, 0.05, 0.0),
+            Vec3::new(0.0, 0.1, -0.1),
+            Vec3::new(0.6, 0.05, 0.0),
+        ] {
+            let analytic = bs.conformal_log_half_gradient(p);
+            let numeric = fd(p);
+            close(analytic.x, numeric.x, 5e-3);
+            close(analytic.y, numeric.y, 5e-3);
+            close(analytic.z, numeric.z, 5e-3);
+        }
+    }
+
+    /// At alpha=0 (pure A region), the `alpha <= 0.0` fast path
+    /// returns A's gradient verbatim. EuclideanR3 has zero
+    /// gradient everywhere, so the BlendedSpace gradient should
+    /// be zero too.
+    ///
+    /// Tolerance `1e-6` is the f32 single-step roundoff floor;
+    /// the fast path does no arithmetic, so anything looser
+    /// hides a real bug.
+    #[test]
+    fn blended_space_log_half_gradient_at_alpha_zero_is_pure_a() {
+        use crate::{EuclideanR3, HyperbolicH3};
+        let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(50.0, 100.0));
+        let g = bs.conformal_log_half_gradient(Vec3::new(1.0, 2.0, 3.0));
+        close(g.x, 0.0, 1e-6);
+        close(g.y, 0.0, 1e-6);
+        close(g.z, 0.0, 1e-6);
+    }
+
+    /// At alpha=1 (pure B region), the `alpha >= 1.0` fast path
+    /// returns B's gradient verbatim. Tolerance `1e-6` chosen
+    /// for the same reason as the alpha=0 test: the fast path
+    /// does no arithmetic.
+    #[test]
+    fn blended_space_log_half_gradient_at_alpha_one_is_pure_b() {
+        use crate::{EuclideanR3, HyperbolicH3};
+        let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-100.0, -50.0));
+        let p = Vec3::new(0.2, 0.1, 0.0);
+        let blended = bs.conformal_log_half_gradient(p);
+        let pure_b = HyperbolicH3.conformal_log_half_gradient(p);
+        close(blended.x, pure_b.x, 1e-6);
+        close(blended.y, pure_b.y, 1e-6);
+        close(blended.z, pure_b.z, 1e-6);
     }
 
     // ------ BlendedSpace skeleton ------

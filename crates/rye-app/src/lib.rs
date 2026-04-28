@@ -76,7 +76,9 @@ use rye_time::FixedTimestep;
 
 // Convenience re-exports so apps don't have to depend on each crate
 // individually for the most common types.
-pub use rye_camera::{Camera, CameraController, CameraView, FirstPersonController, OrbitController};
+pub use rye_camera::{
+    Camera, CameraController, CameraView, FirstPersonController, OrbitController,
+};
 pub use rye_input::FrameInput as Input;
 
 // ---------------------------------------------------------------------------

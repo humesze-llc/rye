@@ -1,21 +1,15 @@
-//! [`CameraController`] — the input-driven logic that mutates a
+//! [`CameraController`] is the input-driven logic that mutates a
 //! [`Camera`] each frame. Camera is data, controller is logic; they
-//! live in separate types so a game can swap controllers (orbit →
-//! first-person → geodesic-follow) without reconstructing the
-//! camera state.
+//! live in separate types so a game can swap controllers without
+//! reconstructing the camera state.
 //!
 //! ## Concrete controllers shipped here
 //!
-//! - [`OrbitController`] — spherical-coordinate orbit around a
+//! - [`OrbitController`]: spherical-coordinate orbit around a
 //!   target. The current default for SDF-rendering demos.
-//! - [`FirstPersonController`] — yaw/pitch free-look from a
+//! - [`FirstPersonController`]: yaw/pitch free-look from a
 //!   user-controlled position. Pairs naturally with
 //!   `rye_player::PlayerState` for WASD-style movement.
-//! - [`GeodesicFollowController`] *(stub for now)* — parallel-
-//!   transports the camera frame along the player's polyline so
-//!   it doesn't drift under repeated H³ rotations. Implementation
-//!   lands when PAINCARE needs it; the type already exists so
-//!   downstream code can name it.
 
 use std::f32::consts::FRAC_PI_2;
 use std::marker::PhantomData;
@@ -229,39 +223,12 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for FirstPersonC
         let rot = yaw_q * pitch_q;
         // The basis is in T_position M; for the closed-form Spaces
         // currently supported, we treat the canonical xyz as the
-        // local frame. A future curved-space first-person controller
-        // that wants honest geodesic transport between frames should
-        // use [`GeodesicFollowController`] instead.
+        // local frame. Honest geodesic transport between frames
+        // (parallel-transport along the polyline the camera traversed)
+        // belongs in a dedicated controller; not implemented yet.
         camera.right = rot * Vec3::X;
         camera.up = rot * Vec3::Y;
         camera.forward = rot * -Vec3::Z;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// GeodesicFollowController (placeholder; impl lands with PAINCARE)
-// ---------------------------------------------------------------------------
-
-/// Camera-frame controller that parallel-transports the basis
-/// along the *actual path* the camera traversed last frame, using
-/// [`Space::parallel_transport_along`]. Avoids the holonomy drift
-/// you'd get in $H^3$ from chaining "rotate-then-translate"
-/// operations naively.
-///
-/// **Stub:** the type exists so PAINCARE can name it in advance
-/// design notes. Actual `advance` implementation lands when the
-/// PAINCARE prototype hits the holonomy-drift problem; until then
-/// this controller is a no-op.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct GeodesicFollowController<S: Space> {
-    _marker: PhantomData<S>,
-}
-
-impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for GeodesicFollowController<S> {
-    fn advance(&mut self, _input: FrameInput, _camera: &mut Camera<S>, _space: &S, _dt: f32) {
-        // No-op until PAINCARE's geodesic motion exposes the
-        // holonomy-drift problem this is designed to fix. See
-        // ROADMAP §3.2 + the comment above.
     }
 }
 

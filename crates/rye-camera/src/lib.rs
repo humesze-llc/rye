@@ -2,14 +2,13 @@
 //!
 //! Two layers, used together:
 //!
-//! 1. [`Camera<S>`] — Space-generic position + tangent frame.
-//!    Pure data; storage agnostic to which controller is driving
-//!    it. Works for any `Space` whose `Point` and `Vector` are
+//! 1. [`Camera<S>`]: Space-generic position + tangent frame. Pure
+//!    data; storage agnostic to which controller is driving it.
+//!    Works for any `Space` whose `Point` and `Vector` are
 //!    `glam::Vec3` (i.e. all the closed-form 3D Spaces today).
-//! 2. [`CameraController`] — input-driven logic that mutates a
-//!    `Camera<S>` each frame. Concrete impls:
-//!    [`OrbitController`], [`FirstPersonController`], and the
-//!    soon-to-land [`GeodesicFollowController`].
+//! 2. [`CameraController`]: input-driven logic that mutates a
+//!    `Camera<S>` each frame. Concrete impls: [`OrbitController`],
+//!    [`FirstPersonController`].
 //!
 //! ## Legacy Euclidean-only types
 //!
@@ -24,9 +23,7 @@ mod camera;
 mod controller;
 
 pub use camera::Camera;
-pub use controller::{
-    CameraController, FirstPersonController, GeodesicFollowController, OrbitController,
-};
+pub use controller::{CameraController, FirstPersonController, OrbitController};
 
 use std::f32::consts::FRAC_PI_2;
 

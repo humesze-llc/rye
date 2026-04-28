@@ -77,18 +77,22 @@ struct LatticeApp {
     rotate_yaw_per_tick: f32,
 }
 
+struct PanelLayout {
+    /// Window pixel width / height (the shader sees the full window
+    /// resolution; the panel selects its own slice via `x_offset` /
+    /// `panel_w`).
+    window_w: u32,
+    window_h: u32,
+    x_offset: u32,
+    panel_w: u32,
+    /// Discriminator the user shader uses to pick this panel's
+    /// per-Space tinting / labels (0.0 = E³, 1.0 = H³, 2.0 = S³).
+    panel_idx: f32,
+    fog_scale: f32,
+}
+
 impl LatticeApp {
-    fn panel_uniforms(
-        &self,
-        time: f32,
-        tick: u64,
-        w: u32,
-        h: u32,
-        x_offset: u32,
-        panel_w: u32,
-        panel_idx: f32,
-        fog_scale: f32,
-    ) -> RayMarchUniforms {
+    fn panel_uniforms(&self, time: f32, tick: u64, p: PanelLayout) -> RayMarchUniforms {
         let camera = self.camera.view();
         RayMarchUniforms {
             camera_pos: camera.position.to_array(),
@@ -99,10 +103,15 @@ impl LatticeApp {
             _pad2: 0.0,
             camera_up: camera.up.to_array(),
             fov_y_tan: (60.0_f32.to_radians() * 0.5).tan(),
-            resolution: [w as f32, h as f32],
+            resolution: [p.window_w as f32, p.window_h as f32],
             time,
             tick: tick as f32,
-            params: [x_offset as f32, panel_idx, panel_w as f32, fog_scale],
+            params: [
+                p.x_offset as f32,
+                p.panel_idx,
+                p.panel_w as f32,
+                p.fog_scale,
+            ],
         }
     }
 }
@@ -189,9 +198,17 @@ impl App for LatticeApp {
         let pw = w / 3;
         let pw2 = w - pw * 2;
 
-        let u_e3 = self.panel_uniforms(ctx.time, ctx.tick, w, h, 0, pw, 0.0, FOG_E3);
-        let u_h3 = self.panel_uniforms(ctx.time, ctx.tick, w, h, pw, pw, 1.0, FOG_H3);
-        let u_s3 = self.panel_uniforms(ctx.time, ctx.tick, w, h, pw * 2, pw2, 2.0, FOG_S3);
+        let panel = |x_offset, panel_w, panel_idx, fog_scale| PanelLayout {
+            window_w: w,
+            window_h: h,
+            x_offset,
+            panel_w,
+            panel_idx,
+            fog_scale,
+        };
+        let u_e3 = self.panel_uniforms(ctx.time, ctx.tick, panel(0, pw, 0.0, FOG_E3));
+        let u_h3 = self.panel_uniforms(ctx.time, ctx.tick, panel(pw, pw, 1.0, FOG_H3));
+        let u_s3 = self.panel_uniforms(ctx.time, ctx.tick, panel(pw * 2, pw2, 2.0, FOG_S3));
         self.node_e3.set_uniforms(&ctx.rd.queue, u_e3);
         self.node_h3.set_uniforms(&ctx.rd.queue, u_h3);
         self.node_s3.set_uniforms(&ctx.rd.queue, u_s3);

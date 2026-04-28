@@ -36,16 +36,15 @@
 //!   brighter when visible). **5**: clear highlight.
 //! - **Esc**: exit.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
-use glam::{Vec3, Vec4};
-use rye_asset::AssetWatcher;
+use glam::Vec4;
+use rye_app::{run_with_config, App, FrameCtx, RunConfig, SetupCtx, TickCtx};
 use rye_camera::OrbitCamera;
-use rye_input::InputState;
 use rye_math::{EuclideanR3, EuclideanR4, Rotor};
 use rye_physics::{
     euclidean_r4::{
@@ -55,15 +54,12 @@ use rye_physics::{
     World,
 };
 use rye_render::{device::RenderDevice, graph::RenderNode};
-use rye_shader::{ShaderDb, ShaderId};
-use rye_time::FixedTimestep;
+use rye_shader::ShaderId;
 use wgpu::{util::DeviceExt, *};
 use winit::{
-    application::ApplicationHandler,
     event::{ElementState, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::{Key, KeyCode, NamedKey, PhysicalKey},
-    window::{Window, WindowAttributes},
+    keyboard::{KeyCode, PhysicalKey},
+    window::WindowAttributes,
 };
 
 fn shader_dir() -> PathBuf {
@@ -280,23 +276,15 @@ fn build_world() -> World<EuclideanR4> {
     world
 }
 
-// ---- App -----------------------------------------------------------
-
-struct App {
-    window: Option<Arc<Window>>,
-    rd: Option<RenderDevice>,
-    minimized: bool,
-
-    shaders: Option<ShaderDb>,
-    shader_id: Option<ShaderId>,
+struct PentatopeApp {
+    /// `App::Space` requirement. The shader is loaded as a non-Space
+    /// scene (no Space prelude needed for this static 4D math), so
+    /// the field is dormant.
+    space: EuclideanR3,
+    shader_id: ShaderId,
     shader_gen: u64,
-    watcher: Option<AssetWatcher>,
-    node: Option<SliceNode>,
-
-    timestep: FixedTimestep,
+    node: SliceNode,
     camera: OrbitCamera,
-    input: InputState,
-    start: Instant,
 
     // Physics.
     world: World<EuclideanR4>,
@@ -314,56 +302,9 @@ struct App {
     /// Held-key state for the ↑ / ↓ continuous slider.
     slider_up_held: bool,
     slider_down_held: bool,
-
-    // FPS bookkeeping.
-    frame_count: u32,
-    last_fps_update: Instant,
-    fps: f32,
 }
 
-impl App {
-    fn new() -> Self {
-        let world = build_world();
-        let pentatope_id = world.bodies.len() - 1;
-
-        Self {
-            window: None,
-            rd: None,
-            minimized: false,
-            shaders: None,
-            shader_id: None,
-            shader_gen: 0,
-            watcher: None,
-            node: None,
-            timestep: FixedTimestep::new(60),
-            camera: {
-                let mut c = OrbitCamera::default();
-                // Pull back and **up** so the pentatope falling onto
-                // `y = 0` is framed from above. `OrbitCamera` uses
-                // negative pitch for "look down" (positive pitch tilts
-                // the camera below the floor, the SDF then reads the
-                // origin as inside the ground half-space and the
-                // viewport floods with checker).
-                c.set_orbit(8.0, -0.35);
-                c
-            },
-            input: InputState::default(),
-            start: Instant::now(),
-            world,
-            pentatope_id,
-            paused: false,
-            w_offset: 0.0,
-            auto_sweep: false,
-            sweep_anchor: Instant::now(),
-            highlight: NO_HIGHLIGHT,
-            slider_up_held: false,
-            slider_down_held: false,
-            frame_count: 0,
-            last_fps_update: Instant::now(),
-            fps: 0.0,
-        }
-    }
-
+impl PentatopeApp {
     fn reset(&mut self) {
         self.world = build_world();
         self.pentatope_id = self.world.bodies.len() - 1;
@@ -380,6 +321,15 @@ impl App {
         // 8 s period, ±W_OFFSET_RANGE about 0 (cosine).
         let phase = (self.sweep_anchor.elapsed().as_secs_f32() / 8.0) * std::f32::consts::TAU;
         self.w_offset = W_OFFSET_RANGE * phase.cos();
+    }
+
+    /// Advance the held-key slider by `dt` seconds.
+    fn advance_slider(&mut self, dt: f32) {
+        let dir = (self.slider_up_held as i32 - self.slider_down_held as i32) as f32;
+        if dir != 0.0 {
+            self.w_offset =
+                (self.w_offset + dir * W_SWEEP_RATE * dt).clamp(-W_OFFSET_RANGE, W_OFFSET_RANGE);
+        }
     }
 
     fn handle_keyboard(&mut self, code: PhysicalKey, state: ElementState) {
@@ -428,15 +378,6 @@ impl App {
         }
     }
 
-    /// Advance the held-key slider by `dt` seconds.
-    fn advance_slider(&mut self, dt: f32) {
-        let dir = (self.slider_up_held as i32 - self.slider_down_held as i32) as f32;
-        if dir != 0.0 {
-            self.w_offset =
-                (self.w_offset + dir * W_SWEEP_RATE * dt).clamp(-W_OFFSET_RANGE, W_OFFSET_RANGE);
-        }
-    }
-
     /// World-space pentatope vertices: each body-local vertex
     /// rotated by the body's orientation rotor and translated by its
     /// position. Sent to the shader every frame.
@@ -455,234 +396,142 @@ impl App {
     fn effective_w_slice(&self) -> f32 {
         self.world.bodies[self.pentatope_id].position.w + self.w_offset
     }
-
-    fn current_uniforms(&self) -> Option<SliceUniforms> {
-        let rd = self.rd.as_ref()?;
-        let view = self.camera.view();
-        let t = self.start.elapsed().as_secs_f32();
-        Some(SliceUniforms {
-            camera_pos: view.position.to_array(),
-            _pad0: 0.0,
-            camera_forward: view.forward.to_array(),
-            _pad1: 0.0,
-            camera_right: view.right.to_array(),
-            _pad2: 0.0,
-            camera_up: view.up.to_array(),
-            fov_y_tan: (60.0_f32.to_radians() * 0.5).tan(),
-            resolution: [
-                rd.surface_bundle.config.width as f32,
-                rd.surface_bundle.config.height as f32,
-            ],
-            time: t,
-            tick: self.timestep.tick() as f32,
-            params: [self.effective_w_slice(), self.highlight, 0.0, 0.0],
-            pentatope_v: self.pentatope_world_vertices(),
-        })
-    }
-
-    fn handle_hot_reload(&mut self) {
-        let (Some(watcher), Some(shaders), Some(id), Some(rd)) = (
-            self.watcher.as_ref(),
-            self.shaders.as_mut(),
-            self.shader_id,
-            self.rd.as_ref(),
-        ) else {
-            return;
-        };
-        let events = watcher.poll();
-        if events.is_empty() {
-            return;
-        }
-        shaders.apply_events(&events, &EuclideanR3);
-        let new_gen = shaders.generation(id);
-        if new_gen != self.shader_gen {
-            tracing::info!("rebuilding SliceNode for shader gen {new_gen}");
-            self.shader_gen = new_gen;
-            self.node = Some(SliceNode::new(
-                &rd.device,
-                rd.surface_bundle.config.format,
-                shaders.module(id),
-            ));
-        }
-    }
 }
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, elwt: &ActiveEventLoop) {
-        let win = Arc::new(
-            elwt.create_window(
-                WindowAttributes::default()
-                    .with_title(TITLE)
-                    .with_visible(false),
-            )
-            .expect("create window"),
-        );
-        let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
+impl App for PentatopeApp {
+    type Space = EuclideanR3;
 
-        let mut shaders = ShaderDb::new(rd.device.clone());
-        let id = shaders
-            .load(shader_path(), &EuclideanR3)
-            .expect("load pentatope_slice.wgsl");
-        let gen = shaders.generation(id);
-        let mut watcher = AssetWatcher::new().expect("asset watcher");
-        watcher.watch(shader_dir()).expect("watch shader dir");
+    fn setup(ctx: &mut SetupCtx<'_>) -> Result<Self> {
+        let rd = ctx.rd;
+        let space = EuclideanR3;
+        let shader_id = ctx.shader_db.load(shader_path(), &space)?;
+        let shader_gen = ctx.shader_db.generation(shader_id);
         let node = SliceNode::new(
             &rd.device,
             rd.surface_bundle.config.format,
-            shaders.module(id),
+            ctx.shader_db.module(shader_id),
         );
 
-        self.window = Some(win.clone());
-        self.rd = Some(rd);
-        self.shaders = Some(shaders);
-        self.shader_id = Some(id);
-        self.shader_gen = gen;
-        self.watcher = Some(watcher);
-        self.node = Some(node);
-        self.minimized = false;
-        self.start = Instant::now();
-        self.sweep_anchor = Instant::now();
+        if let Some(watcher) = ctx.watcher.as_mut() {
+            watcher.watch(shader_dir())?;
+        }
 
-        win.set_visible(true);
-        win.request_redraw();
+        // Pull the camera up and back so the pentatope falling onto
+        // `y = 0` is framed from above. `OrbitCamera` uses negative
+        // pitch for "look down" (positive pitch tilts below the floor;
+        // the SDF then reads the origin as inside the ground
+        // half-space and the viewport floods with checker).
+        let mut camera = OrbitCamera::default();
+        camera.set_orbit(8.0, -0.35);
+
+        let world = build_world();
+        let pentatope_id = world.bodies.len() - 1;
+
+        Ok(Self {
+            space,
+            shader_id,
+            shader_gen,
+            node,
+            camera,
+            world,
+            pentatope_id,
+            paused: false,
+            w_offset: 0.0,
+            auto_sweep: false,
+            sweep_anchor: Instant::now(),
+            highlight: NO_HIGHLIGHT,
+            slider_up_held: false,
+            slider_down_held: false,
+        })
     }
 
-    fn window_event(
-        &mut self,
-        elwt: &ActiveEventLoop,
-        _id: winit::window::WindowId,
-        ev: WindowEvent,
-    ) {
-        let Some(win) = self.window.clone() else {
-            return;
-        };
+    fn space(&self) -> &EuclideanR3 {
+        &self.space
+    }
+
+    fn tick(&mut self, dt: f32, _ctx: &mut TickCtx) {
+        self.advance_slider(dt);
+        self.advance_auto_sweep();
+        if !self.paused {
+            self.world.step(dt);
+        }
+    }
+
+    fn update(&mut self, ctx: &mut FrameCtx<'_>) {
+        self.camera.advance(ctx.input);
+
+        let cfg = &ctx.rd.surface_bundle.config;
+        self.node.set_uniforms(
+            &ctx.rd.queue,
+            SliceUniforms {
+                camera_pos: self.camera.view().position.to_array(),
+                _pad0: 0.0,
+                camera_forward: self.camera.view().forward.to_array(),
+                _pad1: 0.0,
+                camera_right: self.camera.view().right.to_array(),
+                _pad2: 0.0,
+                camera_up: self.camera.view().up.to_array(),
+                fov_y_tan: (60.0_f32.to_radians() * 0.5).tan(),
+                resolution: [cfg.width as f32, cfg.height as f32],
+                time: ctx.time,
+                tick: ctx.tick as f32,
+                params: [self.effective_w_slice(), self.highlight, 0.0, 0.0],
+                pentatope_v: self.pentatope_world_vertices(),
+            },
+        );
+    }
+
+    fn on_event(&mut self, ev: &WindowEvent, _ctx: &mut FrameCtx<'_>) {
         match ev {
-            WindowEvent::CloseRequested => elwt.exit(),
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
-            {
-                elwt.exit();
-            }
             WindowEvent::KeyboardInput { event, .. } => {
-                self.input.key_input(event.physical_key, event.state);
                 self.handle_keyboard(event.physical_key, event.state);
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.input.cursor_moved(position.x, position.y);
-            }
-            WindowEvent::CursorLeft { .. } => self.input.cursor_invalidated(),
             WindowEvent::Focused(false) => {
-                self.input.cursor_invalidated();
-                self.input.release_buttons();
                 // Drop held-slider state so the offset doesn't keep
                 // sweeping while the window is unfocused.
                 self.slider_up_held = false;
                 self.slider_down_held = false;
             }
-            WindowEvent::MouseInput { state, button, .. } => {
-                self.input.mouse_input(button, state);
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                self.input.mouse_wheel(delta);
-            }
-            WindowEvent::Resized(size) => {
-                self.minimized = size.width == 0 || size.height == 0;
-                if !self.minimized {
-                    if let Some(rd) = &mut self.rd {
-                        rd.resize(size);
-                    }
-                }
-            }
-            WindowEvent::RedrawRequested => {
-                if self.minimized {
-                    return;
-                }
-                let ticks = self.timestep.advance(Instant::now());
-                let n_ticks = ticks.count();
-                if n_ticks > 0 {
-                    let frame_input = self.input.take_frame();
-                    self.camera.advance(frame_input);
-                    self.advance_slider(n_ticks as f32 / 60.0);
-                    self.advance_auto_sweep();
-                    if !self.paused {
-                        // One physics step per fixed tick (60 Hz).
-                        // Cap at 4 to prevent the spiral of death if
-                        // the renderer ever stalls.
-                        for _ in 0..n_ticks.min(4) {
-                            self.world.step(1.0 / 60.0);
-                        }
-                    }
-                }
-                self.handle_hot_reload();
-
-                // FPS / title.
-                self.frame_count += 1;
-                let elapsed = self.last_fps_update.elapsed().as_secs_f32();
-                if elapsed >= 1.0 {
-                    self.fps = self.frame_count as f32 / elapsed;
-                    self.frame_count = 0;
-                    self.last_fps_update = Instant::now();
-                    let body = &self.world.bodies[self.pentatope_id];
-                    let p = body.position;
-                    let pause = if self.paused { " [paused]" } else { "" };
-                    let mode = if self.auto_sweep { "auto" } else { "manual" };
-                    let w_eff = p.w + self.w_offset;
-                    win.set_title(&format!(
-                        "{TITLE} | {:.0} fps | offset={:+.2} ({mode}) w₀={:+.2}{pause} | pos.y={:+.2} pos.w={:+.2}",
-                        self.fps, self.w_offset, w_eff, p.y, p.w
-                    ));
-                }
-
-                let Some(uniforms) = self.current_uniforms() else {
-                    return;
-                };
-                let Some(rd) = self.rd.as_ref() else { return };
-                if let Some(node) = self.node.as_mut() {
-                    node.set_uniforms(&rd.queue, uniforms);
-                }
-                match rd.begin_frame() {
-                    Ok((frame, view)) => {
-                        if let Some(node) = self.node.as_mut() {
-                            if let Err(e) = node.execute_frame(rd, &view) {
-                                tracing::error!("render error: {e:#}");
-                            }
-                        }
-                        frame.present();
-                        win.request_redraw();
-                    }
-                    Err(err) => match err {
-                        SurfaceError::Lost | SurfaceError::Outdated => {
-                            if let Some(rd) = &mut self.rd {
-                                let size = rd.surface_bundle.size;
-                                rd.resize(size);
-                            }
-                            win.request_redraw();
-                        }
-                        SurfaceError::Timeout => win.request_redraw(),
-                        SurfaceError::OutOfMemory => elwt.exit(),
-                        SurfaceError::Other => {
-                            tracing::error!("surface error: {err:?}");
-                            win.request_redraw();
-                        }
-                    },
-                }
-            }
             _ => {}
         }
+    }
+
+    fn on_shader_reload(&mut self, ctx: &mut SetupCtx<'_>) {
+        let new_gen = ctx.shader_db.generation(self.shader_id);
+        if new_gen != self.shader_gen {
+            tracing::info!("rebuilding SliceNode for shader gen {new_gen}");
+            self.shader_gen = new_gen;
+            self.node = SliceNode::new(
+                &ctx.rd.device,
+                ctx.rd.surface_bundle.config.format,
+                ctx.shader_db.module(self.shader_id),
+            );
+        }
+    }
+
+    fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
+        self.node.execute_frame(rd, view)
+    }
+
+    fn title(&self, fps: f32) -> Cow<'static, str> {
+        let body = &self.world.bodies[self.pentatope_id];
+        let p = body.position;
+        let pause = if self.paused { " [paused]" } else { "" };
+        let mode = if self.auto_sweep { "auto" } else { "manual" };
+        let w_eff = p.w + self.w_offset;
+        Cow::Owned(format!(
+            "{TITLE} | {fps:.0} fps | offset={:+.2} ({mode}) w₀={:+.2}{pause} | pos.y={:+.2} pos.w={:+.2}",
+            self.w_offset, w_eff, p.y, p.w
+        ))
     }
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-    let elwt = EventLoop::new()?;
-    elwt.set_control_flow(winit::event_loop::ControlFlow::Poll);
-    let mut app = App::new();
-    elwt.run_app(&mut app)?;
-    let _ = Vec3::ZERO;
-    Ok(())
+    let config = RunConfig {
+        window: WindowAttributes::default()
+            .with_title(TITLE)
+            .with_visible(false),
+        ..RunConfig::default()
+    };
+    run_with_config::<PentatopeApp>(config)
 }

@@ -20,9 +20,9 @@
 //! | `Shape` variant | 4D SDF emit | Notes |
 //! |---|---|---|
 //! | [`Shape::HyperSphere4D`] | closed-form | `length(p − center) − radius` |
-//! | [`Shape::HalfSpace4D`] | closed-form | `dot(p, normal) − offset` |
-//! | [`Shape::ConvexPolytope4D`] | runtime-computed | max-of-half-spaces; the half-space normals are derived from the vertex list |
-//! | All 3D-only variants (`Sphere`, `Box3`, `HalfSpace`, ...) | sentinel | `1e9` (no emit; they shouldn't appear in `Scene4`) |
+//! | [`Shape::HalfSpace4D`] | sentinel `1e9` | a chart-coord `dot(p, n) − offset` would render visibly wrong if a future `BlendedSpace4` lands; gated until a closed-form geodesic-hyperplane SDF replaces it |
+//! | [`Shape::ConvexPolytope4D`] | sentinel `1e9` | the production path is `Hyperslice4DNode`'s per-frame uniform buffer (CPU computes face hyperplanes from world-transformed vertices, ships them to GPU); this static emit is intentionally inert |
+//! | All 3D-only variants (`Sphere`, `Box3`, `HalfSpace`, ...) | sentinel `1e9` | shouldn't appear in `Scene4`; sentinel renders invisible if accidentally included |
 //!
 //! The polytope emit currently builds the half-spaces inside the
 //! function on every call, fine for static scenes (5 to 24
@@ -35,6 +35,14 @@ use rye_shape::Shape;
 /// Emit a WGSL function that evaluates the 4D signed-distance
 /// field of this shape. Counterpart of [`crate::Primitive`] for
 /// 4D variants.
+///
+/// Same trait rule as the 3D `Primitive`: emitted SDFs must use
+/// Space-aware primitives only, never raw chart-coord arithmetic.
+/// The 4D pipeline is single-Space today (Euclidean R⁴), so the
+/// rule is forward-looking, but variants that would emit
+/// chart-coord formulas (e.g. `HalfSpace4D`'s `dot(p, n) - offset`)
+/// emit the `+1e9` sentinel rather than ship a future-broken
+/// formula. See the module-level table for the per-variant status.
 pub trait Primitive4 {
     /// Generate a WGSL function definition. Caller picks `name`;
     /// the function takes a `vec4<f32>` and returns a scalar `f32`.
@@ -55,21 +63,6 @@ impl Primitive4 for Shape {
                 cz = center.z,
                 cw = center.w,
                 radius = radius,
-            ),
-
-            // Closed-form half-space SDF: signed distance to a
-            // hyperplane. Positive on the empty side (outside the
-            // half-space's "solid" half), negative inside.
-            Shape::HalfSpace4D { normal, offset } => format!(
-                "fn {name}(p: vec4<f32>) -> f32 {{\n\
-                \treturn dot(p, vec4<f32>({nx}, {ny}, {nz}, {nw})) - ({offset});\n\
-                }}\n",
-                name = name,
-                nx = normal.x,
-                ny = normal.y,
-                nz = normal.z,
-                nw = normal.w,
-                offset = offset,
             ),
 
             // Convex polytope: SDF is `max_i (n_i · p − d_i)` over
@@ -101,17 +94,20 @@ impl Primitive4 for Shape {
                 }}\n",
             ),
 
-            // 3D / 2D variants don't belong in a 4D scene; emit a
-            // far-away sentinel so accidental inclusion doesn't
-            // crash assembly but also doesn't render anything
-            // visible.
-            Shape::Sphere { .. }
+            // `HalfSpace4D` joins this arm: a chart-coord `dot(p, n)
+            // - offset` would render visibly wrong if a future
+            // `BlendedSpace4` is plugged in. Sentinel until a
+            // closed-form geodesic-hyperplane SDF replaces it. The
+            // 3D / 2D variants don't belong in a 4D scene at all;
+            // sentinel keeps the trait exhaustive without producing
+            // type-mismatched WGSL.
+            Shape::HalfSpace4D { .. }
+            | Shape::Sphere { .. }
             | Shape::HalfSpace { .. }
             | Shape::Box3 { .. }
             | Shape::Polygon2D { .. }
             | Shape::ConvexPolytope3D { .. } => format!(
                 "fn {name}(_p: vec4<f32>) -> f32 {{\n\
-                \t// 3D-only Shape variant in a 4D scene, sentinel.\n\
                 \treturn 1e9;\n\
                 }}\n",
             ),
@@ -142,16 +138,24 @@ mod tests {
         assert!(wgsl.contains("- (0.5)"));
     }
 
+    /// `HalfSpace4D` no longer emits a chart-coord `dot(p, n) - d`:
+    /// the trait rule (forward-looking for any future BlendedSpace4)
+    /// forbids raw coordinate arithmetic. Until a closed-form
+    /// geodesic-hyperplane SDF replaces it, the variant emits the
+    /// `+1e9` invisible-far-away sentinel.
     #[test]
-    fn halfspace_4d_emit_has_expected_shape() {
+    fn halfspace_4d_emits_sentinel_sdf() {
         let s = Shape::HalfSpace4D {
             normal: Vec4::new(0.0, 1.0, 0.0, 0.0),
             offset: 0.0,
         };
         let wgsl = s.to_wgsl_4d("floor4");
-        assert!(wgsl.contains("fn floor4(p: vec4<f32>) -> f32"));
-        assert!(wgsl.contains("dot(p, vec4<f32>(0, 1, 0, 0))"));
-        assert!(wgsl.contains("- (0)"));
+        assert!(wgsl.contains("fn floor4(_p: vec4<f32>) -> f32"));
+        assert!(wgsl.contains("return 1e9"));
+        assert!(
+            !wgsl.contains("dot(p,"),
+            "HalfSpace4D must not emit raw chart-coord dot product",
+        );
     }
 
     /// `ConvexPolytope4D` emits a sentinel today; the real path

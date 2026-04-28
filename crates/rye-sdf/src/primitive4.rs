@@ -20,7 +20,7 @@
 //! | `Shape` variant | 4D SDF emit | Notes |
 //! |---|---|---|
 //! | [`Shape::HyperSphere4D`] | closed-form | `length(p − center) − radius` |
-//! | [`Shape::HalfSpace4D`] | sentinel `1e9` | a chart-coord `dot(p, n) − offset` would render visibly wrong if a future `BlendedSpace4` lands; gated until a closed-form geodesic-hyperplane SDF replaces it |
+//! | [`Shape::HalfSpace4D`] | closed-form | `dot(p, normal) − offset`. Honest in flat ℝ⁴, which is the only 4D Space rye ships today. When a curved 4D Space lands (`BlendedSpace4`, hyperbolic 4-space, …), `Primitive4` will need a `space: &S` parameter the way [`crate::Primitive`] takes one, and the chart-coord emit will gate on `WgslSpace::is_chart_flat`. |
 //! | [`Shape::ConvexPolytope4D`] | sentinel `1e9` | the production path is `Hyperslice4DNode`'s per-frame uniform buffer (CPU computes face hyperplanes from world-transformed vertices, ships them to GPU); this static emit is intentionally inert |
 //! | All 3D-only variants (`Sphere`, `Box3`, `HalfSpace`, ...) | sentinel `1e9` | shouldn't appear in `Scene4`; sentinel renders invisible if accidentally included |
 //!
@@ -36,13 +36,13 @@ use rye_shape::Shape;
 /// field of this shape. Counterpart of [`crate::Primitive`] for
 /// 4D variants.
 ///
-/// Same trait rule as the 3D `Primitive`: emitted SDFs must use
-/// Space-aware primitives only, never raw chart-coord arithmetic.
-/// The 4D pipeline is single-Space today (Euclidean R⁴), so the
-/// rule is forward-looking, but variants that would emit
-/// chart-coord formulas (e.g. `HalfSpace4D`'s `dot(p, n) - offset`)
-/// emit the `+1e9` sentinel rather than ship a future-broken
-/// formula. See the module-level table for the per-variant status.
+/// **Single-Space today.** Unlike [`crate::Primitive`], this trait
+/// doesn't take a `space: &S` parameter: ℝ⁴ is the only 4D Space
+/// rye ships, and it's flat, so chart-coord SDFs (`HalfSpace4D`'s
+/// `dot(p, n) - offset`) are mathematically correct. When a
+/// curved 4D Space lands the trait will grow that parameter and
+/// `HalfSpace4D` will gate on `WgslSpace::is_chart_flat`, exactly
+/// like its 3D counterpart.
 pub trait Primitive4 {
     /// Generate a WGSL function definition. Caller picks `name`;
     /// the function takes a `vec4<f32>` and returns a scalar `f32`.
@@ -94,15 +94,28 @@ impl Primitive4 for Shape {
                 }}\n",
             ),
 
-            // `HalfSpace4D` joins this arm: a chart-coord `dot(p, n)
-            // - offset` would render visibly wrong if a future
-            // `BlendedSpace4` is plugged in. Sentinel until a
-            // closed-form geodesic-hyperplane SDF replaces it. The
-            // 3D / 2D variants don't belong in a 4D scene at all;
-            // sentinel keeps the trait exhaustive without producing
+            // Closed-form half-space SDF: signed distance to a
+            // hyperplane. Positive on the empty side (outside the
+            // half-space's "solid" half), negative inside. ℝ⁴ is
+            // flat, so this chart-coord formula is honest; see the
+            // trait docstring for what changes when a curved 4D
+            // Space arrives.
+            Shape::HalfSpace4D { normal, offset } => format!(
+                "fn {name}(p: vec4<f32>) -> f32 {{\n\
+                \treturn dot(p, vec4<f32>({nx}, {ny}, {nz}, {nw})) - ({offset});\n\
+                }}\n",
+                name = name,
+                nx = normal.x,
+                ny = normal.y,
+                nz = normal.z,
+                nw = normal.w,
+                offset = offset,
+            ),
+
+            // 3D / 2D variants don't belong in a 4D scene; sentinel
+            // keeps the trait exhaustive without producing
             // type-mismatched WGSL.
-            Shape::HalfSpace4D { .. }
-            | Shape::Sphere { .. }
+            Shape::Sphere { .. }
             | Shape::HalfSpace { .. }
             | Shape::Box3 { .. }
             | Shape::Polygon2D { .. }
@@ -139,23 +152,21 @@ mod tests {
     }
 
     /// `HalfSpace4D` no longer emits a chart-coord `dot(p, n) - d`:
-    /// the trait rule (forward-looking for any future BlendedSpace4)
-    /// forbids raw coordinate arithmetic. Until a closed-form
-    /// geodesic-hyperplane SDF replaces it, the variant emits the
-    /// `+1e9` invisible-far-away sentinel.
+    /// `HalfSpace4D` emits an honest chart-coord `dot(p, n) - offset`
+    /// hyperplane SDF: ℝ⁴ is flat, so the formula is correct. When
+    /// a curved 4D Space lands `Primitive4` will grow a Space
+    /// parameter and gate this emission via `is_chart_flat`, but
+    /// today the unconditional emit is the right call.
     #[test]
-    fn halfspace_4d_emits_sentinel_sdf() {
+    fn halfspace_4d_emits_dot_in_flat_chart() {
         let s = Shape::HalfSpace4D {
             normal: Vec4::new(0.0, 1.0, 0.0, 0.0),
             offset: 0.0,
         };
         let wgsl = s.to_wgsl_4d("floor4");
-        assert!(wgsl.contains("fn floor4(_p: vec4<f32>) -> f32"));
-        assert!(wgsl.contains("return 1e9"));
-        assert!(
-            !wgsl.contains("dot(p,"),
-            "HalfSpace4D must not emit raw chart-coord dot product",
-        );
+        assert!(wgsl.contains("fn floor4(p: vec4<f32>) -> f32"));
+        assert!(wgsl.contains("dot(p, vec4<f32>(0, 1, 0, 0))"));
+        assert!(wgsl.contains("- (0)"));
     }
 
     /// `ConvexPolytope4D` emits a sentinel today; the real path

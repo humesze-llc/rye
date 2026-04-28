@@ -5,24 +5,15 @@
 //!
 //! ## Flags
 //!
-//! `--hyperbolic`        : swap Space prelude to HyperbolicH3 (geodesic fog)
-//! `--spherical`         : swap Space prelude to SphericalS3
-//! `--rotate`            : auto-rotate camera; interactive at 1 rev/20 s
-//! `--capture-apng PATH` : render N frames, save looping APNG, exit
-//! `--capture-gif  PATH` : render N frames, save looping GIF, exit
-//! `--capture-frames N`  : frame count (default 300 = 10 s @ 30 fps)
-//! `--capture-fps N`     : playback fps baked into the encoded output
-//!
-//! Capture mode forces `--rotate` so the captured loop is a complete
-//! revolution synced to the frame count.
+//! `--hyperbolic` : swap Space prelude to HyperbolicH3 (geodesic fog)
+//! `--spherical`  : swap Space prelude to SphericalS3
+//! `--rotate`     : auto-rotate camera; 1 rev / 20 s
 
 use std::borrow::Cow;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use rye_app::{
-    run_with_config, App, Camera, CaptureConfig, FrameCtx, OrbitController, RunConfig, SetupCtx,
-};
+use rye_app::{run_with_config, App, Camera, FrameCtx, OrbitController, RunConfig, SetupCtx};
 use rye_math::{EuclideanR3, HyperbolicH3, SphericalS3, WgslSpace};
 use rye_render::{
     device::RenderDevice,
@@ -80,12 +71,11 @@ struct FractalApp<S: FractalKnobs> {
     shader_gen: u64,
     ray_march: RayMarchNode,
     rotate: bool,
-    /// Yaw advance per tick when `rotate` is on. In interactive
-    /// mode this is 1 rev / 20 s at the framework's 60 Hz; in
-    /// capture mode it's `TAU / capture_frames` so the recorded
-    /// loop is exactly one revolution.
-    rotate_yaw_per_tick: f32,
 }
+
+/// Yaw advance per tick when `rotate` is on. 1 revolution / 20 s
+/// at the framework's 60 Hz fixed timestep.
+const ROTATE_YAW_PER_TICK: f32 = std::f32::consts::TAU / (60.0 * 20.0);
 
 impl<S: FractalKnobs> App for FractalApp<S> {
     type Space = S;
@@ -105,21 +95,7 @@ impl<S: FractalKnobs> App for FractalApp<S> {
             watcher.watch(shader_dir())?;
         }
 
-        let args: Vec<String> = std::env::args().collect();
-        let capturing = args.iter().any(|a| a.starts_with("--capture-"));
-        // Capture forces rotate so the captured loop is a complete
-        // revolution synced to the frame count.
-        let rotate = capturing || args.iter().any(|a| a == "--rotate");
-        let rotate_yaw_per_tick = if capturing {
-            // Pull the configured frame count back out of the args so
-            // the per-tick yaw makes a clean 360°.
-            let frames = arg_value(&args, "--capture-frames")
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(300);
-            std::f32::consts::TAU / frames as f32
-        } else {
-            std::f32::consts::TAU / (60.0 * 20.0)
-        };
+        let rotate = std::env::args().any(|a| a == "--rotate");
 
         Ok(Self {
             space,
@@ -129,7 +105,6 @@ impl<S: FractalKnobs> App for FractalApp<S> {
             shader_gen,
             ray_march,
             rotate,
-            rotate_yaw_per_tick,
         })
     }
 
@@ -140,7 +115,7 @@ impl<S: FractalKnobs> App for FractalApp<S> {
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
         if self.rotate {
             self.orbit
-                .rotate_yaw(self.rotate_yaw_per_tick * ctx.n_ticks as f32);
+                .rotate_yaw(ROTATE_YAW_PER_TICK * ctx.n_ticks as f32);
         }
         // Camera always orbits in Euclidean space, even when the
         // shader prelude is H³ / S³.
@@ -221,11 +196,6 @@ impl OrbitInputExt for OrbitController<EuclideanR3> {
     }
 }
 
-fn arg_value(args: &[String], flag: &str) -> Option<String> {
-    let i = args.iter().position(|a| a == flag)?;
-    args.get(i + 1).cloned()
-}
-
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let hyperbolic = args.iter().any(|a| a == "--hyperbolic");
@@ -235,7 +205,6 @@ fn main() -> Result<()> {
         window: WindowAttributes::default()
             .with_title("Rye - Mandelbulb")
             .with_visible(false),
-        capture: CaptureConfig::from_env_args(),
         ..RunConfig::default()
     };
 

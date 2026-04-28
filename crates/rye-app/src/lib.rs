@@ -24,6 +24,12 @@
 //!   [`CameraController<S>`] in their `App` struct, advanced from
 //!   inside `App::update`. The framework only hands them the
 //!   drained input.
+//! - A frame-capture pipeline. Use OBS or another external screen
+//!   recorder. (TODO: revisit if a built-in capture knob becomes
+//!   load-bearing for CI / regression-image generation. The future
+//!   shape: GIF-preferred output, separate from any rotation flag.
+//!   Capture and auto-rotate are independent concerns and coupling
+//!   them was a 2026-04-28 mistake; see issue tracker.)
 //!
 //! Designed for a small ergonomic gain; explicitly not an ECS or
 //! scene graph.
@@ -73,10 +79,6 @@ use rye_math::WgslSpace;
 use rye_render::device::RenderDevice;
 use rye_shader::ShaderDb;
 use rye_time::FixedTimestep;
-
-mod capture;
-
-pub use capture::{CaptureConfig, CaptureFormat};
 
 // Convenience re-exports so apps don't have to depend on each crate
 // individually for the most common types.
@@ -236,14 +238,6 @@ pub struct RunConfig {
     /// `RUST_LOG` env var); `Some` installs a new global default
     /// subscriber.
     pub log_filter: Option<String>,
-    /// When `Some`, the runner copies each rendered frame's surface
-    /// texture into RAM (after `App::render`, before `frame.present`)
-    /// and saves the buffer as APNG / GIF once `frames` have been
-    /// captured. The runner exits cleanly after the save. When
-    /// `None`, no capture machinery runs and there's no per-frame
-    /// readback cost. Built typically via
-    /// [`CaptureConfig::from_env_args`].
-    pub capture: Option<CaptureConfig>,
 }
 
 impl Default for RunConfig {
@@ -255,7 +249,6 @@ impl Default for RunConfig {
             fixed_hz: 60,
             max_ticks_per_frame: 4,
             log_filter: None,
-            capture: None,
         }
     }
 }
@@ -311,9 +304,6 @@ struct Runner<A: App> {
     shader_db: Option<ShaderDb>,
     watcher: Option<AssetWatcher>,
     app: Option<A>,
-    /// Active capture session, built lazily in `resumed` from
-    /// `config.capture` once the surface size is known.
-    capture: Option<capture::FrameCapture>,
 
     minimized: bool,
 
@@ -342,7 +332,6 @@ impl<A: App> Runner<A> {
             shader_db: None,
             watcher: None,
             app: None,
-            capture: None,
             minimized: false,
             last_fps_update: Instant::now(),
             frame_count: 0,
@@ -413,14 +402,6 @@ impl<A: App> ApplicationHandler for Runner<A> {
                 return;
             }
         };
-
-        self.capture = self.config.capture.as_ref().map(|cfg| {
-            capture::FrameCapture::new(
-                cfg.clone(),
-                rd.surface_bundle.config.width,
-                rd.surface_bundle.config.height,
-            )
-        });
 
         self.window = Some(win.clone());
         self.rd = Some(rd);
@@ -593,21 +574,6 @@ impl<A: App> Runner<A> {
                 if let Some(app) = self.app.as_mut() {
                     if let Err(e) = app.render(rd, &view) {
                         tracing::error!("App::render error: {e:#}");
-                    }
-                }
-                if let Some(cap) = self.capture.as_mut() {
-                    cap.capture(&rd.device, &rd.queue, &frame);
-                    if cap.is_done() {
-                        match cap.save() {
-                            Ok(()) => {}
-                            Err(e) => {
-                                self.deferred_error = Some(e.context("FrameCapture::save"));
-                            }
-                        }
-                        elwt.exit();
-                        // Skip the request_redraw below: runner is shutting down.
-                        frame.present();
-                        return;
                     }
                 }
                 frame.present();

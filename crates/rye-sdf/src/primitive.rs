@@ -18,16 +18,20 @@
 //!   the local frame's origin. Honest in E³; chart-coordinate in
 //!   H³/S³ (the trait rule treats this as accepted because no
 //!   geodesic-box SDF exists in closed form).
+//! - [`Shape::HalfSpace`], chart-coord `dot(p, n) − offset` **only
+//!   in flat Spaces** (gated by [`WgslSpace::is_chart_flat`]). In
+//!   curved Spaces (H³, S³, `BlendedSpace`) it would draw the
+//!   chart's straight plane, not the geodesic plane, so the
+//!   emission falls back to the `+1e9` sentinel below until a
+//!   closed-form geodesic-plane SDF lands (artanh-of-Möbius in H³,
+//!   chord-distance to a great hyperplane in S³). The `Shape`
+//!   variant stays in `rye-shape` because physics still uses it for
+//!   collision walls regardless of the rendering side.
 //!
-//! Variants that emit a `+1e9` invisible-far-away sentinel:
+//! Variants that always emit a `+1e9` invisible-far-away sentinel
+//! today:
 //!
-//! - [`Shape::HalfSpace`] / [`Shape::HalfSpace4D`]: a chart-coordinate
-//!   `dot(p, n) − offset` would emit visibly wrong geometry in H³
-//!   and S³ (it draws the chart's straight plane, not the geodesic
-//!   plane). The shape stays in `rye-shape` because physics still
-//!   uses it for collision walls; only the SDF emission is gated
-//!   until closed-form geodesic-plane SDFs land (artanh-of-Möbius
-//!   in H³, chord-distance to a great hyperplane in S³).
+//! - [`Shape::HalfSpace4D`]: 4D variant; lives in [`Primitive4`].
 //! - [`Shape::Polygon2D`], [`Shape::ConvexPolytope3D`],
 //!   [`Shape::ConvexPolytope4D`]: vertex-list shapes that need
 //!   either a baked mesh-SDF or a runtime convex-hull kernel.
@@ -40,14 +44,15 @@ use rye_shape::Shape;
 /// function as WGSL.
 ///
 /// The emitted function has signature
-/// `fn {name}(p: vec3<f32>) -> f32` and must call only `rye_*`
-/// functions from the Space prelude, never raw coordinate
-/// arithmetic, so that correctness is preserved across E³, H³, and
-/// S³. Variants that can't honour this rule (because no
-/// closed-form Space-aware SDF exists yet) emit a `+1e9` sentinel
-/// rather than a chart-coordinate approximation that would silently
-/// render wrong in curved spaces. See the module-level doc for the
-/// per-variant status.
+/// `fn {name}(p: vec3<f32>) -> f32`. The trait rule: emitted SDFs
+/// must call only `rye_*` Space-prelude functions, never raw
+/// chart-coord arithmetic, **except** when the Space self-reports
+/// flat via [`WgslSpace::is_chart_flat`]. In flat Spaces the
+/// chart-coord and Riemannian distances coincide, so primitives
+/// like [`Shape::HalfSpace`] are free to emit `dot(p, n) - offset`
+/// directly. In curved Spaces those primitives sentinel until a
+/// real geodesic-plane SDF is written. See the module-level doc
+/// for the per-variant status.
 pub trait Primitive {
     /// Emit a WGSL function named `name` that returns the signed
     /// distance from `p` to `self` in the given Space.
@@ -55,7 +60,7 @@ pub trait Primitive {
 }
 
 impl Primitive for Shape {
-    fn to_wgsl<S: WgslSpace>(&self, _space: &S, name: &str) -> String {
+    fn to_wgsl<S: WgslSpace>(&self, space: &S, name: &str) -> String {
         match self {
             Shape::Sphere { center, radius } => format!(
                 "fn {name}(p: vec3<f32>) -> f32 {{\n\
@@ -78,19 +83,32 @@ impl Primitive for Shape {
                 hy = half_extents.y,
                 hz = half_extents.z,
             ),
+            Shape::HalfSpace { normal, offset } if space.is_chart_flat() => format!(
+                "fn {name}(p: vec3<f32>) -> f32 {{\n\
+                 \treturn dot(p, vec3<f32>({nx:.6}, {ny:.6}, {nz:.6})) - ({d:.6});\n\
+                 }}\n",
+                name = name,
+                nx = normal.x,
+                ny = normal.y,
+                nz = normal.z,
+                d = offset,
+            ),
             Shape::HalfSpace { .. }
             | Shape::HalfSpace4D { .. }
             | Shape::Polygon2D { .. }
             | Shape::ConvexPolytope3D { .. }
             | Shape::ConvexPolytope4D { .. }
             | Shape::HyperSphere4D { .. } => {
-                // Sentinel emission. `HalfSpace`/`HalfSpace4D` would
-                // need closed-form geodesic-plane SDFs in H³ / S³ to
-                // honour the trait rule; vertex-list shapes need a
-                // baked mesh-SDF or a runtime convex-hull kernel. A
-                // `+1e9` SDF renders as an invisible far-away
-                // surface so accidental inclusion fails visibly
-                // rather than silently drawing wrong geometry.
+                // Sentinel emission. `HalfSpace` falls here when the
+                // Space is curved (chart-coord plane != geodesic
+                // plane); `HalfSpace4D` always sentinels via this
+                // arm because `Primitive4` doesn't take a Space
+                // parameter today. Vertex-list shapes (Polygon2D,
+                // ConvexPolytope*) need a baked mesh-SDF or runtime
+                // convex-hull kernel. A `+1e9` SDF renders as an
+                // invisible far-away surface so accidental inclusion
+                // fails visibly rather than silently drawing wrong
+                // geometry.
                 format!("fn {name}(_p: vec3<f32>) -> f32 {{\n\treturn 1e9;\n}}\n",)
             }
         }

@@ -72,13 +72,14 @@ impl SceneNode4 {
         SceneNode4::Leaf(Shape::HyperSphere4D { center, radius })
     }
 
-    /// Half-space (hyperplane) leaf. The shape is canonical (also
-    /// used by `rye-physics` for 4D collision walls), but the
-    /// `Primitive4` emission currently returns the `+1e9` sentinel
-    /// so a future `BlendedSpace4` can't get rendered with a
-    /// chart-coord hyperplane that would silently break. Until a
-    /// closed-form geodesic-hyperplane SDF lands, half-space leaves
-    /// render invisible. See [`crate::Primitive4`].
+    /// Half-space (hyperplane) leaf. ℝ⁴ is the only 4D Space rye
+    /// ships and it's flat, so [`crate::Primitive4`] emits an
+    /// honest `dot(p, n) - offset` hyperplane SDF here. When a
+    /// curved 4D Space lands (`BlendedSpace4`, hyperbolic 4-space)
+    /// `Primitive4` will grow a `space: &S` parameter and gate this
+    /// emission on `WgslSpace::is_chart_flat` the same way the 3D
+    /// path does today. The shape itself is canonical, also used
+    /// by `rye-physics` for 4D collision walls.
     pub fn halfspace(normal: Vec4, offset: f32) -> Self {
         SceneNode4::Leaf(Shape::HalfSpace4D { normal, offset })
     }

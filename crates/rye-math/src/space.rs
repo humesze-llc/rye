@@ -170,4 +170,19 @@ pub trait WgslSpace: Space {
     /// Stateless geometries return `Cow::Borrowed`; parametric ones may
     /// `format!` constants in and return `Cow::Owned`.
     fn wgsl_impl(&self) -> Cow<'static, str>;
+
+    /// Whether this Space's chart is globally flat: chart-coord
+    /// arithmetic (raw `dot(p, n) - offset`, axis-aligned `abs(p) - b`,
+    /// etc.) computes the correct geometry without going through the
+    /// Riemannian `rye_*` machinery. False for curved Spaces (Poincaré
+    /// ball H³, stereographic S³, `BlendedSpace`) where chart
+    /// arithmetic and geodesic distance diverge visibly.
+    ///
+    /// Defaults to `false` so a new Space implementor must explicitly
+    /// opt in to chart-coord SDF fast paths. Consumers of this flag
+    /// (e.g. `rye_sdf::Primitive::HalfSpace::to_wgsl`) emit the
+    /// chart-coord formula when `true`, sentinel otherwise.
+    fn is_chart_flat(&self) -> bool {
+        false
+    }
 }

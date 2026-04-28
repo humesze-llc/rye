@@ -7,22 +7,15 @@
 //!
 //! ## Flags
 //!
-//! `--hyperbolic`        : swap Space prelude to HyperbolicH3
-//! `--spherical`         : swap Space prelude to SphericalS3
-//! `--rotate`            : auto-rotate camera; interactive at 1 rev/20 s
-//! `--capture-apng PATH` : render N frames, save looping APNG, exit
-//! `--capture-gif  PATH` : render N frames, save looping GIF, exit
-//! `--capture-frames N`  : frame count (default 300 = 10 s @ 30 fps)
-//! `--capture-fps N`     : playback fps baked into the encoded output
-//!
-//! Capture mode forces `--rotate` so the captured loop is a
-//! complete revolution synced to the frame count.
+//! `--hyperbolic` : swap Space prelude to HyperbolicH3
+//! `--spherical`  : swap Space prelude to SphericalS3
+//! `--rotate`     : auto-rotate camera; 1 rev / 20 s
 
 use std::borrow::Cow;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use rye_app::{run_with_config, App, CaptureConfig, FrameCtx, RunConfig, SetupCtx};
+use rye_app::{run_with_config, App, FrameCtx, RunConfig, SetupCtx};
 use rye_camera::OrbitCamera;
 use rye_math::{EuclideanR3, HyperbolicH3, SphericalS3, WgslSpace};
 use rye_render::{
@@ -46,34 +39,28 @@ trait SphereKnobs: WgslSpace + Default + 'static {
     const BALL_SCALE: f32;
     const FOG_SCALE: f32;
     const TITLE: &'static str;
-    /// Camera distance for capture mode. Constrained by the Space's
-    /// chart: `distance * BALL_SCALE` must stay inside the Poincaré
-    /// ball / spherical hemisphere.
-    const CAPTURE_DISTANCE: f32;
 }
 
 impl SphereKnobs for EuclideanR3 {
     const BALL_SCALE: f32 = 0.2;
     const FOG_SCALE: f32 = 3.2;
     const TITLE: &'static str = "Rye - Geodesic Spheres";
-    const CAPTURE_DISTANCE: f32 = 5.5;
 }
 
 impl SphereKnobs for HyperbolicH3 {
     const BALL_SCALE: f32 = 0.2;
     const FOG_SCALE: f32 = 3.0;
     const TITLE: &'static str = "Rye - Geodesic Spheres (H3 fog)";
-    // 4.5 * 0.2 = 0.9, safely inside the Poincaré ball.
-    const CAPTURE_DISTANCE: f32 = 4.5;
 }
 
 impl SphereKnobs for SphericalS3 {
     const BALL_SCALE: f32 = 0.2;
     const FOG_SCALE: f32 = 2.6;
     const TITLE: &'static str = "Rye - Geodesic Spheres (S3 fog)";
-    // Same upper-hemisphere constraint as H³: distance * ball_scale < 1.0.
-    const CAPTURE_DISTANCE: f32 = 4.5;
 }
+
+/// 1 revolution / 20 s at the framework's 60 Hz fixed timestep.
+const ROTATE_YAW_PER_TICK: f32 = std::f32::consts::TAU / (60.0 * 20.0);
 
 struct SpheresApp<S: SphereKnobs> {
     space: S,
@@ -82,10 +69,6 @@ struct SpheresApp<S: SphereKnobs> {
     shader_gen: u64,
     ray_march: GeodesicRayMarchNode,
     rotate: bool,
-    /// Yaw advance per tick when `rotate` is on. Interactive: 1 rev /
-    /// 20 s at 60 Hz. Capture: `TAU / capture_frames` so the loop
-    /// closes on a full revolution.
-    rotate_yaw_per_tick: f32,
 }
 
 impl<S: SphereKnobs> App for SpheresApp<S> {
@@ -108,23 +91,8 @@ impl<S: SphereKnobs> App for SpheresApp<S> {
             watcher.watch(shader_dir())?;
         }
 
-        let args: Vec<String> = std::env::args().collect();
-        let capturing = args.iter().any(|a| a.starts_with("--capture-"));
-        let rotate = capturing || args.iter().any(|a| a == "--rotate");
-
-        let mut camera = OrbitCamera::default();
-        if capturing {
-            camera.set_orbit(S::CAPTURE_DISTANCE, -0.60);
-        }
-
-        let rotate_yaw_per_tick = if capturing {
-            let frames = arg_value(&args, "--capture-frames")
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(300);
-            std::f32::consts::TAU / frames as f32
-        } else {
-            std::f32::consts::TAU / (60.0 * 20.0)
-        };
+        let rotate = std::env::args().any(|a| a == "--rotate");
+        let camera = OrbitCamera::default();
 
         Ok(Self {
             space,
@@ -133,7 +101,6 @@ impl<S: SphereKnobs> App for SpheresApp<S> {
             shader_gen,
             ray_march,
             rotate,
-            rotate_yaw_per_tick,
         })
     }
 
@@ -144,7 +111,7 @@ impl<S: SphereKnobs> App for SpheresApp<S> {
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
         if self.rotate {
             self.camera
-                .rotate_yaw(self.rotate_yaw_per_tick * ctx.n_ticks as f32);
+                .rotate_yaw(ROTATE_YAW_PER_TICK * ctx.n_ticks as f32);
         }
         self.camera.advance(ctx.input);
 
@@ -191,11 +158,6 @@ impl<S: SphereKnobs> App for SpheresApp<S> {
     }
 }
 
-fn arg_value(args: &[String], flag: &str) -> Option<String> {
-    let i = args.iter().position(|a| a == flag)?;
-    args.get(i + 1).cloned()
-}
-
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let hyperbolic = args.iter().any(|a| a == "--hyperbolic");
@@ -205,7 +167,6 @@ fn main() -> Result<()> {
         window: WindowAttributes::default()
             .with_title("Rye - Geodesic Spheres")
             .with_visible(false),
-        capture: CaptureConfig::from_env_args(),
         ..RunConfig::default()
     };
 

@@ -13,19 +13,13 @@
 //!
 //! ## Flags
 //!
-//! `--rotate`              : auto-rotate camera
-//! `--capture-apng PATH`   : render N frames, save looping APNG, exit
-//! `--capture-gif  PATH`   : render N frames, save looping GIF, exit
-//! `--capture-frames N`    : frame count (default 300)
-//! `--capture-fps N`       : playback fps (default 30)
-//!
-//! Capture mode forces `--rotate`.
+//! `--rotate` : auto-rotate camera; 1 rev / 20 s
 
 use std::borrow::Cow;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use rye_app::{run_with_config, App, CaptureConfig, FrameCtx, RunConfig, SetupCtx};
+use rye_app::{run_with_config, App, FrameCtx, RunConfig, SetupCtx};
 use rye_camera::OrbitCamera;
 use rye_math::{EuclideanR3, HyperbolicH3, SphericalS3, WgslSpace};
 use rye_render::{
@@ -45,10 +39,8 @@ const FOG_E3: f32 = 3.0;
 const FOG_H3: f32 = 4.2;
 const FOG_S3: f32 = 2.4;
 
-// Capture camera parameters (distance * BALL_SCALE must be < 1.0 for H³/S³).
-// 3.5 * 0.2 = 0.70, comfortably inside the Poincaré ball.
-const CAPTURE_DISTANCE: f32 = 3.5;
-const CAPTURE_PITCH: f32 = -0.35;
+/// 1 revolution / 20 s at the framework's 60 Hz fixed timestep.
+const ROTATE_YAW_PER_TICK: f32 = std::f32::consts::TAU / (60.0 * 20.0);
 
 fn shader_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/lattice/lattice.wgsl")
@@ -74,7 +66,6 @@ struct LatticeApp {
     node_s3: GeodesicRayMarchNode,
     camera: OrbitCamera,
     rotate: bool,
-    rotate_yaw_per_tick: f32,
 }
 
 struct PanelLayout {
@@ -152,23 +143,8 @@ impl App for LatticeApp {
         let node_h3 = GeodesicRayMarchNode::from_module(&rd.device, fmt, &mod_h3);
         let node_s3 = GeodesicRayMarchNode::from_module(&rd.device, fmt, &mod_s3);
 
-        let args: Vec<String> = std::env::args().collect();
-        let capturing = args.iter().any(|a| a.starts_with("--capture-"));
-        let rotate = capturing || args.iter().any(|a| a == "--rotate");
-
-        let mut camera = OrbitCamera::default();
-        if capturing {
-            camera.set_orbit(CAPTURE_DISTANCE, CAPTURE_PITCH);
-        }
-
-        let rotate_yaw_per_tick = if capturing {
-            let frames = arg_value(&args, "--capture-frames")
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(300);
-            std::f32::consts::TAU / frames as f32
-        } else {
-            std::f32::consts::TAU / (60.0 * 20.0)
-        };
+        let rotate = std::env::args().any(|a| a == "--rotate");
+        let camera = OrbitCamera::default();
 
         Ok(Self {
             space: EuclideanR3,
@@ -177,7 +153,6 @@ impl App for LatticeApp {
             node_s3,
             camera,
             rotate,
-            rotate_yaw_per_tick,
         })
     }
 
@@ -188,7 +163,7 @@ impl App for LatticeApp {
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
         if self.rotate {
             self.camera
-                .rotate_yaw(self.rotate_yaw_per_tick * ctx.n_ticks as f32);
+                .rotate_yaw(ROTATE_YAW_PER_TICK * ctx.n_ticks as f32);
         }
         self.camera.advance(ctx.input);
 
@@ -238,17 +213,11 @@ impl App for LatticeApp {
     }
 }
 
-fn arg_value(args: &[String], flag: &str) -> Option<String> {
-    let i = args.iter().position(|a| a == flag)?;
-    args.get(i + 1).cloned()
-}
-
 fn main() -> Result<()> {
     let config = RunConfig {
         window: WindowAttributes::default()
             .with_title("Rye - Geodesic Lattice (E³ / H³ / S³)")
             .with_visible(false),
-        capture: CaptureConfig::from_env_args(),
         ..RunConfig::default()
     };
     run_with_config::<LatticeApp>(config)

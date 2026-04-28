@@ -6,10 +6,11 @@
 //! walls read as flat in E³, bowing outward in H³ (parallel geodesics
 //! diverge), and converging in S³.
 //!
-//! Note: as of the rye-sdf T1-1 sentinel of `HalfSpace` SDF emission,
-//! the corridor walls render invisible until a closed-form
-//! geodesic-plane SDF lands. The pillars (`rye_distance` spheres)
-//! still tell the curvature story honestly.
+//! Note: `HalfSpace` SDF emission gates on `WgslSpace::is_chart_flat`
+//! (rye-sdf T1-1). E³ corridor walls render honestly via chart-coord
+//! `dot(p, n) - d`; H³ / S³ corridor walls sentinel until closed-form
+//! geodesic-plane SDFs land. The pillars (`rye_distance` spheres)
+//! tell the curvature story in every Space.
 //!
 //! Injects:
 //! - Space prelude from `rye-math` (`rye_distance`, `rye_exp`, …)
@@ -18,22 +19,15 @@
 //!
 //! ## Flags
 //!
-//! `--hyperbolic`        : swap Space prelude to HyperbolicH3
-//! `--spherical`         : swap Space prelude to SphericalS3
-//! `--rotate`            : auto-rotate camera; interactive at 1 rev/20 s
-//! `--capture-apng PATH` : render N frames, save looping APNG, exit
-//! `--capture-gif  PATH` : render N frames, save looping GIF, exit
-//! `--capture-frames N`  : frame count (default 300 = 10 s @ 30 fps)
-//! `--capture-fps N`     : playback fps baked into the encoded output
-//!
-//! Capture mode forces `--rotate` so the captured loop is a
-//! complete revolution synced to the frame count.
+//! `--hyperbolic` : swap Space prelude to HyperbolicH3
+//! `--spherical`  : swap Space prelude to SphericalS3
+//! `--rotate`     : auto-rotate camera; 1 rev / 20 s
 
 use std::borrow::Cow;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use rye_app::{run_with_config, App, CaptureConfig, FrameCtx, RunConfig, SetupCtx};
+use rye_app::{run_with_config, App, FrameCtx, RunConfig, SetupCtx};
 use rye_camera::OrbitCamera;
 use rye_math::{EuclideanR3, HyperbolicH3, SphericalS3, WgslSpace};
 use rye_render::{
@@ -61,33 +55,32 @@ trait CorridorKnobs: WgslSpace + Default + 'static {
     const BALL_SCALE: f32;
     const FOG_SCALE: f32;
     const TITLE: &'static str;
-    const CAPTURE_DISTANCE: f32;
-    const CAPTURE_PITCH: f32;
 }
 
 impl CorridorKnobs for EuclideanR3 {
     const BALL_SCALE: f32 = 0.2;
     const FOG_SCALE: f32 = 2.8;
     const TITLE: &'static str = "Rye - Corridor (E³)";
-    const CAPTURE_DISTANCE: f32 = 1.5;
-    const CAPTURE_PITCH: f32 = -0.12;
 }
 
 impl CorridorKnobs for HyperbolicH3 {
     const BALL_SCALE: f32 = 0.2;
     const FOG_SCALE: f32 = 2.2;
     const TITLE: &'static str = "Rye - Corridor (H³ geodesics)";
-    const CAPTURE_DISTANCE: f32 = 1.5;
-    const CAPTURE_PITCH: f32 = -0.12;
 }
 
 impl CorridorKnobs for SphericalS3 {
     const BALL_SCALE: f32 = 0.2;
     const FOG_SCALE: f32 = 2.4;
     const TITLE: &'static str = "Rye - Corridor (S³ geodesics)";
-    const CAPTURE_DISTANCE: f32 = 1.5;
-    const CAPTURE_PITCH: f32 = -0.12;
 }
+
+/// Initial orbit pose so the camera starts inside the corridor; otherwise
+/// the first interactive frame looks at it from outside.
+const INITIAL_DISTANCE: f32 = 1.5;
+const INITIAL_PITCH: f32 = -0.12;
+/// 1 revolution / 20 s at the framework's 60 Hz fixed timestep.
+const ROTATE_YAW_PER_TICK: f32 = std::f32::consts::TAU / (60.0 * 20.0);
 
 struct CorridorApp<S: CorridorKnobs> {
     space: S,
@@ -96,7 +89,6 @@ struct CorridorApp<S: CorridorKnobs> {
     shader_gen: u64,
     ray_march: GeodesicRayMarchNode,
     rotate: bool,
-    rotate_yaw_per_tick: f32,
 }
 
 impl<S: CorridorKnobs> App for CorridorApp<S> {
@@ -119,24 +111,10 @@ impl<S: CorridorKnobs> App for CorridorApp<S> {
             watcher.watch(shader_dir())?;
         }
 
-        let args: Vec<String> = std::env::args().collect();
-        let capturing = args.iter().any(|a| a.starts_with("--capture-"));
-        let rotate = capturing || args.iter().any(|a| a == "--rotate");
+        let rotate = std::env::args().any(|a| a == "--rotate");
 
-        // Always seed the camera inside the corridor; otherwise the
-        // first interactive frame looks at it from outside, before the
-        // user has scrolled in.
         let mut camera = OrbitCamera::default();
-        camera.set_orbit(S::CAPTURE_DISTANCE, S::CAPTURE_PITCH);
-
-        let rotate_yaw_per_tick = if capturing {
-            let frames = arg_value(&args, "--capture-frames")
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(300);
-            std::f32::consts::TAU / frames as f32
-        } else {
-            std::f32::consts::TAU / (60.0 * 20.0)
-        };
+        camera.set_orbit(INITIAL_DISTANCE, INITIAL_PITCH);
 
         Ok(Self {
             space,
@@ -145,7 +123,6 @@ impl<S: CorridorKnobs> App for CorridorApp<S> {
             shader_gen,
             ray_march,
             rotate,
-            rotate_yaw_per_tick,
         })
     }
 
@@ -156,7 +133,7 @@ impl<S: CorridorKnobs> App for CorridorApp<S> {
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
         if self.rotate {
             self.camera
-                .rotate_yaw(self.rotate_yaw_per_tick * ctx.n_ticks as f32);
+                .rotate_yaw(ROTATE_YAW_PER_TICK * ctx.n_ticks as f32);
         }
         self.camera.advance(ctx.input);
 
@@ -203,11 +180,6 @@ impl<S: CorridorKnobs> App for CorridorApp<S> {
     }
 }
 
-fn arg_value(args: &[String], flag: &str) -> Option<String> {
-    let i = args.iter().position(|a| a == flag)?;
-    args.get(i + 1).cloned()
-}
-
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let hyperbolic = args.iter().any(|a| a == "--hyperbolic");
@@ -217,7 +189,6 @@ fn main() -> Result<()> {
         window: WindowAttributes::default()
             .with_title("Rye - Corridor")
             .with_visible(false),
-        capture: CaptureConfig::from_env_args(),
         ..RunConfig::default()
     };
 

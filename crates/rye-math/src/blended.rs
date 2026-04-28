@@ -839,9 +839,9 @@ impl BlendingField for LinearBlendX {
 /// segment). Per-call truncation is `O(h²)`, so cumulative error
 /// over the march stays small for the per-step `h` the kernel uses.
 /// A multi-step RK4 inside each call would multiply the kernel's
-/// cost for marginal accuracy gain, the CPU side runs 8 RK4
-/// sub-steps because it serves a different use case (path-aware
-/// transport over arcs much longer than a march sub-step).
+/// cost for marginal accuracy gain. The CPU side runs 8 RK4
+/// sub-steps because it serves a different use case: path-aware
+/// transport over arcs much longer than a march sub-step.
 ///
 /// CPU/GPU parity for `exp` is pinned by
 /// `blended_e3_h3_gpu_probe_exp_matches_cpu` in `rye-shader/db.rs`;

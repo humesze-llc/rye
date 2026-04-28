@@ -100,13 +100,8 @@ pub struct BodyUniform {
 
 impl Default for BodyUniform {
     fn default() -> Self {
-        // Default to `Invalid` so that a slot left untouched after
-        // construction contributes +inf to the SDF instead of a
-        // degenerate zero-radius sphere at the origin (which the
-        // ray-march kernel would happily render as a singular point).
-        // The kernel's `if (kind == SPHERE) ... else if (kind ==
-        // POLYTOPE) ...` chain has no matching branch for `Invalid`,
-        // so SDF stays at the `1.0e9` initial value.
+        // `Invalid` has no kernel dispatch branch; uninitialised slots
+        // contribute +inf rather than a zero-radius sphere at the origin.
         Self {
             position: [0.0; 4],
             kind: BodyKind::Invalid as i32 as f32,
@@ -248,9 +243,11 @@ const MAX_BODIES: u32 = 32u;
 
 const BODY_KIND_SPHERE: u32 = 0u;
 const BODY_KIND_POLYTOPE: u32 = 1u;
-// 255 is the inert sentinel matching `BodyKind::Invalid` on the CPU
-// side. Slots default to this kind; the dispatch below has no matching
-// branch, so the slot contributes nothing to the SDF.
+// Mirrors `BodyKind::Invalid` (CPU). Intentionally absent from the
+// dispatch chain in `rye_dynamic_bodies_sdf` and `rye_total_sdf` below,
+// the dispatch falls through and the slot contributes nothing to the
+// SDF. Do NOT delete: `BodyUniform::default()` produces this kind so
+// uninitialised slots are inert. CPU/GPU protocol breaks if removed.
 const BODY_KIND_INVALID: u32 = 255u;
 
 struct BodyUniform {

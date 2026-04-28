@@ -195,3 +195,125 @@ pub const MAX_LINEAR_CORRECTION: f32 = 0.5;
 /// trick: 1 m/s reads as "noticeable impact" in the demos' unit
 /// scale.
 pub const RESTITUTION_THRESHOLD: f32 = 1.0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::Vec2;
+    use rye_math::EuclideanR2;
+
+    fn contact(point: Vec2, normal: Vec2, penetration: f32) -> Contact<EuclideanR2> {
+        Contact {
+            normal,
+            point,
+            penetration,
+            restitution: 0.0,
+        }
+    }
+
+    /// Refreshing a slot with a contact within `MERGE_RADIUS` must
+    /// preserve the accumulated normal and tangent impulses (the
+    /// warm-start payload) while updating geometry.
+    #[test]
+    fn merge_preserves_warm_start_impulses() {
+        let mut m: Manifold<EuclideanR2> = Manifold::new(0, 1, 0.0);
+        m.add_or_update(contact(Vec2::ZERO, Vec2::Y, 0.01));
+        m.points[0].normal_impulse = 4.2;
+        m.points[0].tangent_impulse = -1.7;
+        m.points[0].tangent_dir = Vec2::X;
+
+        // New contact a hair away from the original, well within
+        // MERGE_RADIUS_SQ, and with refreshed geometry.
+        let merged_point = Vec2::new(0.01, 0.0);
+        let merged_normal = Vec2::new(0.0, -1.0);
+        m.add_or_update(contact(merged_point, merged_normal, 0.05));
+
+        assert_eq!(m.points.len(), 1, "merge must not add a new slot");
+        let cp = &m.points[0];
+        assert_eq!(cp.world_point, merged_point, "geometry refreshed");
+        assert_eq!(cp.normal, merged_normal, "normal refreshed");
+        assert!(
+            (cp.penetration - 0.05).abs() < 1e-6,
+            "penetration refreshed",
+        );
+        assert!(
+            (cp.normal_impulse - 4.2).abs() < 1e-6,
+            "normal impulse preserved across merge",
+        );
+        assert!(
+            (cp.tangent_impulse - -1.7).abs() < 1e-6,
+            "tangent impulse preserved across merge",
+        );
+    }
+
+    /// When the manifold is at `MAX_POINTS` and a new contact arrives
+    /// outside the merge radius of every slot, the slot with smallest
+    /// total accumulated impulse must be evicted.
+    #[test]
+    fn add_at_max_points_evicts_weakest_slot() {
+        let mut m: Manifold<EuclideanR2> = Manifold::new(0, 1, 0.0);
+        // Place four slots far enough apart that none merge with each
+        // other or with the new contact below.
+        let bases = [
+            Vec2::new(0.0, 0.0),
+            Vec2::new(1.0, 0.0),
+            Vec2::new(2.0, 0.0),
+            Vec2::new(3.0, 0.0),
+        ];
+        for &p in &bases {
+            m.add_or_update(contact(p, Vec2::Y, 0.0));
+        }
+        assert_eq!(m.points.len(), MAX_POINTS);
+
+        // Distinct totals so the weakest is unambiguous. The slot at
+        // index 2 carries the smallest |jn| + |jt|.
+        m.points[0].normal_impulse = 5.0;
+        m.points[1].normal_impulse = 3.0;
+        m.points[2].normal_impulse = 0.5; // weakest
+        m.points[3].normal_impulse = 4.0;
+        m.points[1].tangent_impulse = -2.0;
+        m.points[2].tangent_impulse = 0.1;
+        m.points[3].tangent_impulse = 1.0;
+
+        let intruder = Vec2::new(10.0, 10.0);
+        m.add_or_update(contact(intruder, Vec2::Y, 0.0));
+
+        assert_eq!(m.points.len(), MAX_POINTS, "size must stay capped");
+        assert!(
+            m.points.iter().any(|cp| cp.world_point == intruder),
+            "new contact must be present",
+        );
+        assert!(
+            m.points.iter().all(|cp| cp.world_point != bases[2]),
+            "the lowest-impulse slot must be evicted",
+        );
+        assert!(
+            m.points.iter().any(|cp| cp.world_point == bases[0]),
+            "high-impulse slots must be retained",
+        );
+    }
+
+    /// Adding a non-merging contact below capacity grows the slot
+    /// list without disturbing existing slots' impulses.
+    #[test]
+    fn new_slot_below_capacity_leaves_others_intact() {
+        let mut m: Manifold<EuclideanR2> = Manifold::new(0, 1, 0.0);
+        m.add_or_update(contact(Vec2::ZERO, Vec2::Y, 0.0));
+        m.points[0].normal_impulse = 9.0;
+        m.points[0].tangent_impulse = 0.5;
+        m.points[0].tangent_dir = Vec2::X;
+
+        // Far enough away to not merge.
+        m.add_or_update(contact(Vec2::new(1.0, 0.0), Vec2::Y, 0.0));
+
+        assert_eq!(m.points.len(), 2);
+        let original = &m.points[0];
+        assert_eq!(original.world_point, Vec2::ZERO, "original geometry intact");
+        assert!((original.normal_impulse - 9.0).abs() < 1e-6);
+        assert!((original.tangent_impulse - 0.5).abs() < 1e-6);
+        assert_eq!(original.tangent_dir, Vec2::X);
+        let added = &m.points[1];
+        assert_eq!(added.normal_impulse, 0.0, "fresh slot starts at zero");
+        assert_eq!(added.tangent_impulse, 0.0);
+    }
+}

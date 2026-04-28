@@ -831,12 +831,23 @@ impl BlendingField for LinearBlendX {
 /// **Numerical scheme.** 16 RK4 sub-steps per `rye_exp` call
 /// (controlled by `RYE_BLENDED_RK4_SUB`). `rye_parallel_transport`
 /// is a single midpoint-Euler step along the chart-coordinate line
-/// from `p_from` to `p_to`. The CPU side uses 32 RK4 sub-steps for
-/// `exp` and 8 RK4 sub-steps for transport, so the GPU transport is
-/// strictly less accurate than CPU; the kernel does not currently
-/// call `rye_parallel_transport`, and the function exists only to
-/// satisfy the WGSL prelude shape downstream Spaces share. CPU/GPU
-/// parity test for `BlendedSpace` is a known gap.
+/// from `p_from` to `p_to`.
+///
+/// The geodesic-march kernel in `rye-shader/kernel.wgsl` calls this
+/// `rye_parallel_transport` once per ray-march sub-step (the kernel
+/// chains many small sub-steps per fragment, each over a tiny
+/// chart-coordinate segment). Per-call truncation is `O(h²)`, so
+/// cumulative error over the march stays small for the per-step `h`
+/// the kernel uses.
+/// A multi-step RK4 inside each call would multiply the kernel's
+/// cost for marginal accuracy gain. The CPU side runs 8 RK4
+/// sub-steps because it serves a different use case: path-aware
+/// transport over arcs much longer than a march sub-step.
+///
+/// CPU/GPU parity for `exp` is pinned by
+/// `blended_e3_h3_gpu_probe_exp_matches_cpu` in `rye-shader/db.rs`;
+/// transport parity is intentionally not pinned because the two
+/// sides use different schemes by design.
 ///
 /// **`rye_log` / `rye_distance` accuracy.** `rye_log` returns
 /// the Euclidean chart-coordinate difference (the geodesic march

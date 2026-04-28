@@ -707,12 +707,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     ///   conformal factor at `a`.
     /// - `rye_parallel_transport` is a single midpoint-Euler step
     ///   along the chart-coordinate line; CPU uses 8 RK4 sub-steps
-    ///   along the same line. The kernel does not call it.
+    ///   along the same line. Both are called by the geodesic-march
+    ///   kernel (CPU via `parallel_transport_segment_rk4`, GPU per
+    ///   march sub-step via `kernel.wgsl::rye_march_geodesic`), but
+    ///   the GPU's coarser scheme is intentional: the kernel chains
+    ///   ~256 small sub-steps per fragment so the per-call O(h^2)
+    ///   error stays bounded, while RK4 inside each call would
+    ///   multiply kernel cost for marginal accuracy gain.
     ///
-    /// Only `rye_exp` is on the kernel's hot path (per geodesic
-    /// march sub-step), so CPU/GPU agreement on `exp` is the
-    /// load-bearing parity claim for this `BlendedSpace`
-    /// instantiation.
+    /// `rye_exp` is the highest-leverage of the three (each kernel
+    /// sub-step's geodesic position depends on it directly), so
+    /// CPU/GPU agreement on `exp` is the load-bearing parity claim
+    /// for this `BlendedSpace` instantiation.
     ///
     /// Tolerance: GPU uses 16 RK4 sub-steps, CPU uses 32. Both
     /// are 4th-order so per-step truncation scales as h^5;

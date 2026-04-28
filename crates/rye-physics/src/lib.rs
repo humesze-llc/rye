@@ -45,5 +45,5 @@ pub use field::{ForceField, Gravity};
 pub use integrator::{integrate_body, PhysicsSpace};
 pub use manifold::{ContactPoint, Manifold};
 pub use narrowphase::{Narrowphase, NarrowphaseFn};
-pub use response::{correct_position, Contact, FRICTION_COEFF};
+pub use response::{Contact, FRICTION_COEFF};
 pub use world::World;

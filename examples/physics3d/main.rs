@@ -6,14 +6,13 @@
 //! simple sun-lambert shading. Orbit camera (left-drag to rotate,
 //! scroll to zoom). R resets; Esc exits.
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::borrow::Cow;
 
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
+use rye_app::{run_with_config, App, FrameCtx, RunConfig, SetupCtx, TickCtx};
 use rye_camera::OrbitCamera;
-use rye_input::InputState;
 use rye_math::EuclideanR3;
 use rye_physics::{
     euclidean_r3::{box_body, halfspace_body_r3, register_default_narrowphase, sphere_body_r3},
@@ -22,15 +21,14 @@ use rye_physics::{
 };
 use rye_render::device::RenderDevice;
 use winit::{
-    application::ApplicationHandler,
     event::{ElementState, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::{Key, KeyCode, NamedKey, PhysicalKey},
-    window::{Window, WindowAttributes},
+    keyboard::{KeyCode, PhysicalKey},
+    window::WindowAttributes,
 };
 
 const MAX_BODIES: usize = 32;
-const FIXED_DT: f32 = 1.0 / 120.0;
+
+const PHYSICS_HZ: u32 = 120;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -190,162 +188,32 @@ fn collect_gpu_bodies(world: &World<EuclideanR3>) -> (BodyBuffer, u32) {
     (buf, count)
 }
 
-struct App {
-    window: Option<Arc<Window>>,
-    rd: Option<RenderDevice>,
-    minimized: bool,
-    pipeline: Option<wgpu::RenderPipeline>,
-    scene_buffer: Option<wgpu::Buffer>,
-    body_buffer: Option<wgpu::Buffer>,
-    bind_group: Option<wgpu::BindGroup>,
-
+struct Physics3DApp {
+    /// Required by the `App` trait; passed to `ShaderDb::apply_events`
+    /// on hot-reload. The pipeline here is bespoke (not loaded through
+    /// `ShaderDb`), so the field is dormant.
+    space: EuclideanR3,
+    pipeline: wgpu::RenderPipeline,
+    scene_buffer: wgpu::Buffer,
+    body_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
     world: World<EuclideanR3>,
     camera: OrbitCamera,
-    input: InputState,
-
-    last_frame: Instant,
-    accumulator: f32,
     sim_time: f32,
-    start: Instant,
-    frame_count: u32,
-    last_fps: Instant,
 }
 
-impl Default for App {
-    fn default() -> Self {
-        // Seed orbit camera to look at the bucket area from slightly above.
-        let mut camera = OrbitCamera::default();
-        camera.set_orbit(6.0, -0.45);
-        Self {
-            window: None,
-            rd: None,
-            minimized: false,
-            pipeline: None,
-            scene_buffer: None,
-            body_buffer: None,
-            bind_group: None,
-            world: build_world(),
-            camera,
-            input: InputState::default(),
-            last_frame: Instant::now(),
-            accumulator: 0.0,
-            sim_time: 0.0,
-            start: Instant::now(),
-            frame_count: 0,
-            last_fps: Instant::now(),
-        }
-    }
-}
-
-impl App {
+impl Physics3DApp {
     fn reset(&mut self) {
         self.world = build_world();
         self.sim_time = 0.0;
-        self.accumulator = 0.0;
-        self.last_frame = Instant::now();
-    }
-
-    fn step_physics(&mut self) {
-        let now = Instant::now();
-        let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.25);
-        self.last_frame = now;
-        self.accumulator += dt;
-        while self.accumulator >= FIXED_DT {
-            // Wrap the physics step in `catch_unwind` to surface any
-            // Rust panic explicitly (diagnostic for the "no backtrace
-            // on crash" mystery). If the crash is a non-Rust event
-            // (stack overflow, driver abort), this won't catch it,
-            // but seeing the panic message here would tell us it's a
-            // Rust issue.
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.world.step(FIXED_DT);
-            }));
-            match result {
-                Ok(()) => {}
-                Err(payload) => {
-                    let msg = if let Some(s) = payload.downcast_ref::<String>() {
-                        s.clone()
-                    } else if let Some(s) = payload.downcast_ref::<&'static str>() {
-                        (*s).to_string()
-                    } else {
-                        "<non-string panic payload>".to_string()
-                    };
-                    eprintln!("PHYSICS STEP PANIC CAUGHT: {msg}");
-                    eprintln!(
-                        "  sim_time={:.3}s  dynamic_bodies={}",
-                        self.sim_time,
-                        self.world
-                            .bodies
-                            .iter()
-                            .filter(|b| b.inv_mass > 0.0)
-                            .count()
-                    );
-                    // Resume unwinding so the app-level hook prints the
-                    // full backtrace.
-                    std::panic::resume_unwind(payload);
-                }
-            }
-            self.accumulator -= FIXED_DT;
-            self.sim_time += FIXED_DT;
-        }
     }
 }
 
-fn create_pipeline(
-    device: &wgpu::Device,
-    format: wgpu::TextureFormat,
-    module: &wgpu::ShaderModule,
-    bgl: &wgpu::BindGroupLayout,
-) -> wgpu::RenderPipeline {
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("physics3d pipeline layout"),
-        bind_group_layouts: &[bgl],
-        push_constant_ranges: &[],
-    });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("physics3d pipeline"),
-        layout: Some(&layout),
-        vertex: wgpu::VertexState {
-            module,
-            entry_point: Some("vs_fullscreen"),
-            buffers: &[],
-            compilation_options: Default::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            ..Default::default()
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview: None,
-        cache: None,
-    })
-}
+impl App for Physics3DApp {
+    type Space = EuclideanR3;
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, elwt: &ActiveEventLoop) {
-        let win = Arc::new(
-            elwt.create_window(
-                WindowAttributes::default()
-                    .with_title("Rye - 3D Physics")
-                    .with_inner_size(winit::dpi::LogicalSize::new(900.0, 720.0))
-                    .with_visible(false),
-            )
-            .expect("create window"),
-        );
-
-        let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
-
+    fn setup(ctx: &mut SetupCtx<'_>) -> Result<Self> {
+        let rd = ctx.rd;
         let shader_src = include_str!("physics3d.wgsl");
         let module = rd
             .device
@@ -410,132 +278,124 @@ impl ApplicationHandler for App {
             ],
         });
 
-        let pipeline = create_pipeline(&rd.device, rd.surface_bundle.config.format, &module, &bgl);
+        let layout = rd
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("physics3d pipeline layout"),
+                bind_group_layouts: &[&bgl],
+                push_constant_ranges: &[],
+            });
+        let pipeline = rd
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("physics3d pipeline"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs_fullscreen"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: rd.surface_bundle.config.format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
 
-        self.window = Some(win.clone());
-        self.rd = Some(rd);
-        self.pipeline = Some(pipeline);
-        self.scene_buffer = Some(scene_buffer);
-        self.body_buffer = Some(body_buffer);
-        self.bind_group = Some(bind_group);
-        self.minimized = false;
-        self.last_frame = Instant::now();
-        self.start = Instant::now();
-        self.last_fps = Instant::now();
+        // Seed orbit camera to look at the bucket area from slightly above.
+        let mut camera = OrbitCamera::default();
+        camera.set_orbit(6.0, -0.45);
 
-        win.set_visible(true);
-        win.request_redraw();
+        Ok(Self {
+            space: EuclideanR3,
+            pipeline,
+            scene_buffer,
+            body_buffer,
+            bind_group,
+            world: build_world(),
+            camera,
+            sim_time: 0.0,
+        })
     }
 
-    fn window_event(
-        &mut self,
-        elwt: &ActiveEventLoop,
-        _id: winit::window::WindowId,
-        ev: WindowEvent,
-    ) {
-        let Some(win) = self.window.clone() else {
-            return;
-        };
+    fn space(&self) -> &EuclideanR3 {
+        &self.space
+    }
 
-        match ev {
-            WindowEvent::CloseRequested => elwt.exit(),
+    fn tick(&mut self, dt: f32, _ctx: &mut TickCtx) {
+        // Wrap the physics step in `catch_unwind` so a Rust panic in
+        // narrowphase / EPA produces a tagged stderr line before the
+        // app-level hook prints the full backtrace. Diagnostic for the
+        // "no backtrace on crash" mystery; safe to keep, this path is
+        // off the steady-state hot loop.
+        let world = &mut self.world;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            world.step(dt);
+        }));
+        if let Err(payload) = result {
+            let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+                (*s).to_string()
+            } else {
+                "<non-string panic payload>".to_string()
+            };
+            let dynamic_count = self
+                .world
+                .bodies
+                .iter()
+                .filter(|b| b.inv_mass > 0.0)
+                .count();
+            eprintln!("PHYSICS STEP PANIC CAUGHT: {msg}");
+            eprintln!(
+                "  sim_time={:.3}s  dynamic_bodies={}",
+                self.sim_time, dynamic_count
+            );
+            std::panic::resume_unwind(payload);
+        }
+        self.sim_time += dt;
+    }
 
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
-            {
-                elwt.exit();
-            }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyR)) =>
+    fn update(&mut self, ctx: &mut FrameCtx<'_>) {
+        self.camera.advance(ctx.input);
+    }
+
+    fn on_event(&mut self, ev: &WindowEvent, _ctx: &mut FrameCtx<'_>) {
+        if let WindowEvent::KeyboardInput { event, .. } = ev {
+            if event.state == ElementState::Pressed
+                && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyR))
             {
                 self.reset();
             }
-
-            WindowEvent::CursorMoved { position, .. } => {
-                self.input.cursor_moved(position.x, position.y);
-            }
-            WindowEvent::CursorLeft { .. } => self.input.cursor_invalidated(),
-            WindowEvent::Focused(false) => {
-                self.input.cursor_invalidated();
-                self.input.release_buttons();
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                self.input.mouse_input(button, state);
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                self.input.mouse_wheel(delta);
-            }
-
-            WindowEvent::Resized(size) => {
-                self.minimized = size.width == 0 || size.height == 0;
-                if !self.minimized {
-                    if let Some(rd) = &mut self.rd {
-                        rd.resize(size);
-                    }
-                }
-            }
-
-            WindowEvent::RedrawRequested => {
-                if self.minimized {
-                    return;
-                }
-                // Advance camera from drained input.
-                let frame = self.input.take_frame();
-                self.camera.advance(frame);
-
-                self.step_physics();
-                self.render();
-                win.request_redraw();
-
-                self.frame_count += 1;
-                let elapsed = self.last_fps.elapsed().as_secs_f32();
-                if elapsed >= 0.5 {
-                    let fps = self.frame_count as f32 / elapsed;
-                    self.frame_count = 0;
-                    self.last_fps = Instant::now();
-                    let dynamic_count = self
-                        .world
-                        .bodies
-                        .iter()
-                        .filter(|b| b.inv_mass > 0.0)
-                        .count();
-                    win.set_title(&format!(
-                        "Rye - 3D Physics | {fps:.0} fps | {dynamic_count} bodies | sim {:.1}s (R: reset, drag: orbit, scroll: zoom)",
-                        self.sim_time
-                    ));
-                }
-            }
-
-            _ => {}
         }
     }
-}
 
-impl App {
-    fn render(&mut self) {
-        let (Some(rd), Some(pipeline), Some(scene_buffer), Some(body_buffer), Some(bind_group)) = (
-            self.rd.as_ref(),
-            self.pipeline.as_ref(),
-            self.scene_buffer.as_ref(),
-            self.body_buffer.as_ref(),
-            self.bind_group.as_ref(),
-        ) else {
-            return;
-        };
-
-        let view = self.camera.view();
+    fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
+        let cam_view = self.camera.view();
         let (body_data, body_count) = collect_gpu_bodies(&self.world);
 
         let scene = SceneUniforms {
-            camera_pos: view.position.to_array(),
+            camera_pos: cam_view.position.to_array(),
             _pad0: 0.0,
-            camera_forward: view.forward.to_array(),
+            camera_forward: cam_view.forward.to_array(),
             fov_y_tan: (60.0_f32.to_radians() * 0.5).tan(),
-            camera_right: view.right.to_array(),
+            camera_right: cam_view.right.to_array(),
             _pad1: 0.0,
-            camera_up: view.up.to_array(),
+            camera_up: cam_view.up.to_array(),
             _pad2: 0.0,
             resolution: [
                 rd.surface_bundle.config.width as f32,
@@ -547,13 +407,9 @@ impl App {
             floor_offset: 0.0,
         };
         rd.queue
-            .write_buffer(scene_buffer, 0, bytemuck::bytes_of(&scene));
+            .write_buffer(&self.scene_buffer, 0, bytemuck::bytes_of(&scene));
         rd.queue
-            .write_buffer(body_buffer, 0, bytemuck::bytes_of(&body_data));
-
-        let Ok((frame, view_tex)) = rd.begin_frame() else {
-            return;
-        };
+            .write_buffer(&self.body_buffer, 0, bytemuck::bytes_of(&body_data));
 
         let mut encoder = rd
             .device
@@ -564,7 +420,7 @@ impl App {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("physics3d pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view_tex,
+                    view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -581,23 +437,29 @@ impl App {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            rp.set_pipeline(pipeline);
-            rp.set_bind_group(0, bind_group, &[]);
+            rp.set_pipeline(&self.pipeline);
+            rp.set_bind_group(0, &self.bind_group, &[]);
             rp.draw(0..3, 0..1);
         }
         rd.queue.submit(Some(encoder.finish()));
-        frame.present();
+        Ok(())
+    }
+
+    fn title(&self, fps: f32) -> Cow<'static, str> {
+        let dynamic_count = self
+            .world
+            .bodies
+            .iter()
+            .filter(|b| b.inv_mass > 0.0)
+            .count();
+        Cow::Owned(format!(
+            "Rye - 3D Physics | {fps:.0} fps | {dynamic_count} bodies | sim {:.1}s (R: reset, drag: orbit, scroll: zoom)",
+            self.sim_time
+        ))
     }
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     // Force RUST_BACKTRACE=1 so a panic in the physics step produces
     // an actual stack trace even if the user didn't set the env var.
     // Also install a hook that flushes stderr before the process dies:
@@ -616,8 +478,13 @@ fn main() -> Result<()> {
         default_hook(info);
     }));
 
-    let event_loop = EventLoop::new()?;
-    let mut app = App::default();
-    event_loop.run_app(&mut app)?;
-    Ok(())
+    let config = RunConfig {
+        window: WindowAttributes::default()
+            .with_title("Rye - 3D Physics")
+            .with_inner_size(winit::dpi::LogicalSize::new(900.0, 720.0))
+            .with_visible(false),
+        fixed_hz: PHYSICS_HZ,
+        ..RunConfig::default()
+    };
+    run_with_config::<Physics3DApp>(config)
 }

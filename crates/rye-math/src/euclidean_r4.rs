@@ -122,19 +122,17 @@ impl Space for EuclideanR4 {
 
 impl WgslSpace for EuclideanR4 {
     fn wgsl_impl(&self) -> Cow<'static, str> {
-        // Placeholder: no 4D rendering path today. Emit a minimal
-        // signature-matching prelude so the ABI probe passes when this
-        // Space is ever plugged into the render graph.
         Cow::Borrowed(WGSL_IMPL)
     }
 }
 
-// 4D rendering isn't wired into `rye-render` yet, there is no
-// geodesic-march kernel for R⁴ or anything above it. This prelude
-// exists so `rye-shader`'s ABI probe can validate the Space's WGSL
-// contract against the same test harness used by the 3D spaces, and
-// so future 4D renderers start from a concrete shape rather than a
-// blank file.
+// EuclideanR4's WGSL is the honest, closed-form ABI for flat ℝ⁴:
+// `exp(p, v) = p + v`, `log(a, b) = b - a`, transport is identity.
+// Naga validation lives in `rye-shader/db.rs`'s
+// `euclidean_r4_space_prelude_validates_against_abi_probe`. No render
+// node consumes it today (4D rendering goes through the hyperslice
+// path, not a native 4D geodesic march), but the prelude is correct
+// content rather than a stub, ready for the first consumer.
 const WGSL_IMPL: &str = r#"
 // rye-math :: EuclideanR4 (v0 Space WGSL ABI)
 const RYE_MAX_ARC: f32 = 1e9;
@@ -267,8 +265,26 @@ mod tests {
         assert_relative_eq!(v.length(), v_at_to.length());
     }
 
+    /// Pin the v0 ABI surface: every function the shader contract
+    /// requires must appear in the emitted prelude. Naga validation
+    /// of the assembled source lives in `rye-shader/db.rs`; this
+    /// test is a fast local check that catches a name-rename
+    /// regression without spinning up the WGSL parser.
     #[test]
-    fn wgsl_impl_is_non_empty() {
-        assert!(!r4().wgsl_impl().is_empty());
+    fn wgsl_impl_emits_v0_abi_surface() {
+        let src = r4().wgsl_impl();
+        for name in [
+            "rye_distance",
+            "rye_origin_distance",
+            "rye_exp",
+            "rye_log",
+            "rye_parallel_transport",
+            "RYE_MAX_ARC",
+        ] {
+            assert!(
+                src.contains(name),
+                "EuclideanR4 WGSL prelude missing `{name}`",
+            );
+        }
     }
 }

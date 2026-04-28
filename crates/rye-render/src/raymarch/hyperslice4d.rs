@@ -833,6 +833,32 @@ mod tests {
         assert_eq!(b.rotor, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     }
 
+    /// Naga-validate the full kernel concatenated with a minimal
+    /// scene stub. Catches WGSL syntax / type / binding mismatches
+    /// the string-presence assertions above can't see (e.g. a
+    /// rotor-sandwich edit that drops a swizzle, a uniform field
+    /// renamed without updating the WGSL struct).
+    ///
+    /// The stub `rye_scene_sdf` mirrors what `Scene4::to_hyperslice_wgsl`
+    /// emits at minimum: the kernel only requires the symbol exists
+    /// with the right signature.
+    #[test]
+    fn kernel_validates_with_minimal_scene() {
+        const SCENE_STUB: &str = r#"
+fn rye_scene_sdf(p: vec3<f32>) -> f32 {
+    return length(p) - 0.5;
+}
+"#;
+        let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{SCENE_STUB}");
+        let module = naga::front::wgsl::parse_str(&source)
+            .expect("hyperslice4d kernel + scene stub should parse as WGSL");
+        let flags = naga::valid::ValidationFlags::all();
+        let caps = naga::valid::Capabilities::empty();
+        naga::valid::Validator::new(flags, caps)
+            .validate(&module)
+            .expect("hyperslice4d kernel + scene stub should validate");
+    }
+
     /// `BODY_KIND_INVALID` must not appear in either dispatch chain.
     /// The whole point of the sentinel is that no branch matches it,
     /// so the SDF accumulator passes through unchanged. If a future

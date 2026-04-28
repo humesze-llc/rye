@@ -834,10 +834,11 @@ impl BlendingField for LinearBlendX {
 /// from `p_from` to `p_to`.
 ///
 /// The geodesic-march kernel in `rye-shader/kernel.wgsl` calls this
-/// `rye_parallel_transport` once per ray-march sub-step (typically
-/// ~256 calls per fragment, each over a tiny chart-coordinate
-/// segment). Per-call truncation is `O(h²)`, so cumulative error
-/// over the march stays small for the per-step `h` the kernel uses.
+/// `rye_parallel_transport` once per ray-march sub-step (the kernel
+/// chains many small sub-steps per fragment, each over a tiny
+/// chart-coordinate segment). Per-call truncation is `O(h²)`, so
+/// cumulative error over the march stays small for the per-step `h`
+/// the kernel uses.
 /// A multi-step RK4 inside each call would multiply the kernel's
 /// cost for marginal accuracy gain. The CPU side runs 8 RK4
 /// sub-steps because it serves a different use case: path-aware

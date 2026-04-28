@@ -824,23 +824,28 @@ mod tests {
 
     /// Default body is inert (`kind = Invalid`) so an unused slot
     /// in `Hyperslice4DUniforms::bodies` can't accidentally render.
+    /// Also pins the identity-rotor initialization so a future
+    /// refactor that zeros the whole rotor array is caught.
     #[test]
     fn default_body_is_inert_invalid_kind() {
         let b = BodyUniform::default();
         assert_eq!(b.kind as i32, BodyKind::Invalid as i32);
+        assert_eq!(b.rotor, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     }
 
     /// `BODY_KIND_INVALID` must not appear in either dispatch chain.
     /// The whole point of the sentinel is that no branch matches it,
     /// so the SDF accumulator passes through unchanged. If a future
-    /// edit adds an `if (kind == BODY_KIND_INVALID)` branch, the
-    /// "inert default" guarantee is broken.
+    /// edit adds a comparison against `BODY_KIND_INVALID` (in either
+    /// operand order), the "inert default" guarantee is broken.
     #[test]
     fn invalid_kind_has_no_kernel_dispatch_branch() {
-        assert!(
-            !HYPERSLICE_KERNEL_WGSL.contains("kind == BODY_KIND_INVALID"),
-            "BODY_KIND_INVALID must remain unreferenced in dispatch \
-             so default-constructed bodies stay inert",
-        );
+        for forbidden in ["kind == BODY_KIND_INVALID", "BODY_KIND_INVALID == kind"] {
+            assert!(
+                !HYPERSLICE_KERNEL_WGSL.contains(forbidden),
+                "BODY_KIND_INVALID must remain unreferenced in dispatch \
+                 so default-constructed bodies stay inert (matched: {forbidden:?})",
+            );
+        }
     }
 }

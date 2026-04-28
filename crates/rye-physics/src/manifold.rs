@@ -222,8 +222,8 @@ mod tests {
         m.points[0].tangent_impulse = -1.7;
         m.points[0].tangent_dir = Vec2::X;
 
-        // New contact ~1 cm from the original (well within the 2 cm
-        // MERGE_RADIUS) and with refreshed geometry.
+        // New contact a hair away from the original, well within
+        // MERGE_RADIUS_SQ, and with refreshed geometry.
         let merged_point = Vec2::new(0.01, 0.0);
         let merged_normal = Vec2::new(0.0, -1.0);
         m.add_or_update(contact(merged_point, merged_normal, 0.05));

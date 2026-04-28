@@ -33,7 +33,7 @@ use super::gjk::{minkowski_support, MinkowskiPoint, SupportFn};
 
 const EPA_MAX_ITERATIONS: u32 = 48;
 const EPA_TOLERANCE: f32 = 1e-4;
-/// Sanity cap, a well-formed EPA typically finishes with < 30 vertices.
+/// Sanity cap: a well-formed EPA typically finishes with < 30 vertices.
 /// If we blow through this we're likely in a degenerate stall.
 const EPA_MAX_VERTICES: usize = 96;
 
@@ -273,7 +273,7 @@ pub fn epa<A: SupportFn, B: SupportFn>(
         }
 
         if (new_distance - face.distance).abs() < EPA_TOLERANCE {
-            // Face is on the Minkowski boundary, terminate.
+            // Face is on the Minkowski boundary; terminate.
             return contact_from_face(&polytope, face);
         }
 
@@ -284,8 +284,8 @@ pub fn epa<A: SupportFn, B: SupportFn>(
         }
     }
 
-    // Iteration cap, return the current best estimate rather than
-    // failing outright. Happens only for nearly-degenerate inputs.
+    // Iteration cap reached; return the current best estimate rather
+    // than failing outright. Happens only for nearly-degenerate inputs.
     let face_idx = polytope.closest_face()?;
     contact_from_face(&polytope, polytope.faces[face_idx])
 }

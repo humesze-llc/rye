@@ -7,9 +7,9 @@
 //!
 //! ## Flags
 //!
-//! - `--hyperbolic` , swap `WgslSpace` prelude to `HyperbolicH3`.
-//! - `--spherical`  , swap `WgslSpace` prelude to `SphericalS3`.
-//! - `--rotate`     , auto-rotate camera at 1 rev / 20 s.
+//! - `--hyperbolic`: swap `WgslSpace` prelude to `HyperbolicH3`.
+//! - `--spherical`: swap `WgslSpace` prelude to `SphericalS3`.
+//! - `--rotate`: auto-rotate camera at 1 rev / 20 s.
 //!
 //! Capture-to-APNG/GIF lives in [`examples/fractal`](../fractal)
 //! and is not yet plumbed into the `rye-app` framework. When a

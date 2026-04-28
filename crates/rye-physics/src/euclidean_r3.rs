@@ -214,7 +214,7 @@ fn sphere_halfspace_r3(
 
 // ---------------------------------------------------------------------------
 // Polytope narrowphases via GJK + EPA. All three pairs use the same
-// generic machinery from `crate::collision`, only the `SupportFn`
+// generic machinery from `crate::collision`; only the `SupportFn`
 // wrappers differ per collider kind.
 // ---------------------------------------------------------------------------
 

@@ -420,7 +420,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
             return;
         };
 
-        // Esc / close, exit cleanly.
+        // Esc / close: exit cleanly.
         match &ev {
             WindowEvent::CloseRequested => {
                 elwt.exit();

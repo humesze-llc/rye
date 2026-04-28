@@ -18,3 +18,6 @@ wgpu.workspace = true
 winit.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
+
+[dev-dependencies]
+naga.workspace = true

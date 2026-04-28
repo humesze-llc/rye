@@ -282,7 +282,8 @@ mod tests {
     use bytemuck::{Pod, Zeroable};
     use glam::Vec3;
     use rye_math::{
-        BlendedSpace, EuclideanR3, HyperbolicH3, LinearBlendX, Space, SphericalS3, WgslSpace,
+        BlendedSpace, EuclideanR3, EuclideanR4, HyperbolicH3, LinearBlendX, Space, SphericalS3,
+        WgslSpace,
     };
 
     const ABI_PROBE: &str = r#"
@@ -291,6 +292,24 @@ fn main() {
     let a = vec3<f32>(0.1, 0.2, 0.3);
     let b = vec3<f32>(0.2, -0.1, 0.05);
     let v = vec3<f32>(0.01, 0.02, -0.03);
+    _ = rye_distance(a, b);
+    _ = rye_origin_distance(a);
+    _ = rye_exp(a, v);
+    _ = rye_log(a, b);
+    _ = rye_parallel_transport(a, b, v);
+    _ = RYE_MAX_ARC;
+}
+"#;
+
+    // 4D variant of `ABI_PROBE`. `EuclideanR4`'s prelude uses
+    // `vec4<f32>` for both points and tangent vectors; the v0 ABI is
+    // otherwise identical.
+    const ABI_PROBE_VEC4: &str = r#"
+@compute @workgroup_size(1)
+fn main() {
+    let a = vec4<f32>(0.1, 0.2, 0.3, 0.0);
+    let b = vec4<f32>(0.2, -0.1, 0.05, 0.4);
+    let v = vec4<f32>(0.01, 0.02, -0.03, 0.05);
     _ = rye_distance(a, b);
     _ = rye_origin_distance(a);
     _ = rye_exp(a, v);
@@ -351,6 +370,18 @@ fn main() {
     fn spherical_space_prelude_validates_against_abi_probe() {
         let src = assemble_source(&SphericalS3.wgsl_impl(), ABI_PROBE);
         validate_wgsl(&src).expect("SphericalS3 WGSL prelude should validate");
+    }
+
+    /// `EuclideanR4`'s prelude is the v0 ABI in `vec4<f32>`. No render
+    /// node consumes it today (4D rendering ships through the
+    /// hyperslice path, not a native 4D geodesic march), but the
+    /// prelude's mathematical content is honest, flat-space
+    /// `exp`/`log`/`distance`/`parallel_transport` for ℝ⁴, so naga
+    /// validation pins the contract for any future consumer.
+    #[test]
+    fn euclidean_r4_space_prelude_validates_against_abi_probe() {
+        let src = assemble_source(&EuclideanR4.wgsl_impl(), ABI_PROBE_VEC4);
+        validate_wgsl(&src).expect("EuclideanR4 WGSL prelude should validate");
     }
 
     // Minimal stub of rye_scene_sdf so the kernel has something to call.

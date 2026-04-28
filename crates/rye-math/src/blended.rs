@@ -1,6 +1,6 @@
 //! `BlendedSpace<A, B, F>`: a `Space` whose metric smoothly
 //! interpolates between two source Spaces A and B via a
-//! blending field F: ℝ³ → [0, 1].
+//! blending field F: ℝ³ -> [0, 1].
 //!
 //! THESIS §2.2 design goal: *"Seamless transitions between
 //! geometries, not camera tricks."*
@@ -67,8 +67,8 @@ pub trait ConformallyFlat: Space {
     ///
     /// Must be positive and finite at `p` for `p` inside the
     /// chart. Boundary points (e.g. Poincaré ideal boundary
-    /// |p| → 1) may diverge to `f32::INFINITY`; the integrator
-    /// detects and clamps.
+    /// as |p| approaches 1) may diverge to `f32::INFINITY`; the
+    /// integrator detects and clamps.
     fn conformal_factor(&self, p: Vec3) -> f32;
 
     /// Scalar curvature R(p) at the point. For a 3D conformally

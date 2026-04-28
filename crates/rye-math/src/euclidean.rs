@@ -13,7 +13,7 @@ use crate::space::{Space, WgslSpace};
 
 /// A rigid motion of R³: a rotation followed by a translation.
 ///
-/// Pure isometry, scale and shear are excluded by construction.
+/// Pure isometry; scale and shear are excluded by construction.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3 {
     pub rotation: Quat,
@@ -44,7 +44,7 @@ impl Iso3 {
 /// Euclidean R³ with the standard metric.
 ///
 /// Stateless: a unit struct that monomorphizes away. Construct via
-/// `EuclideanR3` directly, there is only one R³.
+/// `EuclideanR3` directly; there is only one R³.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EuclideanR3;
 

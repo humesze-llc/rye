@@ -50,7 +50,7 @@ impl<'a> SupportFn for ConvexHull<'a> {
     }
 }
 
-/// Sphere support, centre + radius·direction̂.
+/// Sphere support: centre + radius · normalized(direction).
 pub struct Sphere {
     pub center: Vec3,
     pub radius: f32,

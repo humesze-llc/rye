@@ -32,7 +32,7 @@ pub enum AssetEventKind {
 /// single `Modified` or `Created` event per file. That's the usual
 /// shape a shader cache wants.
 ///
-/// Not `Sync`, own one per app. `Send` is fine.
+/// Not `Sync`: own one per app. `Send` is fine.
 pub struct AssetWatcher {
     watcher: RecommendedWatcher,
     rx: Receiver<notify::Result<notify::Event>>,

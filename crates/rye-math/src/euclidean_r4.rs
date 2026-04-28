@@ -58,7 +58,7 @@ impl Default for Iso4Flat {
 
 /// Euclidean R⁴ with the standard metric `‖x‖² = x₁² + x₂² + x₃² + x₄²`.
 ///
-/// Stateless unit struct, there is only one R⁴. `Space` methods
+/// Stateless unit struct; there is only one R⁴. `Space` methods
 /// monomorphize to the bare arithmetic.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EuclideanR4;

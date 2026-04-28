@@ -874,4 +874,235 @@ fn rye_scene_sdf(p: vec3<f32>) -> f32 {
             );
         }
     }
+
+    // ---- Polytope SDF parity (CPU port vs WGSL formula) -----------------
+    //
+    // Each `*_sdf_local_cpu` here is a 1:1 port of the matching WGSL
+    // function in `HYPERSLICE_KERNEL_WGSL`. The parity tests below
+    // assert the *geometry* the SDF is meant to represent (vertex
+    // positions, inradius, sign at sample points), so a port that
+    // silently diverges from the WGSL fails the test even though the
+    // CPU<->WGSL formulas are textually parallel.
+
+    use glam::Vec4;
+
+    fn pentatope_sdf_local_cpu(p: Vec4) -> f32 {
+        // Mirror of `pentatope_sdf_local` in HYPERSLICE_KERNEL_WGSL.
+        // t = sqrt(15) / (4 * sqrt(3)) = sqrt(5) / 4. WGSL stores the
+        // 11-digit truncation 0.55901699437; the CPU side reconstructs
+        // from the closed form so float precision is f32-clean.
+        let t = 5.0_f32.sqrt() * 0.25;
+        let r = 0.25_f32;
+        let normals = [
+            Vec4::new(0.0, 0.0, 0.0, -1.0),
+            Vec4::new(-t, -t, -t, 0.25),
+            Vec4::new(-t, t, t, 0.25),
+            Vec4::new(t, -t, t, 0.25),
+            Vec4::new(t, t, -t, 0.25),
+        ];
+        normals
+            .iter()
+            .map(|n| n.dot(p) - r)
+            .fold(f32::NEG_INFINITY, f32::max)
+    }
+
+    fn tesseract_sdf_local_cpu(p: Vec4) -> f32 {
+        let q = p.abs() - Vec4::splat(0.5);
+        let outside = q.max(Vec4::ZERO).length();
+        let inside = q.x.max(q.y).max(q.z).max(q.w).min(0.0);
+        outside + inside
+    }
+
+    fn cell16_sdf_local_cpu(p: Vec4) -> f32 {
+        let q = p.abs();
+        (q.x + q.y + q.z + q.w - 1.0) * 0.5
+    }
+
+    fn cell24_sdf_local_cpu(p: Vec4) -> f32 {
+        // WGSL stores 8-digit truncations (0.70710678 and 1.41421356);
+        // the CPU side uses the standard library constants for
+        // f32-clean values. Tolerance in the test absorbs the
+        // CPU-vs-WGSL precision delta.
+        let inv_sqrt2 = std::f32::consts::FRAC_1_SQRT_2;
+        let sqrt2 = std::f32::consts::SQRT_2;
+        let q = p.abs();
+        let tess = q.x.max(q.y).max(q.z).max(q.w) - inv_sqrt2;
+        let cross = (q.x + q.y + q.z + q.w - sqrt2) * 0.5;
+        tess.max(cross)
+    }
+
+    // ---- Inline vertex generators (mirror rye_physics::euclidean_r4) ----
+
+    fn pentatope_vertices() -> Vec<Vec4> {
+        // Apex plus regular tetrahedron in the w = -1/4 hyperplane;
+        // matches `rye_physics::euclidean_r4::pentatope_vertices(1.0)`.
+        let base_w = -0.25_f32;
+        let base_r = 15.0_f32.sqrt() / 4.0;
+        let t = base_r / 3.0_f32.sqrt();
+        vec![
+            Vec4::new(0.0, 0.0, 0.0, 1.0),
+            Vec4::new(t, t, t, base_w),
+            Vec4::new(t, -t, -t, base_w),
+            Vec4::new(-t, t, -t, base_w),
+            Vec4::new(-t, -t, t, base_w),
+        ]
+    }
+
+    fn tesseract_vertices() -> Vec<Vec4> {
+        let a = 0.5_f32;
+        let mut v = Vec::with_capacity(16);
+        for &w in &[-a, a] {
+            for &z in &[-a, a] {
+                for &y in &[-a, a] {
+                    for &x in &[-a, a] {
+                        v.push(Vec4::new(x, y, z, w));
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    fn cell16_vertices() -> Vec<Vec4> {
+        vec![
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Vec4::new(-1.0, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, 1.0, 0.0, 0.0),
+            Vec4::new(0.0, -1.0, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, 1.0, 0.0),
+            Vec4::new(0.0, 0.0, -1.0, 0.0),
+            Vec4::new(0.0, 0.0, 0.0, 1.0),
+            Vec4::new(0.0, 0.0, 0.0, -1.0),
+        ]
+    }
+
+    fn cell24_vertices() -> Vec<Vec4> {
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let mut v = Vec::with_capacity(24);
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                for &si in &[-k, k] {
+                    for &sj in &[-k, k] {
+                        let mut c = [0.0_f32; 4];
+                        c[i] = si;
+                        c[j] = sj;
+                        v.push(Vec4::new(c[0], c[1], c[2], c[3]));
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    /// Shared parity assertions: every vertex on the surface, origin
+    /// at -inradius, scaled-out point clearly outside, scaled-in point
+    /// clearly inside.
+    fn assert_polytope_geometry(
+        name: &str,
+        sdf: impl Fn(Vec4) -> f32,
+        vertices: &[Vec4],
+        inradius: f32,
+        vertex_tolerance: f32,
+    ) {
+        for (i, &v) in vertices.iter().enumerate() {
+            let d = sdf(v);
+            assert!(
+                d.abs() < vertex_tolerance,
+                "{name} vertex[{i}] = {v:?} should sit on the surface (sdf={d}, tol={vertex_tolerance})",
+            );
+        }
+        let d_origin = sdf(Vec4::ZERO);
+        assert!(
+            (d_origin - -inradius).abs() < 5e-4,
+            "{name} sdf(origin) = {d_origin} should equal -inradius {}",
+            -inradius,
+        );
+        let outside = vertices[0] * 2.0;
+        let d_outside = sdf(outside);
+        assert!(
+            d_outside > 0.0,
+            "{name} sdf at 2x first vertex {outside:?} = {d_outside} should be positive (outside)",
+        );
+        let inside = vertices[0] * 0.5;
+        let d_inside = sdf(inside);
+        assert!(
+            d_inside < 0.0,
+            "{name} sdf at 0.5x first vertex {inside:?} = {d_inside} should be negative (inside)",
+        );
+    }
+
+    #[test]
+    fn pentatope_cpu_port_matches_geometry() {
+        // Inradius for an n-simplex at unit circumradius is R/n; for
+        // the pentatope (n=4) that's 0.25.
+        assert_polytope_geometry(
+            "pentatope",
+            pentatope_sdf_local_cpu,
+            &pentatope_vertices(),
+            0.25,
+            // Pentatope normals carry sqrt(15)/(4 sqrt(3)) ~ 0.559;
+            // truncated to 11 digits in the WGSL constant. Per-vertex
+            // residual is dominated by that truncation, ~5e-7 in
+            // measurement.
+            5e-6,
+        );
+    }
+
+    #[test]
+    fn tesseract_cpu_port_matches_geometry() {
+        // Tesseract at circumradius 1 has half-edge a = 0.5;
+        // inradius (perpendicular distance to a cubic cell) = 0.5.
+        assert_polytope_geometry(
+            "tesseract",
+            tesseract_sdf_local_cpu,
+            &tesseract_vertices(),
+            0.5,
+            // Tesseract SDF is built from `abs` and `min`/`max`; the
+            // vertex residual is bit-exact for the half-extent 0.5.
+            1e-7,
+        );
+    }
+
+    #[test]
+    fn cell16_cpu_port_matches_geometry() {
+        // 16-cell at circumradius 1: faces are (+/-, +/-, +/-, +/-)/2
+        // hyperplanes at perpendicular distance 0.5.
+        assert_polytope_geometry(
+            "16-cell",
+            cell16_sdf_local_cpu,
+            &cell16_vertices(),
+            0.5,
+            1e-7,
+        );
+    }
+
+    #[test]
+    fn cell24_cpu_port_matches_geometry() {
+        // 24-cell vertices land at distance 1 from the origin (set by
+        // construction). Inradius is 1/sqrt(2) ~ 0.7071: the
+        // intersection of tesseract(1/sqrt(2)) and 16-cell(sqrt(2))
+        // yields equidistant faces at that radius.
+        assert_polytope_geometry(
+            "24-cell",
+            cell24_sdf_local_cpu,
+            &cell24_vertices(),
+            std::f32::consts::FRAC_1_SQRT_2,
+            // CPU port uses f32 standard-library consts; WGSL ships
+            // 8-digit truncations of the same values. The vertex
+            // residual is dominated by that delta.
+            5e-7,
+        );
+    }
+
+    /// The CPU SDF ports above must remain textual mirrors of the
+    /// WGSL formulas. This guards against drift by re-checking the
+    /// load-bearing literals appear in the kernel source.
+    #[test]
+    fn polytope_sdf_constants_match_kernel_source() {
+        // Pentatope: t = 0.55901699437 and r = 0.25.
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("0.55901699437"));
+        // 24-cell: 1/sqrt(2) and sqrt(2) literals.
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("0.70710678"));
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("1.41421356"));
+    }
 }

@@ -30,14 +30,7 @@
 //!   bodies at the current `w₀`. Scrub `w₀` with ↑/↓ to peer at
 //!   different cells; bodies outside the slice plane vanish.
 //! - **Ghost mode** (toggle with **G**), render the bodies' full 4D
-//!   extent simultaneously as a translucent volume. Each point in 3D
-//!   gets opacity proportional to the body's `w`-extent through that
-//!   xyz column (`2·√(r² − |xyz − c.xyz|²)` for points inside the
-//!   xyz-projection, zero outside). A ray through the body's centre
-//!   accumulates ≈ `2r` of `w`-thickness; a glancing ray accumulates
-//!   less; missing rays accumulate nothing. The result is a smoothly
-//!   shaded 3D shadow of the 4-ball that exposes its full extent
-//!   without scrubbing `w`.
+//!   extent simultaneously as a translucent volume.
 //!
 //! ## Controls
 //!
@@ -50,16 +43,15 @@
 //! - **R**: reset, re-spawn all bodies, offset = 0.
 //! - **Esc**: exit.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec4;
-use rye_asset::AssetWatcher;
+use rye_app::{run_with_config, App, FrameCtx, RunConfig, SetupCtx, TickCtx};
 use rye_camera::OrbitCamera;
-use rye_input::InputState;
 use rye_math::{EuclideanR3, EuclideanR4};
 use rye_physics::{
     euclidean_r4::{halfspace4_body_r4, register_default_narrowphase, sphere_body_r4},
@@ -67,15 +59,12 @@ use rye_physics::{
     World,
 };
 use rye_render::{device::RenderDevice, graph::RenderNode};
-use rye_shader::{ShaderDb, ShaderId};
-use rye_time::FixedTimestep;
+use rye_shader::ShaderId;
 use wgpu::{util::DeviceExt, *};
 use winit::{
-    application::ApplicationHandler,
     event::{ElementState, WindowEvent},
-    event_loop::ActiveEventLoop,
-    keyboard::{Key, KeyCode, NamedKey, PhysicalKey},
-    window::{Window, WindowAttributes},
+    keyboard::{KeyCode, PhysicalKey},
+    window::WindowAttributes,
 };
 
 fn shader_dir() -> PathBuf {
@@ -118,9 +107,9 @@ impl Args {
                         .clamp(1, MAX_BODIES);
                 }
                 "-h" | "--help" => {
-                    println!("rye hypersphere w-slice viewer");
+                    println!("rye hypersphere w-slice viewer (legacy bespoke-shader path)");
                     println!();
-                    println!("Usage: cargo run --example hypersphere [options]");
+                    println!("Usage: cargo run --example hypersphere -- --legacy [options]");
                     println!();
                     println!("Options:");
                     println!(
@@ -129,8 +118,10 @@ impl Args {
                     println!("  -h, --help       show this help and exit");
                     std::process::exit(0);
                 }
-                other => {
-                    eprintln!("warning: unknown flag {other:?}; pass --help to see options");
+                _ => {
+                    // Unknown flags are silently ignored: the parent
+                    // `main` may pass framework flags this parser
+                    // doesn't recognise (e.g. `--legacy` itself).
                 }
             }
         }
@@ -152,9 +143,10 @@ struct SliceUniforms {
     resolution: [f32; 2],
     time: f32,
     tick: f32,
-    /// `[w_slice, radius4, body_count_f, _]`. `body_count_f` is the
-    /// number of active entries in `bodies`, encoded as `f32` for
-    /// uniform-buffer simplicity (cast to `u32` in WGSL).
+    /// `[w_slice, radius4, body_count_f, ghost_flag]`. `body_count_f`
+    /// is the active entry count, encoded as `f32` for uniform-buffer
+    /// simplicity (cast to `u32` in WGSL). `ghost_flag` is 0.0 for
+    /// slice mode, 1.0 for ghost (volumetric) mode.
     params: [f32; 4],
     /// Up to `MAX_BODIES` body 4-positions (`vec4(x, y, z, w)` each).
     /// Slots `>= body_count` are unread by the shader.
@@ -301,17 +293,7 @@ impl RenderNode for SliceNode {
     }
 }
 
-/// Spawn-position generator for body `i` of `count`.
-///
-/// One body: directly above the origin so the single-ball mode looks
-/// like the original demo.
-///
-/// Many bodies: a stack/spiral of small offsets in `xz`, increasing
-/// drop height in `y`, and gently varied `w` so the user actually
-/// sees `w`-spread when scrubbing the slice plane. The `xz` offset is
-/// kept inside ≈1.5× the ball radius so the bodies overlap visually
-/// while falling and resolve into a 4D pile on the floor through
-/// sphere-sphere collision.
+/// Spawn-position generator for body `i` of `count`. See module doc.
 fn spawn_position(i: usize, count: usize) -> Vec4 {
     if count <= 1 {
         return Vec4::new(0.0, 2.5, 0.0, 0.0);
@@ -320,14 +302,7 @@ fn spawn_position(i: usize, count: usize) -> Vec4 {
     let phi = (i as f32 / count as f32) * std::f32::consts::TAU;
     let x = r_xz * phi.cos();
     let z = r_xz * phi.sin();
-    // Each body starts at a different height so they don't all collide
-    // simultaneously on the first frame; the higher ones fall onto
-    // the lower ones over time.
     let y = 2.5 + 2.5 * RADIUS_4D * i as f32;
-    // `w`-spread: alternate ± with a slowly growing magnitude so each
-    // body's cross-section appears at a slightly different `w₀` and
-    // the user can scrub from one to another. Within ±1.0 so all
-    // bodies' cross-sections overlap the default ±1.5 sweep range.
     let w = 0.6 * RADIUS_4D * (i as f32 - 0.5 * (count - 1) as f32) / count.max(1) as f32;
     Vec4::new(x, y, z, w)
 }
@@ -352,21 +327,14 @@ fn build_world(count: usize) -> (World<EuclideanR4>, Vec<usize>) {
     (world, ball_ids)
 }
 
-struct App {
-    window: Option<Arc<Window>>,
-    rd: Option<RenderDevice>,
-    minimized: bool,
-
-    shaders: Option<ShaderDb>,
-    shader_id: Option<ShaderId>,
+struct LegacyHypersphereApp {
+    /// `App::Space` requirement; the bespoke shader doesn't go
+    /// through ShaderDb's prelude path, so the field is dormant.
+    space: EuclideanR3,
+    shader_id: ShaderId,
     shader_gen: u64,
-    watcher: Option<AssetWatcher>,
-    node: Option<SliceNode>,
-
-    timestep: FixedTimestep,
+    node: SliceNode,
     camera: OrbitCamera,
-    input: InputState,
-    start: Instant,
 
     world: World<EuclideanR4>,
     ball_ids: Vec<usize>,
@@ -381,49 +349,10 @@ struct App {
     /// translucent volume rather than a single `w`-slice.
     ghost_mode: bool,
 
-    frame_count: u32,
-    last_fps_update: Instant,
-    fps: f32,
+    initial_count: usize,
 }
 
-impl App {
-    fn new(count: usize) -> Self {
-        let (world, ball_ids) = build_world(count);
-        // Pull the camera out a bit further when there are many
-        // bodies so the whole stack is in frame at the start.
-        let cam_dist = (8.0 + 1.5 * count as f32).min(20.0);
-        Self {
-            window: None,
-            rd: None,
-            minimized: false,
-            shaders: None,
-            shader_id: None,
-            shader_gen: 0,
-            watcher: None,
-            node: None,
-            timestep: FixedTimestep::new(60),
-            camera: {
-                let mut c = OrbitCamera::default();
-                c.set_orbit(cam_dist, -0.35);
-                c
-            },
-            input: InputState::default(),
-            start: Instant::now(),
-            world,
-            ball_ids,
-            paused: false,
-            w_offset: 0.0,
-            auto_sweep: false,
-            sweep_anchor: Instant::now(),
-            slider_up_held: false,
-            slider_down_held: false,
-            ghost_mode: false,
-            frame_count: 0,
-            last_fps_update: Instant::now(),
-            fps: 0.0,
-        }
-    }
-
+impl LegacyHypersphereApp {
     fn reset(&mut self) {
         let count = self.ball_ids.len();
         let (world, ball_ids) = build_world(count);
@@ -502,240 +431,158 @@ impl App {
         self.anchor_body_w() + self.w_offset
     }
 
-    fn current_uniforms(&self) -> Option<SliceUniforms> {
-        let rd = self.rd.as_ref()?;
-        let view = self.camera.view();
-        let t = self.start.elapsed().as_secs_f32();
-
+    fn body_positions(&self) -> ([[f32; 4]; MAX_BODIES], usize) {
         let mut bodies = [[0.0_f32; 4]; MAX_BODIES];
         let count = self.ball_ids.len().min(MAX_BODIES);
         for (slot, &id) in bodies.iter_mut().zip(self.ball_ids.iter()).take(count) {
             *slot = self.world.bodies[id].position.to_array();
         }
-
-        Some(SliceUniforms {
-            camera_pos: view.position.to_array(),
-            _pad0: 0.0,
-            camera_forward: view.forward.to_array(),
-            _pad1: 0.0,
-            camera_right: view.right.to_array(),
-            _pad2: 0.0,
-            camera_up: view.up.to_array(),
-            fov_y_tan: (60.0_f32.to_radians() * 0.5).tan(),
-            resolution: [
-                rd.surface_bundle.config.width as f32,
-                rd.surface_bundle.config.height as f32,
-            ],
-            time: t,
-            tick: self.timestep.tick() as f32,
-            params: [
-                self.effective_w_slice(),
-                RADIUS_4D,
-                count as f32,
-                if self.ghost_mode { 1.0 } else { 0.0 },
-            ],
-            bodies,
-        })
-    }
-
-    fn handle_hot_reload(&mut self) {
-        let (Some(watcher), Some(shaders), Some(id), Some(rd)) = (
-            self.watcher.as_ref(),
-            self.shaders.as_mut(),
-            self.shader_id,
-            self.rd.as_ref(),
-        ) else {
-            return;
-        };
-        let events = watcher.poll();
-        if events.is_empty() {
-            return;
-        }
-        shaders.apply_events(&events, &EuclideanR3);
-        let new_gen = shaders.generation(id);
-        if new_gen != self.shader_gen {
-            tracing::info!("rebuilding SliceNode for shader gen {new_gen}");
-            self.shader_gen = new_gen;
-            self.node = Some(SliceNode::new(
-                &rd.device,
-                rd.surface_bundle.config.format,
-                shaders.module(id),
-            ));
-        }
+        (bodies, count)
     }
 }
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, elwt: &ActiveEventLoop) {
-        let win = Arc::new(
-            elwt.create_window(
-                WindowAttributes::default()
-                    .with_title(TITLE)
-                    .with_visible(false),
-            )
-            .expect("create window"),
-        );
-        let rd = pollster::block_on(RenderDevice::new(win.clone())).expect("render device");
+impl App for LegacyHypersphereApp {
+    type Space = EuclideanR3;
 
-        let mut shaders = ShaderDb::new(rd.device.clone());
-        let id = shaders
-            .load(shader_path(), &EuclideanR3)
-            .expect("load hypersphere.wgsl");
-        let gen = shaders.generation(id);
-        let mut watcher = AssetWatcher::new().expect("asset watcher");
-        watcher.watch(shader_dir()).expect("watch shader dir");
+    fn setup(ctx: &mut SetupCtx<'_>) -> Result<Self> {
+        let rd = ctx.rd;
+        let space = EuclideanR3;
+        let shader_id = ctx.shader_db.load(shader_path(), &space)?;
+        let shader_gen = ctx.shader_db.generation(shader_id);
         let node = SliceNode::new(
             &rd.device,
             rd.surface_bundle.config.format,
-            shaders.module(id),
+            ctx.shader_db.module(shader_id),
         );
 
-        self.window = Some(win.clone());
-        self.rd = Some(rd);
-        self.shaders = Some(shaders);
-        self.shader_id = Some(id);
-        self.shader_gen = gen;
-        self.watcher = Some(watcher);
-        self.node = Some(node);
-        self.minimized = false;
-        self.start = Instant::now();
-        self.sweep_anchor = Instant::now();
+        if let Some(watcher) = ctx.watcher.as_mut() {
+            watcher.watch(shader_dir())?;
+        }
 
-        win.set_visible(true);
-        win.request_redraw();
+        let args = Args::parse();
+        let (world, ball_ids) = build_world(args.count);
+
+        // Pull the camera back proportionally to the body count so the
+        // whole stack is in frame at the start.
+        let cam_dist = (8.0 + 1.5 * args.count as f32).min(20.0);
+        let mut camera = OrbitCamera::default();
+        camera.set_orbit(cam_dist, -0.35);
+
+        Ok(Self {
+            space,
+            shader_id,
+            shader_gen,
+            node,
+            camera,
+            world,
+            ball_ids,
+            paused: false,
+            w_offset: 0.0,
+            auto_sweep: false,
+            sweep_anchor: Instant::now(),
+            slider_up_held: false,
+            slider_down_held: false,
+            ghost_mode: false,
+            initial_count: args.count,
+        })
     }
 
-    fn window_event(
-        &mut self,
-        elwt: &ActiveEventLoop,
-        _id: winit::window::WindowId,
-        ev: WindowEvent,
-    ) {
-        let Some(win) = self.window.clone() else {
-            return;
-        };
+    fn space(&self) -> &EuclideanR3 {
+        &self.space
+    }
+
+    fn tick(&mut self, dt: f32, _ctx: &mut TickCtx) {
+        self.advance_slider(dt);
+        self.advance_auto_sweep();
+        if !self.paused {
+            self.world.step(dt);
+        }
+    }
+
+    fn update(&mut self, ctx: &mut FrameCtx<'_>) {
+        self.camera.advance(ctx.input);
+
+        let view = self.camera.view();
+        let cfg = &ctx.rd.surface_bundle.config;
+        let (bodies, count) = self.body_positions();
+        self.node.set_uniforms(
+            &ctx.rd.queue,
+            SliceUniforms {
+                camera_pos: view.position.to_array(),
+                _pad0: 0.0,
+                camera_forward: view.forward.to_array(),
+                _pad1: 0.0,
+                camera_right: view.right.to_array(),
+                _pad2: 0.0,
+                camera_up: view.up.to_array(),
+                fov_y_tan: (60.0_f32.to_radians() * 0.5).tan(),
+                resolution: [cfg.width as f32, cfg.height as f32],
+                time: ctx.time,
+                tick: ctx.tick as f32,
+                params: [
+                    self.effective_w_slice(),
+                    RADIUS_4D,
+                    count as f32,
+                    if self.ghost_mode { 1.0 } else { 0.0 },
+                ],
+                bodies,
+            },
+        );
+    }
+
+    fn on_event(&mut self, ev: &WindowEvent, _ctx: &mut FrameCtx<'_>) {
         match ev {
-            WindowEvent::CloseRequested => elwt.exit(),
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
-            {
-                elwt.exit();
-            }
             WindowEvent::KeyboardInput { event, .. } => {
-                self.input.key_input(event.physical_key, event.state);
                 self.handle_keyboard(event.physical_key, event.state);
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.input.cursor_moved(position.x, position.y);
-            }
-            WindowEvent::CursorLeft { .. } => self.input.cursor_invalidated(),
             WindowEvent::Focused(false) => {
-                self.input.cursor_invalidated();
-                self.input.release_buttons();
                 self.slider_up_held = false;
                 self.slider_down_held = false;
             }
-            WindowEvent::MouseInput { state, button, .. } => {
-                self.input.mouse_input(button, state);
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                self.input.mouse_wheel(delta);
-            }
-            WindowEvent::Resized(size) => {
-                self.minimized = size.width == 0 || size.height == 0;
-                if !self.minimized {
-                    if let Some(rd) = &mut self.rd {
-                        rd.resize(size);
-                    }
-                }
-            }
-            WindowEvent::RedrawRequested => {
-                if self.minimized {
-                    return;
-                }
-                let ticks = self.timestep.advance(Instant::now());
-                let n_ticks = ticks.count();
-                if n_ticks > 0 {
-                    let frame_input = self.input.take_frame();
-                    self.camera.advance(frame_input);
-                    self.advance_slider(n_ticks as f32 / 60.0);
-                    self.advance_auto_sweep();
-                    if !self.paused {
-                        for _ in 0..n_ticks.min(4) {
-                            self.world.step(1.0 / 60.0);
-                        }
-                    }
-                }
-                self.handle_hot_reload();
-
-                self.frame_count += 1;
-                let elapsed = self.last_fps_update.elapsed().as_secs_f32();
-                if elapsed >= 1.0 {
-                    self.fps = self.frame_count as f32 / elapsed;
-                    self.frame_count = 0;
-                    self.last_fps_update = Instant::now();
-                    let n = self.ball_ids.len();
-                    let anchor = &self.world.bodies[self.ball_ids[0]];
-                    let p = anchor.position;
-                    let pause = if self.paused { " [paused]" } else { "" };
-                    let view_mode = if self.ghost_mode { "ghost" } else { "slice" };
-                    if self.ghost_mode {
-                        win.set_title(&format!(
-                            "{TITLE} | {:.0} fps | n={n} | mode={view_mode}{pause} | pos[0].y={:+.2} pos[0].w={:+.2}",
-                            self.fps, p.y, p.w
-                        ));
-                    } else {
-                        let mode = if self.auto_sweep { "auto" } else { "manual" };
-                        let w_eff = p.w + self.w_offset;
-                        // Visible-radius indicator for the *anchor*
-                        // body in slice mode. Matches `slice_radius`
-                        // in the WGSL.
-                        let dw = w_eff - p.w;
-                        let r3_sq = RADIUS_4D * RADIUS_4D - dw * dw;
-                        let r3 = if r3_sq > 0.0 { r3_sq.sqrt() } else { 0.0 };
-                        win.set_title(&format!(
-                            "{TITLE} | {:.0} fps | n={n} | mode={view_mode} offset={:+.2} ({mode}) w₀={:+.2}{pause} | r₃[0]={:.3} | pos[0].y={:+.2} pos[0].w={:+.2}",
-                            self.fps, self.w_offset, w_eff, r3, p.y, p.w
-                        ));
-                    }
-                }
-
-                let Some(uniforms) = self.current_uniforms() else {
-                    return;
-                };
-                let Some(rd) = self.rd.as_ref() else { return };
-                if let Some(node) = self.node.as_mut() {
-                    node.set_uniforms(&rd.queue, uniforms);
-                }
-                match rd.begin_frame() {
-                    Ok((frame, view)) => {
-                        if let Some(node) = self.node.as_mut() {
-                            if let Err(e) = node.execute_frame(rd, &view) {
-                                tracing::error!("render error: {e:#}");
-                            }
-                        }
-                        frame.present();
-                        win.request_redraw();
-                    }
-                    Err(err) => match err {
-                        SurfaceError::Lost | SurfaceError::Outdated => {
-                            if let Some(rd) = &mut self.rd {
-                                let size = rd.surface_bundle.size;
-                                rd.resize(size);
-                            }
-                            win.request_redraw();
-                        }
-                        SurfaceError::Timeout => win.request_redraw(),
-                        SurfaceError::OutOfMemory => elwt.exit(),
-                        SurfaceError::Other => {
-                            tracing::error!("surface error: {err:?}");
-                            win.request_redraw();
-                        }
-                    },
-                }
-            }
             _ => {}
+        }
+    }
+
+    fn on_shader_reload(&mut self, ctx: &mut SetupCtx<'_>) {
+        let new_gen = ctx.shader_db.generation(self.shader_id);
+        if new_gen != self.shader_gen {
+            tracing::info!("rebuilding SliceNode for shader gen {new_gen}");
+            self.shader_gen = new_gen;
+            self.node = SliceNode::new(
+                &ctx.rd.device,
+                ctx.rd.surface_bundle.config.format,
+                ctx.shader_db.module(self.shader_id),
+            );
+        }
+    }
+
+    fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
+        self.node.execute_frame(rd, view)
+    }
+
+    fn title(&self, fps: f32) -> Cow<'static, str> {
+        let n = self.initial_count;
+        let anchor = &self.world.bodies[self.ball_ids[0]];
+        let p = anchor.position;
+        let pause = if self.paused { " [paused]" } else { "" };
+        let view_mode = if self.ghost_mode { "ghost" } else { "slice" };
+        if self.ghost_mode {
+            Cow::Owned(format!(
+                "{TITLE} | {fps:.0} fps | n={n} | mode={view_mode}{pause} | pos[0].y={:+.2} pos[0].w={:+.2}",
+                p.y, p.w
+            ))
+        } else {
+            let mode = if self.auto_sweep { "auto" } else { "manual" };
+            let w_eff = p.w + self.w_offset;
+            // Visible-radius indicator for the *anchor* body in slice
+            // mode. Matches `slice_radius` in the WGSL.
+            let dw = w_eff - p.w;
+            let r3_sq = RADIUS_4D * RADIUS_4D - dw * dw;
+            let r3 = if r3_sq > 0.0 { r3_sq.sqrt() } else { 0.0 };
+            Cow::Owned(format!(
+                "{TITLE} | {fps:.0} fps | n={n} | mode={view_mode} offset={:+.2} ({mode}) w₀={:+.2}{pause} | r₃[0]={:.3} | pos[0].y={:+.2} pos[0].w={:+.2}",
+                self.w_offset, w_eff, r3, p.y, p.w
+            ))
         }
     }
 }
@@ -743,21 +590,17 @@ impl ApplicationHandler for App {
 /// Entry point for the legacy bespoke-shader path. Invoked by the
 /// outer `main` when `--legacy` is on the CLI.
 ///
-/// Has the full feature set: slice-mode + ghost-mode (volumetric
-/// raymarch), per-body color cycling, on-pause / on-reset hot
-/// keys. Doesn't use `rye-app` or `Hyperslice4DNode`; it's the
-/// pre-framework hand-rolled implementation that proves the same
-/// pipeline works without the framework abstraction.
-pub fn run() -> anyhow::Result<()> {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .try_init();
-    let args = Args::parse();
-    let elwt = winit::event_loop::EventLoop::new()?;
-    elwt.set_control_flow(winit::event_loop::ControlFlow::Poll);
-    let mut app = App::new(args.count);
-    elwt.run_app(&mut app)?;
-    Ok(())
+/// Now runs through `rye-app`'s framework like every other example;
+/// the "legacy" name persists because this kept the bespoke shader
+/// (volumetric ghost mode) when the parent `hypersphere` migrated
+/// to the slim `Hyperslice4DNode` path. Both are kept around so
+/// either rendering style is one CLI flag away.
+pub fn run() -> Result<()> {
+    let config = RunConfig {
+        window: WindowAttributes::default()
+            .with_title(TITLE)
+            .with_visible(false),
+        ..RunConfig::default()
+    };
+    run_with_config::<LegacyHypersphereApp>(config)
 }

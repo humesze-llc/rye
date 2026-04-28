@@ -605,7 +605,7 @@ impl<A: App> Runner<A> {
                             }
                         }
                         elwt.exit();
-                        // Skip the request_redraw below — runner is shutting down.
+                        // Skip the request_redraw below: runner is shutting down.
                         frame.present();
                         return;
                     }

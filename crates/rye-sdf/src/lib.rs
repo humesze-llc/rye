@@ -8,19 +8,9 @@
 //! [`combinator`] provides Space-agnostic combinators (union, intersection,
 //! smooth-min) that operate on the scalar distances returned by primitive SDFs.
 //!
-//! [`GeodesicSpheresScene`], [`CorridorScene`], and [`LatticeSphereScene`]
-//! are demo-shaped scene builders consumed by the corresponding examples.
-//! They are constructed on top of the typed primitive layer (each has a
-//! `to_scene` method that returns a [`scene::Scene`]).
-//!
-//! TODO: Each demo scene is consumed by exactly one example
-//! (`geodesic_spheres`, `corridor`, `lattice`). The plan is to push each
-//! scene into its example as a private module so the example becomes
-//! self-contained and `rye-sdf` keeps only the underlying typed layer
-//! ([`Primitive`], [`Scene`]). Deferred from the cleanup batch because
-//! the move forces rewriting the demo-specific tests against synthetic
-//! constructions (the per-scene tests below depend on the demos being
-//! visible from inside `rye-sdf`'s test module).
+//! Demo-shaped scene wrappers (geodesic spheres, corridor, lattice)
+//! live in their respective `examples/<name>/scene.rs` files. The
+//! crate proper keeps only the typed primitive + scene layer.
 
 pub mod combinator;
 pub mod primitive;
@@ -34,263 +24,10 @@ pub use rye_shape::Shape;
 pub use scene::{PrimitiveKind, Scene, SceneNode};
 pub use scene4::{Scene4, SceneNode4};
 
-use std::f32::consts::PI;
-
-use glam::Vec3;
-use rye_math::{EuclideanR3, Space, WgslSpace};
-
-/// Geodesic-spheres demo scene parameters.
-///
-/// The default scene is seven geodesic spheres:
-/// - one center sphere
-/// - six orbit spheres around the center
-///
-/// Optionally, a Euclidean-y slab (floor / ceiling planes) can be
-/// enabled as a visual cage. The slab renders honestly via
-/// chart-coord `dot(p, n) - d` in `EuclideanR3` (the Space this
-/// helper compiles against); per [`Primitive`]'s `HalfSpace` arm, it would
-/// sentinel in H³ / S³ until geodesic-plane SDFs land.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GeodesicSpheresScene {
-    pub sphere_radius: f32,
-    pub orbit_radius: f32,
-    pub orbit_height: f32,
-    pub include_slab: bool,
-    pub floor_y: f32,
-    pub ceiling_y: f32,
-}
-
-impl Default for GeodesicSpheresScene {
-    fn default() -> Self {
-        Self {
-            sphere_radius: 0.22,
-            orbit_radius: 0.62,
-            orbit_height: 0.18,
-            include_slab: false,
-            floor_y: -0.50,
-            ceiling_y: 0.82,
-        }
-    }
-}
-
-/// Emit WGSL source defining `rye_scene_sdf`.
-pub fn geodesic_spheres_demo_wgsl() -> String {
-    GeodesicSpheresScene::default().to_wgsl()
-}
-
-impl GeodesicSpheresScene {
-    pub fn with_slab(mut self, floor_y: f32, ceiling_y: f32) -> Self {
-        self.include_slab = true;
-        self.floor_y = floor_y;
-        self.ceiling_y = ceiling_y;
-        self
-    }
-
-    /// Build the typed scene tree. Orbit centers are pre-computed in Rust
-    /// and embedded as literals; `rye_distance` carries the Space metric.
-    pub fn to_scene(&self) -> Scene {
-        let mut node = SceneNode::sphere(Vec3::new(0.0, 0.12, 0.0), self.sphere_radius);
-        for i in 0..6 {
-            let a = (i as f32) * PI / 3.0;
-            let center = Vec3::new(
-                a.cos() * self.orbit_radius,
-                self.orbit_height,
-                a.sin() * self.orbit_radius,
-            );
-            node = node.union(SceneNode::sphere(center, self.sphere_radius));
-        }
-        if self.include_slab {
-            // floor: SDF = p.y - floor_y (positive above floor)
-            // ceiling: SDF = ceiling_y - p.y (positive below ceiling)
-            // union = min(floor_sdf, ceiling_sdf): positive inside slab, terminates march at walls
-            let floor = SceneNode::plane(Vec3::Y, self.floor_y);
-            let ceiling = SceneNode::plane(Vec3::NEG_Y, -self.ceiling_y);
-            node = node.union(floor.union(ceiling));
-        }
-        Scene::new(node)
-    }
-
-    pub fn to_wgsl(&self) -> String {
-        self.to_scene().to_wgsl(&EuclideanR3)
-    }
-}
-
-/// A rectangular corridor oriented along the Z axis, lined with
-/// rows of geodesic spheres for depth cues.
-///
-/// Pillars use `rye_distance` so they are space-aware (perfect
-/// spheres in every metric, with the curvature carried by ray
-/// bending). Floor, ceiling, and side walls are chart-coordinate
-/// planes (`p.y + H`, `H - p.y`, etc.) chosen specifically to
-/// visualise the chart-vs-geodesic difference. `corridor_demo_wgsl`
-/// compiles against `EuclideanR3` (flat), so those wall planes
-/// emit honestly via `dot(p, n) - d`. A future
-/// `corridor_demo_wgsl_<S>` for H³ / S³ would sentinel them via
-/// [`Primitive`]'s `HalfSpace` arm until geodesic-plane SDFs land.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CorridorScene {
-    /// Half-width of the corridor along the Space X axis.
-    pub half_width: f32,
-    /// Half-height of the corridor along the Space Y axis.
-    pub half_height: f32,
-    /// Half-length along Z. End walls close the corridor so every ray
-    /// hits geometry before reaching the Poincaré ball boundary in H³/S³.
-    /// An open corridor (no end walls) lets rays drift into the
-    /// saturation shell where Euclidean-coord wall SDFs produce noise.
-    pub half_depth: f32,
-    /// Geodesic radius of each pillar sphere.
-    pub pillar_radius: f32,
-    /// Distance from centerline to each pillar row (Space X).
-    pub pillar_x_offset: f32,
-    /// Y coordinate of pillar centers (typically `-half_height + pillar_radius`).
-    pub pillar_y: f32,
-    /// Geodesic spacing between consecutive pillars along Z.
-    pub pillar_z_spacing: f32,
-    /// Total pillars per row. Must be odd (symmetric about z = 0).
-    pub pillars_per_row: u32,
-}
-
-impl Default for CorridorScene {
-    fn default() -> Self {
-        Self {
-            half_width: 0.55,
-            half_height: 0.40,
-            // 0.70 keeps the end walls well inside the Poincaré ball
-            // (|p| ≤ 0.70 has conformal factor ~3.9, still well-conditioned).
-            half_depth: 0.70,
-            pillar_radius: 0.07,
-            pillar_x_offset: 0.40,
-            pillar_y: -0.33,
-            pillar_z_spacing: 0.24,
-            pillars_per_row: 7,
-        }
-    }
-}
-
-impl CorridorScene {
-    /// Build the typed scene tree for the corridor.
-    ///
-    /// Walls are `SceneNode::plane(...)` leaves; pillars are
-    /// `SceneNode::sphere(...)` leaves wrapped in a union. The
-    /// emitted SDF for the walls depends on the Space the scene
-    /// is later compiled against: `dot(p, n) - d` in flat charts
-    /// (E³), sentinel in curved charts (H³ / S³). See
-    /// [`Primitive`]'s `HalfSpace` arm for the `is_chart_flat` gate.
-    pub fn to_scene(&self) -> Scene {
-        assert!(
-            self.pillars_per_row % 2 == 1,
-            "pillars_per_row must be odd so the row is symmetric about z=0"
-        );
-        // Six walls as Euclidean half-space planes.
-        // Each plane's SDF is positive on the interior side of that wall.
-        let walls = SceneNode::plane(Vec3::Y, -self.half_height) // floor: p.y + H
-            .union(SceneNode::plane(Vec3::NEG_Y, -self.half_height)) // ceiling: H - p.y
-            .union(SceneNode::plane(Vec3::X, -self.half_width)) // left: p.x + W
-            .union(SceneNode::plane(Vec3::NEG_X, -self.half_width)) // right: W - p.x
-            .union(SceneNode::plane(Vec3::Z, -self.half_depth)) // back: p.z + D
-            .union(SceneNode::plane(Vec3::NEG_Z, -self.half_depth)); // front: D - p.z
-
-        let half = (self.pillars_per_row - 1) / 2;
-        let mut root = walls;
-        for i in -(half as i32)..=(half as i32) {
-            let z = (i as f32) * self.pillar_z_spacing;
-            root = root.union(SceneNode::sphere(
-                Vec3::new(-self.pillar_x_offset, self.pillar_y, z),
-                self.pillar_radius,
-            ));
-            root = root.union(SceneNode::sphere(
-                Vec3::new(self.pillar_x_offset, self.pillar_y, z),
-                self.pillar_radius,
-            ));
-        }
-        Scene::new(root)
-    }
-
-    pub fn to_wgsl(&self) -> String {
-        self.to_scene().to_wgsl(&EuclideanR3)
-    }
-}
-
-/// Emit WGSL source for the default `CorridorScene`.
-pub fn corridor_demo_wgsl() -> String {
-    CorridorScene::default().to_wgsl()
-}
-
-/// Periodic geodesic lattice scene.
-///
-/// Emits a `rye_scene_sdf` that places a sphere at the origin and at
-/// geodesic lattice positions along the ±X, ±Y, ±Z axes. The lattice
-/// centers are computed in Rust by calling `space.exp` so that they
-/// live at evenly-spaced geodesic intervals in the given Space:
-///
-/// - E³: evenly-spaced Euclidean grid
-/// - H³: tanh-compressed toward the Poincaré boundary
-/// - S³: sin-based, wrapping past π/2
-///
-/// The visual difference between the three spaces emerges naturally
-/// when the same shader is compiled against each Space prelude.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LatticeSphereScene {
-    /// Number of shells along each axis direction (1..=N).
-    pub steps: u32,
-    /// Geodesic arc length between consecutive shells.
-    pub geodesic_spacing: f32,
-    /// Sphere radius in Space coordinates.
-    pub sphere_radius: f32,
-}
-
-impl Default for LatticeSphereScene {
-    fn default() -> Self {
-        Self {
-            steps: 2,
-            geodesic_spacing: 0.45,
-            sphere_radius: 0.12,
-        }
-    }
-}
-
-impl LatticeSphereScene {
-    /// Build the typed scene tree for the given Space.
-    ///
-    /// Centers are computed via `space.exp` and stored as literal positions in
-    /// `Sphere` primitives. The emitted `rye_scene_sdf` calls only
-    /// `rye_distance`, so the spatial metric is fully Space-aware at runtime.
-    pub fn to_scene<S>(&self, space: &S) -> Scene
-    where
-        S: Space<Point = Vec3, Vector = Vec3> + WgslSpace,
-    {
-        let axes = [
-            Vec3::X,
-            Vec3::NEG_X,
-            Vec3::Y,
-            Vec3::NEG_Y,
-            Vec3::Z,
-            Vec3::NEG_Z,
-        ];
-        let mut node = SceneNode::sphere(Vec3::ZERO, self.sphere_radius);
-        for axis in axes {
-            for k in 1..=self.steps {
-                let tangent = axis * (k as f32 * self.geodesic_spacing);
-                node = node.union(SceneNode::sphere(
-                    space.exp(Vec3::ZERO, tangent),
-                    self.sphere_radius,
-                ));
-            }
-        }
-        Scene::new(node)
-    }
-
-    pub fn to_wgsl<S>(&self, space: &S) -> String
-    where
-        S: Space<Point = Vec3, Vector = Vec3> + WgslSpace,
-    {
-        self.to_scene(space).to_wgsl(space)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
 
     // ---- Primitive trait tests -------------------------------------------
 
@@ -386,94 +123,64 @@ mod tests {
         assert!(src.contains("mix"));
     }
 
-    #[test]
-    fn emits_required_scene_entrypoint() {
-        let src = geodesic_spheres_demo_wgsl();
-        assert!(src.contains("fn rye_scene_sdf"));
-        assert!(src.contains("rye_distance"));
-    }
+    // ---- Scene-tree integration tests ------------------------------------
+    //
+    // These cover behaviours the legacy demo-scene tests used to gate.
+    // The demo wrappers themselves now live in their respective examples;
+    // this layer pins the behaviour at the underlying typed-scene API.
 
+    /// A Scene with a sphere and a half-space plane in flat E³ must
+    /// emit both `rye_distance` (sphere) and `dot(p,` (plane), all
+    /// inside a single `rye_scene_sdf` entry point.
     #[test]
-    fn default_scene_has_no_slab_constants() {
-        let src = geodesic_spheres_demo_wgsl();
-        assert!(!src.contains("RYE_SCENE_FLOOR_Y"));
-        assert!(!src.contains("RYE_SCENE_CEILING_Y"));
-    }
-
-    /// Slab planes (floor + ceiling) emit the chart-coord
-    /// `dot(p, n) - d` formula, since `GeodesicSpheresScene::to_wgsl`
-    /// uses `EuclideanR3` (which reports `is_chart_flat == true`).
-    /// The literal floor / ceiling values appear in the WGSL.
-    #[test]
-    fn slab_scene_emits_floor_and_ceiling_values() {
-        let src = GeodesicSpheresScene::default()
-            .with_slab(-0.5, 0.8)
-            .to_wgsl();
-        assert!(src.contains("fn rye_scene_sdf"));
-        assert!(src.contains("rye_distance")); // spheres
-        assert!(src.contains("dot(p,")); // slab planes
-        assert!(src.contains("-0.500000")); // floor_y
-        assert!(src.contains("-0.800000")); // -ceiling_y (negated in plane construction)
-    }
-
-    #[test]
-    fn lattice_scene_emits_required_entrypoint() {
+    fn scene_with_sphere_and_plane_emits_both_paths_in_e3() {
         use rye_math::EuclideanR3;
-        let src = LatticeSphereScene::default().to_wgsl(&EuclideanR3);
-        assert!(src.contains("fn rye_scene_sdf"));
-        assert!(src.contains("rye_distance"));
-        // Sphere radius is now inlined per-sphere, not a named constant.
-        assert!(src.contains("0.120000")); // default sphere_radius
-    }
-
-    #[test]
-    fn lattice_scene_euclidean_centers_are_evenly_spaced() {
-        use rye_math::EuclideanR3;
-        let scene = LatticeSphereScene {
-            steps: 1,
-            geodesic_spacing: 0.5,
-            sphere_radius: 0.1,
-        };
+        let scene =
+            Scene::new(SceneNode::sphere(Vec3::ZERO, 0.22).union(SceneNode::plane(Vec3::Y, -0.5)));
         let src = scene.to_wgsl(&EuclideanR3);
-        // E³ step-1 center along +X should be at (0.5, 0, 0)
+        assert!(src.contains("fn rye_scene_sdf"));
+        assert!(src.contains("rye_distance"));
+        assert!(src.contains("dot(p,"));
+        // Plane offset literal appears in the emitted dot() call.
+        assert!(src.contains("-0.500000"));
+    }
+
+    /// A sphere-only scene must not emit any `dot()` calls; the
+    /// half-space gate stays inert when no plane leaves are present.
+    #[test]
+    fn sphere_only_scene_emits_no_chart_coord_dot() {
+        use rye_math::EuclideanR3;
+        let scene = Scene::new(SceneNode::sphere(Vec3::ZERO, 0.3));
+        let src = scene.to_wgsl(&EuclideanR3);
+        assert!(src.contains("fn rye_scene_sdf"));
+        assert!(src.contains("rye_distance"));
+        assert!(!src.contains("dot(p,"));
+    }
+
+    /// Sphere centres baked into the WGSL must literally match the
+    /// input point. Pins the per-sphere literal-emission contract the
+    /// lattice / corridor scenes rely on.
+    #[test]
+    fn sphere_center_appears_as_wgsl_literal() {
+        use rye_math::EuclideanR3;
+        let scene = Scene::new(SceneNode::sphere(Vec3::new(0.5, 0.0, 0.0), 0.1));
+        let src = scene.to_wgsl(&EuclideanR3);
         assert!(src.contains("0.500000, 0.000000, 0.000000"));
     }
 
-    /// `corridor_demo_wgsl` uses `EuclideanR3`, so the wall
-    /// half-spaces emit chart-coord `dot()` formulas (honest in
-    /// flat space). Pillars use `rye_distance`. Both the
-    /// half-width / half-height literals and the dot calls appear.
+    /// Same construction in H³ must NOT emit the E³-style literal,
+    /// because the lattice-style usage pre-computes centres via
+    /// `space.exp` and tanh-compresses them. This test fakes the
+    /// compression by exping a tangent vector through HyperbolicH3
+    /// and confirming the emitted literal differs.
     #[test]
-    fn corridor_scene_emits_required_entrypoint() {
-        let src = corridor_demo_wgsl();
-        assert!(src.contains("fn rye_scene_sdf"));
-        assert!(src.contains("rye_distance")); // pillars
-        assert!(src.contains("dot(p,")); // walls
-        assert!(src.contains("0.550000")); // half_width
-        assert!(src.contains("0.400000")); // half_height
-    }
-
-    #[test]
-    #[should_panic(expected = "pillars_per_row must be odd")]
-    fn corridor_scene_rejects_even_pillar_count() {
-        let scene = CorridorScene {
-            pillars_per_row: 6,
-            ..Default::default()
-        };
-        let _ = scene.to_wgsl();
-    }
-
-    #[test]
-    fn lattice_scene_hyperbolic_centers_are_compressed() {
-        use rye_math::HyperbolicH3;
-        let scene = LatticeSphereScene {
-            steps: 1,
-            geodesic_spacing: 0.5,
-            sphere_radius: 0.1,
-        };
+    fn lattice_centres_compress_under_hyperbolic_exp() {
+        use rye_math::{HyperbolicH3, Space};
+        let p = HyperbolicH3.exp(Vec3::ZERO, Vec3::X * 0.5);
+        let scene = Scene::new(SceneNode::sphere(p, 0.1));
         let src = scene.to_wgsl(&HyperbolicH3);
-        // H³ step-1 center along +X: tanh(0.25) ≈ 0.2449, which is < 0.5.
-        // The WGSL source should not contain "0.500000" as an x-coord.
+        // tanh(0.25) ≈ 0.2449, well under 0.5.
+        assert!(p.x < 0.5);
         assert!(!src.contains("0.500000, 0.000000, 0.000000"));
     }
 }

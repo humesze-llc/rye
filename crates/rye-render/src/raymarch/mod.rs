@@ -17,7 +17,7 @@ mod hyperslice4d;
 pub use geodesic::GeodesicRayMarchNode;
 pub use hyperslice4d::{
     BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
-    MAX_BODIES,
+    MAX_BODIES, SHAPE_16CELL, SHAPE_24CELL, SHAPE_PENTATOPE, SHAPE_TESSERACT,
 };
 
 use anyhow::Result;
@@ -149,16 +149,13 @@ impl RayMarchNode {
             cache: None,
         });
 
-        let mut this = Self {
+        Self {
             pipeline,
             uniforms: RayMarchUniforms::default(),
             uniform_buf,
             bind_group,
             clear_color: Color::BLACK,
-        };
-        // Initial upload so the UBO isn't garbage on first frame.
-        this.upload(device);
-        this
+        }
     }
 
     pub fn uniforms(&self) -> &RayMarchUniforms {
@@ -176,19 +173,11 @@ impl RayMarchNode {
 
     /// Flush current [`RayMarchUniforms`] to the GPU. Use after mutating
     /// via [`RayMarchNode::uniforms_mut`].
+    ///
+    /// Render loops must call this (or [`set_uniforms`](Self::set_uniforms))
+    /// before the first draw; the UBO is undefined at construction time.
     pub fn flush_uniforms(&self, queue: &Queue) {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
-    }
-
-    fn upload(&mut self, device: &Device) {
-        // One-shot upload via staging: we don't have a Queue here at
-        // construction time, so use create_buffer_init via the device's
-        // queue is out of reach. Instead we'll rely on the first
-        // explicit set_uniforms / flush_uniforms the user issues.
-        //
-        // This intentionally leaves the UBO undefined until first flush;
-        // render loops should always set uniforms before first draw.
-        let _ = device;
     }
 }
 

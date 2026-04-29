@@ -84,6 +84,11 @@ pub struct TextRenderer {
     pipeline: RenderPipeline,
     bind_group: BindGroup,
     uniform_buf: Buffer,
+    // The atlas resources are referenced only through `bind_group`'s
+    // resource bindings; we hold them on the struct so they stay
+    // alive for the bind group's lifetime. Dropping them would free
+    // the GPU resource the bind group still references and crash on
+    // the next render.
     #[allow(dead_code)]
     atlas_tex: Texture,
     #[allow(dead_code)]
@@ -315,69 +320,16 @@ impl TextRenderer {
     /// Newlines (`\n`) advance to the next line. Other control
     /// characters are skipped.
     pub fn queue(&mut self, text: &str, position: [f32; 2], size_px: f32, color: [f32; 4]) {
-        let scale = size_px / self.bake_size_px;
-        let line_h = self.line_height_px * scale;
-        let mut cursor_x = position[0];
-        let mut cursor_y = position[1];
-
-        for c in text.chars() {
-            if c == '\n' {
-                cursor_x = position[0];
-                cursor_y += line_h;
-                continue;
-            }
-            if (c as u32) < 0x20 || (c as u32) > 0x7E {
-                continue;
-            }
-            let Some(g) = self.glyphs.get(&c) else {
-                // Missing glyph (atlas didn't fit it); silently skip.
-                continue;
-            };
-
-            let x0 = cursor_x + g.bearing_x * scale;
-            let y0 = cursor_y + (self.line_height_px + g.bearing_y) * scale;
-            let x1 = x0 + g.px_width * scale;
-            let y1 = y0 + g.px_height * scale;
-
-            let (u0, v0) = (g.uv_min[0], g.uv_min[1]);
-            let (u1, v1) = (g.uv_max[0], g.uv_max[1]);
-
-            // Six vertices per glyph (two triangles).
-            self.queued.extend_from_slice(&[
-                TextVertex {
-                    pos: [x0, y0],
-                    uv: [u0, v0],
-                    color,
-                },
-                TextVertex {
-                    pos: [x1, y0],
-                    uv: [u1, v0],
-                    color,
-                },
-                TextVertex {
-                    pos: [x0, y1],
-                    uv: [u0, v1],
-                    color,
-                },
-                TextVertex {
-                    pos: [x1, y0],
-                    uv: [u1, v0],
-                    color,
-                },
-                TextVertex {
-                    pos: [x1, y1],
-                    uv: [u1, v1],
-                    color,
-                },
-                TextVertex {
-                    pos: [x0, y1],
-                    uv: [u0, v1],
-                    color,
-                },
-            ]);
-
-            cursor_x += g.h_advance * scale;
-        }
+        layout_text(
+            text,
+            position,
+            size_px,
+            color,
+            &self.glyphs,
+            self.bake_size_px,
+            self.line_height_px,
+            &mut self.queued,
+        );
     }
 
     /// Render queued text into `view` at `viewport_size` (pixels) and
@@ -462,6 +414,93 @@ impl TextRenderer {
     /// each call). Useful for measurement helpers built on top.
     pub fn font_bytes(&self) -> &[u8] {
         &self.font_data
+    }
+}
+
+/// Pure layout: append the vertices for `text` (six per glyph,
+/// two triangles) into `out`. No GPU resources touched, so this
+/// can be tested with a hand-built glyph table.
+///
+/// `position` is the top-left of the first line in viewport
+/// coordinates; `size_px` is the rendered glyph height; `scale = size_px /
+/// bake_size_px` rescales the baked atlas geometry to the requested
+/// size. Newlines reset `cursor_x` to `position[0]` and advance
+/// `cursor_y` by `line_height_px * scale`. Non-printable / out-of-
+/// ASCII chars are skipped silently; chars with no glyph in the
+/// table (atlas didn't fit them) are also skipped.
+#[allow(clippy::too_many_arguments)] // pure layout helper, parameters are the layout state.
+fn layout_text(
+    text: &str,
+    position: [f32; 2],
+    size_px: f32,
+    color: [f32; 4],
+    glyphs: &HashMap<char, GlyphEntry>,
+    bake_size_px: f32,
+    line_height_px: f32,
+    out: &mut Vec<TextVertex>,
+) {
+    let scale = size_px / bake_size_px;
+    let line_h = line_height_px * scale;
+    let mut cursor_x = position[0];
+    let mut cursor_y = position[1];
+
+    for c in text.chars() {
+        if c == '\n' {
+            cursor_x = position[0];
+            cursor_y += line_h;
+            continue;
+        }
+        if (c as u32) < 0x20 || (c as u32) > 0x7E {
+            continue;
+        }
+        let Some(g) = glyphs.get(&c) else {
+            // Missing glyph (atlas didn't fit it); silently skip.
+            continue;
+        };
+
+        let x0 = cursor_x + g.bearing_x * scale;
+        let y0 = cursor_y + (line_height_px + g.bearing_y) * scale;
+        let x1 = x0 + g.px_width * scale;
+        let y1 = y0 + g.px_height * scale;
+
+        let (u0, v0) = (g.uv_min[0], g.uv_min[1]);
+        let (u1, v1) = (g.uv_max[0], g.uv_max[1]);
+
+        // Six vertices per glyph (two triangles).
+        out.extend_from_slice(&[
+            TextVertex {
+                pos: [x0, y0],
+                uv: [u0, v0],
+                color,
+            },
+            TextVertex {
+                pos: [x1, y0],
+                uv: [u1, v0],
+                color,
+            },
+            TextVertex {
+                pos: [x0, y1],
+                uv: [u0, v1],
+                color,
+            },
+            TextVertex {
+                pos: [x1, y0],
+                uv: [u1, v0],
+                color,
+            },
+            TextVertex {
+                pos: [x1, y1],
+                uv: [u1, v1],
+                color,
+            },
+            TextVertex {
+                pos: [x0, y1],
+                uv: [u0, v1],
+                color,
+            },
+        ]);
+
+        cursor_x += g.h_advance * scale;
     }
 }
 
@@ -659,5 +698,173 @@ mod tests {
         // 'A' should have nonzero pixel size.
         let a = glyphs.get(&'A').expect("A in atlas");
         assert!(a.px_width > 0.0 && a.px_height > 0.0);
+    }
+
+    /// Build a minimal glyph table for layout tests: every printable
+    /// ASCII char gets a unit-square glyph at the same UV slot. The
+    /// math we want to pin (cursor advance, newline reset, vertex
+    /// count) doesn't depend on the actual atlas geometry, only on
+    /// per-glyph `h_advance`.
+    fn mock_glyph_table(h_advance: f32) -> HashMap<char, GlyphEntry> {
+        (0x20u8..=0x7Eu8)
+            .map(|c| {
+                (
+                    c as char,
+                    GlyphEntry {
+                        uv_min: [0.0, 0.0],
+                        uv_max: [1.0, 1.0],
+                        bearing_x: 0.0,
+                        bearing_y: 0.0,
+                        px_width: 1.0,
+                        px_height: 1.0,
+                        h_advance,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Each printable glyph emits exactly 6 vertices (two triangles).
+    /// "abc" produces 18 vertices.
+    #[test]
+    fn layout_emits_six_vertices_per_glyph() {
+        let glyphs = mock_glyph_table(10.0);
+        let mut out = Vec::new();
+        layout_text(
+            "abc",
+            [0.0, 0.0],
+            16.0,
+            [1.0, 1.0, 1.0, 1.0],
+            &glyphs,
+            16.0,
+            16.0,
+            &mut out,
+        );
+        assert_eq!(out.len(), 18);
+    }
+
+    /// Newline resets `cursor_x` to `position[0]` and advances
+    /// `cursor_y` by `line_height_px * scale`. Two-line text should
+    /// produce vertices on two distinct y-bands.
+    #[test]
+    fn layout_newline_resets_x_and_advances_y() {
+        let glyphs = mock_glyph_table(10.0);
+        let mut out = Vec::new();
+        // size_px = bake_size_px = 16.0, so scale = 1.0 and line_h = 16.0.
+        layout_text(
+            "a\nb",
+            [5.0, 0.0],
+            16.0,
+            [1.0; 4],
+            &glyphs,
+            16.0,
+            16.0,
+            &mut out,
+        );
+        assert_eq!(out.len(), 12); // 6 verts × 2 glyphs
+
+        // First glyph's top-left vertex sits at (cursor_x = 5, cursor_y + line_height).
+        // After mock bearing_x = 0, bearing_y = 0: x0 = 5, y0 = 0 + (16 + 0)*1 = 16.
+        let first = out[0];
+        assert_eq!(first.pos[0], 5.0);
+        assert!((first.pos[1] - 16.0).abs() < 1e-5);
+
+        // Seventh vertex is the start of glyph 2 ('b'), after the newline.
+        // cursor_x reset to 5 (position[0]); cursor_y advanced by line_h = 16.
+        let second = out[6];
+        assert_eq!(
+            second.pos[0], 5.0,
+            "newline must reset cursor_x to position[0]"
+        );
+        assert!(
+            (second.pos[1] - 32.0).abs() < 1e-5,
+            "newline must advance cursor_y by line_h ({})",
+            16.0,
+        );
+    }
+
+    /// Cursor advances by `h_advance * scale` per glyph, both
+    /// horizontally on the baseline and through the resulting vertex
+    /// positions.
+    #[test]
+    fn layout_cursor_advances_by_h_advance_scaled() {
+        let glyphs = mock_glyph_table(10.0);
+        let mut out = Vec::new();
+        // Render at 32 px when bake is 16 px ⇒ scale = 2 ⇒ effective
+        // advance = 20 per glyph.
+        layout_text(
+            "ab",
+            [0.0, 0.0],
+            32.0,
+            [1.0; 4],
+            &glyphs,
+            16.0,
+            16.0,
+            &mut out,
+        );
+
+        // Glyph 0 starts at x = 0; glyph 1 starts at x = 20 (one
+        // scaled advance later). The top-left vertex of each glyph
+        // is the first of its 6-vertex chunk.
+        assert_eq!(out[0].pos[0], 0.0);
+        assert_eq!(out[6].pos[0], 20.0);
+    }
+
+    /// Non-ASCII / control chars are skipped without crashing or
+    /// emitting bogus vertices. Tabs, form-feeds, raw bytes 0x80+,
+    /// emoji are all silently dropped.
+    #[test]
+    fn layout_skips_unprintable_and_out_of_range_chars() {
+        let glyphs = mock_glyph_table(10.0);
+        let mut out = Vec::new();
+        layout_text(
+            "a\tb\u{80}c😀d",
+            [0.0, 0.0],
+            16.0,
+            [1.0; 4],
+            &glyphs,
+            16.0,
+            16.0,
+            &mut out,
+        );
+        // Only 'a', 'b', 'c', 'd' get glyphs. 4 × 6 = 24 vertices.
+        assert_eq!(out.len(), 24);
+    }
+
+    /// Chars with no entry in the glyph table (because the atlas
+    /// didn't fit them) are silently skipped, NOT rendered as
+    /// missing-glyph fallback boxes. This keeps the layout
+    /// deterministic when the atlas is partial.
+    #[test]
+    fn layout_skips_missing_glyphs() {
+        let mut glyphs = mock_glyph_table(10.0);
+        glyphs.remove(&'b');
+        let mut out = Vec::new();
+        layout_text(
+            "ab",
+            [0.0, 0.0],
+            16.0,
+            [1.0; 4],
+            &glyphs,
+            16.0,
+            16.0,
+            &mut out,
+        );
+        // Only 'a' produces 6 vertices.
+        assert_eq!(out.len(), 6);
+    }
+
+    /// `WGSL_SHADER` is the shader module string the GPU pipeline
+    /// loads. A naga-front parse + validate pass catches syntax /
+    /// type / binding errors at test time rather than at first
+    /// `TextRenderer::new` call (which needs a wgpu adapter).
+    #[test]
+    fn wgsl_shader_validates_via_naga() {
+        let module = naga::front::wgsl::parse_str(WGSL_SHADER).expect("WGSL parse");
+        let flags = naga::valid::ValidationFlags::all();
+        let caps = naga::valid::Capabilities::empty();
+        naga::valid::Validator::new(flags, caps)
+            .validate(&module)
+            .expect("WGSL validate");
     }
 }

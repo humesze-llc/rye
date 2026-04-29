@@ -19,7 +19,7 @@
 //!   H³/S³ (the trait rule treats this as accepted because no
 //!   geodesic-box SDF exists in closed form).
 //! - [`Shape::HalfSpace`], chart-coord `dot(p, n) − offset` **only
-//!   in flat Spaces** (gated by [`WgslSpace::is_chart_flat`]). In
+//!   in flat Spaces** (gated by `WgslSpace::is_chart_flat`). In
 //!   curved Spaces (H³, S³, `BlendedSpace`) it would draw the
 //!   chart's straight plane, not the geodesic plane, so the
 //!   emission falls back to the `+1e9` sentinel below until a
@@ -31,11 +31,11 @@
 //! Variants that always emit a `+1e9` invisible-far-away sentinel
 //! today:
 //!
-//! - [`Shape::HalfSpace4D`]: 4D variant; lives in [`Primitive4`].
+//! - [`Shape::HalfSpace4D`]: 4D variant; lives in [`Primitive4`](crate::Primitive4).
 //! - [`Shape::Polygon2D`], [`Shape::ConvexPolytope3D`],
 //!   [`Shape::ConvexPolytope4D`]: vertex-list shapes that need
 //!   either a baked mesh-SDF or a runtime convex-hull kernel.
-//! - [`Shape::HyperSphere4D`]: 4D variant; lives in [`Primitive4`].
+//! - [`Shape::HyperSphere4D`]: 4D variant; lives in [`Primitive4`](crate::Primitive4).
 
 use rye_math::WgslSpace;
 use rye_shape::Shape;
@@ -47,7 +47,7 @@ use rye_shape::Shape;
 /// `fn {name}(p: vec3<f32>) -> f32`. The trait rule: emitted SDFs
 /// must call only `rye_*` Space-prelude functions, never raw
 /// chart-coord arithmetic, **except** when the Space self-reports
-/// flat via [`WgslSpace::is_chart_flat`]. In flat Spaces the
+/// flat via `WgslSpace::is_chart_flat`. In flat Spaces the
 /// chart-coord and Riemannian distances coincide, so primitives
 /// like [`Shape::HalfSpace`] are free to emit `dot(p, n) - offset`
 /// directly. In curved Spaces those primitives sentinel until a

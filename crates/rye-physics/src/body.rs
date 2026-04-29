@@ -42,6 +42,18 @@ impl<S: PhysicsSpace> RigidBody<S> {
         inertia: S::Inertia,
         space: &S,
     ) -> Self {
+        // Half-spaces are infinite planes; a finite mass with infinite
+        // extent breaks the integrator's assumptions (no centre of mass,
+        // no bounded inertia). Static-only is the only sensible mode;
+        // catch the misuse in debug builds before it produces silently
+        // wrong physics in release.
+        debug_assert!(
+            !matches!(
+                collider,
+                Collider::HalfSpace { .. } | Collider::HalfSpace4D { .. }
+            ) || mass <= 0.0,
+            "half-space colliders must be static (mass <= 0); got mass = {mass}"
+        );
         let inv_mass = if mass > 0.0 { 1.0 / mass } else { 0.0 };
         Self {
             position,
@@ -72,5 +84,70 @@ impl<S: PhysicsSpace> RigidBody<S> {
             collider,
             restitution: 0.2,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::{Vec3, Vec4};
+    use rye_math::{EuclideanR3, EuclideanR4};
+
+    #[test]
+    fn dynamic_halfspace_3d_panics_in_debug() {
+        let result = std::panic::catch_unwind(|| {
+            RigidBody::<EuclideanR3>::new(
+                Vec3::ZERO,
+                Vec3::ZERO,
+                Collider::HalfSpace {
+                    normal: Vec3::Y,
+                    offset: 0.0,
+                },
+                1.0,
+                1.0,
+                &EuclideanR3,
+            )
+        });
+        assert!(
+            result.is_err(),
+            "expected debug_assert to fire on dynamic 3D half-space"
+        );
+    }
+
+    #[test]
+    fn dynamic_halfspace_4d_panics_in_debug() {
+        let result = std::panic::catch_unwind(|| {
+            RigidBody::<EuclideanR4>::new(
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Collider::HalfSpace4D {
+                    normal: Vec4::Y,
+                    offset: 0.0,
+                },
+                1.0,
+                1.0,
+                &EuclideanR4,
+            )
+        });
+        assert!(
+            result.is_err(),
+            "expected debug_assert to fire on dynamic 4D half-space"
+        );
+    }
+
+    #[test]
+    fn static_halfspace_4d_is_allowed() {
+        // Mass = 0 means static; the guard must not fire.
+        let _ = RigidBody::<EuclideanR4>::new(
+            Vec4::ZERO,
+            Vec4::ZERO,
+            Collider::HalfSpace4D {
+                normal: Vec4::Y,
+                offset: 0.0,
+            },
+            0.0,
+            1.0,
+            &EuclideanR4,
+        );
     }
 }

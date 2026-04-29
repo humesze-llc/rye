@@ -65,3 +65,26 @@ jobs:
         env:
           WGPU_BACKEND: vulkan
         run: cargo test --workspace gpu_probe -- --include-ignored
+
+  doc:
+    name: cargo doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux deps for wgpu/winit
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
+            pkg-config
+      # `--no-deps` keeps the run fast and limits failures to our own
+      # docs. `RUSTDOCFLAGS=-D warnings` makes broken intra-doc links
+      # and missing-code-block-language warnings fail the build;
+      # docstring drift is otherwise invisible until a reader hits it.
+      - name: cargo doc --no-deps --workspace
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --workspace

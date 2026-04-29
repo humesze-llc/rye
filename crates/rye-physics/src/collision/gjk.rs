@@ -15,7 +15,7 @@
 //! This module is the 3D specialization: a simplex can be at most a
 //! tetrahedron (4 points). The Voronoi-region logic for the
 //! line → triangle → tetrahedron cases is hand-written. The support-
-//! function side is generic over [`VectorOps`], so when 4D lands,
+//! function side is generic over `VectorOps`, so when 4D lands,
 //! only the simplex-case logic needs a 4D cousin (pentachoron = 5
 //! points); the support-function path, the iteration loop, and all
 //! the numerics are shared.

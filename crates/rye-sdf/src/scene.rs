@@ -64,7 +64,7 @@ impl SceneNode {
 
     /// Half-space leaf. SDF emission depends on the Space the
     /// scene is later compiled against (per
-    /// [`crate::Primitive::HalfSpace`]): chart-coord `dot(p, n) - d`
+    /// [`Primitive`]'s `HalfSpace` arm): chart-coord `dot(p, n) - d`
     /// in flat charts (E³), `+1e9` sentinel in curved charts (H³ /
     /// S³) until closed-form geodesic-plane SDFs land. The shape
     /// itself is canonical, also used by `rye-physics` for

@@ -1,12 +1,12 @@
 //! `impl PhysicsSpace for EuclideanR4`, 4D Euclidean rigid-body physics.
 //!
-//! Angular velocity is a [`Bivector4`] (six rotation-plane components);
+//! Angular velocity is a `Bivector4` (six rotation-plane components);
 //! inertia is the scalar moment for isotropic bodies, same pragmatic
 //! simplification made in 3D. A full 4D inertia tensor is a 6×6
 //! bivector-to-bivector map, it doesn't land until an actual anisotropic
 //! 4D body demands it.
 //!
-//! Orientation integration uses [`Rotor4`] directly. The Clifford-rotor
+//! Orientation integration uses `Rotor4` directly. The Clifford-rotor
 //! multiplication convention is "left operand applied first" (opposite to
 //! `glam::Quat`'s "right first"), so the composed orientation after a
 //! timestep is `rotation_new = rotation_current * delta_rotor`.

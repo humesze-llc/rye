@@ -1,6 +1,6 @@
 //! EPA in R⁴, Expanding Polytope for 4D penetration depth.
 //!
-//! Parallel to [`super::epa`] (3D) with three dimensionality changes:
+//! Parallel to [`super::epa`][mod@super::epa] (3D) with three dimensionality changes:
 //!
 //! 1. **Faces** are tetrahedra (3-simplices, 4 vertex indices), not
 //!    triangles.

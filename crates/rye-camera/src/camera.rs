@@ -69,7 +69,7 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
     /// Default-ish camera: at the origin, looking down −Z, with
     /// 60° vertical FOV and a sensible near/far for unit-scale
     /// scenes. Most callers want a controller to overwrite the
-    /// pose immediately; this exists so [`Camera::default`] is a
+    /// pose immediately; this exists so a "default" camera is a
     /// thing for `S` instances that can't auto-derive `Default`.
     pub fn at_origin() -> Self {
         Self {
@@ -226,5 +226,63 @@ mod tests {
         let mut cam = Camera::<EuclideanR3>::at_origin();
         cam.translate(Vec3::X, 2.5, &space);
         close(cam.view().position, Vec3::new(2.5, 0.0, 0.0), 1e-6);
+    }
+
+    /// `translate` in H³ must keep the position inside the Poincaré
+    /// ball and the basis finite + ≈orthonormal after parallel
+    /// transport. Catches NaN drift in `Space::exp` /
+    /// `parallel_transport_along` for `HyperbolicH3`.
+    #[test]
+    fn translate_in_hyperbolic_h3_stays_in_ball_and_orthonormal() {
+        use rye_math::HyperbolicH3;
+        let space = HyperbolicH3;
+        let mut cam = Camera::<HyperbolicH3>::at_origin();
+        // Step in +X for half a second at unit Riemannian speed.
+        cam.translate(Vec3::X, 0.5, &space);
+        assert!(
+            cam.position.length() < 1.0,
+            "camera escaped Poincaré ball: {:?}",
+            cam.position
+        );
+        assert!(cam.right.is_finite());
+        assert!(cam.up.is_finite());
+        assert!(cam.forward.is_finite());
+        // Frame remains ≈orthonormal (transport + renormalise above).
+        assert!((cam.right.length() - 1.0).abs() < 1e-3);
+        assert!((cam.up.length() - 1.0).abs() < 1e-3);
+        assert!((cam.forward.length() - 1.0).abs() < 1e-3);
+        assert!(cam.right.dot(cam.up).abs() < 1e-3);
+        assert!(cam.right.dot(cam.forward).abs() < 1e-3);
+        assert!(cam.up.dot(cam.forward).abs() < 1e-3);
+    }
+
+    /// `looking_at` with `position == target` has no defined forward
+    /// direction (`log = 0`). The fallback should produce a finite,
+    /// orthonormal frame rather than NaN/inf.
+    #[test]
+    fn looking_at_collapsed_target_falls_back_to_finite_frame() {
+        let cam = Camera::<EuclideanR3>::looking_at(Vec3::ZERO, Vec3::ZERO, Vec3::Y, &EuclideanR3);
+        assert!(cam.forward.is_finite() && cam.right.is_finite() && cam.up.is_finite());
+        // Frame is unit-length; the exact direction is unspecified
+        // (fallback), only finiteness is guaranteed.
+        assert!((cam.forward.length() - 1.0).abs() < 1e-6);
+        assert!((cam.right.length() - 1.0).abs() < 1e-6);
+        assert!((cam.up.length() - 1.0).abs() < 1e-6);
+    }
+
+    /// `looking_at` where `forward` is parallel to `world_up` makes
+    /// `forward × world_up = 0`. The fallback `right` keeps the frame
+    /// finite even though it can't be derived from the cross product.
+    #[test]
+    fn looking_at_world_up_parallel_to_forward_falls_back() {
+        let cam = Camera::<EuclideanR3>::looking_at(
+            Vec3::new(0.0, 0.0, 0.0),
+            // Look straight up; world_up is also +Y, so cross is zero.
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::Y,
+            &EuclideanR3,
+        );
+        assert!(cam.forward.is_finite() && cam.right.is_finite() && cam.up.is_finite());
+        assert!((cam.right.length() - 1.0).abs() < 1e-6);
     }
 }

@@ -457,7 +457,7 @@ impl Bivector4 {
     /// **Note for physics callers**: rigid-body dynamics wants
     /// `ω × r` with the *opposite* sign, `e_xy` "applied to" `e_x`
     /// should give `+e_y`, since rotating in the +xy plane sends the
-    /// +x axis toward +y. Use [`crate::euclidean_r4::omega_cross_r`]
+    /// +x axis toward +y. Use `rye_physics::euclidean_r4::omega_cross_r`
     /// (or just negate the result of this function) when you want
     /// the physics convention. Keeping the math primitive
     /// Clifford-pure means future generic-`N` callers and the

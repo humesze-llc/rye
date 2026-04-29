@@ -924,4 +924,36 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             "actual {actual} differs from expected {expected} by more than {eps}",
         );
     }
+
+    /// Hot-reload's text path: read a shader file, assemble against a
+    /// Space prelude, validate via naga, mutate the file, repeat. Pins
+    /// the I/O + assembly + validation pipeline that
+    /// [`ShaderDb::reload`] depends on without needing a wgpu Device
+    /// (constructing one headlessly in CI is heavy and platform-
+    /// flaky). The Device-bound layer is just `create_shader_module`
+    /// over the same validated source.
+    #[test]
+    fn hot_reload_pipeline_reads_assembles_and_validates_mutated_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("probe.wgsl");
+
+        let v1 = ABI_PROBE;
+        std::fs::write(&path, v1).unwrap();
+
+        let read1 = std::fs::read_to_string(&path).unwrap();
+        let src1 = assemble_source(&EuclideanR3.wgsl_impl(), &read1);
+        validate_wgsl(&src1).expect("v1 must validate");
+
+        // Mutate the file in place: bytes change, path is identical
+        // (the same shape the watcher sees on a save). Tweak a constant
+        // rather than the structure so the v2 source still validates.
+        let v2 = ABI_PROBE.replace("vec3<f32>(0.1, 0.2, 0.3)", "vec3<f32>(0.4, 0.5, 0.6)");
+        assert_ne!(v1, v2, "test mutation should produce different source");
+        std::fs::write(&path, &v2).unwrap();
+
+        let read2 = std::fs::read_to_string(&path).unwrap();
+        assert_ne!(read1, read2, "file mutation should change bytes");
+        let src2 = assemble_source(&EuclideanR3.wgsl_impl(), &read2);
+        validate_wgsl(&src2).expect("v2 must validate after mutation");
+    }
 }

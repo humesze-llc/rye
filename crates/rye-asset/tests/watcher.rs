@@ -80,6 +80,46 @@ fn reports_modified_file() {
     );
 }
 
+/// `Removed` event fires end-to-end when a watched file is deleted.
+/// Pinned because the merge logic in `watcher.rs::merge_kinds`
+/// special-cases Created/Modified bursts but a delete should pass
+/// through cleanly.
+///
+/// Compares by file name + parent-directory containment (not
+/// `canonicalize`-equality) because `canonicalize` fails on a
+/// removed path, and on Windows the notify-reported path lacks the
+/// `\\?\` verbatim prefix that `canonicalize` would add.
+#[test]
+fn reports_removed_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("doomed.txt");
+    fs::write(&file, b"goodbye").unwrap();
+    let target_name = file.file_name().unwrap().to_owned();
+    let dir_canonical = dir.path().canonicalize().unwrap();
+
+    let mut watcher = AssetWatcher::new().unwrap();
+    watcher.watch(dir.path()).unwrap();
+    // Drain the Created event from the initial setup.
+    let _ = watcher.poll();
+
+    fs::remove_file(&file).unwrap();
+
+    wait_for(&watcher, Duration::from_secs(3), |ev| {
+        if ev.kind != AssetEventKind::Removed {
+            return false;
+        }
+        // Match by file name; verify the parent is the watched dir
+        // (canonicalise the *parent*; that path still exists).
+        ev.path.file_name() == Some(&target_name)
+            && ev
+                .path
+                .parent()
+                .and_then(|p| p.canonicalize().ok())
+                .map(|p| p == dir_canonical)
+                .unwrap_or(false)
+    });
+}
+
 #[test]
 fn poll_is_empty_when_no_changes() {
     let dir = tempfile::tempdir().unwrap();

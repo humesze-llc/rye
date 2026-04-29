@@ -7,7 +7,7 @@
 //!   for convex shapes via their Minkowski difference. Used for
 //!   polytope-polytope narrowphase where analytical solutions
 //!   (sphere-sphere, sphere-halfspace) don't apply.
-//! - [`epa`] / [`epa_r4`]: Expanding Polytope Algorithm for
+//! - [`epa`][mod@self::epa] / [`epa_r4`][mod@self::epa_r4]: Expanding Polytope Algorithm for
 //!   penetration depth and contact normal from a GJK-terminating
 //!   simplex.
 //! - [`simplex_r4`]: closest-point-on-simplex via Gram-matrix

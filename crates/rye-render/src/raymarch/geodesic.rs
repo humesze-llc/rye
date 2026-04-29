@@ -11,7 +11,7 @@ use crate::raymarch::{RayMarchNode, RayMarchUniforms};
 /// shader assembled from four layers:
 /// `[Space prelude] + [scene SDF] + [march kernel] + [user shading]`.
 ///
-/// Build the compiled `ShaderModule` with [`rye_shader::ShaderDb::load_geodesic_scene`],
+/// Build the compiled `ShaderModule` with `rye_shader::ShaderDb::load_geodesic_scene`,
 /// then pass it to [`GeodesicRayMarchNode::from_module`].
 pub struct GeodesicRayMarchNode(RayMarchNode);
 

@@ -1,3 +1,11 @@
+//! Window surface + wgpu adapter/device acquisition.
+//!
+//! [`RenderDevice::new`] picks a high-performance adapter and an sRGB
+//! surface format when available; resize is handled by
+//! [`RenderDevice::resize`]. [`RenderDevice::begin_frame`] returns the
+//! per-frame `(SurfaceTexture, TextureView)` pair the render graph
+//! draws into.
+
 use anyhow::Result;
 use std::sync::Arc;
 use wgpu::*;
@@ -51,7 +59,9 @@ impl RenderDevice {
             .unwrap_or(caps.formats[0]);
 
         let config = SurfaceConfiguration {
-            // COPY_SRC allows texture readback for frame capture.
+            // COPY_SRC keeps texture readback open for headless screenshot tools
+            // and any future capture path; cost is negligible vs. the headache of
+            // re-creating the surface to enable it later.
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
             format,
             width: size.width,

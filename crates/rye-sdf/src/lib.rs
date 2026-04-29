@@ -12,6 +12,15 @@
 //! are demo-shaped scene builders consumed by the corresponding examples.
 //! They are constructed on top of the typed primitive layer (each has a
 //! `to_scene` method that returns a [`scene::Scene`]).
+//!
+//! TODO: Each demo scene is consumed by exactly one example
+//! (`geodesic_spheres`, `corridor`, `lattice`). The plan is to push each
+//! scene into its example as a private module so the example becomes
+//! self-contained and `rye-sdf` keeps only the underlying typed layer
+//! ([`Primitive`], [`Scene`]). Deferred from the cleanup batch because
+//! the move forces rewriting the demo-specific tests against synthetic
+//! constructions (the per-scene tests below depend on the demos being
+//! visible from inside `rye-sdf`'s test module).
 
 pub mod combinator;
 pub mod primitive;
@@ -39,7 +48,7 @@ use rye_math::{EuclideanR3, Space, WgslSpace};
 /// Optionally, a Euclidean-y slab (floor / ceiling planes) can be
 /// enabled as a visual cage. The slab renders honestly via
 /// chart-coord `dot(p, n) - d` in `EuclideanR3` (the Space this
-/// helper compiles against); per [`Primitive::HalfSpace`], it would
+/// helper compiles against); per [`Primitive`]'s `HalfSpace` arm, it would
 /// sentinel in H³ / S³ until geodesic-plane SDFs land.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GeodesicSpheresScene {
@@ -117,7 +126,7 @@ impl GeodesicSpheresScene {
 /// compiles against `EuclideanR3` (flat), so those wall planes
 /// emit honestly via `dot(p, n) - d`. A future
 /// `corridor_demo_wgsl_<S>` for H³ / S³ would sentinel them via
-/// [`Primitive::HalfSpace`] until geodesic-plane SDFs land.
+/// [`Primitive`]'s `HalfSpace` arm until geodesic-plane SDFs land.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CorridorScene {
     /// Half-width of the corridor along the Space X axis.
@@ -166,7 +175,7 @@ impl CorridorScene {
     /// emitted SDF for the walls depends on the Space the scene
     /// is later compiled against: `dot(p, n) - d` in flat charts
     /// (E³), sentinel in curved charts (H³ / S³). See
-    /// [`Primitive::HalfSpace`] for the `is_chart_flat` gate.
+    /// [`Primitive`]'s `HalfSpace` arm for the `is_chart_flat` gate.
     pub fn to_scene(&self) -> Scene {
         assert!(
             self.pillars_per_row % 2 == 1,

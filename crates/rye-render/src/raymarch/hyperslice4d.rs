@@ -25,7 +25,7 @@
 //!
 //! ## What it renders
 //!
-//! - **Static scene primitives** via [`Scene4`]: hyperspheres at
+//! - **Static scene primitives** via `Scene4`: hyperspheres at
 //!   fixed centres, half-spaces, etc. The `Scene4` is captured at
 //!   construction; its primitive parameters become WGSL constants.
 //! - **Dynamic bodies** via the [`BodyUniform`] array on
@@ -61,6 +61,15 @@ use crate::graph::RenderNode;
 /// at 32; pentatope-pile scenes top out around 20 active
 /// polytopes).
 pub const MAX_BODIES: usize = 32;
+
+/// Shape table indices for `BodyKind::Polytope` bodies. Stored in
+/// [`BodyUniform::radius_or_shape`] (cast through `f32`); read by
+/// the kernel's `body_polytope_sdf_4d` dispatch chain. Mirrored as
+/// `SHAPE_*` constants in [`HYPERSLICE_KERNEL_WGSL`]; keep in sync.
+pub const SHAPE_PENTATOPE: u32 = 0;
+pub const SHAPE_TESSERACT: u32 = 1;
+pub const SHAPE_16CELL: u32 = 2;
+pub const SHAPE_24CELL: u32 = 3;
 
 /// One dynamic-body slot. Discriminated record covering both
 /// hypersphere and polytope cases, `kind` selects which fields
@@ -249,6 +258,13 @@ const MAX_BODIES: u32 = 32u;
 
 const BODY_KIND_SPHERE: u32 = 0u;
 const BODY_KIND_POLYTOPE: u32 = 1u;
+
+// Polytope shape table indices. Mirrored from rye-render Rust-side
+// `SHAPE_*` constants; keep in sync.
+const SHAPE_PENTATOPE: u32 = 0u;
+const SHAPE_TESSERACT: u32 = 1u;
+const SHAPE_16CELL: u32 = 2u;
+const SHAPE_24CELL: u32 = 3u;
 // Mirrors `BodyKind::Invalid` (CPU). Intentionally absent from the
 // dispatch chain in `rye_dynamic_bodies_sdf` and `rye_total_sdf` below:
 // neither the sphere nor the polytope branch matches, so the SDF
@@ -446,13 +462,13 @@ fn body_polytope_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
     let unit_p = local_v / size;
     let shape = u32(b.radius_or_shape + 0.5);
     var d: f32 = 1.0e9;
-    if (shape == 0u) {
+    if (shape == SHAPE_PENTATOPE) {
         d = pentatope_sdf_local(unit_p);
-    } else if (shape == 1u) {
+    } else if (shape == SHAPE_TESSERACT) {
         d = tesseract_sdf_local(unit_p);
-    } else if (shape == 2u) {
+    } else if (shape == SHAPE_16CELL) {
         d = cell16_sdf_local(unit_p);
-    } else if (shape == 3u) {
+    } else if (shape == SHAPE_24CELL) {
         d = cell24_sdf_local(unit_p);
     }
     return d * size;
@@ -610,7 +626,7 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
 "#;
 
 /// Render node that ray-marches the 3D cross-section of a 4D
-/// scene at `u.w_slice`. Pairs with [`rye_sdf::Scene4`].
+/// scene at `u.w_slice`. Pairs with `rye_sdf::Scene4`.
 pub struct Hyperslice4DNode {
     pipeline: RenderPipeline,
     uniforms: Hyperslice4DUniforms,
@@ -1121,5 +1137,23 @@ fn rye_scene_sdf(p: vec3<f32>) -> f32 {
         // 24-cell: 1/sqrt(2) and sqrt(2) literals.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("0.70710678"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("1.41421356"));
+    }
+
+    /// `BodyUniform::polytope(shape_index, ..)` writes the same numeric
+    /// table the kernel branches on. Catches the failure mode where one
+    /// side renumbers without the other.
+    #[test]
+    fn shape_constants_mirror_kernel_table() {
+        for (rust_const, wgsl_decl) in [
+            (SHAPE_PENTATOPE, "const SHAPE_PENTATOPE: u32 = 0u;"),
+            (SHAPE_TESSERACT, "const SHAPE_TESSERACT: u32 = 1u;"),
+            (SHAPE_16CELL, "const SHAPE_16CELL: u32 = 2u;"),
+            (SHAPE_24CELL, "const SHAPE_24CELL: u32 = 3u;"),
+        ] {
+            assert!(
+                HYPERSLICE_KERNEL_WGSL.contains(wgsl_decl),
+                "kernel missing `{wgsl_decl}` for Rust value {rust_const}"
+            );
+        }
     }
 }

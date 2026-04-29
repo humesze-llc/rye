@@ -238,6 +238,16 @@ pub struct RunConfig {
     /// `RUST_LOG` env var); `Some` installs a new global default
     /// subscriber.
     pub log_filter: Option<String>,
+    /// When true (default) the framework exits the event loop on
+    /// `Esc`. Apps that bind `Esc` to a gameplay action (pause,
+    /// menu, modal dismiss) set this to false and handle the key
+    /// inside [`App::on_event`].
+    pub esc_exits: bool,
+    /// Bail out after this many consecutive [`App::render`] errors.
+    /// The last error surfaces back through [`run_with_config`]'s
+    /// `Result` instead of looping forever on a wedged GPU. Reset to
+    /// zero on any successful frame. `0` disables the budget.
+    pub render_error_budget: u32,
 }
 
 impl Default for RunConfig {
@@ -249,6 +259,8 @@ impl Default for RunConfig {
             fixed_hz: 60,
             max_ticks_per_frame: 4,
             log_filter: None,
+            esc_exits: true,
+            render_error_budget: 8,
         }
     }
 }
@@ -313,6 +325,9 @@ struct Runner<A: App> {
     fps: f32,
 
     tick_index: u64,
+    /// Consecutive `App::render` failures since the last successful
+    /// frame. Compared against `RunConfig::render_error_budget`.
+    render_error_streak: u32,
     /// Surfaced to the user via `finish()` if the runner exited
     /// because of a setup or render error, so callers can
     /// propagate it from `main`.
@@ -337,6 +352,7 @@ impl<A: App> Runner<A> {
             frame_count: 0,
             fps: 0.0,
             tick_index: 0,
+            render_error_streak: 0,
             deferred_error: None,
         }
     }
@@ -433,7 +449,8 @@ impl<A: App> ApplicationHandler for Runner<A> {
                 return;
             }
             WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
+                if self.config.esc_exits
+                    && event.state == ElementState::Pressed
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
             {
                 elwt.exit();
@@ -571,12 +588,27 @@ impl<A: App> Runner<A> {
         // 5. Render.
         match rd.begin_frame() {
             Ok((frame, view)) => {
+                let mut last_err: Option<anyhow::Error> = None;
                 if let Some(app) = self.app.as_mut() {
                     if let Err(e) = app.render(rd, &view) {
                         tracing::error!("App::render error: {e:#}");
+                        last_err = Some(e);
                     }
                 }
                 frame.present();
+                if let Some(err) = last_err {
+                    self.render_error_streak = self.render_error_streak.saturating_add(1);
+                    let budget = self.config.render_error_budget;
+                    if budget > 0 && self.render_error_streak >= budget {
+                        self.deferred_error = Some(err.context(format!(
+                            "App::render failed {budget} consecutive frames; aborting"
+                        )));
+                        elwt.exit();
+                        return;
+                    }
+                } else {
+                    self.render_error_streak = 0;
+                }
                 win.request_redraw();
             }
             Err(err) => match err {

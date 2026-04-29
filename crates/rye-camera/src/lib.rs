@@ -140,7 +140,7 @@ impl OrbitCamera {
 // ---------------------------------------------------------------------------
 
 /// Free-look first-person camera. The caller owns the position (e.g. inside a
-/// [`rye_player::PlayerState`]); this type tracks only yaw and pitch.
+/// `rye_player::PlayerState`); this type tracks only yaw and pitch.
 ///
 /// Call [`FirstPersonCamera::advance_look`] with the frame's mouse delta, then
 /// [`FirstPersonCamera::view`] with the current world position.
@@ -167,9 +167,13 @@ impl FirstPersonCamera {
         }
     }
 
-    /// Rotate look direction from mouse delta. Only applies when right mouse
-    /// is held; callers may gate on `input.left_mouse_down` or always call it
-    /// for pointer-locked windows.
+    /// Rotate look direction from mouse delta. Always integrates the
+    /// delta, so pointer-locked windows just call it every frame.
+    /// Callers that want a hold-to-look UX wrap the call in their own
+    /// `if input.left_mouse_down { ... }` (or right-button gate); doing
+    /// it inside the controller would force the always-on case to
+    /// fight against gating, which is the more common mode in
+    /// SDF-render demos.
     pub fn advance_look(&mut self, input: FrameInput) {
         self.yaw -= input.mouse_delta.x * FIRST_PERSON_MOUSE_SENSITIVITY;
         self.pitch = (self.pitch - input.mouse_delta.y * FIRST_PERSON_MOUSE_SENSITIVITY)

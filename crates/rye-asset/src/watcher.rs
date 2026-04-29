@@ -73,7 +73,7 @@ impl AssetWatcher {
     /// Drain all pending events, deduplicating per path.
     ///
     /// When the same path produces multiple events since the last poll,
-    /// they are merged with [`merge_kinds`]: `Created` beats `Modified`
+    /// they are merged: `Created` beats `Modified`
     /// (a new file should look new, not merely modified), otherwise the
     /// later event wins. Events that aren't create/modify/remove
     /// (access, metadata, other) are dropped.
@@ -82,7 +82,12 @@ impl AssetWatcher {
 
         while let Ok(res) = self.rx.try_recv() {
             let Ok(event) = res else {
-                tracing::debug!("notify error: {:?}", res.err());
+                // `warn` (not `debug`) because notify errors are usually
+                // platform-watcher failures (handle exhaustion on Windows,
+                // permission denied, dropped events) that silently degrade
+                // hot-reload. A user not seeing reloads should at least
+                // see something in stderr.
+                tracing::warn!("notify error: {:?}", res.err());
                 continue;
             };
             let kind = match event.kind {

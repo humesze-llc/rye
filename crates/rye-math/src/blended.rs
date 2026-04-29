@@ -42,10 +42,9 @@ use crate::space::{Space, WgslSpace};
 ///   f(p) = 4/(1-|p|²)², valid for |p| < 1.
 /// - [`crate::SphericalS3`] (stereographic model):
 ///   f(p) = 4/(1+|p|²)².
-/// - [`HyperbolicH3UpperHalf`] (upper-half-space, *future*,
+/// - `HyperbolicH3UpperHalf` (upper-half-space, *future*,
 ///   lands when the BlendedSpace demo needs an *unbounded* E³
-///   side; see [`docs/devlog/BLENDED_SPACE.md`](../../../../docs/devlog/BLENDED_SPACE.md)):
-///   f(p) = 1/z², valid for z > 0.
+///   side): f(p) = 1/z², valid for z > 0.
 ///
 /// **Why a separate trait, not a method on `Space`:** not every
 /// Space is conformally flat. Sol³ and Nil³ (two of Thurston's

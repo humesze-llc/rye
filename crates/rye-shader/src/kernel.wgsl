@@ -63,6 +63,17 @@ fn rye_march_geodesic(ro: vec3<f32>, rd: vec3<f32>, ball_scale: f32) -> vec4<f32
 }
 
 // Central-difference SDF gradient at a Space-coordinate point.
+//
+// `p` and the returned normal are in the Space's *chart* coordinates
+// (Cartesian for E³, Poincaré-ball for H³, unit-3-sphere for S³),
+// matching how `rye_scene_sdf` is emitted. The chart-coord gradient
+// is **not** the Riemannian normal, but the renderer only ever uses
+// it for Lambert shading, where the chart-coord gradient and the
+// transported Riemannian gradient point in the same direction (both
+// give the Euclidean-screen-space normal the lighting kernel wants).
+// `ball_scale` widens the central-difference epsilon so curved-Space
+// SDFs near `|p| ≈ 1` (boundary of the model) don't sample across
+// the boundary and get a NaN normal.
 fn rye_estimate_normal(p: vec3<f32>, ball_scale: f32) -> vec3<f32> {
     let eps = 0.0012 * max(ball_scale, 1e-5);
     let ex = vec3<f32>(eps, 0.0, 0.0);

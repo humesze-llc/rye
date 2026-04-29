@@ -1,3 +1,21 @@
+//! Space-generic first-person player controller. Reads
+//! [`rye_input::FrameInput`] and advances a position along the
+//! ambient [`rye_math::Space`]'s geodesics, matched against a yaw
+//! angle for facing.
+//!
+//! Movement convention: WASD drives forward/back/strafe relative to
+//! the player's yaw; Space / Shift drive world-Y up/down. The tangent
+//! vector is built in the Space's chart coordinates, then `space.exp`
+//! integrates it for one tick of motion. In Euclidean Spaces this
+//! collapses to `position += tangent * speed`; in curved Spaces the
+//! geodesic step bends the path naturally without further work in
+//! the controller.
+//!
+//! Yaw is kept as an explicit `f32` (not a rotor) because the
+//! player's facing only ever rotates about the Y axis here. A 4D
+//! player or a player that needs full rotor orientation would use
+//! a different controller.
+
 use glam::Vec3;
 use rye_input::FrameInput;
 use rye_math::Space;
@@ -106,5 +124,109 @@ mod tests {
             0.002,
         );
         assert_close(player.yaw, -0.2);
+    }
+
+    /// W+D should travel `speed` units along the geodesic, not
+    /// `sqrt(2) * speed`. The tangent vector is the diagonal of forward
+    /// and right; without normalization, diagonal motion would be
+    /// faster than axis-aligned motion.
+    #[test]
+    fn advance_diagonal_input_speed_matches_axis_aligned_speed() {
+        let mut player: PlayerState<EuclideanR3> = PlayerState::new(Vec3::ZERO);
+        player.advance(
+            &FrameInput {
+                move_forward: 1.0,
+                move_right: 1.0,
+                ..FrameInput::default()
+            },
+            &EuclideanR3,
+            1.0,
+        );
+        assert_close(player.position.length(), 1.0);
+    }
+
+    #[test]
+    fn advance_move_up_lifts_player_along_world_y() {
+        let mut player: PlayerState<EuclideanR3> = PlayerState::new(Vec3::ZERO);
+        player.advance(
+            &FrameInput {
+                move_up: 1.0,
+                ..FrameInput::default()
+            },
+            &EuclideanR3,
+            1.0,
+        );
+        assert_close(player.position.x, 0.0);
+        assert_close(player.position.y, 1.0);
+        assert_close(player.position.z, 0.0);
+    }
+
+    #[test]
+    fn with_yaw_rotates_forward_direction() {
+        // yaw = +π/2 rotates forward from −Z to −X.
+        let mut player: PlayerState<EuclideanR3> =
+            PlayerState::new(Vec3::ZERO).with_yaw(std::f32::consts::FRAC_PI_2);
+        player.advance(
+            &FrameInput {
+                move_forward: 1.0,
+                ..FrameInput::default()
+            },
+            &EuclideanR3,
+            1.0,
+        );
+        assert_close(player.position.x, -1.0);
+        assert_close(player.position.y, 0.0);
+        assert_close(player.position.z, 0.0);
+    }
+
+    /// W in H³ from the origin moves along the ambient axis but the
+    /// resulting position must stay strictly inside the Poincaré ball
+    /// (`|p| < 1`), and the geodesic step is shorter than the
+    /// Euclidean equivalent because H³ stretches distance away from the
+    /// origin.
+    #[test]
+    fn advance_in_hyperbolic_h3_stays_inside_ball() {
+        use rye_math::HyperbolicH3;
+        let mut player: PlayerState<HyperbolicH3> = PlayerState::new(Vec3::ZERO);
+        player.advance(
+            &FrameInput {
+                move_forward: 1.0,
+                ..FrameInput::default()
+            },
+            &HyperbolicH3,
+            0.5,
+        );
+        assert!(player.position.is_finite());
+        assert!(
+            player.position.length() < 1.0,
+            "player escaped Poincaré ball: {:?}",
+            player.position
+        );
+        // Forward at yaw=0 is −Z, so motion is purely in −Z.
+        assert_close(player.position.x, 0.0);
+        assert_close(player.position.y, 0.0);
+        assert!(player.position.z < 0.0);
+    }
+
+    /// Same shape in S³: position must stay inside the unit-3-sphere
+    /// embedding (`|p| < 1`) and motion direction is consistent with
+    /// the −Z forward convention.
+    #[test]
+    fn advance_in_spherical_s3_stays_inside_embedding() {
+        use rye_math::SphericalS3;
+        let mut player: PlayerState<SphericalS3> = PlayerState::new(Vec3::ZERO);
+        player.advance(
+            &FrameInput {
+                move_forward: 1.0,
+                ..FrameInput::default()
+            },
+            &SphericalS3,
+            0.5,
+        );
+        assert!(player.position.is_finite());
+        assert!(player.position.length() < 1.0);
+        assert_close(player.position.x, 0.0);
+        assert_close(player.position.y, 0.0);
+        assert!(player.position.z < 0.0);
     }
 }

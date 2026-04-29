@@ -195,6 +195,10 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for OrbitControl
 /// Use by setting `camera.position` directly each frame (or via
 /// player physics), then calling `advance` to update the basis
 /// from yaw/pitch.
+///
+/// `advance` always integrates the mouse delta; pointer-locked
+/// windows just call it every frame. Apps that want hold-to-look
+/// gate the call themselves (`if input.left_mouse_down { ctrl.advance(...) }`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FirstPersonController<S: Space> {
     pub yaw: f32,

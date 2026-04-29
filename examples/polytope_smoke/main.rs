@@ -71,22 +71,18 @@ use rye_math::{Bivector, Bivector4, EuclideanR3, Rotor4};
 use rye_render::{
     device::RenderDevice,
     graph::RenderNode,
-    raymarch::{BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL},
+    raymarch::{
+        BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL, SHAPE_16CELL, SHAPE_24CELL,
+        SHAPE_PENTATOPE, SHAPE_TESSERACT,
+    },
 };
 use rye_sdf::{Scene4, SceneNode4};
 use rye_text::TextRenderer;
 use winit::window::WindowAttributes;
 
-const SHAPE_PENTATOPE: u32 = 0;
-const SHAPE_TESSERACT: u32 = 1;
-const SHAPE_16CELL: u32 = 2;
-const SHAPE_24CELL: u32 = 3;
-// Placeholders for the dodecahedron/icosahedron Platonic-slice
-// shapes, real SDFs deferred to a follow-up branch (see
-// `parse_shape_name` for the friendly-error message users see if
-// they request them by name today).
-const _SHAPE_120CELL: u32 = 4;
-const _SHAPE_600CELL: u32 = 5;
+// 120-cell / 600-cell shape indices are deliberately unallocated; the
+// SDFs land in a follow-up branch. `parse_shape_name` returns a
+// friendly error if a user asks for them by name today.
 
 const W_SCRUB_RATE: f32 = 0.5;
 const W_RANGE: f32 = 1.5;

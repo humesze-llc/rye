@@ -107,7 +107,7 @@ fn color_for_kind(kind: u32) -> vec3<f32> {
 
 @fragment
 fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
-    // Pixel → UV → world (y flipped so +Y is up).
+    // Pixel -> UV -> world (y flipped so +Y is up).
     let uv = frag_pos.xy / scene.resolution;
     let world = vec2<f32>(
         scene.view.x + uv.x * scene.view.z,

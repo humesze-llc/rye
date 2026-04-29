@@ -11,12 +11,18 @@ use std::sync::Arc;
 use wgpu::*;
 use winit::window::Window;
 
+/// Surface + per-frame configuration. Owned by [`RenderDevice`]; held
+/// out as a struct so resize-aware code can read the current size and
+/// format without poking at private fields.
 pub struct SurfaceBundle {
     pub surface: Surface<'static>,
     pub config: SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
 }
 
+/// All wgpu state the engine carries: shared `Instance`, the chosen
+/// `Adapter`, the logical `Device`, the submission `Queue`, and the
+/// current surface bundle. One per app; cloning this is not supported.
 pub struct RenderDevice {
     pub instance: Instance,
     pub adapter: Adapter,
@@ -26,6 +32,10 @@ pub struct RenderDevice {
 }
 
 impl RenderDevice {
+    /// Acquire a surface for `window`, request a high-performance
+    /// adapter, and configure the surface for sRGB rendering when
+    /// the platform supports it. Async because both adapter and
+    /// device creation are async on every wgpu backend.
     pub async fn new(window: Arc<Window>) -> Result<Self> {
         let instance = Instance::default();
 
@@ -87,6 +97,9 @@ impl RenderDevice {
         })
     }
 
+    /// Reconfigure the surface for the new window size. No-ops on
+    /// width or height of zero (the minimized-window case wgpu rejects
+    /// outright).
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width == 0 || new_size.height == 0 {
             return;
@@ -99,6 +112,10 @@ impl RenderDevice {
             .configure(&self.device, &self.surface_bundle.config);
     }
 
+    /// Acquire the next swapchain texture and its default view, ready
+    /// for a render pass. Returns the wgpu surface error directly so
+    /// callers can branch on `Lost` / `Outdated` / `Timeout` without
+    /// extra wrapping.
     pub fn begin_frame(
         &self,
     ) -> std::result::Result<(SurfaceTexture, TextureView), wgpu::SurfaceError> {

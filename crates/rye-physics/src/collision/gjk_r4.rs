@@ -114,8 +114,8 @@ const GJK_EPS: f32 = 1e-6;
 /// (via [`closest_to_origin`]), drops any unused vertices, then
 /// searches for a new support in the direction from the closest point
 /// toward the origin. Terminates when (i) a new support can't advance
-/// toward the origin (→ separated), (ii) the simplex's closest point
-/// reaches the origin (→ intersecting), or (iii) iteration cap is hit.
+/// toward the origin (-> separated), (ii) the simplex's closest point
+/// reaches the origin (-> intersecting), or (iii) iteration cap is hit.
 pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
     a: &A,
     b: &B,
@@ -132,9 +132,9 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
 
     // ---- Phase 1: standard GJK, searching toward the origin.
     // Terminates when either (a) a new support fails to cross the
-    // origin along the search direction (→ Separated) or (b) the
+    // origin along the search direction (-> Separated) or (b) the
     // current simplex's closest-point to origin is already at the
-    // origin (→ shapes intersect, exit to Phase 2 to grow the
+    // origin (-> shapes intersect, exit to Phase 2 to grow the
     // simplex to 5 points for EPA).
     for _ in 0..GJK_MAX_ITERATIONS {
         if dir.length_squared() < GJK_EPS {

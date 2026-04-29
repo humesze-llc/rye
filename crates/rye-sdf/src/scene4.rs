@@ -10,13 +10,10 @@
 //!   is a uniform. This is the production path today,
 //!   `Hyperslice4DNode` consumes it as the SDF for a 3D ray march.
 //!
-//! See [`docs/devlog/4D_RENDERING.md`](../../../../docs/devlog/4D_RENDERING.md)
-//! for the design rationale.
-//!
 //! ## Why a parallel `Scene4`, not `Scene<S, const DIM>`
 //!
-//! Per the 4D-rendering design doc: the 3D and 4D paths share no
-//! shader code (different SDF signatures, different ray equations,
+//! The 3D and 4D paths share no shader code (different SDF signatures,
+//! different ray equations,
 //! different uniforms), so dimensioning [`crate::scene::Scene`]
 //! generically saves no implementation work and obscures the
 //! difference. Parallel hierarchies keep each clear.

@@ -3,7 +3,7 @@
 //! 16-cell, 24-cell, in a row on a 4D `y = 0` floor, with
 //! user-controllable `w`-slice scrubbing and a per-plane toggle
 //! UI for arbitrary 4D rotations. The user composes their own
-//! motion by toggling individual rotation planes (1..6 → xy, xz,
+//! motion by toggling individual rotation planes (1..6 -> xy, xz,
 //! xw, yz, yw, zw); active planes' bivectors sum into the
 //! per-frame angular velocity, which integrates into a rotor via
 //! `(ω · dt).exp()`. Sum-of-bivectors composition is commutative,
@@ -395,7 +395,7 @@ struct PolytopeSmokeApp {
     rot_state: Rotor4,
     /// Toggle bitmap for the six rotation planes; sum of active
     /// planes' unit bivectors becomes the per-frame angular
-    /// velocity. See [`PLANES`] for the index → plane mapping.
+    /// velocity. See [`PLANES`] for the index -> plane mapping.
     active: [bool; 6],
     rate_scale: f32,
     /// Accumulated time spent rotating (advances only while

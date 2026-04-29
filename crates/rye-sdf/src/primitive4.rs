@@ -134,7 +134,7 @@ mod tests {
     use glam::Vec4;
 
     /// Each emit produces a syntactically valid WGSL function with
-    /// the expected `vec4<f32> → f32` signature. We don't run the
+    /// the expected `vec4<f32> -> f32` signature. We don't run the
     /// shader here (that's the naga-validation test in
     /// `rye-shader`); we just sanity-check the textual output so
     /// the round-trip with the WGSL builder downstream stays

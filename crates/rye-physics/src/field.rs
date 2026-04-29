@@ -3,7 +3,7 @@
 //!
 //! Register any number of force fields on a [`crate::World`]. Each
 //! integration tick, [`crate::World::step`] samples every field at each
-//! body's position, accumulates the forces, and applies `v ← v + F·dt/m`
+//! body's position, accumulates the forces, and applies `v += F*dt/m`
 //! before advancing bodies along geodesics.
 
 use crate::body::RigidBody;

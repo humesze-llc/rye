@@ -9,5 +9,6 @@ description = "Rye rigid-body physics: Space-generic integration, narrowphase di
 
 [dependencies]
 glam.workspace = true
+tracing.workspace = true
 rye-math  = { path = "../rye-math" }
 rye-shape = { path = "../rye-shape" }

@@ -26,7 +26,7 @@ use rye_math::Space;
 /// [`PlayerState::advance`] every tick to move along geodesics driven by WASD,
 /// and [`PlayerState::advance_look`] to update yaw from mouse.
 ///
-/// The space type `S` must map `Vec3 → Vec3` (point and tangent vector both live
+/// The space type `S` must map `Vec3 -> Vec3` (point and tangent vector both live
 /// in R³ from the Space's ambient embedding, e.g. Poincaré ball for H³).
 pub struct PlayerState<S: Space<Point = Vec3, Vector = Vec3>> {
     pub position: Vec3,
@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn advance_forward_moves_in_minus_z() {
         let mut player: PlayerState<EuclideanR3> = PlayerState::new(Vec3::ZERO);
-        // yaw=0 → forward = −Z
+        // yaw=0 -> forward = −Z
         player.advance(
             &FrameInput {
                 move_forward: 1.0,

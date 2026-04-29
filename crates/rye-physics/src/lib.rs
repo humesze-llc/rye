@@ -8,7 +8,7 @@
 //!   velocity, mass, and a [`Collider`].
 //! - [`World<S>`] owns bodies, force fields, and a [`Narrowphase`]
 //!   dispatch table. One `step(dt)` advances the simulation by one tick.
-//! - [`Narrowphase<S>`] is a registry of `(ColliderKind, ColliderKind) →
+//! - [`Narrowphase<S>`] is a registry of `(ColliderKind, ColliderKind) ->
 //!   NarrowphaseFn<S>` entries. New collider types / new spaces / new
 //!   collision algorithms are added by registering functions in this
 //!   table; no existing code changes.

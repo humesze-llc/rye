@@ -10,7 +10,7 @@
 //! - Window creation and the winit `ApplicationHandler` impl.
 //! - [`RenderDevice`] construction and surface-error recovery.
 //! - [`ShaderDb`] + [`AssetWatcher`] for shader hot-reload.
-//! - [`InputState`] event routing → drained `FrameInput` per
+//! - [`InputState`] event routing -> drained `FrameInput` per
 //!   redraw.
 //! - [`FixedTimestep`] driving `App::tick` at the fixed-rate.
 //! - FPS bookkeeping and rate-limited title updates.
@@ -45,12 +45,12 @@
 //!         create ShaderDb + AssetWatcher
 //!         A::setup(&mut SetupCtx) -> A
 //!   └─ on each redraw:
-//!         FixedTimestep::advance → ticks
+//!         FixedTimestep::advance -> ticks
 //!         for each tick: A::tick(dt, &mut TickCtx)
 //!         input.take_frame()
 //!         A::update(&mut FrameCtx)
 //!         A::on_event(...) for each WindowEvent
-//!         poll AssetWatcher → if events:
+//!         poll AssetWatcher -> if events:
 //!             shader_db.apply_events(events, app.space())
 //!             A::on_shader_reload(&mut SetupCtx)
 //!         maybe update title (rate-limited to ~1 Hz)
@@ -127,7 +127,7 @@ pub trait App: Sized + 'static {
     /// without thinking, you commit your scene to live in that
     /// Space's coordinates. For H³ that means the Poincaré ball;
     /// orbit distances inherited from a Euclidean default
-    /// (`OrbitController::default()` → `distance ≈ 3.55`) will
+    /// (`OrbitController::default()` -> `distance ≈ 3.55`) will
     /// `exp_target` into a tangent vector that lands at
     /// `tanh(1.78) ≈ 0.94` of the way to the ideal boundary, where
     /// the metric explodes. If your scene's geometry isn't actually

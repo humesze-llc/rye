@@ -1,4 +1,4 @@
-// Geodesic lattice demo — user shading layer.
+// Geodesic lattice demo: user shading layer.
 //
 // The Space prelude, scene SDF, and geodesic march kernel are prepended by
 // rye-shader (or the local assemble() call) before this file is compiled.
@@ -57,9 +57,9 @@ fn panel_ray_dir(frag_pos: vec4<f32>) -> vec3<f32> {
 
 // Per-space accent color for visual distinction between panels.
 fn accent_color(panel_idx: f32) -> vec3<f32> {
-    if panel_idx < 0.5 { return vec3<f32>(0.35, 0.60, 1.00); } // E³ — blue
-    if panel_idx < 1.5 { return vec3<f32>(1.00, 0.52, 0.18); } // H³ — orange
-    return vec3<f32>(0.22, 0.85, 0.58);                          // S³ — teal
+    if panel_idx < 0.5 { return vec3<f32>(0.35, 0.60, 1.00); } // E³: blue
+    if panel_idx < 1.5 { return vec3<f32>(1.00, 0.52, 0.18); } // H³: orange
+    return vec3<f32>(0.22, 0.85, 0.58);                          // S³: teal
 }
 
 @fragment

@@ -2,12 +2,10 @@
 //! interpolates between two source Spaces A and B via a
 //! blending field F: ℝ³ -> [0, 1].
 //!
-//! THESIS §2.2 design goal: *"Seamless transitions between
-//! geometries, not camera tricks."*
-//!
-//! See [`docs/devlog/BLENDED_SPACE.md`](../../../../docs/devlog/BLENDED_SPACE.md)
-//! for the full design, math foundation, numerical scheme,
-//! validation strategy, and lock-in audit.
+//! Design goal: seamless transitions between geometries, not camera
+//! tricks. The math foundation, numerical scheme, validation strategy,
+//! and lock-in notes for this implementation live in the project's
+//! private design notes, not in this docstring.
 //!
 //! ## What ships
 //!
@@ -501,7 +499,7 @@ pub const LOG_MAX_ITERS: u32 = 12;
 pub const LOG_RESIDUAL_TOL: f32 = 1.0e-5;
 
 /// Finite-difference step for the Jacobian of `exp` w.r.t. `v`.
-/// Smaller → more accurate Jacobian but more f32 noise; 1e-3 is
+/// Smaller -> more accurate Jacobian but more f32 noise; 1e-3 is
 /// the sweet spot for f32 RK4-of-32-steps.
 const LOG_JACOBIAN_EPS: f32 = 1.0e-3;
 
@@ -1345,7 +1343,7 @@ mod tests {
         // At x = -1 (alpha=0): factor = 1 (pure E³).
         close(bs.conformal_factor(Vec3::new(-1.0, 0.0, 0.0)), 1.0, 1e-6);
         // At x = 1 (alpha=1): factor = HyperbolicH3 at x=1, but
-        // x=1 is on the Poincaré boundary so f → ∞. Use a point
+        // x=1 is on the Poincaré boundary so f -> ∞. Use a point
         // *near* x=1 but slightly inside.
         let p = Vec3::new(0.99, 0.0, 0.0);
         let alpha = LinearBlendX::new(-1.0, 1.0).weight(p);

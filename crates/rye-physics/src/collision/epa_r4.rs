@@ -139,7 +139,7 @@ impl Polytope4 {
         for f in self.faces.drain(..) {
             let view = support.point - self.vertices[f.v[0]].point;
             if f.normal.dot(view) > 0.0 {
-                // Visible from the new point → remove.
+                // Visible from the new point -> remove.
                 for tri in tet_triangles(&f.v) {
                     add_or_remove_triangle(&mut horizon, tri);
                 }
@@ -149,7 +149,7 @@ impl Polytope4 {
         }
         self.faces = keep;
 
-        // Each horizon triangle + new vertex → new tetrahedral face.
+        // Each horizon triangle + new vertex -> new tetrahedral face.
         // Re-uses the seed centroid as the interior reference,
         // still inside the (only-expanding) polytope by convexity.
         let centroid = self.centroid;
@@ -176,10 +176,10 @@ type Triangle = (usize, usize, usize);
 /// one vertex in the rotation `(a, b, c, d)`.
 fn tet_triangles(tet: &[usize; 4]) -> [Triangle; 4] {
     // The opposite-vertex-excluded triangles:
-    //   exclude d → (a, b, c)
-    //   exclude c → (a, b, d) but with flipped winding
-    //   exclude b → (a, c, d)
-    //   exclude a → (b, c, d) with flipped winding
+    //   exclude d -> (a, b, c)
+    //   exclude c -> (a, b, d) but with flipped winding
+    //   exclude b -> (a, c, d)
+    //   exclude a -> (b, c, d) with flipped winding
     //
     // Signs don't matter here since we use an order-insensitive
     // match (see `add_or_remove_triangle`). Use the canonical
@@ -223,7 +223,7 @@ fn sort_triangle(t: Triangle) -> (usize, usize, usize) {
 /// cases, where the face is degenerate anyway).
 ///
 /// Returns `None` when the face is degenerate (three edges nearly
-/// coplanar → tiny normal magnitude).
+/// coplanar -> tiny normal magnitude).
 fn build_face(
     verts: &[MinkowskiPoint4],
     a: usize,
@@ -254,7 +254,7 @@ fn build_face(
     } else {
         // Origin lies on the face plane. Use the centroid as
         // tiebreaker: if centroid is on `+normal` side (relative to
-        // pa), `+normal` points toward interior → flip.
+        // pa), `+normal` points toward interior -> flip.
         let signed_c = normal.dot(centroid - pa);
         signed_c > 0.0
     };
@@ -280,7 +280,7 @@ fn build_face(
 /// Generalized 4D cross product: the vector perpendicular to three
 /// 4-vectors `u`, `v`, `w`. Equal to the Hodge dual of the trivector
 /// `u ∧ v ∧ w`, which for basis `e_ijk` maps
-/// `e_123 → −e_4, e_124 → +e_3, e_134 → −e_2, e_234 → +e_1`.
+/// `e_123 -> −e_4, e_124 -> +e_3, e_134 -> −e_2, e_234 -> +e_1`.
 ///
 /// Components are four 3×3 determinants of the column-sub-matrices
 /// of `[u; v; w]`, with alternating signs.
@@ -292,7 +292,7 @@ fn hodge_dual_of_trivector_wedge(u: Vec4, v: Vec4, w: Vec4) -> Vec4 {
     let t_124 = det3(u.x, u.y, u.w, v.x, v.y, v.w, w.x, w.y, w.w);
     let t_123 = det3(u.x, u.y, u.z, v.x, v.y, v.z, w.x, w.y, w.z);
 
-    // Hodge dual: e_123 → −e_4, e_124 → +e_3, e_134 → −e_2, e_234 → +e_1.
+    // Hodge dual: e_123 -> −e_4, e_124 -> +e_3, e_134 -> −e_2, e_234 -> +e_1.
     Vec4::new(t_234, -t_134, t_124, -t_123)
 }
 
@@ -356,7 +356,13 @@ pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
     }
 
     // Iteration cap, return best-estimate contact from current
-    // closest face rather than failing.
+    // closest face rather than failing. Debug-level trace so the
+    // 4D narrowphase tuning has the same observability as 3D.
+    tracing::debug!(
+        max_iterations = EPA_MAX_ITERATIONS,
+        vertices = polytope.vertices.len(),
+        "EPA 4D hit iteration cap; returning best-estimate contact",
+    );
     let face_idx = polytope.closest_face()?;
     contact_from_face(&polytope, polytope.faces[face_idx])
 }
@@ -547,7 +553,7 @@ mod tests {
     }
 
     /// 16-cell vs 16-cell: the cross-polytope with 8 vertices. Tests
-    /// the GJK→EPA pipeline on a sharp-vertexed polytope that has
+    /// the GJK->EPA pipeline on a sharp-vertexed polytope that has
     /// fewer support points than the tesseract.
     #[test]
     fn cell16_cell16_penetration_nonzero() {

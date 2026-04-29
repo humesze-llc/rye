@@ -232,6 +232,9 @@ impl Bivector for Bivector3 {
     /// decomposition needed (unlike 4D).
     fn exp(self) -> Rotor3 {
         let mag_sq = self.xy * self.xy + self.yz * self.yz + self.zx * self.zx;
+        // 1e-16 is below the squared-angle below which f32 sin/cos
+        // round-trip is dominated by floating-point noise; the linear
+        // Taylor approximation below is exact to within f32 precision.
         if mag_sq < 1e-16 {
             // Small-angle: Taylor expand `sin(θ/2)/θ ≈ 1/2`.
             return Rotor3 {
@@ -536,13 +539,13 @@ impl Bivector for Bivector4 {
     ///
     /// Three cases, handled separately to keep f32 stable:
     ///
-    /// 1. `|B|² ≈ 0` → identity rotor.
-    /// 2. `δ ≈ 0` (simple bivector, single rotation plane) → 3D-style
+    /// 1. `|B|² ≈ 0` -> identity rotor.
+    /// 2. `δ ≈ 0` (simple bivector, single rotation plane) -> 3D-style
     ///    closed form `cos(|B|/2) + sin(|B|/2)/|B| · B`.
     /// 3. `disc ≈ 0` with `δ ≠ 0` (isoclinic: equal angles in two
-    ///    orthogonal planes) → closed form using `sinc(θ)` so the
+    ///    orthogonal planes) -> closed form using `sinc(θ)` so the
     ///    general-case `1/(θ₁²−θ₂²)` singularity never appears.
-    /// 4. General case (`θ₁ ≠ θ₂`, both nonzero) → expansion of
+    /// 4. General case (`θ₁ ≠ θ₂`, both nonzero) -> expansion of
     ///    `exp(B_a/2)·exp(B_b/2)` in the basis `{1, B, B*, I}`.
     fn exp(self) -> Rotor4 {
         let s = self.magnitude_squared();
@@ -586,6 +589,8 @@ impl Bivector for Bivector4 {
             let sign_i = delta.signum();
             // b_coef = sin(θ)/(2·θ). Use the trig identity
             // sin(θ) = 2·sin(θ/2)·cos(θ/2) and divide by 2·θ.
+            // 1e-8 is the angle below which `sin(θ)/(2θ)` rounds away
+            // its leading term in f32; substitute the limit `1/2`.
             let b_coef = if theta > 1e-8 {
                 (theta.sin()) / (2.0 * theta)
             } else {
@@ -826,7 +831,7 @@ impl Rotor for Rotor4 {
     /// - `e_ijk · e_lm` with `{l,m} ⊂ {i,j,k}`: collapses to `±e_{one
     ///   remaining}` per the standard reduction.
     /// - `e_ijk · I`: `−e_l` (with `l` the missing index), signed by
-    ///   the parity of the `e_{ijk}·e_l → I` permutation.
+    ///   the parity of the `e_{ijk}·e_l -> I` permutation.
     fn apply(&self, v: Vec4) -> Vec4 {
         let (vx, vy, vz, vw) = (v.x, v.y, v.z, v.w);
         let rs = self.s;
@@ -931,16 +936,21 @@ impl Rotor for Rotor4 {
             .max(0.0)
             .sqrt();
 
-        // Isoclinic branch within `log`: t₁ ≈ t₂. bstar_coef → 0, so
+        // Isoclinic branch within `log`: t₁ ≈ t₂. bstar_coef -> 0, so
         // the inverse simplifies to `B = R / b_coef` and `b_coef` has
         // the isoclinic closed form `sin(θ)/(2·θ)`.
         if disc_target < 1e-6 * s_target.max(1.0) {
             let theta = (s_target * 0.5).sqrt();
+            // 1e-8: same sin(θ)/(2θ) cutover as `Rotor4::exp`'s
+            // isoclinic branch; below it the `0.5` limit is exact in f32.
             let b_coef = if theta > 1e-8 {
                 theta.sin() / (2.0 * theta)
             } else {
                 0.5
             };
+            // 1e-12: the inverted coefficient would amplify f32 noise
+            // beyond the correctness bound. Treat as zero rather than
+            // divide.
             if b_coef.abs() < 1e-12 {
                 return Bivector4::ZERO;
             }
@@ -1095,7 +1105,7 @@ mod tests {
 
     #[test]
     fn bivector3_xy_quarter_turn_sends_x_to_y() {
-        // Rotation in xy-plane by π/2: e1 → e2.
+        // Rotation in xy-plane by π/2: e1 -> e2.
         let r = Bivector3::new(FRAC_PI_2, 0.0, 0.0).exp();
         assert_vec3_close(r.apply(Vec3::X), Vec3::Y);
         assert_vec3_close(r.apply(Vec3::Y), -Vec3::X);
@@ -1105,7 +1115,7 @@ mod tests {
 
     #[test]
     fn bivector3_yz_rotation() {
-        // Rotation in yz-plane (e2 → e3) by π/2.
+        // Rotation in yz-plane (e2 -> e3) by π/2.
         let r = Bivector3::new(0.0, FRAC_PI_2, 0.0).exp();
         assert_vec3_close(r.apply(Vec3::Y), Vec3::Z);
         assert_vec3_close(r.apply(Vec3::Z), -Vec3::Y);
@@ -1114,7 +1124,7 @@ mod tests {
 
     #[test]
     fn bivector3_zx_rotation() {
-        // Rotation in zx-plane (e3 → e1) by π/2.
+        // Rotation in zx-plane (e3 -> e1) by π/2.
         let r = Bivector3::new(0.0, 0.0, FRAC_PI_2).exp();
         assert_vec3_close(r.apply(Vec3::Z), Vec3::X);
         assert_vec3_close(r.apply(Vec3::X), -Vec3::Z);
@@ -1175,7 +1185,7 @@ mod tests {
                 (back.xy - bv.xy).abs() < 1e-5
                     && (back.yz - bv.yz).abs() < 1e-5
                     && (back.zx - bv.zx).abs() < 1e-5,
-                "log∘exp mismatch: {bv:?} → {back:?}"
+                "log∘exp mismatch: {bv:?} -> {back:?}"
             );
         }
     }
@@ -1241,7 +1251,7 @@ mod tests {
     /// the other two are fixed.
     #[test]
     fn bivector4_single_plane_rotations_are_planar() {
-        // xy-plane (θ = π/2): x → y, y → −x, z / w fixed.
+        // xy-plane (θ = π/2): x -> y, y -> −x, z / w fixed.
         let r = Bivector4::new(FRAC_PI_2, 0.0, 0.0, 0.0, 0.0, 0.0).exp();
         assert_vec4_close(r.apply(Vec4::X), Vec4::Y);
         assert_vec4_close(r.apply(Vec4::Y), -Vec4::X);
@@ -1290,8 +1300,8 @@ mod tests {
     }
 
     /// A "double rotation" uses two complementary planes simultaneously.
-    /// Rotating by π/2 in both xy and zw: x → y, y → −x, z → w,
-    /// w → −z. The pseudoscalar component of the rotor is nonzero
+    /// Rotating by π/2 in both xy and zw: x -> y, y -> −x, z -> w,
+    /// w -> −z. The pseudoscalar component of the rotor is nonzero
     /// here, that's the fingerprint of the compound decomposition.
     #[test]
     fn bivector4_double_rotation_xy_plus_zw() {
@@ -1387,7 +1397,7 @@ mod tests {
             let rotated = r.apply(v);
             assert!(
                 (rotated.length() - v.length()).abs() < 1e-3,
-                "length drift: {v:?} → {rotated:?}"
+                "length drift: {v:?} -> {rotated:?}"
             );
         }
     }
@@ -1414,7 +1424,7 @@ mod tests {
         ] {
             let back = b.exp().log();
             let diff = (back + b * (-1.0)).magnitude();
-            assert!(diff < 1e-4, "log∘exp mismatch: {b:?} → {back:?}");
+            assert!(diff < 1e-4, "log∘exp mismatch: {b:?} -> {back:?}");
         }
     }
 

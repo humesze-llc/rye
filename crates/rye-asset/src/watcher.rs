@@ -28,7 +28,7 @@ pub enum AssetEventKind {
 /// Events arrive on a background thread managed by `notify`; [`poll`](Self::poll)
 /// drains the channel non-blockingly and deduplicates events per path
 /// within one poll cycle. That means editor saves that produce a burst
-/// of raw events (remove temp → create target → modify) collapse to a
+/// of raw events (remove temp -> create target -> modify) collapse to a
 /// single `Modified` or `Created` event per file. That's the usual
 /// shape a shader cache wants.
 ///
@@ -118,7 +118,7 @@ impl AssetWatcher {
 /// `fs::write` on a fresh file emits Create+Modify, and downstream
 /// consumers expect "new file" to look different from "existing file
 /// changed." Otherwise the later event wins, which correctly handles
-/// save-by-atomic-replace (Remove→Create→target exists).
+/// save-by-atomic-replace (Remove->Create->target exists).
 fn merge_kinds(old: AssetEventKind, new: AssetEventKind) -> AssetEventKind {
     use AssetEventKind::*;
     match (old, new) {

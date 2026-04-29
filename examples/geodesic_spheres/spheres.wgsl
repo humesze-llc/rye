@@ -1,4 +1,4 @@
-// Geodesic spheres raymarch demo — user shading layer.
+// Geodesic spheres raymarch demo: user shading layer.
 //
 // The Space prelude, scene SDF, and geodesic march kernel are prepended by
 // rye-shader before this file is compiled. Available functions:

@@ -6,7 +6,7 @@
 //! when a game actually needs them, a full 3×3 `Inertia` type is a
 //! structural change to the trait and can happen later.
 //!
-//! Orientation integration bridges `Bivector3` → `Rotor3` → `Quat` (the
+//! Orientation integration bridges `Bivector3` -> `Rotor3` -> `Quat` (the
 //! type stored in `Iso3`). The conversion is a fixed mapping
 //! (xy↔z, yz↔x, zx↔y) defined by how rotor sandwich matches quaternion
 //! conjugation for the three cardinal axes.
@@ -41,7 +41,7 @@ fn omega_cross_r(w: Bivector3, r: Vec3) -> Vec3 {
     )
 }
 
-/// Wedge product `r ∧ f` → bivector. Components match `r × f` mapped
+/// Wedge product `r ∧ f` -> bivector. Components match `r × f` mapped
 /// via the (xy↔z, yz↔x, zx↔y) correspondence used by `rotor_to_quat`.
 fn wedge(r: Vec3, f: Vec3) -> Bivector3 {
     Bivector3::new(
@@ -71,13 +71,13 @@ impl PhysicsSpace for EuclideanR3 {
     type Inertia = f32;
 
     fn integrate_orientation(&self, iso: Iso3, omega: Bivector3, dt: f32) -> Iso3 {
-        // Guard against NaN/infinite angular velocity leaking into the
-        // orientation. Without this, one bad impulse → NaN ω → NaN
-        // rotor → NaN quaternion → downstream wgpu validation blows up
-        // when it hits the GPU buffer.
-        if !(omega.xy.is_finite() && omega.yz.is_finite() && omega.zx.is_finite()) {
-            return iso;
-        }
+        // Catch NaN/infinite angular velocity at the source rather
+        // than letting it propagate through the rotor and into the
+        // GPU buffer. Debug-only; release builds trust internal callers.
+        debug_assert!(
+            omega.xy.is_finite() && omega.yz.is_finite() && omega.zx.is_finite(),
+            "non-finite Bivector3 angular velocity in integrate_orientation",
+        );
         let delta_rotor = (omega * dt).exp();
         let delta_quat = rotor_to_quat(delta_rotor);
         // Compose: delta applied after existing rotation. Renormalize
@@ -198,7 +198,7 @@ fn sphere_halfspace_r3(
     if penetration <= 0.0 {
         return None;
     }
-    // Contact normal A→B points *into* the half-space (into the wall),
+    // Contact normal A->B points *into* the half-space (into the wall),
     // i.e. opposite to the half-space's outward normal. Pushing along this
     // separates the sphere from the wall.
     let contact_normal = -normal;
@@ -346,7 +346,7 @@ fn sphere_polytope_r3(
 
 /// Polytope vs half-space: analytical deep-vertex search. The polytope
 /// vertex penetrating deepest into the half-space is the contact point;
-/// normal = −plane_normal (A→B, from polytope into the solid side),
+/// normal = −plane_normal (A->B, from polytope into the solid side),
 /// depth = how far that vertex is beyond the plane.
 fn polytope_halfspace_r3(
     a: &RigidBody<EuclideanR3>,
@@ -700,7 +700,7 @@ mod tests {
     fn off_center_glancing_hit_produces_angular_velocity() {
         // A static-ish target sphere at the origin is hit by a moving
         // sphere offset vertically from the collision axis. The
-        // contact point lies off each body's geometric center → the
+        // contact point lies off each body's geometric center -> the
         // impact should impart angular velocity.
         let mut world = World::new(EuclideanR3);
         register_default_narrowphase(&mut world.narrowphase);

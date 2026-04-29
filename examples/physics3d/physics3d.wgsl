@@ -1,4 +1,4 @@
-// 3D physics demo shader — renders a scene of mixed convex bodies
+// 3D physics demo shader: renders a scene of mixed convex bodies
 // (spheres, oriented boxes) plus an infinite floor via exact ray-shape
 // intersection. Spheres use analytical quadratic; boxes use the
 // slab method in the body's local frame.
@@ -95,7 +95,7 @@ fn intersect_plane(ro: vec3<f32>, rd: vec3<f32>, n: vec3<f32>, offset: f32) -> f
 /// Ray vs oriented box via the slab method. Ray is transformed to the
 /// box's local frame (position at origin, axis-aligned) before testing.
 fn intersect_box(ro: vec3<f32>, rd: vec3<f32>, center: vec3<f32>, half: vec3<f32>, rot: vec4<f32>) -> f32 {
-    // World → body-local: rotate by the inverse (conjugate) of rot.
+    // World -> body-local: rotate by the inverse (conjugate) of rot.
     let inv_rot = quat_conjugate(rot);
     let ro_local = quat_rotate(inv_rot, ro - center);
     let rd_local = quat_rotate(inv_rot, rd);

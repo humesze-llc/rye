@@ -12,9 +12,9 @@
 //! geodesic-plane SDFs land. The pillars (`rye_distance` spheres)
 //! tell the curvature story in every Space.
 //!
-//! Injects:
-//! - Space prelude from `rye-math` (`rye_distance`, `rye_exp`, …)
-//! - Scene module from `rye-sdf` (`corridor_demo_wgsl`)
+//! Assembles a shader from three layers:
+//! - Space prelude from `rye-math` (`rye_distance`, `rye_exp`, ...)
+//! - Scene module from the local `scene` submodule (`corridor_demo_wgsl`)
 //! - User shader from `examples/corridor/corridor.wgsl`
 //!
 //! ## Flags
@@ -35,9 +35,11 @@ use rye_render::{
     graph::RenderNode,
     raymarch::{GeodesicRayMarchNode, RayMarchUniforms},
 };
-use rye_sdf::corridor_demo_wgsl;
 use rye_shader::ShaderId;
 use winit::window::WindowAttributes;
+
+mod scene;
+use scene::corridor_demo_wgsl;
 
 fn shader_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/corridor")

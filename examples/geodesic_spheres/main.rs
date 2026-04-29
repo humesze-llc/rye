@@ -1,8 +1,8 @@
 //! Geodesic spheres raymarch demo.
 //!
-//! Injects a scene module from `rye-sdf`:
+//! Assembles a shader from three layers:
 //! - Space prelude from `rye-math` (`rye_distance`, `rye_exp`, ...)
-//! - scene module from `rye-sdf` (`rye_scene_sdf`)
+//! - scene module from the local `scene` submodule (`rye_scene_sdf`)
 //! - user shader from `examples/geodesic_spheres/spheres.wgsl`
 //!
 //! ## Flags
@@ -23,9 +23,11 @@ use rye_render::{
     graph::RenderNode,
     raymarch::{GeodesicRayMarchNode, RayMarchUniforms},
 };
-use rye_sdf::geodesic_spheres_demo_wgsl;
 use rye_shader::ShaderId;
 use winit::window::WindowAttributes;
+
+mod scene;
+use scene::geodesic_spheres_demo_wgsl;
 
 fn shader_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/geodesic_spheres")

@@ -26,9 +26,11 @@ use rye_render::{
     device::RenderDevice,
     raymarch::{GeodesicRayMarchNode, RayMarchUniforms},
 };
-use rye_sdf::LatticeSphereScene;
 use rye_shader::{validate_wgsl, GEODESIC_MARCH_KERNEL};
 use winit::window::WindowAttributes;
+
+mod scene;
+use scene::LatticeSphereScene;
 
 // BALL_SCALE is baked into lattice.wgsl as a constant; this comment documents
 // the value so main.rs and the shader stay in sync. Camera orbit distance ×

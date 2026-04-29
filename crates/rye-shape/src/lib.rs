@@ -167,12 +167,31 @@ mod tests {
             Shape::ConvexPolytope4D { vertices: vec![] }.kind(),
             ShapeKind::ConvexPolytope4D
         );
+        assert_eq!(
+            Shape::HalfSpace4D {
+                normal: Vec4::Y,
+                offset: 0.0
+            }
+            .kind(),
+            ShapeKind::HalfSpace4D
+        );
+        assert_eq!(
+            Shape::HyperSphere4D {
+                center: Vec4::ZERO,
+                radius: 1.0
+            }
+            .kind(),
+            ShapeKind::HyperSphere4D
+        );
     }
 
     #[test]
     fn ron_roundtrip_preserves_shape() {
-        // Quick sanity: the derived serde impls work on every variant.
-        // Scenes and pair-cache files lean on this.
+        // Sanity: the derived serde impls work on every variant.
+        // Scenes and pair-cache files lean on this. Covers all 8
+        // variants so adding a new one without thinking about serde
+        // surfaces here, not at runtime when the scene file fails to
+        // parse.
         for original in [
             Shape::sphere_at_origin(0.5),
             Shape::sphere_at(Vec3::new(1.0, 2.0, 3.0), 0.25),
@@ -180,11 +199,25 @@ mod tests {
                 normal: Vec3::Y,
                 offset: 0.5,
             },
+            Shape::HalfSpace4D {
+                normal: Vec4::Y,
+                offset: -0.5,
+            },
             Shape::Box3 {
                 half_extents: Vec3::new(0.5, 1.0, 0.25),
             },
             Shape::Polygon2D {
                 vertices: vec![Vec2::ZERO, Vec2::X, Vec2::Y],
+            },
+            Shape::ConvexPolytope3D {
+                vertices: vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z],
+            },
+            Shape::ConvexPolytope4D {
+                vertices: vec![Vec4::ZERO, Vec4::X, Vec4::Y, Vec4::Z, Vec4::W],
+            },
+            Shape::HyperSphere4D {
+                center: Vec4::new(0.1, 0.2, 0.3, 0.4),
+                radius: 0.7,
             },
         ] {
             let s = ron::ser::to_string(&original).unwrap();

@@ -105,3 +105,64 @@ where
     body.position = p_new;
     body.orientation = space.integrate_orientation(body.orientation, body.angular_velocity, dt);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collider::Collider;
+    use glam::Vec3;
+    use rye_math::EuclideanR3;
+
+    /// `inv_mass == 0` means static; the integrator must not advance
+    /// position even when velocity is non-zero (the solver may have
+    /// written velocity into a static slot intentionally for diagnostic
+    /// reasons; integration ignoring it is the canonical guarantee).
+    #[test]
+    fn static_body_skips_integration() {
+        let mut body = RigidBody::<EuclideanR3>::fixed(
+            Vec3::ZERO,
+            Collider::sphere_at_origin(0.5),
+            1.0,
+            &EuclideanR3,
+        );
+        body.velocity = Vec3::new(10.0, 0.0, 0.0);
+        integrate_body(&EuclideanR3, &mut body, 1.0);
+        assert_eq!(body.position, Vec3::ZERO);
+    }
+
+    /// Dynamic body in flat E³: position advances by `velocity * dt`
+    /// and the velocity vector is unchanged (parallel transport is
+    /// the identity in Euclidean space).
+    #[test]
+    fn dynamic_body_in_e3_moves_linearly() {
+        let mut body = RigidBody::<EuclideanR3>::new(
+            Vec3::ZERO,
+            Vec3::new(1.0, 2.0, -3.0),
+            Collider::sphere_at_origin(0.1),
+            1.0,
+            0.1,
+            &EuclideanR3,
+        );
+        integrate_body(&EuclideanR3, &mut body, 0.5);
+        assert_eq!(body.position, Vec3::new(0.5, 1.0, -1.5));
+        assert_eq!(body.velocity, Vec3::new(1.0, 2.0, -3.0));
+    }
+
+    /// Zero `dt` is a no-op for both position and velocity. Catches
+    /// the failure mode where a bug in `space.exp` returns garbage
+    /// for a zero tangent vector.
+    #[test]
+    fn zero_dt_does_not_advance_state() {
+        let mut body = RigidBody::<EuclideanR3>::new(
+            Vec3::new(2.0, 3.0, 5.0),
+            Vec3::new(7.0, 11.0, 13.0),
+            Collider::sphere_at_origin(0.1),
+            1.0,
+            0.1,
+            &EuclideanR3,
+        );
+        let before = (body.position, body.velocity);
+        integrate_body(&EuclideanR3, &mut body, 0.0);
+        assert_eq!((body.position, body.velocity), before);
+    }
+}

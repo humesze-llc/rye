@@ -363,6 +363,31 @@ mod tests {
         assert!((camera.forward.length() - 1.0).abs() < 1e-3);
     }
 
+    /// `OrbitController` against `BlendedSpace<E3, H3, LinearBlendX>`
+    /// exercises the variable-metric `parallel_transport_along` path
+    /// the closed-form Spaces never hit. Pin: targeting the H³-side of
+    /// a transition zone, the orbit produces a finite, ≈-orthonormal
+    /// frame inside the Poincaré ball.
+    #[test]
+    fn orbit_in_blended_e3_h3_produces_valid_frame() {
+        use rye_math::{BlendedSpace, EuclideanR3, HyperbolicH3, LinearBlendX};
+        let space = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-2.0, 2.0));
+        // Orbit around a point firmly inside the H³ region (x > 2).
+        let mut camera =
+            Camera::<BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>>::at_origin();
+        camera.position = Vec3::new(2.5, 0.0, 0.0);
+        let mut ctrl = OrbitController::around(Vec3::new(2.5, 0.0, 0.0));
+        ctrl.distance = 0.4;
+        ctrl.advance(FrameInput::default(), &mut camera, &space, 0.0);
+        assert!(camera.position.is_finite());
+        assert!(camera.right.is_finite() && camera.up.is_finite() && camera.forward.is_finite());
+        // Tolerances are looser than closed-form because the variable-
+        // metric integrator has finite step error.
+        assert!((camera.right.length() - 1.0).abs() < 1e-2);
+        assert!((camera.up.length() - 1.0).abs() < 1e-2);
+        assert!((camera.forward.length() - 1.0).abs() < 1e-2);
+    }
+
     /// Per-Space `OrbitController::advance` timing. `#[ignore]` by
     /// default, run on demand via
     ///

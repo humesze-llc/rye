@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::space::{Space, WgslSpace};
 
-/// Closest `|p|²` is allowed to 1.0. At the equator `w = sqrt(1 − |p|²) → 0`
+/// Closest `|p|²` is allowed to 1.0. At the equator `w = sqrt(1 − |p|²) -> 0`
 /// and the tangent formula saturates; this shell keeps `w ≥ ~1e-3`.
 const SPHERE_R2_MAX: f32 = 1.0 - 1e-6;
 
@@ -124,10 +124,10 @@ impl Iso4 {
         let k = c - 1.0; // reused below
 
         // Givens rotation in the {n_4d, e_w} plane by angle θ (cos=c, sin=s)
-        // mapping e_w → qt. Derivation: for each basis vector e_i, decompose
+        // mapping e_w -> qt. Derivation: for each basis vector e_i, decompose
         // into (component along n_4d, component along e_w, perpendicular)
         // and apply the 2D rotation. The result is the same algebraic form as
-        // H³'s Lorentz boost with sinh→sin, cosh→cos, and a sign flip on the
+        // H³'s Lorentz boost with sinh->sin, cosh->cos, and a sign flip on the
         // (xyz, w) block (SO(4) vs SO⁺(3,1)).
         Self {
             matrix: Mat4::from_cols(
@@ -169,7 +169,7 @@ impl Space for SphericalS3 {
         }
         let q = to_sphere(at);
         // Lift v to a 4D tangent perpendicular to q.
-        // Constraint: dot(v4, q) = dot(v, at) + vw·q.w = 0 → vw = −dot(v,at)/q.w
+        // Constraint: dot(v4, q) = dot(v, at) + vw·q.w = 0 -> vw = −dot(v,at)/q.w
         let vw = -v.dot(at) / q.w;
         let v4 = Vec4::new(v.x, v.y, v.z, vw);
         let mag = v4.length();

@@ -125,7 +125,7 @@ impl Polytope {
         for f in self.faces.drain(..) {
             let view = support.point - self.vertices[f.v[0]].point;
             if f.normal.dot(view) > 0.0 {
-                // Face faces the new point → remove, record edges.
+                // Face faces the new point -> remove, record edges.
                 add_or_remove_edge(&mut horizon, f.v[0], f.v[1]);
                 add_or_remove_edge(&mut horizon, f.v[1], f.v[2]);
                 add_or_remove_edge(&mut horizon, f.v[2], f.v[0]);
@@ -286,6 +286,13 @@ pub fn epa<A: SupportFn, B: SupportFn>(
 
     // Iteration cap reached; return the current best estimate rather
     // than failing outright. Happens only for nearly-degenerate inputs.
+    // Emit a debug-level trace so developers tuning narrowphase can
+    // count cap hits without spamming release logs.
+    tracing::debug!(
+        max_iterations = EPA_MAX_ITERATIONS,
+        vertices = polytope.vertices.len(),
+        "EPA 3D hit iteration cap; returning best-estimate contact",
+    );
     let face_idx = polytope.closest_face()?;
     contact_from_face(&polytope, polytope.faces[face_idx])
 }
@@ -363,7 +370,7 @@ mod tests {
 
     #[test]
     fn box_box_axis_aligned_overlap_penetration_matches_axis() {
-        // Unit boxes offset by 1.5 along X → 0.5 overlap along +X.
+        // Unit boxes offset by 1.5 along X -> 0.5 overlap along +X.
         let va = box_vertices(Vec3::ZERO, Vec3::ONE);
         let vb = box_vertices(Vec3::new(1.5, 0.0, 0.0), Vec3::ONE);
         let a = ConvexHull { vertices: &va };
@@ -377,7 +384,7 @@ mod tests {
         );
         assert!(
             info.normal.dot(Vec3::X) > 0.0,
-            "normal not A→B: {:?}",
+            "normal not A->B: {:?}",
             info.normal
         );
         assert_close(info.penetration, 0.5, 1e-3);
@@ -397,7 +404,7 @@ mod tests {
             radius: 0.5,
         };
 
-        // Put the box as A and the sphere as B so normal A→B points
+        // Put the box as A and the sphere as B so normal A->B points
         // toward (1, 1, 1)/√3.
         let info = run(&b, &s, Vec3::new(1.0, 1.0, 1.0));
         let expected = Vec3::new(1.0, 1.0, 1.0).normalize();

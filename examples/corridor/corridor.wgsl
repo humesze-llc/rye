@@ -1,4 +1,4 @@
-// Corridor geodesic raymarch demo — user shading layer.
+// Corridor geodesic raymarch demo: user shading layer.
 //
 // The Space prelude, scene SDF, and geodesic march kernel are prepended by
 // rye-shader before this file is compiled. Available functions:
@@ -40,7 +40,7 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32
 fn surface_base_color(n: vec3<f32>, hit: vec3<f32>) -> vec3<f32> {
     // Floor: normal points up strongly.
     if (n.y > 0.75) {
-        // Checkerboard in Space coords — tile lines are geodesic in E³,
+        // Checkerboard in Space coords; tile lines are geodesic in E³,
         // tanh-spaced in H³, sin-spaced in S³. The tiling is the grid.
         let cell = floor(hit.x * 10.0) + floor(hit.z * 10.0);
         let light_cell = 0.72;

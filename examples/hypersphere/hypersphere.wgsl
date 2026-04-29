@@ -5,7 +5,7 @@
 //   `sqrt(r² − (w₀ − c.w)²)`
 // centered at `(c.x, c.y, c.z)`. Outside that w-band the cross-section
 // is empty. As the user slides `w₀` the rendered sphere grows from a
-// point to its maximum radius and back — the visible signature of
+// point to its maximum radius and back: the visible signature of
 // slicing a 4-ball.
 //
 // Rendering: ray march the union of every active body's cross-section
@@ -55,7 +55,7 @@ struct SceneHit {
     // MAX_BODIES     = ground
     // MAX_BODIES + 1 = empty
     material: u32,
-    // For body hits, `dw` from this body's w to the slice plane —
+    // For body hits, `dw` from this body's w to the slice plane;
     // used by the fragment shader for the warm/cold tint.
     dw: f32,
 };
@@ -122,7 +122,7 @@ fn sky(rd: vec3<f32>) -> vec3<f32> {
 }
 
 /// Per-body base hue. Cycles through 8 distinct hues so adjacent
-/// bodies in the spawn order render in distinguishable colors —
+/// bodies in the spawn order render in distinguishable colors;
 /// useful when many cross-sections overlap in the slice plane.
 fn body_base_color(idx: u32) -> vec3<f32> {
     let i = idx % 8u;
@@ -147,14 +147,14 @@ fn body_base_color(idx: u32) -> vec3<f32> {
 /// Returns `(rgb, alpha)` in pre-multiplied form, ready to composite
 /// over a background.
 ///
-/// Cost: `MAX_STEPS × body_count` per pixel — roughly 250 × 32 ≈ 8K
+/// Cost: `MAX_STEPS × body_count` per pixel, roughly 250 × 32 ≈ 8K
 /// per pixel for the worst case. GPU absorbs this fine at 1080p; the
 /// inner loop early-exits as soon as accumulated alpha saturates.
 fn ghost_volume(ro: vec3<f32>, rd: vec3<f32>, body_count: u32, t_max: f32) -> vec4<f32> {
     let r4 = u.radius4;
     let r4_sq = r4 * r4;
     // Step size and extinction. Sigma is high enough that the
-    // visible silhouette matches the body's geometric radius — at
+    // visible silhouette matches the body's geometric radius: at
     // sigma = 1.5 a ray through the centre reaches alpha ≈ 0.99 and
     // a glancing ray with `p_perp = 0.9·r` still reaches alpha ≈ 0.6,
     // so the ghost reads as a soft-edged solid ball rather than a
@@ -241,7 +241,7 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     if (u.ghost_mode_f > 0.5) {
         let bg = ghost_background(ro, rd);
         // Volumetric march up to the floor (or 60 units if no floor
-        // hit). We don't penetrate the floor — bodies below `y = 0`
+        // hit). We don't penetrate the floor; bodies below `y = 0`
         // are unphysical anyway.
         let t_max = select(60.0, bg.w, bg.w > 0.0);
         let ghost = ghost_volume(ro, rd, body_count, t_max);

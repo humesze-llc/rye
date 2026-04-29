@@ -1,4 +1,4 @@
-// Pentatope w-slice viewer — live physics edition.
+// Pentatope w-slice viewer: live physics edition.
 //
 // Differences from the static viewer that preceded this:
 //
@@ -7,7 +7,7 @@
 //   physics body's position + Rotor4 orientation on the CPU.
 // - There's a 4D ground at `y = 0` (a half-space whose normal is
 //   `+y` in 4D, with `w` component zero). Its cross-section at any
-//   `w = w₀` is the 3D half-space `y ≥ 0` — i.e. a horizontal floor
+//   `w = w₀` is the 3D half-space `y ≥ 0`: a horizontal floor
 //   plane that doesn't move when you change `w₀`.
 //
 // Rendering: ray march the union of the pentatope cross-section and
@@ -61,7 +61,7 @@ fn slice_sdf(p: vec3<f32>, w0: f32) -> SliceHit {
 
     // First pass: collect every edge-crossing point and average them
     // for an interior reference. The 4D body-centroid projected to
-    // xyz is *not* reliable here — once the body has rotated, that
+    // xyz is *not* reliable here: once the body has rotated, that
     // point can sit outside the cross-section, flipping face
     // normals and making the SDF read huge regions as "inside."
     // Cross-section vertices are always inside the cross-section's
@@ -97,7 +97,7 @@ fn slice_sdf(p: vec3<f32>, w0: f32) -> SliceHit {
             }
         }
 
-        // 6 cell edges → up to 4 cross-section vertices.
+        // 6 cell edges -> up to 4 cross-section vertices.
         var verts: array<vec3<f32>, 4>;
         var nv: i32 = 0;
         for (var i: i32 = 0; i < 4; i = i + 1) {

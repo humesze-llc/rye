@@ -1,4 +1,4 @@
-// Mandelbulb raymarcher — the fractal demo for Rye.
+// Mandelbulb raymarcher: the fractal demo for Rye.
 //
 // Edit this file while the example is running; the ShaderDb watcher
 // recompiles and RayMarchNode rebuilds on the next frame.

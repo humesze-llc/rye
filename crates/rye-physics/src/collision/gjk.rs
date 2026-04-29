@@ -9,12 +9,12 @@
 //!   `s_{A⊖B}(d) = s_A(d) − s_B(−d)`.
 //! - GJK maintains a simplex of such support points inside `A ⊖ B` and
 //!   iteratively refines it, always moving toward the origin, until it
-//!   either encloses the origin (→ intersection) or finds a direction
-//!   where no new support point makes progress (→ separation).
+//!   either encloses the origin (-> intersection) or finds a direction
+//!   where no new support point makes progress (-> separation).
 //!
 //! This module is the 3D specialization: a simplex can be at most a
 //! tetrahedron (4 points). The Voronoi-region logic for the
-//! line → triangle → tetrahedron cases is hand-written. The support-
+//! line -> triangle -> tetrahedron cases is hand-written. The support-
 //! function side is generic over `VectorOps`, so when 4D lands,
 //! only the simplex-case logic needs a 4D cousin (pentachoron = 5
 //! points); the support-function path, the iteration loop, and all
@@ -335,9 +335,9 @@ fn do_tetrahedron(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     if adb.dot(ao) > 0.0 {
         // Drop C, recurse on triangle [B, D, A].
         let d_point = simplex[0];
-        simplex[0] = simplex[2]; // B → [0]
-        simplex[1] = d_point; // D → [1]
-        simplex[2] = simplex[3]; // A → [2]
+        simplex[0] = simplex[2]; // B -> [0]
+        simplex[1] = d_point; // D -> [1]
+        simplex[2] = simplex[3]; // A -> [2]
         return do_triangle(simplex);
     }
 
@@ -429,8 +429,8 @@ mod tests {
     #[test]
     fn sphere_vs_sphere_matches_distance_test() {
         for &(ax, bx, overlap) in &[
-            (0.0, 3.0, false), // 3 apart, radii 1 each → gap of 1
-            (0.0, 1.5, true),  // 1.5 apart, radii 1 each → overlap
+            (0.0, 3.0, false), // 3 apart, radii 1 each -> gap of 1
+            (0.0, 1.5, true),  // 1.5 apart, radii 1 each -> overlap
             (0.0, 2.0, true),  // exactly touching
         ] {
             let a = Sphere {
@@ -455,8 +455,8 @@ mod tests {
         // Unit box with corner at (1,1,1). Sphere at (1+d, 1+d, 1+d)
         // reaches the corner when d·√3 ≤ r, i.e. d ≤ r/√3.
         // For r=0.5: threshold d ≈ 0.2887.
-        //   d = 0.35 → distance 0.606 > 0.5 → no overlap
-        //   d = 0.20 → distance 0.346 < 0.5 → overlap
+        //   d = 0.35 -> distance 0.606 > 0.5 -> no overlap
+        //   d = 0.20 -> distance 0.346 < 0.5 -> overlap
         let vb = box_vertices(Vec3::ZERO, Vec3::ONE);
         let b = ConvexHull { vertices: &vb };
 

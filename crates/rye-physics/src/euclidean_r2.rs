@@ -387,7 +387,7 @@ fn sphere_polygon_r2(
     if point_in_convex_ccw(&vb, center) {
         // Sphere center is inside the polygon, maximal penetration.
         // Push the sphere out along (center - closest) = toward the
-        // nearest edge. Normal A→B is from sphere toward polygon =
+        // nearest edge. Normal A->B is from sphere toward polygon =
         // (closest - center) direction, but since the center is inside
         // we flip to push it out.
         let dir = (center - closest).try_normalize().unwrap_or(Vec2::Y);
@@ -439,7 +439,7 @@ pub fn regular_polygon_vertices(n: u32, r: f32) -> Vec<Vec2> {
 /// `I = (m·r²/6) · (1 + 2·cos²(π/n))`
 ///
 /// Reduces to `m·r²/4` for n=3, `m·r²/3` for n=4, and `m·r²/2` in the
-/// disk limit as n→∞.
+/// disk limit as n->∞.
 pub fn regular_polygon_inertia(mass: f32, n: u32, r: f32) -> f32 {
     use std::f32::consts::PI;
     let c = (PI / n as f32).cos();
@@ -606,12 +606,12 @@ mod tests {
         register_default_narrowphase(&mut np);
 
         // Two axis-aligned unit squares (half-extent 1), centers 1.5
-        // apart along X → x-extents overlap by 0.5.
+        // apart along X -> x-extents overlap by 0.5.
         let a = aa_box(Vec2::ZERO, Vec2::ONE, 1.0);
         let b = aa_box(Vec2::new(1.5, 0.0), Vec2::ONE, 1.0);
 
         let c = np.test(&a, &b, &EuclideanR2).expect("should collide");
-        // Normal A→B should point along ±X; minimum overlap 0.5.
+        // Normal A->B should point along ±X; minimum overlap 0.5.
         assert!(
             c.normal.dot(Vec2::X).abs() > 0.99,
             "normal not ±X: {:?}",
@@ -619,7 +619,7 @@ mod tests {
         );
         assert!(
             c.normal.dot(Vec2::X) > 0.0,
-            "normal not A→B: {:?}",
+            "normal not A->B: {:?}",
             c.normal
         );
         assert!(
@@ -655,7 +655,7 @@ mod tests {
 
         // Rotate B by 45°. Its x-extent becomes ±√2/2 ≈ ±0.707, so the
         // gap between A's right edge (x=1) and B's left edge (x=1.9−0.707=1.193)
-        // is positive → no collision.
+        // is positive -> no collision.
         let mut b = polygon_body(Vec2::new(1.9, 0.0), Vec2::ZERO, 4, 1.0, 1.0);
         b.orientation = Iso2 {
             rotation: rye_math::Bivector2(std::f32::consts::FRAC_PI_4).exp(),
@@ -670,7 +670,7 @@ mod tests {
         register_default_narrowphase(&mut np);
 
         // Square circumradius 1 at origin. Its right edge is at x=1.
-        // Sphere radius 0.5 at (1.3, 0) → distance from center to edge
+        // Sphere radius 0.5 at (1.3, 0) -> distance from center to edge
         // is 0.3, penetration = 0.5 − 0.3 = 0.2.
         let square = polygon_body(Vec2::ZERO, Vec2::ZERO, 4, 1.0, 1.0);
         let sphere = sphere_body(Vec2::new(1.3, 0.0), Vec2::ZERO, 0.5, 1.0);
@@ -678,7 +678,7 @@ mod tests {
         let c = np
             .test(&sphere, &square, &EuclideanR2)
             .expect("should collide");
-        // Normal sphere→square (A→B): points from sphere toward polygon = −X.
+        // Normal sphere->square (A->B): points from sphere toward polygon = −X.
         assert!(c.normal.dot(-Vec2::X) > 0.99, "normal: {:?}", c.normal);
         assert!(
             (c.penetration - 0.2).abs() < 1e-4,
@@ -708,11 +708,11 @@ mod tests {
         let square = polygon_body(Vec2::ZERO, Vec2::ZERO, 4, 1.0, 1.0);
         let sphere = sphere_body(Vec2::new(1.3, 0.0), Vec2::ZERO, 0.5, 1.0);
 
-        // polygon first, sphere second → dispatch flips.
+        // polygon first, sphere second -> dispatch flips.
         let c = np
             .test(&square, &sphere, &EuclideanR2)
             .expect("should collide");
-        // Normal polygon→sphere (A→B): now points from polygon toward sphere = +X.
+        // Normal polygon->sphere (A->B): now points from polygon toward sphere = +X.
         assert!(c.normal.dot(Vec2::X) > 0.99, "normal: {:?}", c.normal);
     }
 

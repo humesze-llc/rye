@@ -1,11 +1,11 @@
-// BlendedSpace demo — user shading layer.
+// BlendedSpace demo: user shading layer.
 //
 // The Space prelude (BlendedSpace<E3, H3, LinearBlendX>), scene SDF, and
 // geodesic march kernel are prepended by rye-shader before this file is
 // compiled. Available functions:
 //   rye_safe_normalize, rye_march_geodesic, rye_estimate_normal (kernel)
 //   rye_distance, rye_exp, rye_parallel_transport (Space prelude)
-//   rye_blended_alpha (BlendedSpace prelude — for tinting by zone)
+//   rye_blended_alpha (BlendedSpace prelude, for tinting by zone)
 //   rye_scene_sdf (scene module)
 //
 // Edit while the example is running; ShaderDb hot-reloads this file.
@@ -63,7 +63,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let ambient   = 0.22;
 
     // Tint by blending zone: E³ side cool blue, H³ side warm red.
-    // The transition zone shows a smooth gradient — *that* is the
+    // The transition zone shows a smooth gradient; *that* is the
     // visible BlendedSpace seam.
     let alpha = rye_blended_alpha(hit_space);
     let e3_color = vec3<f32>(0.40, 0.62, 0.95);

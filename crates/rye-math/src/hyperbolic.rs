@@ -12,8 +12,8 @@
 //! model, composition is matmul, which the GPU and existing transform
 //! graphs are already good at. See [`Iso3H`].
 //!
-//! Applying an isometry to a point projects Poincaré → hyperboloid →
-//! matmul → Poincaré. Round-trip cost is paid per `iso_apply`, not per
+//! Applying an isometry to a point projects Poincaré -> hyperboloid ->
+//! matmul -> Poincaré. Round-trip cost is paid per `iso_apply`, not per
 //! shader fragment.
 //!
 //! ## Curvature
@@ -511,7 +511,7 @@ mod tests {
     #[test]
     fn small_scale_distance_matches_euclidean_via_metric_factor() {
         // At the origin, ds_hyp = 2 · ds_euc. So for tiny offsets,
-        // d_hyp(0, p) → 2 · |p|. This is the small-scale "flat limit"
+        // d_hyp(0, p) -> 2 · |p|. This is the small-scale "flat limit"
         // up to the constant conformal factor.
         let s = h3();
         let eps = 1e-3;
@@ -525,7 +525,7 @@ mod tests {
         // at 60° opening. Gauss-Bonnet for K = -1 gives:
         //   π − (α + β + γ) = area
         // For an equilateral hyperbolic triangle of side L the area
-        // approaches the Euclidean (√3/4) L² as L → 0.
+        // approaches the Euclidean (√3/4) L² as L -> 0.
         let s = h3();
         let l = 0.05;
         let v_norm = l * 0.5; // exp from origin moves 2·|v|

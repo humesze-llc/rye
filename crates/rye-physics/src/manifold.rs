@@ -7,7 +7,7 @@
 //! bodies stable: the bottom body has one contact with the floor, one
 //! with the body above; each frame's resolution applies an impulse,
 //! the next frame finds the bodies still slightly overlapping (due to
-//! gravity over `dt`), repeat → jitter forever.
+//! gravity over `dt`), repeat -> jitter forever.
 //!
 //! The standard fix is two-fold:
 //!
@@ -175,7 +175,7 @@ pub const DEFAULT_PGS_ITERS: usize = 8;
 
 /// Baumgarte bias coefficient: how aggressively the velocity-level
 /// constraint corrects positional error per timestep. β ∈ [0.1, 0.3]
-/// is the standard range. Higher → faster correction, more energetic
+/// is the standard range. Higher -> faster correction, more energetic
 /// (can introduce small bursts of velocity). 0.2 is the Bullet /
 /// rapier default.
 pub const BAUMGARTE_BETA: f32 = 0.2;

@@ -231,11 +231,11 @@ mod tests {
     fn parallel_transport_along_default_impl_is_identity_in_flat_space() {
         let s = r3();
         let v = Vec3::new(1.7, -0.3, 0.5);
-        // Empty path → unchanged.
+        // Empty path -> unchanged.
         assert_eq!(s.parallel_transport_along(&[], v), v);
-        // Single point → unchanged.
+        // Single point -> unchanged.
         assert_eq!(s.parallel_transport_along(&[Vec3::ZERO], v), v);
-        // Multi-segment polyline → still identity in E³.
+        // Multi-segment polyline -> still identity in E³.
         let path = [
             Vec3::ZERO,
             Vec3::new(1.0, 0.0, 0.0),

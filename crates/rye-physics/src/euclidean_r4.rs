@@ -62,17 +62,18 @@ impl PhysicsSpace for EuclideanR4 {
     type Inertia = f32;
 
     fn integrate_orientation(&self, iso: Iso4Flat, omega: Bivector4, dt: f32) -> Iso4Flat {
-        // Guard against NaN/infinite angular velocity leaking into
-        // the orientation, same defense in depth as the 3D path.
-        if !(omega.xy.is_finite()
-            && omega.xz.is_finite()
-            && omega.xw.is_finite()
-            && omega.yz.is_finite()
-            && omega.yw.is_finite()
-            && omega.zw.is_finite())
-        {
-            return iso;
-        }
+        // Catch NaN/infinite angular velocity at the source rather
+        // than letting it propagate through the rotor and into the
+        // GPU buffer. Debug-only; release builds trust internal callers.
+        debug_assert!(
+            omega.xy.is_finite()
+                && omega.xz.is_finite()
+                && omega.xw.is_finite()
+                && omega.yz.is_finite()
+                && omega.yw.is_finite()
+                && omega.zw.is_finite(),
+            "non-finite Bivector4 angular velocity in integrate_orientation",
+        );
         let delta = (omega * dt).exp();
         // Rotor4 multiplication is left-first: `A · B` applies A then
         // B. To apply `iso_current` then `delta`, compose as
@@ -197,7 +198,7 @@ fn sphere_halfspace_r4(
     if penetration <= 0.0 {
         return None;
     }
-    // A→B normal points *into* the half-space (opposite the
+    // A->B normal points *into* the half-space (opposite the
     // half-space's outward normal); pushing along it separates the
     // sphere from the wall.
     let contact_normal = -normal;
@@ -692,7 +693,7 @@ mod tests {
     /// (not None from `validate_contact4`), comes to rest above the
     /// floor, and stays there with bounded angular velocity.
     /// End-to-end integration test of the full
-    /// `gravity → integrator → polytope_halfspace_r4 → manifold → PGS`
+    /// `gravity -> integrator -> polytope_halfspace_r4 -> manifold -> PGS`
     /// pipeline in 4D.
     ///
     /// **Catches:**
@@ -1052,7 +1053,7 @@ mod tests {
         );
     }
 
-    /// Separated 4D polytopes → no contact. Exercises the bounding-
+    /// Separated 4D polytopes -> no contact. Exercises the bounding-
     /// sphere pre-cull plus GJK's Separated path.
     #[test]
     fn separated_pentatopes_produce_no_contact() {

@@ -35,7 +35,7 @@ pub trait PhysicsSpace: Space {
     fn integrate_orientation(&self, iso: Self::Iso, omega: Self::AngVel, dt: f32) -> Self::Iso;
 
     /// Apply the inverse inertia to a torque-bivector. Used by the
-    /// solver for `ω ← ω + I⁻¹τ dt`.
+    /// solver for `ω += I⁻¹τ dt`.
     fn apply_inv_inertia(&self, inertia: Self::Inertia, torque: Self::AngVel) -> Self::AngVel;
 
     /// World-space velocity of `body` at world point `p`, accounting

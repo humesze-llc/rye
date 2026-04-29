@@ -297,9 +297,13 @@ fn solve_normal_then_tangent<S>(
     S: PhysicsSpace,
     S::Vector: VectorOps,
 {
-    if !VectorOps::is_finite(cp.normal) || !cp.penetration.is_finite() {
-        return;
-    }
+    // Contacts reach the solver only after narrowphase validation; a
+    // non-finite slot here means a bug upstream, not a runtime case to
+    // silently skip. Catch it in debug; release trusts narrowphase.
+    debug_assert!(
+        VectorOps::is_finite(cp.normal) && cp.penetration.is_finite(),
+        "non-finite contact in solve_normal_then_tangent",
+    );
 
     // ---- Normal solve ----
     let v_rel_n_vec =

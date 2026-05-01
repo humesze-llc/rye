@@ -826,25 +826,20 @@ impl BlendingField for LinearBlendX {
 /// shader emission is single-instantiation.
 ///
 /// **Numerical scheme.** 16 RK4 sub-steps per `rye_exp` call
-/// (controlled by `RYE_BLENDED_RK4_SUB`). `rye_parallel_transport`
-/// is a single midpoint-Euler step along the chart-coordinate line
-/// from `p_from` to `p_to`.
+/// (`RYE_BLENDED_RK4_SUB`). 8 RK4 sub-steps per `rye_parallel_transport`
+/// call (`RYE_BLENDED_TRANSPORT_SUB`), matching the CPU's
+/// `parallel_transport_segment_rk4` step-for-step.
 ///
-/// The geodesic-march kernel in `rye-shader/kernel.wgsl` calls this
-/// `rye_parallel_transport` once per ray-march sub-step (the kernel
-/// chains many small sub-steps per fragment, each over a tiny
-/// chart-coordinate segment). Per-call truncation is `O(h²)`, so
-/// cumulative error over the march stays small for the per-step `h`
-/// the kernel uses.
-/// A multi-step RK4 inside each call would multiply the kernel's
-/// cost for marginal accuracy gain. The CPU side runs 8 RK4
-/// sub-steps because it serves a different use case: path-aware
-/// transport over arcs much longer than a march sub-step.
+/// The geodesic-march kernel calls `rye_parallel_transport` once per
+/// ray-march sub-step. Internal RK4 multiplies per-call cost ~32x vs
+/// the previous single-step Euler, but `parallel_transport` only
+/// touches the curved-Space ray-march path; closed-form Spaces
+/// continue to use closed-form transport with no integrator at all.
 ///
-/// CPU/GPU parity for `exp` is pinned by
-/// `blended_e3_h3_gpu_probe_exp_matches_cpu` in `rye-shader/db.rs`;
-/// transport parity is intentionally not pinned because the two
-/// sides use different schemes by design.
+/// CPU/GPU parity is pinned by
+/// `blended_e3_h3_gpu_probe_exp_matches_cpu` (`rye_exp`) and
+/// `blended_e3_h3_gpu_probe_transport_matches_cpu`
+/// (`rye_parallel_transport`) in `rye-shader/db.rs`.
 ///
 /// **`rye_log` / `rye_distance` accuracy.** `rye_log` returns
 /// the Euclidean chart-coordinate difference (the geodesic march
@@ -863,6 +858,7 @@ const RYE_BLENDED_X_START: f32 = {start:?};
 const RYE_BLENDED_X_END:   f32 = {end:?};
 const RYE_BLENDED_X_WIDTH: f32 = {width:?};
 const RYE_BLENDED_RK4_SUB: i32 = 16;
+const RYE_BLENDED_TRANSPORT_SUB: i32 = 8;
 
 fn rye_blended_alpha(p: vec3<f32>) -> f32 {{
     let raw_t = (p.x - RYE_BLENDED_X_START) / RYE_BLENDED_X_WIDTH;
@@ -972,14 +968,27 @@ fn rye_blended_transport_rhs(p: vec3<f32>, gamma_dot: vec3<f32>, v: vec3<f32>) -
 }}
 
 fn rye_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{
-    // Single-step transport along the chart-coordinate straight
-    // line p_from to p_to. Matches the kernel's small-step
-    // pattern; the transport error per step is O(h²) but the
-    // kernel chains many of them so cumulative error stays small.
-    let gamma_dot = p_to - p_from;
-    let p_mid = 0.5 * (p_from + p_to);
-    let dv = rye_blended_transport_rhs(p_mid, gamma_dot, v);
-    return v + dv;
+    // 8 RK4 sub-steps along the chart-coordinate straight line from
+    // p_from to p_to. Mirrors the CPU `parallel_transport_segment_rk4`
+    // step-for-step so the two sides agree to 4th-order truncation.
+    // Pinned by `blended_e3_h3_gpu_probe_transport_matches_cpu` in
+    // rye-shader/db.rs.
+    let dgamma = p_to - p_from;
+    if dot(dgamma, dgamma) < 1e-14 {{ return v; }}
+    let h = 1.0 / f32(RYE_BLENDED_TRANSPORT_SUB);
+    var v_curr = v;
+    for (var step: i32 = 0; step < RYE_BLENDED_TRANSPORT_SUB; step = step + 1) {{
+        let t = f32(step) * h;
+        let p_t      = p_from + dgamma * t;
+        let p_t_half = p_from + dgamma * (t + h * 0.5);
+        let p_t_full = p_from + dgamma * (t + h);
+        let k1 = rye_blended_transport_rhs(p_t,      dgamma, v_curr);
+        let k2 = rye_blended_transport_rhs(p_t_half, dgamma, v_curr + k1 * (h * 0.5));
+        let k3 = rye_blended_transport_rhs(p_t_half, dgamma, v_curr + k2 * (h * 0.5));
+        let k4 = rye_blended_transport_rhs(p_t_full, dgamma, v_curr + k3 * h);
+        v_curr = v_curr + (k1 + 2.0 * k2 + 2.0 * k3 + k4) * (h / 6.0);
+    }}
+    return v_curr;
 }}
 
 fn rye_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {{

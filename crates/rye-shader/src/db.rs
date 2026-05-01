@@ -835,9 +835,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     /// CPU/GPU parity for `BlendedSpace<EuclideanR3, HyperbolicH3,
-    /// LinearBlendX>`, restricted to `rye_exp` only.
+    /// LinearBlendX>`, restricted to `rye_exp`. Transport parity has
+    /// its own probe at `blended_e3_h3_gpu_probe_transport_matches_cpu`.
     ///
-    /// The other ABI methods are intentionally divergent here:
+    /// The other two ABI methods are intentionally divergent:
     /// - `rye_log` returns the chart-coordinate difference; CPU
     ///   runs Gauss-Newton shooting. The geodesic march kernel
     ///   does not call it.
@@ -845,20 +846,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     ///   `sqrt(f((a+b)/2)) * |a-b|`; CPU computes the full
     ///   Riemannian distance via `log` length scaled by the
     ///   conformal factor at `a`.
-    /// - `rye_parallel_transport` is a single midpoint-Euler step
-    ///   along the chart-coordinate line; CPU uses 8 RK4 sub-steps
-    ///   along the same line. Both are called by the geodesic-march
-    ///   kernel (CPU via `parallel_transport_segment_rk4`, GPU per
-    ///   march sub-step via `kernel.wgsl::rye_march_geodesic`), but
-    ///   the GPU's coarser scheme is intentional: the kernel chains
-    ///   ~256 small sub-steps per fragment so the per-call O(h^2)
-    ///   error stays bounded, while RK4 inside each call would
-    ///   multiply kernel cost for marginal accuracy gain.
     ///
-    /// `rye_exp` is the highest-leverage of the three (each kernel
-    /// sub-step's geodesic position depends on it directly), so
-    /// CPU/GPU agreement on `exp` is the load-bearing parity claim
-    /// for this `BlendedSpace` instantiation.
+    /// `rye_exp` is the highest-leverage method (each kernel
+    /// sub-step's geodesic position depends on it directly).
     ///
     /// Tolerance: GPU uses 16 RK4 sub-steps, CPU uses 32. Both
     /// are 4th-order so per-step truncation scales as h^5;
@@ -908,6 +898,63 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             assert!(
                 diff < 5e-3,
                 "BlendedSpace exp parity failed at a={a:?} v={v:?}: cpu={cpu:?} gpu={gpu:?} diff={diff}",
+            );
+        }
+    }
+
+    /// CPU/GPU parity for `BlendedSpace<EuclideanR3, HyperbolicH3,
+    /// LinearBlendX>::parallel_transport`. Both sides run 8 RK4
+    /// sub-steps along the chart-coordinate line from `a` to `b`, so
+    /// agreement is to 4th-order truncation modulo f32 noise.
+    ///
+    /// Chosen test paths sample the three regions: pure E3 (transport
+    /// reduces to identity, tightest tolerance), the mid-zone where
+    /// the conformal factor's gradient is non-zero, and pure H3 at
+    /// moderate radius where the metric varies fastest. Tolerance
+    /// matches the exp probe's 5e-3 budget.
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run manually when changing BlendedSpace WGSL"]
+    fn blended_e3_h3_gpu_probe_transport_matches_cpu() {
+        let space = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.5, 0.5));
+        let cases = [
+            // Pure E3: transport is identity in flat space; any drift
+            // is pure GPU-vs-CPU floating-point noise.
+            gpu_case(
+                Vec3::new(-1.0, 0.05, 0.0),
+                Vec3::new(-0.8, 0.05, 0.0),
+                Vec3::new(0.1, 0.0, 0.0),
+            ),
+            // Long traversal across the transition zone (-0.5 -> +0.5)
+            // and out into H3 at r ~ 0.7. The conformal-factor gradient
+            // varies fastest here, and the path length plus large
+            // transport vector amplifies per-step truncation. This is
+            // the case that discriminates 8-step RK4 from single-step
+            // Euler.
+            gpu_case(
+                Vec3::new(-0.6, 0.0, 0.0),
+                Vec3::new(0.7, 0.0, 0.0),
+                Vec3::new(0.5, 0.5, 0.0),
+            ),
+            // Pure H3 at r ~ 0.7 where f(p) ~ 15.4x identity.
+            gpu_case(
+                Vec3::new(0.7, 0.0, 0.0),
+                Vec3::new(0.72, 0.05, 0.0),
+                Vec3::new(0.02, 0.02, 0.0),
+            ),
+        ];
+        let out =
+            pollster::block_on(run_gpu_probe(&space, &cases)).expect("BlendedSpace GPU probe");
+
+        for (case, row) in cases.iter().zip(&out) {
+            let a = Vec3::from_array([case.a[0], case.a[1], case.a[2]]);
+            let b = Vec3::from_array([case.b[0], case.b[1], case.b[2]]);
+            let v = Vec3::from_array([case.v[0], case.v[1], case.v[2]]);
+            let cpu = space.parallel_transport(a, b, v);
+            let gpu = Vec3::new(row.transported[0], row.transported[1], row.transported[2]);
+            let diff = (cpu - gpu).length();
+            assert!(
+                diff < 5e-3,
+                "BlendedSpace transport parity failed at a={a:?} b={b:?} v={v:?}: cpu={cpu:?} gpu={gpu:?} diff={diff}",
             );
         }
     }

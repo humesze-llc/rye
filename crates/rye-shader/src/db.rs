@@ -691,6 +691,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::default(),
                 trace: wgpu::Trace::Off,
+                experimental_features: Default::default(),
             })
             .await
             .map_err(|e| format!("request_device failed: {e}"))?;
@@ -803,8 +804,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         slice.map_async(wgpu::MapMode::Read, move |res| {
             tx.send(res).expect("map callback receiver should exist");
         });
+        // wgpu v27 made `PollType::Wait` a struct variant. Default
+        // `submission_index = None` waits on the most recent submission;
+        // `timeout = None` waits indefinitely (matches the v26 behaviour).
         device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
             .map_err(|e| e.to_string())?;
         rx.recv()
             .map_err(|e| e.to_string())?

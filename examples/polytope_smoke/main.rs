@@ -10,10 +10,11 @@
 //! so toggle-order doesn't matter and the result is always
 //! predictable from the visible "active" set.
 //!
-//! (120-cell and 600-cell are the remaining two regular polychora;
-//! their face-hyperplane sets are large enough to want a Rust-side
-//! generator before they go into the kernel, deferred until the
-//! demo or game needs them.)
+//! All six convex regular 4-polytopes ship; the 120-cell and 600-cell
+//! use a Rust-side face-hyperplane generator (their orbit sets are
+//! too large to inline as WGSL literals). Their SDFs run a
+//! true-Euclidean Wolfe greedy hyperplane projection, not a
+//! max-plane lower bound.
 //!
 //! Doubles as the integration showcase for `rye-text`, all live
 //! state and the controls help are drawn in-window via the text
@@ -55,12 +56,9 @@
 //!
 //! - `--shapes name1 name2 ...`: choose the polytopes to render
 //!   in left-to-right order. Names accepted include the math form
-//!   (`5-cell`, `tesseract`, `16-cell`, `24-cell`) and Platonic-
-//!   slice aliases (`tetrahedron`, `cube`, `octahedron`,
-//!   `cuboctahedron`). The `dodecahedron` (120-cell) and
-//!   `icosahedron` (600-cell) names produce an explanatory error
-//!   today, their face-hyperplane tables ship in a follow-up
-//!   branch.
+//!   (`5-cell`, `tesseract`, `16-cell`, `24-cell`, `120-cell`,
+//!   `600-cell`) and Platonic-slice aliases (`tetrahedron`, `cube`,
+//!   `octahedron`, `cuboctahedron`, `dodecahedron`, `icosahedron`).
 
 use std::path::Path;
 
@@ -72,8 +70,8 @@ use rye_render::{
     device::RenderDevice,
     graph::RenderNode,
     raymarch::{
-        BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL, SHAPE_16CELL, SHAPE_24CELL,
-        SHAPE_PENTATOPE, SHAPE_TESSERACT,
+        polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
+        SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_600CELL, SHAPE_PENTATOPE, SHAPE_TESSERACT,
     },
 };
 use rye_sdf::{Scene4, SceneNode4};
@@ -172,25 +170,22 @@ fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
             color: [0.95, 0.45, 0.85],
             label: "24-cell",
         },
-        "120-cell" | "120cell" | "hecatonicosachoron" | "dodecahedron" => {
-            return Err(anyhow!(
-                "120-cell (dodecahedron-slice) not yet implemented; \
-                 face-hyperplane table pending in a follow-up branch"
-            ))
-        }
-        "600-cell" | "600cell" | "hexacosichoron" | "icosahedron" => {
-            return Err(anyhow!(
-                "600-cell (icosahedron-slice) not yet implemented; \
-                 face-hyperplane table pending in a follow-up branch"
-            ))
-        }
+        "120-cell" | "120cell" | "hecatonicosachoron" | "dodecahedron" => ShapeEntry {
+            shape: SHAPE_120CELL,
+            color: [0.40, 0.85, 0.85],
+            label: "120-cell",
+        },
+        "600-cell" | "600cell" | "hexacosichoron" | "icosahedron" => ShapeEntry {
+            shape: SHAPE_600CELL,
+            color: [0.95, 0.85, 0.40],
+            label: "600-cell",
+        },
         _ => {
             return Err(anyhow!(
                 "unknown shape name {name:?}; valid names: 5-cell, \
-                 tesseract, 16-cell, 24-cell, 120-cell*, 600-cell* \
+                 tesseract, 16-cell, 24-cell, 120-cell, 600-cell \
                  (or Platonic aliases: tetrahedron, cube, octahedron, \
-                 cuboctahedron, dodecahedron*, icosahedron*) \
-                 (* deferred)"
+                 cuboctahedron, dodecahedron, icosahedron)"
             ))
         }
     })
@@ -433,8 +428,9 @@ impl App for PolytopeSmokeApp {
 
         let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, 0.0));
         let shader_source = format!(
-            "{kernel}\n{scene}\n",
+            "{kernel}\n{polytope}\n{scene}\n",
             kernel = HYPERSLICE_KERNEL_WGSL,
+            polytope = polytope_extended_sdfs_wgsl(),
             scene = scene.to_hyperslice_wgsl("u.w_slice"),
         );
         let module = ctx

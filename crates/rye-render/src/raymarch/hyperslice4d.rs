@@ -70,6 +70,8 @@ pub const SHAPE_PENTATOPE: u32 = 0;
 pub const SHAPE_TESSERACT: u32 = 1;
 pub const SHAPE_16CELL: u32 = 2;
 pub const SHAPE_24CELL: u32 = 3;
+pub const SHAPE_120CELL: u32 = 4;
+pub const SHAPE_600CELL: u32 = 5;
 
 /// One dynamic-body slot. Discriminated record covering both
 /// hypersphere and polytope cases, `kind` selects which fields
@@ -265,6 +267,8 @@ const SHAPE_PENTATOPE: u32 = 0u;
 const SHAPE_TESSERACT: u32 = 1u;
 const SHAPE_16CELL: u32 = 2u;
 const SHAPE_24CELL: u32 = 3u;
+const SHAPE_120CELL: u32 = 4u;
+const SHAPE_600CELL: u32 = 5u;
 // Mirrors `BodyKind::Invalid` (CPU). Intentionally absent from the
 // dispatch chain in `rye_dynamic_bodies_sdf` and `rye_total_sdf` below:
 // neither the sphere nor the polytope branch matches, so the SDF
@@ -470,6 +474,10 @@ fn body_polytope_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
         d = cell16_sdf_local(unit_p);
     } else if (shape == SHAPE_24CELL) {
         d = cell24_sdf_local(unit_p);
+    } else if (shape == SHAPE_120CELL) {
+        d = cell120_sdf_local(unit_p);
+    } else if (shape == SHAPE_600CELL) {
+        d = cell600_sdf_local(unit_p);
     }
     return d * size;
 }
@@ -868,6 +876,8 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("tesseract_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("cell16_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("cell24_sdf_local"));
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("cell120_sdf_local"));
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("cell600_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rotor4_inverse_apply"));
         // Per-body SDF for normal sampling (issue #17).
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_body_sdf_at"));
@@ -936,7 +946,11 @@ fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     return 1.0e9;
 }
 "#;
-        let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{SCENE_STUB}");
+        // The kernel's body_polytope_sdf_4d dispatch references
+        // cell120_sdf_local and cell600_sdf_local, defined in the
+        // polytope_data emit. Append it so naga validation succeeds.
+        let polytope = super::super::polytope_data::polytope_extended_sdfs_wgsl();
+        let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{polytope}\n{SCENE_STUB}");
         let module = naga::front::wgsl::parse_str(&source)
             .expect("hyperslice4d kernel + scene stub should parse as WGSL");
         let flags = naga::valid::ValidationFlags::all();
@@ -963,7 +977,8 @@ fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
                 .union(SceneNode4::halfspace(Vec4::Y, 0.0)),
         );
         let scene_wgsl = scene.to_hyperslice_wgsl("u.w_slice");
-        let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{scene_wgsl}");
+        let polytope = super::super::polytope_data::polytope_extended_sdfs_wgsl();
+        let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{polytope}\n{scene_wgsl}");
         let module = naga::front::wgsl::parse_str(&source)
             .expect("hyperslice4d kernel + Scene4 emit should parse as WGSL");
         let flags = naga::valid::ValidationFlags::all();
@@ -1230,6 +1245,8 @@ fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             (SHAPE_TESSERACT, "const SHAPE_TESSERACT: u32 = 1u;"),
             (SHAPE_16CELL, "const SHAPE_16CELL: u32 = 2u;"),
             (SHAPE_24CELL, "const SHAPE_24CELL: u32 = 3u;"),
+            (SHAPE_120CELL, "const SHAPE_120CELL: u32 = 4u;"),
+            (SHAPE_600CELL, "const SHAPE_600CELL: u32 = 5u;"),
         ] {
             assert!(
                 HYPERSLICE_KERNEL_WGSL.contains(wgsl_decl),

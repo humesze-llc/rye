@@ -908,6 +908,11 @@ mod tests {
         // Per-body SDF accessor used by `estimate_normal` to avoid
         // sampling the combined SDF at silhouettes (issue #17).
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_body_sdf_at"));
+        // Floor-classification gate also requires the hit y-position
+        // to be on the y=0 plane (issue #17 follow-up). Without this,
+        // sphere tops with n.y > 0.95 were being painted with the
+        // floor checker, producing a dark cap regression.
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("abs(p_hit.y) < 0.01"));
     }
 
     /// `BodyUniform` is exactly 80 bytes, the std140-aligned
@@ -969,6 +974,39 @@ fn rye_scene_sdf(p: vec3<f32>) -> f32 {
         naga::valid::Validator::new(flags, caps)
             .validate(&module)
             .expect("hyperslice4d kernel + scene stub should validate");
+    }
+
+    /// End-to-end validation: take a real `Scene4` (the
+    /// `overlapping_sdfs` example's shape: a union of hyperspheres
+    /// and a half-space floor), emit its hyperslice WGSL, splice
+    /// against the kernel, parse + validate via naga.
+    ///
+    /// Catches drift between the `Scene4::to_hyperslice_wgsl` emit
+    /// and what the kernel expects at the `rye_scene_sdf` boundary.
+    /// The `kernel_validates_with_minimal_scene` test above pins
+    /// the kernel's call-site shape against a hand-rolled stub;
+    /// this one pins the `Scene4` emit produces a stub the kernel
+    /// can actually call.
+    #[test]
+    fn kernel_validates_with_real_scene_union() {
+        use glam::Vec4;
+        use rye_sdf::{Scene4, SceneNode4};
+
+        let scene = Scene4::new(
+            SceneNode4::hypersphere(Vec4::new(-0.6, 0.7, -1.5, 0.0), 0.7)
+                .union(SceneNode4::hypersphere(Vec4::new(0.6, 0.7, -1.5, 0.0), 0.7))
+                .union(SceneNode4::hypersphere(Vec4::new(0.0, 1.0, 1.5, 0.0), 1.0))
+                .union(SceneNode4::halfspace(Vec4::Y, 0.0)),
+        );
+        let scene_wgsl = scene.to_hyperslice_wgsl("u.w_slice");
+        let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{scene_wgsl}");
+        let module = naga::front::wgsl::parse_str(&source)
+            .expect("hyperslice4d kernel + Scene4 emit should parse as WGSL");
+        let flags = naga::valid::ValidationFlags::all();
+        let caps = naga::valid::Capabilities::empty();
+        naga::valid::Validator::new(flags, caps)
+            .validate(&module)
+            .expect("hyperslice4d kernel + Scene4 emit should validate");
     }
 
     /// `BODY_KIND_INVALID` must not appear in either dispatch chain.

@@ -1273,4 +1273,172 @@ fn rye_scene_sdf(p: vec3<f32>) -> f32 {
             );
         }
     }
+
+    // ---- CPU port of the hyperslice marcher -----------------------------
+    //
+    // 1:1 mirror of `fs_main`'s sphere-trace loop in `HYPERSLICE_KERNEL_WGSL`.
+    // Used by the integration tests below to assert hit positions against a
+    // known SDF without needing a GPU adapter (the existing GPU probes in
+    // `rye-shader::db` are `#[ignore]`d locally and run via lavapipe).
+    //
+    // The kernel reads its constants (`hit_eps`, `min_step`, iteration cap,
+    // `max_t`, under-step factor) inline; the CPU port pins the same values
+    // here. If the kernel changes them, this port must be updated too.
+
+    use glam::Vec3;
+
+    struct HyperHit {
+        hit_pos: Vec3,
+        body_idx: u32,
+        #[allow(dead_code)]
+        iter_count: u32,
+    }
+
+    fn march_hyperslice_cpu<F>(ro: Vec3, rd: Vec3, sdf: F) -> Option<HyperHit>
+    where
+        F: Fn(Vec3) -> (f32, u32),
+    {
+        let mut t: f32 = 0.0;
+        let max_t = 60.0_f32;
+        let hit_eps = 0.001_f32;
+        let min_step = 0.0001_f32;
+        for i in 0..384u32 {
+            let p = ro + rd * t;
+            let (d, body_idx) = sdf(p);
+            if d < hit_eps {
+                return Some(HyperHit {
+                    hit_pos: p,
+                    body_idx,
+                    iter_count: i,
+                });
+            }
+            t += (d * 0.85).max(min_step);
+            if t > max_t {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Static-scene SDF for the `overlapping_sdfs` example: three
+    /// hyperspheres at `w = 0` plus a `y = 0` floor, evaluated via 4D
+    /// distance at `(p, w_slice)`. All hits attribute to the static scene
+    /// (`body_idx = MAX_BODIES`), matching what the kernel's
+    /// `rye_total_sdf` returns when no dynamic bodies are active.
+    fn overlapping_sdfs_scene(p: Vec3, w_slice: f32) -> (f32, u32) {
+        use glam::Vec4;
+        let p4 = Vec4::new(p.x, p.y, p.z, w_slice);
+        let twin_l = (Vec4::new(-0.6, 0.7, -1.5, 0.0), 0.7_f32);
+        let twin_r = (Vec4::new(0.6, 0.7, -1.5, 0.0), 0.7_f32);
+        let solo = (Vec4::new(0.0, 1.0, 1.5, 0.0), 1.0_f32);
+        let d_twin_l = (p4 - twin_l.0).length() - twin_l.1;
+        let d_twin_r = (p4 - twin_r.0).length() - twin_r.1;
+        let d_solo = (p4 - solo.0).length() - solo.1;
+        let d_floor = p.y;
+        let d = d_twin_l.min(d_twin_r).min(d_solo).min(d_floor);
+        (d, MAX_BODIES as u32)
+    }
+
+    // ---- Integration tests against the CPU port -------------------------
+    //
+    // These exercise the *whole* marcher pipeline (step calculus + SDF
+    // composition + hit attribution) on the `overlapping_sdfs` scene, the
+    // same scene the example renders. Each test pins a property the visual
+    // verification confirmed; together they form a regression net for the
+    // issue #17 fix at the geometry level (not just the WGSL string level).
+
+    /// A ray pointing straight down through the solo sphere's centre
+    /// hits the sphere's *top* at y close to 2.0 (centre y + radius).
+    /// Without the iteration-cap bump (192 -> 384) and the under-step
+    /// factor, near-tangent silhouette rays exhausted the budget; the
+    /// solo sphere is large enough that this central ray converges
+    /// fast, but it pins the basic "hit the top, body_idx = static"
+    /// contract.
+    #[test]
+    fn cpu_march_hits_solo_sphere_top() {
+        let ro = Vec3::new(0.0, 5.0, 1.5);
+        let rd = Vec3::new(0.0, -1.0, 0.0);
+        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
+            .expect("ray pointing at solo sphere should hit something");
+        assert_eq!(hit.body_idx, MAX_BODIES as u32, "static-scene hit");
+        // Solo sphere at (0, 1, 1.5) r=1; top at y=2.0. Hit registers
+        // when SDF < hit_eps = 0.001; under-step factor + min_step
+        // bound the residual at < 5e-3.
+        assert!(
+            (hit.hit_pos.y - 2.0).abs() < 5e-3,
+            "hit y {} should be near 2.0 (sphere top)",
+            hit.hit_pos.y
+        );
+    }
+
+    /// A ray pointing straight down between the spheres hits the floor
+    /// at y close to 0. Pins the no-dimple property: the static-scene
+    /// `min(spheres, floor)` correctly returns the floor's distance
+    /// when no sphere covers the ray's path.
+    #[test]
+    fn cpu_march_hits_floor_in_gap_between_spheres() {
+        let ro = Vec3::new(0.0, 5.0, -3.5);
+        let rd = Vec3::new(0.0, -1.0, 0.0);
+        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
+            .expect("ray pointing at empty floor should hit");
+        assert_eq!(hit.body_idx, MAX_BODIES as u32, "static-scene hit");
+        // Floor at y=0; hit_eps=0.001 so the hit y is in [0, 0.001].
+        assert!(
+            hit.hit_pos.y.abs() < 5e-3,
+            "hit y {} should be near 0 (floor)",
+            hit.hit_pos.y
+        );
+    }
+
+    /// A ray pointing at the twin-pair overlap region (x = 0,
+    /// z = -1.5) hits one of the twin spheres' top, NOT the floor.
+    /// Pins the `min(sphere_l, sphere_r, floor)` composition: at the
+    /// twin overlap, both sphere SDFs are small (the surfaces meet),
+    /// the floor SDF is ~0.7 (the sphere top is at y=1.4). The
+    /// marcher must prefer the closer sphere surface.
+    #[test]
+    fn cpu_march_hits_twin_overlap_top_not_floor() {
+        let ro = Vec3::new(0.0, 5.0, -1.5);
+        let rd = Vec3::new(0.0, -1.0, 0.0);
+        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
+            .expect("ray pointing at twin overlap should hit");
+        assert_eq!(hit.body_idx, MAX_BODIES as u32);
+        // Twin spheres at (+/-0.6, 0.7, -1.5) r=0.7. At x=z=-1.5, the
+        // intersection of the twin tops along the y-axis is at y where
+        // both spheres touch: solving (0.6)^2 + (y-0.7)^2 = 0.7^2 gives
+        // (y-0.7)^2 = 0.13, y ≈ 0.7 + 0.36 = 1.06 (the twin-saddle top).
+        // Hit must be above the floor by clearly more than hit_eps.
+        assert!(
+            hit.hit_pos.y > 0.5,
+            "hit y {} should be on a sphere surface (>0.5), not the floor",
+            hit.hit_pos.y
+        );
+    }
+
+    /// A ray with shallow downward angle on a clear path to the floor
+    /// converges within 384 iterations. Pins the iteration-cap fix:
+    /// the original 192 cap exhausted on shallow rays; 384 covers
+    /// them with headroom.
+    #[test]
+    fn cpu_march_converges_on_shallow_ray_to_floor() {
+        // Camera at y=2.5, ray angled gently down to the horizon.
+        // Hits the floor at t ≈ 50 (y=2.5, descending 0.05/unit).
+        let ro = Vec3::new(0.0, 2.5, 5.0);
+        let rd = Vec3::new(0.0, -0.05, -1.0).normalize();
+        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
+            .expect("shallow ray with clear path to floor should converge");
+        assert_eq!(hit.body_idx, MAX_BODIES as u32);
+        assert!(hit.hit_pos.y.abs() < 5e-3);
+    }
+
+    /// A ray going straight up from the camera into empty space misses
+    /// (returns None). Pins the iteration-cap and `max_t` cap exit
+    /// paths; without them the marcher would loop forever.
+    #[test]
+    fn cpu_march_misses_into_empty_sky() {
+        let ro = Vec3::new(0.0, 5.0, 0.0);
+        let rd = Vec3::new(0.0, 1.0, 0.0);
+        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0));
+        assert!(hit.is_none(), "ray into sky should miss the scene");
+    }
 }

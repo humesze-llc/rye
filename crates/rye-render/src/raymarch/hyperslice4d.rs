@@ -624,7 +624,17 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     let ro = u.camera_pos;
 
     var t: f32 = 0.0;
-    let max_t = 60.0;
+    // Analytical upper bound from any HalfSpace4D leaves the scene
+    // emits via `rye_scene_max_t`. Capped at the demo-scale 60.0 so a
+    // scene without analytical contributions falls back to the legacy
+    // far-clip. The +1.0 buffer past the analytical bound lets the
+    // marcher land its hit on the floor surface itself rather than
+    // exiting one iteration short. Without this bound, near-horizon
+    // rays exhaust the iteration budget converging on the floor and
+    // return sky, producing the horizon-banding artifact at shallow
+    // viewing angles.
+    let scene_max_t = rye_scene_max_t(ro, rd);
+    let max_t = min(60.0, scene_max_t + 1.0);
     var hit = false;
     var hit_idx: u32 = MAX_BODIES + 1u;
     // Sphere-trace step calculus (issue #17):
@@ -913,6 +923,11 @@ mod tests {
         // a future revert to the heuristic fails loudly.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_scene_at(p_hit).kind == RYE_PRIM_HALFSPACE4D"));
         assert!(!HYPERSLICE_KERNEL_WGSL.contains("abs(p_hit.y) < 0.01"));
+        // Analytical max-t shortcut from `rye_scene_max_t` caps the
+        // marcher's far-clip so near-horizon rays don't exhaust the
+        // iteration budget. Pin the call so a future refactor that
+        // drops it fails loudly.
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_scene_max_t(ro, rd)"));
     }
 
     /// `BodyUniform` is exactly 80 bytes, the std140-aligned
@@ -961,7 +976,10 @@ mod tests {
     /// constants the kernel references. `rye_scene_sdf` is provided
     /// as a thin wrapper for completeness even though `rye_total_sdf`
     /// reads `dist` via `rye_scene_at` directly in the production
-    /// path through Scene4.
+    /// path through Scene4. `rye_scene_max_t` returns the legacy
+    /// no-analytical-bound sentinel so the kernel falls back to its
+    /// hard-coded far-clip; Scene4's emit overrides this with a real
+    /// ray-plane bound when the scene has half-space leaves.
     #[test]
     fn kernel_validates_with_minimal_scene() {
         const SCENE_STUB: &str = r#"
@@ -974,6 +992,9 @@ fn rye_scene_at(p: vec3<f32>) -> RyeSceneHit {
 }
 fn rye_scene_sdf(p: vec3<f32>) -> f32 {
     return rye_scene_at(p).dist;
+}
+fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
+    return 1.0e9;
 }
 "#;
         let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{SCENE_STUB}");

@@ -181,6 +181,7 @@ impl Scene4 {
         let mut counter = 0u32;
         let (d_root, k_root) = emit_node_4d(&self.root, &mut counter, &mut helpers, &mut body);
         let kind_consts = SCENE_KIND_CONSTANTS;
+        let max_t_body = emit_max_t_body(&self.root);
         // Use a distinct parameter name `p3` and an inner `let p`
         // for the 4D point. WGSL forbids declaring a `let` with the
         // same name as the function parameter (no shadowing); naming
@@ -199,6 +200,16 @@ impl Scene4 {
              }}\n\
              fn rye_scene_sdf(p3: vec3<f32>) -> f32 {{\n\
              \treturn rye_scene_at(p3).dist;\n\
+             }}\n\
+             // Analytical upper bound on march distance: ray-plane intersection\n\
+             // for every HalfSpace4D leaf in the scene whose 3D-projected\n\
+             // normal points against the ray. Returns +infinity if no leaf\n\
+             // contributes; the kernel uses this to terminate near-horizon\n\
+             // rays that would otherwise exhaust the iteration budget.\n\
+             fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {{\n\
+             \tvar t_max: f32 = 1.0e9;\n\
+             {max_t_body}\
+             \treturn t_max;\n\
              }}\n"
         )
     }
@@ -219,6 +230,61 @@ const SCENE_KIND_CONSTANTS: &str = "\
 const RYE_PRIM_HYPERSPHERE4D: u32 = 0u;\n\
 const RYE_PRIM_HALFSPACE4D: u32 = 1u;\n\
 const RYE_PRIM_OTHER: u32 = 255u;\n";
+
+/// Walk the scene tree to emit the body of `rye_scene_max_t`, the
+/// analytical upper bound on march distance.
+///
+/// For each `HalfSpace4D` leaf, emits a ray-plane intersection check:
+/// if the ray is heading toward the plane (`dot(rd, n) < 0`), compute
+/// the t at which the ray crosses, clip to positive, fold into `t_max`
+/// via `min`. Other primitive types contribute nothing (their bounds
+/// are encoded only in `rye_scene_at`'s SDF).
+///
+/// Combinators don't change the analytical bound; we visit all leaves
+/// regardless of how they compose. The bound is conservative: it's the
+/// closest plane the ray would cross under any composition, which is a
+/// safe upper bound on the actual hit-t.
+///
+/// Only the 3D part of each `HalfSpace4D` normal is used; the slicing
+/// hyperplane fixes `p.w = w_slice`, so the ray-plane intersection in
+/// 3D matches the 4D-projected behaviour of the half-space leaf for
+/// any fixed slice.
+fn emit_max_t_body(node: &SceneNode4) -> String {
+    let mut body = String::new();
+    walk_max_t(node, &mut body);
+    body
+}
+
+fn walk_max_t(node: &SceneNode4, body: &mut String) {
+    match node {
+        SceneNode4::Leaf(Shape::HalfSpace4D { normal, offset }) => {
+            // Ray-plane intersection: t = (offset - dot(ro, n)) / dot(rd, n).
+            // Only valid (and useful for a max-t bound) when `dot(rd, n) < 0`,
+            // i.e. the ray heads toward the plane's solid side.
+            body.push_str(&format!(
+                "\t{{\n\
+                 \t\tlet n = vec3<f32>({nx:.6}, {ny:.6}, {nz:.6});\n\
+                 \t\tlet dr = dot(rd, n);\n\
+                 \t\tif (dr < -1.0e-4) {{\n\
+                 \t\t\tlet t = ({offset:.6} - dot(ro, n)) / dr;\n\
+                 \t\t\tif (t > 0.0 && t < t_max) {{ t_max = t; }}\n\
+                 \t\t}}\n\
+                 \t}}\n",
+                nx = normal.x,
+                ny = normal.y,
+                nz = normal.z,
+                offset = offset,
+            ));
+        }
+        SceneNode4::Leaf(_) => {
+            // Other primitives have no closed-form max-t bound here.
+        }
+        SceneNode4::Union(l, r) | SceneNode4::Intersection(l, r) | SceneNode4::Difference(l, r) => {
+            walk_max_t(l, body);
+            walk_max_t(r, body);
+        }
+    }
+}
 
 /// Map a Shape variant to its WGSL kind constant name.
 fn primitive_kind_constant(shape: &Shape) -> &'static str {

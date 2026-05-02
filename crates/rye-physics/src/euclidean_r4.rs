@@ -619,6 +619,196 @@ pub fn cell24_vertices(r: f32) -> Vec<Vec4> {
     v
 }
 
+/// The 12 even permutations of S₄ (the alternating group A₄), applied
+/// to a 4-tuple. Used by the 600-cell and 120-cell vertex generators
+/// where part of the vertex orbit is "even permutations of (a, b, c, d)".
+///
+/// Convention: result `[i]` is `arr[σ(i)]` where σ runs over A₄. So
+/// the identity gives `[arr[0], arr[1], arr[2], arr[3]]`.
+fn even_permutations_4<T: Copy>(arr: [T; 4]) -> [[T; 4]; 12] {
+    [
+        // Identity
+        [arr[0], arr[1], arr[2], arr[3]],
+        // 3-cycles (8 of them)
+        [arr[1], arr[2], arr[0], arr[3]], // (012)
+        [arr[2], arr[0], arr[1], arr[3]], // (021)
+        [arr[1], arr[3], arr[2], arr[0]], // (013)
+        [arr[3], arr[0], arr[2], arr[1]], // (031)
+        [arr[2], arr[1], arr[3], arr[0]], // (023)
+        [arr[3], arr[1], arr[0], arr[2]], // (032)
+        [arr[0], arr[2], arr[3], arr[1]], // (123)
+        [arr[0], arr[3], arr[1], arr[2]], // (132)
+        // (2,2)-cycles (3 of them)
+        [arr[1], arr[0], arr[3], arr[2]], // (01)(23)
+        [arr[2], arr[3], arr[0], arr[1]], // (02)(13)
+        [arr[3], arr[2], arr[1], arr[0]], // (03)(12)
+    ]
+}
+
+/// **600-cell / hexacosichoron**: 120 vertices, 720 edges, 1200
+/// triangle faces, 600 tetrahedral cells. The 4D analogue of the
+/// icosahedron; H₄ symmetry. Dual of the 120-cell.
+///
+/// Vertex set (in coordinates with circumradius 1):
+/// - 8 axial: `(±1, 0, 0, 0)` and permutations.
+/// - 16 corners of half-tesseract: `(±1/2, ±1/2, ±1/2, ±1/2)`.
+/// - 96 even permutations of `(0, ±1/2, ±φ/2, ±1/(2φ))` with `φ`
+///   the golden ratio. Independent signs on the three non-zero
+///   entries: 12 even perms × 8 sign combos = 96.
+///
+/// Total: 8 + 16 + 96 = 120 ✓. Rescale to circumradius `r`.
+pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
+    let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
+    let mut v = Vec::with_capacity(120);
+
+    // Group 1: 8 axial (±r, 0, 0, 0) permutations.
+    for axis in 0..4 {
+        for sign in [r, -r] {
+            let mut c = [0.0_f32; 4];
+            c[axis] = sign;
+            v.push(Vec4::from_array(c));
+        }
+    }
+
+    // Group 2: 16 (±r/2, ±r/2, ±r/2, ±r/2).
+    let h = r * 0.5;
+    for s in 0..16u32 {
+        let x = if s & 1 == 1 { -h } else { h };
+        let y = if (s >> 1) & 1 == 1 { -h } else { h };
+        let z = if (s >> 2) & 1 == 1 { -h } else { h };
+        let w = if (s >> 3) & 1 == 1 { -h } else { h };
+        v.push(Vec4::new(x, y, z, w));
+    }
+
+    // Group 3: 96 even permutations of (0, ±r/2, ±rφ/2, ±r/(2φ)).
+    let base = [0.0_f32, r * 0.5, r * phi * 0.5, r / (2.0 * phi)];
+    for perm in even_permutations_4(base) {
+        for sign_mask in 0..8u32 {
+            let mut x = perm;
+            let mut k = 0usize;
+            for xi in x.iter_mut() {
+                if *xi != 0.0 {
+                    if (sign_mask >> k) & 1 == 1 {
+                        *xi = -*xi;
+                    }
+                    k += 1;
+                }
+            }
+            v.push(Vec4::from_array(x));
+        }
+    }
+
+    v
+}
+
+/// **120-cell / hecatonicosachoron**: 600 vertices, 1200 edges, 720
+/// pentagonal faces, 120 dodecahedral cells. The 4D analogue of the
+/// dodecahedron; H₄ symmetry. Dual of the 600-cell.
+///
+/// Vertex set (Wikipedia "120-cell"; coordinates have circumradius
+/// `2*sqrt(2)` before rescaling):
+/// - 24: permutations of `(0, 0, ±2, ±2)`.
+/// - 64: `(±1, ±1, ±1, ±√5)` with √5 in any of 4 positions.
+/// - 64: `(±1/φ, ±1/φ, ±1/φ, ±φ²)` with `φ²` in any of 4 positions.
+/// - 64: `(±1/φ², ±φ, ±φ, ±φ)` with `1/φ²` in any of 4 positions.
+/// - 96: even permutations of `(0, ±1/φ², ±1, ±φ²)`.
+/// - 96: even permutations of `(0, ±1/φ, ±φ, ±√5)`.
+/// - 192: even permutations of `(±1/φ, ±1, ±φ, ±2)`.
+///
+/// Total: 24 + 64·3 + 96·2 + 192 = 600 ✓. Rescale to circumradius `r`.
+pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
+    let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
+    let phi2 = phi * phi;
+    let inv_phi = 1.0 / phi;
+    let inv_phi2 = inv_phi * inv_phi;
+    let sqrt5 = 5.0_f32.sqrt();
+    let scale = r / (2.0 * 2.0_f32.sqrt());
+    let mut v = Vec::with_capacity(600);
+
+    // Group 1: 24 permutations of (0, 0, ±2, ±2).
+    for i in 0..4 {
+        for j in (i + 1)..4 {
+            for si in [2.0_f32, -2.0] {
+                for sj in [2.0_f32, -2.0] {
+                    let mut c = [0.0_f32; 4];
+                    c[i] = si * scale;
+                    c[j] = sj * scale;
+                    v.push(Vec4::from_array(c));
+                }
+            }
+        }
+    }
+
+    // Helper: emit "value `special` at one of 4 positions, value
+    // `common` at the other 3, all signs independent". 4·16 = 64.
+    let mut emit_one_special = |special: f32, common: f32| {
+        for special_pos in 0..4 {
+            for sm in 0..16u32 {
+                let mut c = [0.0_f32; 4];
+                for (i, ci) in c.iter_mut().enumerate() {
+                    let val = if i == special_pos { special } else { common };
+                    let sign = if (sm >> i) & 1 == 1 { -1.0 } else { 1.0 };
+                    *ci = val * sign * scale;
+                }
+                v.push(Vec4::from_array(c));
+            }
+        }
+    };
+
+    // Groups 2, 3, 4: 64 each.
+    emit_one_special(sqrt5, 1.0);
+    emit_one_special(phi2, inv_phi);
+    emit_one_special(inv_phi2, phi);
+
+    // Helper: emit "even permutations of (0, ±a, ±b, ±c)" with
+    // independent signs on the three non-zero entries. 12·8 = 96.
+    let mut emit_even_zero = |a: f32, b: f32, c: f32| {
+        let base = [0.0_f32, a, b, c];
+        for perm in even_permutations_4(base) {
+            for sign_mask in 0..8u32 {
+                let mut x = perm;
+                let mut k = 0usize;
+                for xi in x.iter_mut() {
+                    if *xi != 0.0 {
+                        if (sign_mask >> k) & 1 == 1 {
+                            *xi = -*xi;
+                        }
+                        k += 1;
+                    }
+                }
+                for ci in &mut x {
+                    *ci *= scale;
+                }
+                v.push(Vec4::from_array(x));
+            }
+        }
+    };
+
+    // Groups 5, 6: 96 each.
+    emit_even_zero(inv_phi2, 1.0, phi2);
+    emit_even_zero(inv_phi, phi, sqrt5);
+
+    // Group 7: 192 even permutations of (±1/φ, ±1, ±φ, ±2). All four
+    // entries non-zero, so 16 sign combos: 12·16 = 192.
+    let base7 = [inv_phi, 1.0, phi, 2.0_f32];
+    for perm in even_permutations_4(base7) {
+        for sm in 0..16u32 {
+            let mut x = perm;
+            for (i, xi) in x.iter_mut().enumerate() {
+                if (sm >> i) & 1 == 1 {
+                    *xi = -*xi;
+                }
+            }
+            for ci in &mut x {
+                *ci *= scale;
+            }
+            v.push(Vec4::from_array(x));
+        }
+    }
+
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -990,6 +1180,69 @@ mod tests {
         let verts = cell24_vertices(1.0);
         assert_eq!(verts.len(), 24);
         assert_all_on_circumsphere(&verts, 1.0, "24-cell");
+    }
+
+    #[test]
+    fn cell600_has_120_vertices_on_circumsphere() {
+        let verts = cell600_vertices(1.0);
+        assert_eq!(verts.len(), 120);
+        assert_all_on_circumsphere(&verts, 1.0, "600-cell");
+    }
+
+    #[test]
+    fn cell120_has_600_vertices_on_circumsphere() {
+        let verts = cell120_vertices(1.0);
+        assert_eq!(verts.len(), 600);
+        assert_all_on_circumsphere(&verts, 1.0, "120-cell");
+    }
+
+    /// The 600-cell and 120-cell are both centrally symmetric: for
+    /// every vertex v, the antipode -v is also a vertex. Checked here
+    /// since it's a fast property test that catches sign-mask bugs in
+    /// the orbit enumeration without requiring full symmetry-group
+    /// closure.
+    fn assert_centrally_symmetric(verts: &[Vec4], label: &str) {
+        for v in verts {
+            let antipode = -*v;
+            assert!(
+                verts.iter().any(|u| (*u - antipode).length() < 1e-5),
+                "{label}: antipode of {v:?} is missing from the vertex set"
+            );
+        }
+    }
+
+    #[test]
+    fn cell600_is_centrally_symmetric() {
+        assert_centrally_symmetric(&cell600_vertices(1.0), "600-cell");
+    }
+
+    #[test]
+    fn cell120_is_centrally_symmetric() {
+        assert_centrally_symmetric(&cell120_vertices(1.0), "120-cell");
+    }
+
+    /// Vertex-set duplicates would silently inflate the orbit count;
+    /// pin uniqueness so a sign-mask or permutation bug fails loud.
+    fn assert_all_unique(verts: &[Vec4], label: &str) {
+        for i in 0..verts.len() {
+            for j in (i + 1)..verts.len() {
+                assert!(
+                    (verts[i] - verts[j]).length() > 1e-5,
+                    "{label}: duplicate vertices at indices {i} and {j}: {:?}",
+                    verts[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cell600_vertices_are_unique() {
+        assert_all_unique(&cell600_vertices(1.0), "600-cell");
+    }
+
+    #[test]
+    fn cell120_vertices_are_unique() {
+        assert_all_unique(&cell120_vertices(1.0), "120-cell");
     }
 
     /// The 24-cell vertex set equals 16-cell ∪ (rescaled) tesseract

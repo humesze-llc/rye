@@ -639,9 +639,20 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     //     when an SDF dipped into the (0.001, 0.005) range -- which
     //     happens on every approach to a polytope silhouette --
     //     the marcher was forced to overshoot its actual clearance.
+    //   * 384 iterations: the under-step factor + small min_step
+    //     means tangent-grazing rays (those that just barely miss
+    //     a polytope silhouette and produce screen-space edges
+    //     between shapes) need more iterations to traverse the
+    //     near-tangent zone where `d` stays small. The earlier 192
+    //     cap was sized for the unsafe `min_step = 0.005` regime;
+    //     the safe regime needs roughly 6x more iterations through
+    //     a tangent zone, and 384 covers it with headroom while
+    //     adding negligible cost on non-grazing rays (which exit
+    //     in <30 steps via the under-step factor's geometric
+    //     convergence).
     let hit_eps = 0.001;
     let min_step = 0.0001;
-    for (var i: i32 = 0; i < 192; i = i + 1) {
+    for (var i: i32 = 0; i < 384; i = i + 1) {
         let p = ro + rd * t;
         let h = rye_total_sdf(p);
         if (h.dist < hit_eps) {

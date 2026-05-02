@@ -493,15 +493,8 @@ fn rye_dynamic_bodies_sdf(p3: vec3<f32>) -> f32 {
     return sdf;
 }
 
-// SDF of a single dynamic body at `p3`, evaluated at the slicing
-// hyperplane `w = u.w_slice`. Used by `estimate_normal` to compute
-// per-surface gradients without contamination from other SDFs that
-// happen to be nearby in chart space (issue #17: a polytope close
-// to the floor was contaminating the floor's normal estimate near
-// the polytope's silhouette, dropping `n.y` below the floor-checker
-// threshold and producing visible discoloration in the polytope's
-// xy-footprint).
-//
+// Single-body SDF at `p3`, evaluated at `w = u.w_slice`. Used by
+// `estimate_normal` to sample one body's gradient in isolation.
 // Returns +infinity for invalid indices or kinds.
 fn rye_body_sdf_at(p3: vec3<f32>, body_idx: u32) -> f32 {
     if (body_idx >= MAX_BODIES) { return 1.0e9; }
@@ -562,18 +555,10 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32
     return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
 }
 
-// Normal estimate via central differences on the *dominating* SDF
-// at the hit point, dispatched by `body_idx`:
-//   body_idx >= MAX_BODIES => the static scene was closest; sample
-//                             only `rye_scene_sdf`.
-//   otherwise              => that body was closest; sample only
-//                             that body's SDF in isolation.
-//
-// Sampling the combined `rye_total_sdf` here (the previous
-// behaviour) blends contributions from neighbouring SDFs near
-// silhouettes, which produces a wrong normal exactly at the visible
-// edge of every dynamic body (issue #17). The dispatch keeps each
-// surface's normal honest at the price of one branch per fragment.
+// Normal via central differences on the dominating SDF only:
+// static-scene hits sample `rye_scene_sdf`, body hits sample that
+// body's SDF in isolation. Sampling the combined SDF blends
+// gradients at silhouettes (issue #17).
 fn estimate_normal(p: vec3<f32>, body_idx: u32) -> vec3<f32> {
     let h = 0.001;
     if (body_idx >= MAX_BODIES) {
@@ -624,42 +609,18 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     let ro = u.camera_pos;
 
     var t: f32 = 0.0;
-    // Analytical upper bound from any HalfSpace4D leaves the scene
-    // emits via `rye_scene_max_t`. Capped at the demo-scale 60.0 so a
-    // scene without analytical contributions falls back to the legacy
-    // far-clip. The +1.0 buffer past the analytical bound lets the
-    // marcher land its hit on the floor surface itself rather than
-    // exiting one iteration short. Without this bound, near-horizon
-    // rays exhaust the iteration budget converging on the floor and
-    // return sky, producing the horizon-banding artifact at shallow
-    // viewing angles.
+    // Analytical far-clip from any HalfSpace4D leaves; +1.0 buffer
+    // lets the marcher land its hit on the floor itself. Caps at
+    // 60.0 when no analytical contribution exists. Without this,
+    // near-horizon rays exhaust the iter budget and return sky.
     let scene_max_t = rye_scene_max_t(ro, rd);
     let max_t = min(60.0, scene_max_t + 1.0);
     var hit = false;
     var hit_idx: u32 = MAX_BODIES + 1u;
-    // Sphere-trace step calculus (issue #17):
-    //   * `hit_eps = 0.001` is the surface-hit gate.
-    //   * `step = max(h.dist * 0.85, min_step)`. The 0.85 under-step
-    //     factor matches the geodesic kernel and is the safety net
-    //     for SDFs that are bounded but not Lipschitz-1 (e.g. the
-    //     inlined polytope SDFs here, which underestimate true
-    //     Euclidean distance in corner regions).
-    //   * `min_step = 0.0001` is one tenth of `hit_eps`, deliberately.
-    //     The previous value (0.005) was *larger* than `hit_eps`, so
-    //     when an SDF dipped into the (0.001, 0.005) range -- which
-    //     happens on every approach to a polytope silhouette --
-    //     the marcher was forced to overshoot its actual clearance.
-    //   * 384 iterations: the under-step factor + small min_step
-    //     means tangent-grazing rays (those that just barely miss
-    //     a polytope silhouette and produce screen-space edges
-    //     between shapes) need more iterations to traverse the
-    //     near-tangent zone where `d` stays small. The earlier 192
-    //     cap was sized for the unsafe `min_step = 0.005` regime;
-    //     the safe regime needs roughly 6x more iterations through
-    //     a tangent zone, and 384 covers it with headroom while
-    //     adding negligible cost on non-grazing rays (which exit
-    //     in <30 steps via the under-step factor's geometric
-    //     convergence).
+    // Sphere-trace step: `max(d * 0.85, min_step)` with min_step <
+    // hit_eps. The 0.85 under-step factor handles SDFs that are
+    // Lipschitz-1 but not tight (polytope SDFs underestimate near
+    // corners). 384 iters covers tangent-grazing convergence.
     let hit_eps = 0.001;
     let min_step = 0.0001;
     for (var i: i32 = 0; i < 384; i = i + 1) {
@@ -692,15 +653,9 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     if (hit_idx < MAX_BODIES) {
         base = u.bodies[hit_idx].color;
     } else if (rye_scene_at(p_hit).kind == RYE_PRIM_HALFSPACE4D) {
-        // Floor classification: route on the closest primitive's
-        // identity, not a normal/position heuristic. Scene4's emit
-        // attaches a `kind` tag to each leaf and propagates it
-        // through union/intersection so `rye_scene_at` returns the
-        // active boundary's primitive type. `RYE_PRIM_HALFSPACE4D`
-        // is a half-space (the conventional "floor" in rye demos).
-        // The previous version gated on the surface normal plus the
-        // hit y-position, which mis-classified sphere tops at y=0
-        // and only worked for floors anchored at y=0 specifically.
+        // Floor classification routes on the closest leaf's kind tag
+        // (set by Scene4's emit). Replaces a normal+y-position
+        // heuristic that mis-classified sphere tops at y=0.
         base = ground_color(p_hit);
     }
     let lit = base * (ambient + lambert * 0.85);
@@ -914,19 +869,12 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("cell16_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("cell24_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rotor4_inverse_apply"));
-        // Per-body SDF accessor used by `estimate_normal` to avoid
-        // sampling the combined SDF at silhouettes (issue #17).
+        // Per-body SDF for normal sampling (issue #17).
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_body_sdf_at"));
-        // Floor classification routes on per-primitive identity
-        // (kind tag from Scene4's emit), not the legacy
-        // n.y/p_hit.y heuristic. Pinning the new contract here so
-        // a future revert to the heuristic fails loudly.
+        // Floor classification by primitive kind, not normal/y.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_scene_at(p_hit).kind == RYE_PRIM_HALFSPACE4D"));
         assert!(!HYPERSLICE_KERNEL_WGSL.contains("abs(p_hit.y) < 0.01"));
-        // Analytical max-t shortcut from `rye_scene_max_t` caps the
-        // marcher's far-clip so near-horizon rays don't exhaust the
-        // iteration budget. Pin the call so a future refactor that
-        // drops it fails loudly.
+        // Analytical far-clip from HalfSpace4D leaves.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_scene_max_t(ro, rd)"));
     }
 
@@ -966,20 +914,11 @@ mod tests {
     }
 
     /// Naga-validate the full kernel concatenated with a minimal
-    /// scene stub. Catches WGSL syntax / type / binding mismatches
-    /// the string-presence assertions above can't see (e.g. a
-    /// rotor-sandwich edit that drops a swizzle, a uniform field
-    /// renamed without updating the WGSL struct).
-    ///
-    /// The stub mirrors the contract `Scene4::to_hyperslice_wgsl`
-    /// emits: `rye_scene_at(p3) -> RyeSceneHit` plus the kind
-    /// constants the kernel references. `rye_scene_sdf` is provided
-    /// as a thin wrapper for completeness even though `rye_total_sdf`
-    /// reads `dist` via `rye_scene_at` directly in the production
-    /// path through Scene4. `rye_scene_max_t` returns the legacy
-    /// no-analytical-bound sentinel so the kernel falls back to its
-    /// hard-coded far-clip; Scene4's emit overrides this with a real
-    /// ray-plane bound when the scene has half-space leaves.
+    /// Naga parse + validate the kernel against a minimal scene stub.
+    /// Catches WGSL syntax / type / binding errors the string-presence
+    /// tests can't see. Stub mirrors `Scene4::to_hyperslice_wgsl`'s
+    /// contract minimally: kind constants, `rye_scene_at`,
+    /// `rye_scene_sdf`, `rye_scene_max_t`.
     #[test]
     fn kernel_validates_with_minimal_scene() {
         const SCENE_STUB: &str = r#"
@@ -1007,17 +946,11 @@ fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             .expect("hyperslice4d kernel + scene stub should validate");
     }
 
-    /// End-to-end validation: take a real `Scene4` (the
-    /// `overlapping_sdfs` example's shape: a union of hyperspheres
-    /// and a half-space floor), emit its hyperslice WGSL, splice
-    /// against the kernel, parse + validate via naga.
-    ///
-    /// Catches drift between the `Scene4::to_hyperslice_wgsl` emit
-    /// and what the kernel expects at the `rye_scene_sdf` boundary.
-    /// The `kernel_validates_with_minimal_scene` test above pins
-    /// the kernel's call-site shape against a hand-rolled stub;
-    /// this one pins the `Scene4` emit produces a stub the kernel
-    /// can actually call.
+    /// Take a real `Scene4` (union of hyperspheres + halfspace),
+    /// emit its hyperslice WGSL, splice against the kernel, and
+    /// validate via naga. Catches drift between
+    /// `Scene4::to_hyperslice_wgsl` and the kernel's expectations
+    /// at the `rye_scene_sdf` / `rye_scene_at` boundary.
     #[test]
     fn kernel_validates_with_real_scene_union() {
         use glam::Vec4;
@@ -1306,15 +1239,8 @@ fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     }
 
     // ---- CPU port of the hyperslice marcher -----------------------------
-    //
-    // 1:1 mirror of `fs_main`'s sphere-trace loop in `HYPERSLICE_KERNEL_WGSL`.
-    // Used by the integration tests below to assert hit positions against a
-    // known SDF without needing a GPU adapter (the existing GPU probes in
-    // `rye-shader::db` are `#[ignore]`d locally and run via lavapipe).
-    //
-    // The kernel reads its constants (`hit_eps`, `min_step`, iteration cap,
-    // `max_t`, under-step factor) inline; the CPU port pins the same values
-    // here. If the kernel changes them, this port must be updated too.
+    // 1:1 mirror of `fs_main`'s sphere-trace loop. Constants must
+    // match the kernel.
 
     use glam::Vec3;
 
@@ -1351,11 +1277,8 @@ fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         None
     }
 
-    /// Static-scene SDF for the `overlapping_sdfs` example: three
-    /// hyperspheres at `w = 0` plus a `y = 0` floor, evaluated via 4D
-    /// distance at `(p, w_slice)`. All hits attribute to the static scene
-    /// (`body_idx = MAX_BODIES`), matching what the kernel's
-    /// `rye_total_sdf` returns when no dynamic bodies are active.
+    /// Test scene: three hyperspheres at `w = 0` plus a `y = 0` floor.
+    /// All hits attribute to static scene (`body_idx = MAX_BODIES`).
     fn overlapping_sdfs_scene(p: Vec3, w_slice: f32) -> (f32, u32) {
         use glam::Vec4;
         let p4 = Vec4::new(p.x, p.y, p.z, w_slice);
@@ -1371,20 +1294,11 @@ fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     }
 
     // ---- Integration tests against the CPU port -------------------------
-    //
-    // These exercise the *whole* marcher pipeline (step calculus + SDF
-    // composition + hit attribution) on the `overlapping_sdfs` scene, the
-    // same scene the example renders. Each test pins a property the visual
-    // verification confirmed; together they form a regression net for the
-    // issue #17 fix at the geometry level (not just the WGSL string level).
+    // Exercise step calculus + SDF composition + hit attribution
+    // against the test scene. Each test pins one geometric property of
+    // the issue #17 fix.
 
-    /// A ray pointing straight down through the solo sphere's centre
-    /// hits the sphere's *top* at y close to 2.0 (centre y + radius).
-    /// Without the iteration-cap bump (192 -> 384) and the under-step
-    /// factor, near-tangent silhouette rays exhausted the budget; the
-    /// solo sphere is large enough that this central ray converges
-    /// fast, but it pins the basic "hit the top, body_idx = static"
-    /// contract.
+    /// Ray straight down through solo sphere centre hits its top.
     #[test]
     fn cpu_march_hits_solo_sphere_top() {
         let ro = Vec3::new(0.0, 5.0, 1.5);
@@ -1402,10 +1316,9 @@ fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         );
     }
 
-    /// A ray pointing straight down between the spheres hits the floor
-    /// at y close to 0. Pins the no-dimple property: the static-scene
-    /// `min(spheres, floor)` correctly returns the floor's distance
-    /// when no sphere covers the ray's path.
+    /// Ray straight down between spheres hits floor at y ≈ 0. Pins
+    /// the no-dimple property: `min(spheres, floor)` returns the
+    /// floor's distance when no sphere covers the path.
     #[test]
     fn cpu_march_hits_floor_in_gap_between_spheres() {
         let ro = Vec3::new(0.0, 5.0, -3.5);
@@ -1421,12 +1334,9 @@ fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         );
     }
 
-    /// A ray pointing at the twin-pair overlap region (x = 0,
-    /// z = -1.5) hits one of the twin spheres' top, NOT the floor.
-    /// Pins the `min(sphere_l, sphere_r, floor)` composition: at the
-    /// twin overlap, both sphere SDFs are small (the surfaces meet),
-    /// the floor SDF is ~0.7 (the sphere top is at y=1.4). The
-    /// marcher must prefer the closer sphere surface.
+    /// Ray at the twin-pair overlap (x=0, z=-1.5) hits a sphere top,
+    /// not the floor. Pins `min(sphere_l, sphere_r, floor)` at a point
+    /// where both sphere SDFs are small.
     #[test]
     fn cpu_march_hits_twin_overlap_top_not_floor() {
         let ro = Vec3::new(0.0, 5.0, -1.5);
@@ -1446,14 +1356,10 @@ fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         );
     }
 
-    /// A ray with shallow downward angle on a clear path to the floor
-    /// converges within 384 iterations. Pins the iteration-cap fix:
-    /// the original 192 cap exhausted on shallow rays; 384 covers
-    /// them with headroom.
+    /// Shallow ray with clear path to floor converges within budget.
+    /// Pins the iteration-cap fix (192 → 384).
     #[test]
     fn cpu_march_converges_on_shallow_ray_to_floor() {
-        // Camera at y=2.5, ray angled gently down to the horizon.
-        // Hits the floor at t ≈ 50 (y=2.5, descending 0.05/unit).
         let ro = Vec3::new(0.0, 2.5, 5.0);
         let rd = Vec3::new(0.0, -0.05, -1.0).normalize();
         let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
@@ -1462,9 +1368,8 @@ fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         assert!(hit.hit_pos.y.abs() < 5e-3);
     }
 
-    /// A ray going straight up from the camera into empty space misses
-    /// (returns None). Pins the iteration-cap and `max_t` cap exit
-    /// paths; without them the marcher would loop forever.
+    /// Ray straight up into empty sky misses. Pins the iter-cap and
+    /// `max_t` exit paths.
     #[test]
     fn cpu_march_misses_into_empty_sky() {
         let ro = Vec3::new(0.0, 5.0, 0.0);

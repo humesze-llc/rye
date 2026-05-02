@@ -120,14 +120,10 @@ impl Scene4 {
         Self { root }
     }
 
-    /// Emit the native 4D SDF module. The entry point is
-    /// `fn rye_scene_sdf_4d(p: vec4<f32>) -> f32`. Used by future
-    /// full-4D ray-march renderers; the hyperslice path uses
-    /// [`Self::to_hyperslice_wgsl`] instead.
-    ///
-    /// The walker also emits unused `let kN: u32 = ...;` kind-tracking
-    /// bindings; WGSL accepts unused locals so they are inert here.
-    /// The hyperslice path is what actually consumes the kind output.
+    /// Emit `fn rye_scene_sdf_4d(p: vec4<f32>) -> f32`. Used by
+    /// future full-4D ray-march renderers; the hyperslice path uses
+    /// [`Self::to_hyperslice_wgsl`]. Kind-tracking bindings are
+    /// emitted but unused (WGSL accepts unused locals).
     pub fn to_wgsl_4d(&self) -> String {
         let mut helpers = String::new();
         let mut body = String::new();
@@ -145,36 +141,16 @@ impl Scene4 {
         )
     }
 
-    /// Emit the hyperslice SDF module. Defines:
+    /// Emit the hyperslice SDF module: kind constants, `RyeSceneHit`,
+    /// `rye_scene_at(p3) -> RyeSceneHit`, `rye_scene_sdf(p3) -> f32`
+    /// (thin wrapper), and `rye_scene_max_t(ro, rd) -> f32` (analytical
+    /// far-clip from HalfSpace4D leaves).
     ///
-    /// - `rye_scene_at(p3: vec3<f32>) -> RyeSceneHit` (`{dist, kind}`),
-    ///   the per-pixel scene query carrying the closest primitive's
-    ///   identity alongside its distance. The renderer uses `.kind`
-    ///   for floor classification (gating the ground-checker shading
-    ///   on `RYE_PRIM_HALFSPACE4D`) instead of a normal/position
-    ///   heuristic.
-    /// - `rye_scene_sdf(p3: vec3<f32>) -> f32`, a thin wrapper around
-    ///   `rye_scene_at(...).dist` for backward compatibility with
-    ///   callers that only need distance (the hyperslice marcher's
-    ///   inner loop, the minimal-scene-stub validation test).
-    /// - Constants `RYE_PRIM_HYPERSPHERE4D = 0`, `RYE_PRIM_HALFSPACE4D = 1`,
-    ///   `RYE_PRIM_OTHER = 255`.
+    /// `w_slice_expr` is the WGSL expression for the slicing w-coord;
+    /// typically `"u.w_slice"`.
     ///
-    /// `w_slice_expr` is the WGSL expression the kernel uses to
-    /// reach its `w_slice` uniform, typically `"u.w_slice"` when
-    /// the node binds a single uniform struct named `u`. Passing a
-    /// literal (e.g. `"0.0"`) is also valid for static-slice tests.
-    ///
-    /// ## Kind tracking through combinators
-    ///
-    /// - `Union (min)`: the closer leaf wins; kind = closer leaf's kind.
-    /// - `Intersection (max)`: the farther leaf is on the boundary;
-    ///   kind = farther leaf's kind.
-    /// - `Difference (a - b)`: kind = `RYE_PRIM_OTHER`. The active
-    ///   surface alternates between `a`'s outside and `b`'s inside,
-    ///   and a clean per-region routing isn't worth the WGSL code-gen
-    ///   complexity at this level. Difference is rare in scene
-    ///   composition; if a future caller needs it, refine here.
+    /// Kind tracking: union picks the closer leaf, intersection picks
+    /// the farther (boundary) leaf, difference returns `RYE_PRIM_OTHER`.
     pub fn to_hyperslice_wgsl(&self, w_slice_expr: &str) -> String {
         let mut helpers = String::new();
         let mut body = String::new();
@@ -231,24 +207,10 @@ const RYE_PRIM_HYPERSPHERE4D: u32 = 0u;\n\
 const RYE_PRIM_HALFSPACE4D: u32 = 1u;\n\
 const RYE_PRIM_OTHER: u32 = 255u;\n";
 
-/// Walk the scene tree to emit the body of `rye_scene_max_t`, the
-/// analytical upper bound on march distance.
-///
-/// For each `HalfSpace4D` leaf, emits a ray-plane intersection check:
-/// if the ray is heading toward the plane (`dot(rd, n) < 0`), compute
-/// the t at which the ray crosses, clip to positive, fold into `t_max`
-/// via `min`. Other primitive types contribute nothing (their bounds
-/// are encoded only in `rye_scene_at`'s SDF).
-///
-/// Combinators don't change the analytical bound; we visit all leaves
-/// regardless of how they compose. The bound is conservative: it's the
-/// closest plane the ray would cross under any composition, which is a
-/// safe upper bound on the actual hit-t.
-///
-/// Only the 3D part of each `HalfSpace4D` normal is used; the slicing
-/// hyperplane fixes `p.w = w_slice`, so the ray-plane intersection in
-/// 3D matches the 4D-projected behaviour of the half-space leaf for
-/// any fixed slice.
+/// Emit the body of `rye_scene_max_t`: ray-plane intersection check
+/// for each `HalfSpace4D` leaf. Only the 3D part of the normal is
+/// used (the slice fixes `p.w`). Combinator-agnostic: visit every
+/// leaf, fold into `t_max` via `min` to get a conservative bound.
 fn emit_max_t_body(node: &SceneNode4) -> String {
     let mut body = String::new();
     walk_max_t(node, &mut body);
@@ -258,9 +220,9 @@ fn emit_max_t_body(node: &SceneNode4) -> String {
 fn walk_max_t(node: &SceneNode4, body: &mut String) {
     match node {
         SceneNode4::Leaf(Shape::HalfSpace4D { normal, offset }) => {
-            // Ray-plane intersection: t = (offset - dot(ro, n)) / dot(rd, n).
-            // Only valid (and useful for a max-t bound) when `dot(rd, n) < 0`,
-            // i.e. the ray heads toward the plane's solid side.
+            // t = (offset - dot(ro, n)) / dot(rd, n), guarded by
+            // dot(rd, n) < 0 so we only catch rays heading toward the
+            // plane's solid side.
             body.push_str(&format!(
                 "\t{{\n\
                  \t\tlet n = vec3<f32>({nx:.6}, {ny:.6}, {nz:.6});\n\
@@ -276,9 +238,7 @@ fn walk_max_t(node: &SceneNode4, body: &mut String) {
                 offset = offset,
             ));
         }
-        SceneNode4::Leaf(_) => {
-            // Other primitives have no closed-form max-t bound here.
-        }
+        SceneNode4::Leaf(_) => {} // Other primitives: no closed-form bound.
         SceneNode4::Union(l, r) | SceneNode4::Intersection(l, r) | SceneNode4::Difference(l, r) => {
             walk_max_t(l, body);
             walk_max_t(r, body);

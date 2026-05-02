@@ -185,19 +185,9 @@ mod tests {
     }
 
     // ---- Semantic-SDF correctness + Lipschitz-bound tests ------------------
-    //
-    // The `to_wgsl` tests above verify that the right *strings* are emitted
-    // for each primitive. These tests verify that the *mathematical* SDF
-    // each primitive represents is well-formed: positive outside, negative
-    // inside, near-zero on the surface, and Lipschitz-1 (i.e. the gradient
-    // magnitude never exceeds 1, which is the property sphere-tracing
-    // depends on for safe convergence).
-    //
-    // The CPU helpers below mirror the WGSL formula in `to_wgsl`. If the
-    // formula or the underlying Shape data model changes without updating
-    // both sides, the string-presence tests above catch it; these tests
-    // catch a more subtle class of bug: a formula that emits cleanly but
-    // is mathematically wrong.
+    // The string-emit tests above verify the right WGSL is produced.
+    // These verify the mathematical SDF each primitive represents:
+    // sign correctness, surface zero, Lipschitz-1.
 
     fn sphere_sdf_cpu(p: Vec3, center: Vec3, radius: f32) -> f32 {
         (p - center).length() - radius
@@ -220,12 +210,7 @@ mod tests {
         p.dot(normal) - offset
     }
 
-    /// Deterministic point-pair sampler for Lipschitz checks. Returns
-    /// `count` (a, b) pairs uniformly distributed in `[-extent, extent]`
-    /// per axis, seeded by `seed` for reproducibility.
-    ///
-    /// Uses xorshift32 because the test only needs spatial coverage,
-    /// not statistical quality; rand-crate dep would be overkill.
+    /// Deterministic xorshift32 point-pair sampler for Lipschitz checks.
     fn deterministic_pair_samples(seed: u32, count: usize, extent: f32) -> Vec<(Vec3, Vec3)> {
         let mut state = seed;
         let mut next_f32 = || {
@@ -252,10 +237,7 @@ mod tests {
             .collect()
     }
 
-    /// Assert `|sdf(a) - sdf(b)| <= |a - b| * (1 + tol)` across `samples`
-    /// random pairs. The tolerance covers f32 round-off in the `length`
-    /// calls; primitives that satisfy Lipschitz-1 mathematically should
-    /// pass with `tol = 1e-5`.
+    /// Assert `|sdf(a) - sdf(b)| <= |a - b| * (1 + 1e-5)` across all pairs.
     fn assert_lipschitz_1<F: Fn(Vec3) -> f32>(label: &str, sdf: F, samples: &[(Vec3, Vec3)]) {
         for &(a, b) in samples {
             let dist_ab = (a - b).length();
@@ -272,9 +254,7 @@ mod tests {
         }
     }
 
-    /// Sphere SDF: positive outside, negative inside, exactly zero on the
-    /// surface (within f32 epsilon). At the centre, returns `-radius`.
-    /// Lipschitz-1: yes (gradient is the unit radial vector).
+    /// Sphere SDF: sign + surface zero + centre = -radius.
     #[test]
     fn sphere_sdf_distance_and_signs() {
         let center = Vec3::new(1.0, 2.0, 3.0);
@@ -300,9 +280,7 @@ mod tests {
         assert_lipschitz_1("sphere", |p| sphere_sdf_cpu(p, center, radius), &samples);
     }
 
-    /// Box SDF: signed distance to an axis-aligned box centred at the
-    /// origin. Zero on faces, negative inside, positive outside.
-    /// Lipschitz-1 in all regions.
+    /// Box SDF: sign + surface zero + corner Euclidean distance.
     #[test]
     fn box3_sdf_distance_and_signs() {
         let h = Vec3::splat(0.4);
@@ -326,9 +304,7 @@ mod tests {
         assert_lipschitz_1("box3", |p| box3_sdf_cpu(p, h), &samples);
     }
 
-    /// HalfSpace SDF: signed distance to the plane `dot(p, n) = offset`.
-    /// Honest in any flat chart (E³, ℝ⁴). Lipschitz-1 because the gradient
-    /// is `n` (a unit vector by construction).
+    /// HalfSpace SDF: sign + plane zero (gradient = unit normal).
     #[test]
     fn halfspace_sdf_distance_and_signs() {
         let normal = Vec3::Y;
@@ -353,10 +329,7 @@ mod tests {
         );
     }
 
-    /// Combinators preserve Lipschitz-1: `min(a, b)` is Lipschitz-1 if
-    /// both `a` and `b` are. Pinning this here means scene combinators
-    /// don't need their own per-shape Lipschitz tests; the property
-    /// composes.
+    /// `min(a, b)` is Lipschitz-1 when both `a` and `b` are.
     #[test]
     fn union_min_preserves_lipschitz_1() {
         let center_a = Vec3::new(-1.0, 0.0, 0.0);
@@ -368,8 +341,7 @@ mod tests {
         assert_lipschitz_1("union(sphere_a, sphere_b)", union_sdf, &samples);
     }
 
-    /// 4D primitives: `HyperSphere4D` and `HalfSpace4D`. Same algebra as
-    /// 3D, one more axis. Lipschitz-1 follows the same proof.
+    /// HyperSphere4D: sign + surface zero + Lipschitz-1 spot check.
     #[test]
     fn hypersphere4d_sdf_distance_and_lipschitz() {
         use glam::Vec4;

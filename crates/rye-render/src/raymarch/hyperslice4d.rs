@@ -681,7 +681,17 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     var base = vec3<f32>(0.65, 0.65, 0.72);
     if (hit_idx < MAX_BODIES) {
         base = u.bodies[hit_idx].color;
-    } else if (n.y > 0.95) {
+    } else if (n.y > 0.95 && abs(p_hit.y) < 0.01) {
+        // Floor classification: an upward-facing normal alone is
+        // not enough. The top of any static-scene sphere also has
+        // n.y > 0.95, and was previously being painted with the
+        // floor checker, producing a dark cap wherever the
+        // ground-color sample landed on a dark square. Gate on the
+        // hit y-position too: floor at y=0, hit_eps=0.001, so 0.01
+        // is a 10x margin for "this hit is on the floor plane".
+        // Other y=0 static surfaces (none today) would also
+        // qualify; a richer scheme would route per-primitive
+        // identity through `rye_scene_sdf`, deferred.
         base = ground_color(p_hit);
     }
     let lit = base * (ambient + lambert * 0.85);

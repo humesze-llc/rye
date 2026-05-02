@@ -171,6 +171,13 @@ fn {fn_name}(p: vec4<f32>) -> f32 {{
     }}
     if (max_d <= 0.0) {{ return max_d; }}
 
+    // Outside-circumsphere fast-path: max-plane distance is a
+    // Lipschitz-1 lower bound on the true SDF; tight in face-Voronoi
+    // regions, slightly loose in corner regions but still safe for
+    // sphere-tracing convergence. Skip Wolfe iteration here so distant
+    // grazing rays don't pay the full 4-level projection cost.
+    if (dot(p, p) > 1.0) {{ return max_d; }}
+
     var active_idx_0: u32 = max_i;
     var active_idx_1: u32 = 0u;
     var active_idx_2: u32 = 0u;

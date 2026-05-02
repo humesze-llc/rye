@@ -459,9 +459,21 @@ fn cell24_sdf_local(p: vec4<f32>) -> f32 {
 // to body origin, applies the inverse rotor (world -> body local),
 // scales by 1/size to evaluate the unit-circumradius shape, then
 // rescales the resulting SDF.
+//
+// Bounding-sphere fast-path: any unit-circumradius polytope is
+// contained in the unit 4-ball. For points well outside, the ball
+// SDF (`|world_v| - size`) is a Lipschitz-1 lower bound on the true
+// polytope SDF, so the marcher can take a safe step without paying
+// for the rotor inverse + per-shape eval. The 1.5 factor leaves
+// margin for Wolfe to kick in slightly before silhouette.
 fn body_polytope_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
     let size = max(b.polytope_size, 1.0e-6);
     let world_v = p4 - b.position;
+    let world_dist2 = dot(world_v, world_v);
+    let bound = size * 1.5;
+    if (world_dist2 > bound * bound) {
+        return sqrt(world_dist2) - size;
+    }
     let local_v = rotor4_inverse_apply(b.rotor_lo, b.rotor_hi, world_v);
     let unit_p = local_v / size;
     let shape = u32(b.radius_or_shape + 0.5);

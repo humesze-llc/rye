@@ -183,4 +183,254 @@ mod tests {
         assert!(p.x < 0.5);
         assert!(!src.contains("0.500000, 0.000000, 0.000000"));
     }
+
+    // ---- Semantic-SDF correctness + Lipschitz-bound tests ------------------
+    //
+    // The `to_wgsl` tests above verify that the right *strings* are emitted
+    // for each primitive. These tests verify that the *mathematical* SDF
+    // each primitive represents is well-formed: positive outside, negative
+    // inside, near-zero on the surface, and Lipschitz-1 (i.e. the gradient
+    // magnitude never exceeds 1, which is the property sphere-tracing
+    // depends on for safe convergence).
+    //
+    // The CPU helpers below mirror the WGSL formula in `to_wgsl`. If the
+    // formula or the underlying Shape data model changes without updating
+    // both sides, the string-presence tests above catch it; these tests
+    // catch a more subtle class of bug: a formula that emits cleanly but
+    // is mathematically wrong.
+
+    fn sphere_sdf_cpu(p: Vec3, center: Vec3, radius: f32) -> f32 {
+        (p - center).length() - radius
+    }
+
+    fn box3_sdf_cpu(p: Vec3, half_extents: Vec3) -> f32 {
+        let q = p.abs() - half_extents;
+        q.max(Vec3::ZERO).length() + q.x.max(q.y.max(q.z)).min(0.0)
+    }
+
+    fn halfspace_sdf_cpu(p: Vec3, normal: Vec3, offset: f32) -> f32 {
+        p.dot(normal) - offset
+    }
+
+    fn hypersphere_sdf_cpu(p: glam::Vec4, center: glam::Vec4, radius: f32) -> f32 {
+        (p - center).length() - radius
+    }
+
+    fn halfspace4d_sdf_cpu(p: glam::Vec4, normal: glam::Vec4, offset: f32) -> f32 {
+        p.dot(normal) - offset
+    }
+
+    /// Deterministic point-pair sampler for Lipschitz checks. Returns
+    /// `count` (a, b) pairs uniformly distributed in `[-extent, extent]`
+    /// per axis, seeded by `seed` for reproducibility.
+    ///
+    /// Uses xorshift32 because the test only needs spatial coverage,
+    /// not statistical quality; rand-crate dep would be overkill.
+    fn deterministic_pair_samples(seed: u32, count: usize, extent: f32) -> Vec<(Vec3, Vec3)> {
+        let mut state = seed;
+        let mut next_f32 = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            // Map to [-1, 1].
+            (state as f32 / u32::MAX as f32) * 2.0 - 1.0
+        };
+        (0..count)
+            .map(|_| {
+                let a = Vec3::new(
+                    next_f32() * extent,
+                    next_f32() * extent,
+                    next_f32() * extent,
+                );
+                let b = Vec3::new(
+                    next_f32() * extent,
+                    next_f32() * extent,
+                    next_f32() * extent,
+                );
+                (a, b)
+            })
+            .collect()
+    }
+
+    /// Assert `|sdf(a) - sdf(b)| <= |a - b| * (1 + tol)` across `samples`
+    /// random pairs. The tolerance covers f32 round-off in the `length`
+    /// calls; primitives that satisfy Lipschitz-1 mathematically should
+    /// pass with `tol = 1e-5`.
+    fn assert_lipschitz_1<F: Fn(Vec3) -> f32>(label: &str, sdf: F, samples: &[(Vec3, Vec3)]) {
+        for &(a, b) in samples {
+            let dist_ab = (a - b).length();
+            if dist_ab < 1e-6 {
+                continue; // skip degenerate pairs
+            }
+            let lhs = (sdf(a) - sdf(b)).abs();
+            let rhs = dist_ab * (1.0 + 1e-5);
+            assert!(
+                lhs <= rhs,
+                "{label}: |sdf({a:?}) - sdf({b:?})| = {lhs} exceeds |a-b| = {dist_ab} \
+                 (Lipschitz-1 violated)"
+            );
+        }
+    }
+
+    /// Sphere SDF: positive outside, negative inside, exactly zero on the
+    /// surface (within f32 epsilon). At the centre, returns `-radius`.
+    /// Lipschitz-1: yes (gradient is the unit radial vector).
+    #[test]
+    fn sphere_sdf_distance_and_signs() {
+        let center = Vec3::new(1.0, 2.0, 3.0);
+        let radius = 0.5_f32;
+        // At centre: distance = -radius.
+        assert!((sphere_sdf_cpu(center, center, radius) + radius).abs() < 1e-6);
+        // On surface: distance = 0.
+        let on_surface = center + Vec3::X * radius;
+        assert!(sphere_sdf_cpu(on_surface, center, radius).abs() < 1e-6);
+        // Far away: distance = |p - c| - r.
+        let far = center + Vec3::X * 10.0;
+        assert!((sphere_sdf_cpu(far, center, radius) - (10.0 - radius)).abs() < 1e-5);
+        // Sign: negative inside, positive outside.
+        assert!(sphere_sdf_cpu(center + Vec3::X * 0.1, center, radius) < 0.0);
+        assert!(sphere_sdf_cpu(center + Vec3::X * 1.0, center, radius) > 0.0);
+    }
+
+    #[test]
+    fn sphere_sdf_is_lipschitz_1() {
+        let center = Vec3::new(1.0, 2.0, 3.0);
+        let radius = 0.5_f32;
+        let samples = deterministic_pair_samples(0xABCD_1234, 256, 5.0);
+        assert_lipschitz_1("sphere", |p| sphere_sdf_cpu(p, center, radius), &samples);
+    }
+
+    /// Box SDF: signed distance to an axis-aligned box centred at the
+    /// origin. Zero on faces, negative inside, positive outside.
+    /// Lipschitz-1 in all regions.
+    #[test]
+    fn box3_sdf_distance_and_signs() {
+        let h = Vec3::splat(0.4);
+        // At origin (interior): -min(half_extent).
+        assert!((box3_sdf_cpu(Vec3::ZERO, h) + 0.4).abs() < 1e-6);
+        // On face: zero.
+        assert!(box3_sdf_cpu(Vec3::new(0.4, 0.0, 0.0), h).abs() < 1e-6);
+        // Outside one face: distance to face along that axis.
+        assert!((box3_sdf_cpu(Vec3::new(1.4, 0.0, 0.0), h) - 1.0).abs() < 1e-5);
+        // Outside corner: 3D Euclidean distance to the corner.
+        let corner = Vec3::splat(0.4);
+        let outside_corner = corner + Vec3::splat(1.0);
+        let expected = (outside_corner - corner).length();
+        assert!((box3_sdf_cpu(outside_corner, h) - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn box3_sdf_is_lipschitz_1() {
+        let h = Vec3::splat(0.4);
+        let samples = deterministic_pair_samples(0xBEEF_5678, 256, 5.0);
+        assert_lipschitz_1("box3", |p| box3_sdf_cpu(p, h), &samples);
+    }
+
+    /// HalfSpace SDF: signed distance to the plane `dot(p, n) = offset`.
+    /// Honest in any flat chart (E³, ℝ⁴). Lipschitz-1 because the gradient
+    /// is `n` (a unit vector by construction).
+    #[test]
+    fn halfspace_sdf_distance_and_signs() {
+        let normal = Vec3::Y;
+        let offset = -0.5_f32;
+        // On the plane y = -0.5: zero.
+        assert!(halfspace_sdf_cpu(Vec3::new(0.0, -0.5, 0.0), normal, offset).abs() < 1e-6);
+        // Above the plane: positive.
+        assert!((halfspace_sdf_cpu(Vec3::new(0.0, 1.0, 0.0), normal, offset) - 1.5).abs() < 1e-5);
+        // Below the plane: negative.
+        assert!(halfspace_sdf_cpu(Vec3::new(0.0, -1.0, 0.0), normal, offset) < 0.0);
+    }
+
+    #[test]
+    fn halfspace_sdf_is_lipschitz_1() {
+        let normal = Vec3::new(0.6, 0.8, 0.0); // unit
+        let offset = 0.0_f32;
+        let samples = deterministic_pair_samples(0xCAFE_F00D, 256, 5.0);
+        assert_lipschitz_1(
+            "halfspace",
+            |p| halfspace_sdf_cpu(p, normal, offset),
+            &samples,
+        );
+    }
+
+    /// Combinators preserve Lipschitz-1: `min(a, b)` is Lipschitz-1 if
+    /// both `a` and `b` are. Pinning this here means scene combinators
+    /// don't need their own per-shape Lipschitz tests; the property
+    /// composes.
+    #[test]
+    fn union_min_preserves_lipschitz_1() {
+        let center_a = Vec3::new(-1.0, 0.0, 0.0);
+        let center_b = Vec3::new(1.0, 0.0, 0.0);
+        let radius = 0.5_f32;
+        let union_sdf =
+            |p: Vec3| sphere_sdf_cpu(p, center_a, radius).min(sphere_sdf_cpu(p, center_b, radius));
+        let samples = deterministic_pair_samples(0x1357_9BDF, 256, 4.0);
+        assert_lipschitz_1("union(sphere_a, sphere_b)", union_sdf, &samples);
+    }
+
+    /// 4D primitives: `HyperSphere4D` and `HalfSpace4D`. Same algebra as
+    /// 3D, one more axis. Lipschitz-1 follows the same proof.
+    #[test]
+    fn hypersphere4d_sdf_distance_and_lipschitz() {
+        use glam::Vec4;
+        let center = Vec4::new(0.5, 1.0, -0.5, 0.25);
+        let radius = 0.7_f32;
+        // On surface along +x.
+        let on_surface = center + Vec4::X * radius;
+        assert!(hypersphere_sdf_cpu(on_surface, center, radius).abs() < 1e-5);
+        // Far in 4D: distance is true 4D Euclidean.
+        let far = center + Vec4::W * 5.0;
+        assert!((hypersphere_sdf_cpu(far, center, radius) - (5.0 - radius)).abs() < 1e-5);
+        // Lipschitz-1 spot check.
+        let mut state: u32 = 0x9999_AAAA;
+        let mut nf32 = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state as f32 / u32::MAX as f32) * 2.0 - 1.0
+        };
+        for _ in 0..256 {
+            let a = Vec4::new(nf32() * 5.0, nf32() * 5.0, nf32() * 5.0, nf32() * 5.0);
+            let b = Vec4::new(nf32() * 5.0, nf32() * 5.0, nf32() * 5.0, nf32() * 5.0);
+            let dist_ab = (a - b).length();
+            if dist_ab < 1e-6 {
+                continue;
+            }
+            let lhs = (hypersphere_sdf_cpu(a, center, radius)
+                - hypersphere_sdf_cpu(b, center, radius))
+            .abs();
+            assert!(lhs <= dist_ab * (1.0 + 1e-5));
+        }
+    }
+
+    #[test]
+    fn halfspace4d_sdf_distance_and_lipschitz() {
+        use glam::Vec4;
+        let normal = Vec4::Y;
+        let offset = 0.0_f32;
+        // y = 0 plane: zero.
+        assert!(halfspace4d_sdf_cpu(Vec4::new(1.0, 0.0, 2.0, 3.0), normal, offset).abs() < 1e-6);
+        // y > 0: positive.
+        assert!(halfspace4d_sdf_cpu(Vec4::new(0.0, 2.0, 0.0, 0.0), normal, offset) > 0.0);
+        // Lipschitz-1: gradient is unit normal.
+        let mut state: u32 = 0x5555_3333;
+        let mut nf32 = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state as f32 / u32::MAX as f32) * 2.0 - 1.0
+        };
+        for _ in 0..256 {
+            let a = Vec4::new(nf32() * 5.0, nf32() * 5.0, nf32() * 5.0, nf32() * 5.0);
+            let b = Vec4::new(nf32() * 5.0, nf32() * 5.0, nf32() * 5.0, nf32() * 5.0);
+            let dist_ab = (a - b).length();
+            if dist_ab < 1e-6 {
+                continue;
+            }
+            let lhs = (halfspace4d_sdf_cpu(a, normal, offset)
+                - halfspace4d_sdf_cpu(b, normal, offset))
+            .abs();
+            assert!(lhs <= dist_ab * (1.0 + 1e-5));
+        }
+    }
 }

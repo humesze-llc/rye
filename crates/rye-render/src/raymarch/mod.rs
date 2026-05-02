@@ -21,7 +21,7 @@ pub use hyperslice4d::{
     MAX_BODIES, SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_600CELL, SHAPE_PENTATOPE,
     SHAPE_TESSERACT,
 };
-pub use polytope_data::polytope_extended_sdfs_wgsl;
+pub use polytope_data::{polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl};
 
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};

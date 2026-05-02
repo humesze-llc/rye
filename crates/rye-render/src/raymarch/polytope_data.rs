@@ -38,8 +38,31 @@ use rye_physics::euclidean_r4::{
     icosian_inradius_unit,
 };
 
+/// No-op stub WGSL satisfying the kernel's `cell120_sdf_local` /
+/// `cell600_sdf_local` symbol references when the scene doesn't use
+/// either polytope. Returns `+1e9` (invisible far-away surface) so the
+/// dispatch branches are inert at runtime.
+///
+/// The kernel's `body_polytope_sdf_4d` always references both function
+/// names — naga rejects the WGSL otherwise — so callers must include
+/// either this stub or [`polytope_extended_sdfs_wgsl`]. The stub is
+/// tiny (~150 bytes) and adds zero register pressure; prefer it when
+/// the scene contains no 120-cell or 600-cell bodies.
+pub fn polytope_stub_sdfs_wgsl() -> &'static str {
+    "// ---- Polytope stub SDFs (no 120-cell/600-cell bodies in scene) ----\n\
+     fn cell120_sdf_local(p: vec4<f32>) -> f32 { return 1.0e9; }\n\
+     fn cell600_sdf_local(p: vec4<f32>) -> f32 { return 1.0e9; }\n"
+}
+
 /// Emit the full WGSL fragment for the 120-cell and 600-cell SDFs.
 /// Append this to the hyperslice4d kernel before naga validation.
+///
+/// Includes ~24 KB of `const` array data (face normals + vertex sets
+/// for both polytopes). On some GPU drivers this constant data
+/// competes with scalar registers and slows ALL pixel-shader work,
+/// even when the cell120/cell600 dispatch branches are never reached.
+/// If your scene has no 120-cell or 600-cell bodies, prefer
+/// [`polytope_stub_sdfs_wgsl`] instead.
 pub fn polytope_extended_sdfs_wgsl() -> String {
     let mut s = String::with_capacity(32 * 1024);
     s.push_str("// ---- Extended polytope SDFs (120-cell, 600-cell) ----\n");
@@ -274,5 +297,26 @@ mod tests {
         assert!(wgsl.contains("CELL600_VERTICES"));
         assert!(wgsl.contains("fn cell120_sdf_local"));
         assert!(wgsl.contains("fn cell600_sdf_local"));
+    }
+
+    /// The stub WGSL also parses + validates against naga, satisfying
+    /// the kernel's symbol references with no const-array overhead.
+    #[test]
+    fn polytope_stub_sdfs_wgsl_validates() {
+        let wgsl = polytope_stub_sdfs_wgsl();
+        let probe = format!(
+            "{wgsl}\n\
+             @compute @workgroup_size(1) fn main() {{\n\
+             let p = vec4<f32>(0.5, 0.0, 0.0, 0.0);\n\
+             _ = cell120_sdf_local(p);\n\
+             _ = cell600_sdf_local(p);\n\
+             }}\n"
+        );
+        let module = naga::front::wgsl::parse_str(&probe).expect("stub must parse");
+        let flags = naga::valid::ValidationFlags::all();
+        let caps = naga::valid::Capabilities::empty();
+        naga::valid::Validator::new(flags, caps)
+            .validate(&module)
+            .expect("stub must validate");
     }
 }

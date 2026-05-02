@@ -70,8 +70,9 @@ use rye_render::{
     device::RenderDevice,
     graph::RenderNode,
     raymarch::{
-        polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
-        SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_600CELL, SHAPE_PENTATOPE, SHAPE_TESSERACT,
+        polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode,
+        HYPERSLICE_KERNEL_WGSL, SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_600CELL,
+        SHAPE_PENTATOPE, SHAPE_TESSERACT,
     },
 };
 use rye_sdf::{Scene4, SceneNode4};
@@ -427,10 +428,21 @@ impl App for PolytopeSmokeApp {
         }
 
         let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, 0.0));
+        // Only pay the ~24 KB polytope-data compile cost if the row
+        // actually contains a 120-cell or 600-cell. Otherwise the
+        // kernel's dispatch branches for those shapes are unreachable
+        // at runtime and the stubs are enough to satisfy naga.
+        let needs_extended = row
+            .iter()
+            .any(|e| e.shape == SHAPE_120CELL || e.shape == SHAPE_600CELL);
+        let polytope_wgsl = if needs_extended {
+            polytope_extended_sdfs_wgsl()
+        } else {
+            polytope_stub_sdfs_wgsl().to_owned()
+        };
         let shader_source = format!(
-            "{kernel}\n{polytope}\n{scene}\n",
+            "{kernel}\n{polytope_wgsl}\n{scene}\n",
             kernel = HYPERSLICE_KERNEL_WGSL,
-            polytope = polytope_extended_sdfs_wgsl(),
             scene = scene.to_hyperslice_wgsl("u.w_slice"),
         );
         let module = ctx

@@ -53,8 +53,7 @@ use rye_render::{
     device::RenderDevice,
     graph::RenderNode,
     raymarch::{
-        polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
-        MAX_BODIES,
+        polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL, MAX_BODIES,
     },
 };
 use rye_sdf::{Scene4, SceneNode4};
@@ -170,13 +169,13 @@ impl App for HypersphereApp {
         // through `Hyperslice4DNode::set_bodies`.
         let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, 0.0));
 
-        // Assemble shader: kernel + extended polytope SDFs (kernel
-        // dispatch references cell120/cell600 even when unused) +
-        // scene's hyperslice emit.
+        // Hypersphere scene has no 120/600-cell bodies, so use the
+        // cheap stubs that satisfy the kernel's symbol references
+        // without paying the ~24 KB const-array compile cost.
         let shader_source = format!(
             "{kernel}\n{polytope}\n{scene}\n",
             kernel = HYPERSLICE_KERNEL_WGSL,
-            polytope = polytope_extended_sdfs_wgsl(),
+            polytope = polytope_stub_sdfs_wgsl(),
             scene = scene.to_hyperslice_wgsl("u.w_slice"),
         );
         let module = ctx

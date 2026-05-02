@@ -748,8 +748,12 @@ impl Mul for Rotor4 {
         //   e23·I = −e14, e24·I = +e13, e34·I = −e12.
         // (Left-multiplication by I has the same signs since I
         // commutes with every bivector in G(4,0).)
-        let xy = a0 * b12 + a12 * b0 - a13 * b23 + a14 * b24 + a23 * b13
-            - a24 * b14
+        // Bivector-bivector contributions to `e12`:
+        //   e13·e23 = -e12, e23·e13 = +e12, e14·e24 = -e12, e24·e14 = +e12.
+        // The previous version had the e14·e24 / e24·e14 pair's signs
+        // swapped, which produced visible drift under sustained rotation
+        // by non-simple bivectors mixing w-planes (issue #37).
+        let xy = a0 * b12 + a12 * b0 - a13 * b23 + a23 * b13 - a14 * b24 + a24 * b14
             - a34 * b_i
             - a_i * b34;
         let xz = a0 * b13 + a13 * b0 + a12 * b23 - a14 * b34 - a23 * b12
@@ -1532,9 +1536,11 @@ mod tests {
     /// bivectors that include w-mixing planes.
     ///
     /// `omega = e_xy + e_xz + e_xw + e_yz` is the exact bivector the
-    /// user's failing screenshot has active.
+    /// failing-screenshot polytope_smoke run had active. Regression
+    /// gate for the issue #37 fix in `Rotor4::mul` (the e14·e24 /
+    /// e24·e14 pair's signs in the e12 output were swapped). Pre-fix
+    /// drift was ~1.3%; post-fix it sits at f32 noise (~5e-7).
     #[test]
-    #[ignore = "rotor4 multiplicative drift — see issue #TBD"]
     fn rotor4_compound_xy_xz_xw_yz_integrated_matches_closed_form() {
         let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
         let dt = 1.0 / 60.0;
@@ -1562,8 +1568,12 @@ mod tests {
             let via_integrated = integrated.apply(v);
             let via_closed = closed_form.apply(v);
             let diff = (via_integrated - via_closed).length();
+            // 1e-5 gives ~20x headroom over the post-fix f32 noise
+            // floor (observed: ~5e-7). Tight enough to catch a
+            // regression of the e12-component sign error; loose
+            // enough to survive cross-machine f32 variation.
             assert!(
-                diff < 5e-3,
+                diff < 1e-5,
                 "compound xy+xz+xw+yz integration drift: v={v:?} \
                  integrated={via_integrated:?} closed={via_closed:?} \
                  diff={diff}",
@@ -1577,7 +1587,6 @@ mod tests {
     /// vertices grow / shrink under sustained spin (suspect for the
     /// "polytopes appear to grow" symptom).
     #[test]
-    #[ignore = "rotor4 multiplicative drift — see issue #TBD"]
     fn rotor4_compound_integration_preserves_unit_norm_over_900_steps() {
         let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
         let dt = 1.0 / 60.0;
@@ -1587,8 +1596,11 @@ mod tests {
             r = delta * r;
         }
         let n2 = r.norm_squared();
+        // Post-fix observed: |R|² ≈ 1.0 + 2.3e-6 after 900 raw
+        // multiplications (no normalize). Pre-fix the bug pushed it
+        // to 25.4. 1e-5 is a comfortable post-fix gate.
         assert!(
-            (n2 - 1.0).abs() < 1e-3,
+            (n2 - 1.0).abs() < 1e-5,
             "rotor norm drifted after 900 compositions: |R|² = {n2}",
         );
     }
@@ -1601,7 +1613,6 @@ mod tests {
     /// composition without intermediate `.normalize()` to catch
     /// algebraic drift in the geometric product itself.
     #[test]
-    #[ignore = "rotor4 multiplicative drift — see issue #TBD"]
     fn polytope_vertex_stays_on_unit_hypersphere_over_900_steps() {
         let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
         let dt = 1.0 / 60.0;
@@ -1620,9 +1631,11 @@ mod tests {
             let v_rotated = r.apply(v0);
             let l0 = v0.length();
             let l_rot = v_rotated.length();
+            // Pre-fix: vertex grew to ~16.4. Post-fix: drift sits at
+            // ~2e-6 from f32 accumulation over 900 raw composes.
             assert!(
-                (l_rot - l0).abs() < 5e-3,
-                "vertex length drift over 900 steps: {v0:?} (|v|={l0}) → {v_rotated:?} (|Rv|={l_rot})",
+                (l_rot - l0).abs() < 1e-5,
+                "vertex length drift over 900 steps: {v0:?} (|v|={l0}) -> {v_rotated:?} (|Rv|={l_rot})",
             );
         }
     }
@@ -1636,7 +1649,6 @@ mod tests {
     /// catches and the visual issue is somewhere else (cross-section
     /// shape change, dispatcher inverse rotor, etc.).
     #[test]
-    #[ignore = "rotor4 multiplicative drift — see issue #TBD"]
     fn polytope_vertex_stays_on_unit_hypersphere_with_normalize_path() {
         let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
         let dt = 1.0 / 60.0;
@@ -1655,10 +1667,15 @@ mod tests {
             let v_rotated = r.apply(v0);
             let l0 = v0.length();
             let l_rot = v_rotated.length();
+            // Pre-fix (with normalize): vertex shrunk to ~0.65 because
+            // normalization to a unit 8-sphere is the wrong manifold
+            // when the rotor itself was wrong. Post-fix the drift is
+            // essentially zero (the normalize re-projects onto the
+            // correct manifold each step).
             assert!(
-                (l_rot - l0).abs() < 5e-3,
+                (l_rot - l0).abs() < 1e-5,
                 "normalized-path vertex length drift over 900 steps: \
-                 {v0:?} (|v|={l0}) → {v_rotated:?} (|Rv|={l_rot})",
+                 {v0:?} (|v|={l0}) -> {v_rotated:?} (|Rv|={l_rot})",
             );
         }
     }

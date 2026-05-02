@@ -681,17 +681,16 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     var base = vec3<f32>(0.65, 0.65, 0.72);
     if (hit_idx < MAX_BODIES) {
         base = u.bodies[hit_idx].color;
-    } else if (n.y > 0.95 && abs(p_hit.y) < 0.01) {
-        // Floor classification: an upward-facing normal alone is
-        // not enough. The top of any static-scene sphere also has
-        // n.y > 0.95, and was previously being painted with the
-        // floor checker, producing a dark cap wherever the
-        // ground-color sample landed on a dark square. Gate on the
-        // hit y-position too: floor at y=0, hit_eps=0.001, so 0.01
-        // is a 10x margin for "this hit is on the floor plane".
-        // Other y=0 static surfaces (none today) would also
-        // qualify; a richer scheme would route per-primitive
-        // identity through `rye_scene_sdf`, deferred.
+    } else if (rye_scene_at(p_hit).kind == RYE_PRIM_HALFSPACE4D) {
+        // Floor classification: route on the closest primitive's
+        // identity, not a normal/position heuristic. Scene4's emit
+        // attaches a `kind` tag to each leaf and propagates it
+        // through union/intersection so `rye_scene_at` returns the
+        // active boundary's primitive type. `RYE_PRIM_HALFSPACE4D`
+        // is a half-space (the conventional "floor" in rye demos).
+        // The previous version gated on the surface normal plus the
+        // hit y-position, which mis-classified sphere tops at y=0
+        // and only worked for floors anchored at y=0 specifically.
         base = ground_color(p_hit);
     }
     let lit = base * (ambient + lambert * 0.85);
@@ -908,11 +907,12 @@ mod tests {
         // Per-body SDF accessor used by `estimate_normal` to avoid
         // sampling the combined SDF at silhouettes (issue #17).
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_body_sdf_at"));
-        // Floor-classification gate also requires the hit y-position
-        // to be on the y=0 plane (issue #17 follow-up). Without this,
-        // sphere tops with n.y > 0.95 were being painted with the
-        // floor checker, producing a dark cap regression.
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("abs(p_hit.y) < 0.01"));
+        // Floor classification routes on per-primitive identity
+        // (kind tag from Scene4's emit), not the legacy
+        // n.y/p_hit.y heuristic. Pinning the new contract here so
+        // a future revert to the heuristic fails loudly.
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_scene_at(p_hit).kind == RYE_PRIM_HALFSPACE4D"));
+        assert!(!HYPERSLICE_KERNEL_WGSL.contains("abs(p_hit.y) < 0.01"));
     }
 
     /// `BodyUniform` is exactly 80 bytes, the std140-aligned
@@ -956,14 +956,24 @@ mod tests {
     /// rotor-sandwich edit that drops a swizzle, a uniform field
     /// renamed without updating the WGSL struct).
     ///
-    /// The stub `rye_scene_sdf` mirrors what `Scene4::to_hyperslice_wgsl`
-    /// emits at minimum: the kernel only requires the symbol exists
-    /// with the right signature.
+    /// The stub mirrors the contract `Scene4::to_hyperslice_wgsl`
+    /// emits: `rye_scene_at(p3) -> RyeSceneHit` plus the kind
+    /// constants the kernel references. `rye_scene_sdf` is provided
+    /// as a thin wrapper for completeness even though `rye_total_sdf`
+    /// reads `dist` via `rye_scene_at` directly in the production
+    /// path through Scene4.
     #[test]
     fn kernel_validates_with_minimal_scene() {
         const SCENE_STUB: &str = r#"
+const RYE_PRIM_HYPERSPHERE4D: u32 = 0u;
+const RYE_PRIM_HALFSPACE4D: u32 = 1u;
+const RYE_PRIM_OTHER: u32 = 255u;
+struct RyeSceneHit { dist: f32, kind: u32 }
+fn rye_scene_at(p: vec3<f32>) -> RyeSceneHit {
+    return RyeSceneHit(length(p) - 0.5, RYE_PRIM_OTHER);
+}
 fn rye_scene_sdf(p: vec3<f32>) -> f32 {
-    return length(p) - 0.5;
+    return rye_scene_at(p).dist;
 }
 "#;
         let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{SCENE_STUB}");

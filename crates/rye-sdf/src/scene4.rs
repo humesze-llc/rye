@@ -124,33 +124,63 @@ impl Scene4 {
     /// `fn rye_scene_sdf_4d(p: vec4<f32>) -> f32`. Used by future
     /// full-4D ray-march renderers; the hyperslice path uses
     /// [`Self::to_hyperslice_wgsl`] instead.
+    ///
+    /// The walker also emits unused `let kN: u32 = ...;` kind-tracking
+    /// bindings; WGSL accepts unused locals so they are inert here.
+    /// The hyperslice path is what actually consumes the kind output.
     pub fn to_wgsl_4d(&self) -> String {
         let mut helpers = String::new();
         let mut body = String::new();
         let mut counter = 0u32;
-        let result_var = emit_node_4d(&self.root, &mut counter, &mut helpers, &mut body);
+        let (d_root, _k_root) = emit_node_4d(&self.root, &mut counter, &mut helpers, &mut body);
+        let kind_consts = SCENE_KIND_CONSTANTS;
         format!(
             "// ---- rye-sdf scene4 (native 4D) ----\n\
+             {kind_consts}\
              {helpers}\
              fn rye_scene_sdf_4d(p: vec4<f32>) -> f32 {{\n\
              {body}\
-             \treturn {result_var};\n\
+             \treturn {d_root};\n\
              }}\n"
         )
     }
 
-    /// Emit the hyperslice SDF: `fn rye_scene_sdf(p: vec3<f32>) -> f32`
-    /// that evaluates this scene's 4D SDF at `vec4(p, w_slice_expr)`.
+    /// Emit the hyperslice SDF module. Defines:
+    ///
+    /// - `rye_scene_at(p3: vec3<f32>) -> RyeSceneHit` (`{dist, kind}`),
+    ///   the per-pixel scene query carrying the closest primitive's
+    ///   identity alongside its distance. The renderer uses `.kind`
+    ///   for floor classification (gating the ground-checker shading
+    ///   on `RYE_PRIM_HALFSPACE4D`) instead of a normal/position
+    ///   heuristic.
+    /// - `rye_scene_sdf(p3: vec3<f32>) -> f32`, a thin wrapper around
+    ///   `rye_scene_at(...).dist` for backward compatibility with
+    ///   callers that only need distance (the hyperslice marcher's
+    ///   inner loop, the minimal-scene-stub validation test).
+    /// - Constants `RYE_PRIM_HYPERSPHERE4D = 0`, `RYE_PRIM_HALFSPACE4D = 1`,
+    ///   `RYE_PRIM_OTHER = 255`.
     ///
     /// `w_slice_expr` is the WGSL expression the kernel uses to
     /// reach its `w_slice` uniform, typically `"u.w_slice"` when
     /// the node binds a single uniform struct named `u`. Passing a
     /// literal (e.g. `"0.0"`) is also valid for static-slice tests.
+    ///
+    /// ## Kind tracking through combinators
+    ///
+    /// - `Union (min)`: the closer leaf wins; kind = closer leaf's kind.
+    /// - `Intersection (max)`: the farther leaf is on the boundary;
+    ///   kind = farther leaf's kind.
+    /// - `Difference (a - b)`: kind = `RYE_PRIM_OTHER`. The active
+    ///   surface alternates between `a`'s outside and `b`'s inside,
+    ///   and a clean per-region routing isn't worth the WGSL code-gen
+    ///   complexity at this level. Difference is rare in scene
+    ///   composition; if a future caller needs it, refine here.
     pub fn to_hyperslice_wgsl(&self, w_slice_expr: &str) -> String {
         let mut helpers = String::new();
         let mut body = String::new();
         let mut counter = 0u32;
-        let result_var = emit_node_4d(&self.root, &mut counter, &mut helpers, &mut body);
+        let (d_root, k_root) = emit_node_4d(&self.root, &mut counter, &mut helpers, &mut body);
+        let kind_consts = SCENE_KIND_CONSTANTS;
         // Use a distinct parameter name `p3` and an inner `let p`
         // for the 4D point. WGSL forbids declaring a `let` with the
         // same name as the function parameter (no shadowing); naming
@@ -159,11 +189,16 @@ impl Scene4 {
         // collision.
         format!(
             "// ---- rye-sdf scene4 (hyperslice at w = {w_slice_expr}) ----\n\
+             {kind_consts}\
+             struct RyeSceneHit {{ dist: f32, kind: u32 }}\n\
              {helpers}\
-             fn rye_scene_sdf(p3: vec3<f32>) -> f32 {{\n\
+             fn rye_scene_at(p3: vec3<f32>) -> RyeSceneHit {{\n\
              \tlet p = vec4<f32>(p3, {w_slice_expr});\n\
              {body}\
-             \treturn {result_var};\n\
+             \treturn RyeSceneHit({d_root}, {k_root});\n\
+             }}\n\
+             fn rye_scene_sdf(p3: vec3<f32>) -> f32 {{\n\
+             \treturn rye_scene_at(p3).dist;\n\
              }}\n"
         )
     }
@@ -177,45 +212,82 @@ impl Scene4 {
     }
 }
 
+/// WGSL constant block emitted at the top of every Scene4 module.
+/// Pinned so kind comparisons in the kernel and tests reference the
+/// same numeric values.
+const SCENE_KIND_CONSTANTS: &str = "\
+const RYE_PRIM_HYPERSPHERE4D: u32 = 0u;\n\
+const RYE_PRIM_HALFSPACE4D: u32 = 1u;\n\
+const RYE_PRIM_OTHER: u32 = 255u;\n";
+
+/// Map a Shape variant to its WGSL kind constant name.
+fn primitive_kind_constant(shape: &Shape) -> &'static str {
+    match shape {
+        Shape::HyperSphere4D { .. } => "RYE_PRIM_HYPERSPHERE4D",
+        Shape::HalfSpace4D { .. } => "RYE_PRIM_HALFSPACE4D",
+        _ => "RYE_PRIM_OTHER",
+    }
+}
+
 /// Walk the 4D scene tree, append helper functions to `helpers`
-/// and `let` bindings to `body`. Returns the WGSL variable holding
-/// the signed distance for this node.
+/// and `let` bindings to `body`. Returns `(dist_var, kind_var)`,
+/// the WGSL identifiers holding this node's signed distance and
+/// closest-primitive kind.
 fn emit_node_4d(
     node: &SceneNode4,
     counter: &mut u32,
     helpers: &mut String,
     body: &mut String,
-) -> String {
+) -> (String, String) {
     let idx = *counter;
     *counter += 1;
     match node {
         SceneNode4::Leaf(prim) => {
             let fn_name = format!("sdf4_p{idx}");
             helpers.push_str(&prim.to_wgsl_4d(&fn_name));
-            let var = format!("d{idx}");
-            body.push_str(&format!("\tlet {var} = {fn_name}(p);\n"));
-            var
+            let d_var = format!("d{idx}");
+            let k_var = format!("k{idx}");
+            let kind = primitive_kind_constant(prim);
+            body.push_str(&format!("\tlet {d_var} = {fn_name}(p);\n"));
+            body.push_str(&format!("\tlet {k_var}: u32 = {kind};\n"));
+            (d_var, k_var)
         }
         SceneNode4::Union(left, right) => {
-            let lv = emit_node_4d(left, counter, helpers, body);
-            let rv = emit_node_4d(right, counter, helpers, body);
-            let var = format!("d{idx}");
-            body.push_str(&format!("\tlet {var} = min({lv}, {rv});\n"));
-            var
+            let (ld, lk) = emit_node_4d(left, counter, helpers, body);
+            let (rd, rk) = emit_node_4d(right, counter, helpers, body);
+            let d_var = format!("d{idx}");
+            let k_var = format!("k{idx}");
+            body.push_str(&format!("\tlet {d_var} = min({ld}, {rd});\n"));
+            // Closer leaf wins.
+            body.push_str(&format!(
+                "\tlet {k_var}: u32 = select({rk}, {lk}, {ld} <= {rd});\n"
+            ));
+            (d_var, k_var)
         }
         SceneNode4::Intersection(left, right) => {
-            let lv = emit_node_4d(left, counter, helpers, body);
-            let rv = emit_node_4d(right, counter, helpers, body);
-            let var = format!("d{idx}");
-            body.push_str(&format!("\tlet {var} = max({lv}, {rv});\n"));
-            var
+            let (ld, lk) = emit_node_4d(left, counter, helpers, body);
+            let (rd, rk) = emit_node_4d(right, counter, helpers, body);
+            let d_var = format!("d{idx}");
+            let k_var = format!("k{idx}");
+            body.push_str(&format!("\tlet {d_var} = max({ld}, {rd});\n"));
+            // Farther leaf is the active boundary.
+            body.push_str(&format!(
+                "\tlet {k_var}: u32 = select({rk}, {lk}, {ld} >= {rd});\n"
+            ));
+            (d_var, k_var)
         }
         SceneNode4::Difference(left, right) => {
-            let lv = emit_node_4d(left, counter, helpers, body);
-            let rv = emit_node_4d(right, counter, helpers, body);
-            let var = format!("d{idx}");
-            body.push_str(&format!("\tlet {var} = max({lv}, -({rv}));\n"));
-            var
+            let (ld, _lk) = emit_node_4d(left, counter, helpers, body);
+            let (rd, _rk) = emit_node_4d(right, counter, helpers, body);
+            let d_var = format!("d{idx}");
+            let k_var = format!("k{idx}");
+            body.push_str(&format!("\tlet {d_var} = max({ld}, -({rd}));\n"));
+            // Per the to_hyperslice_wgsl docstring: difference's active
+            // surface alternates between left's outside and right's
+            // inside, no clean per-region kind. Sentinel until a caller
+            // needs it.
+            body.push_str(&format!("\tlet {k_var}: u32 = RYE_PRIM_OTHER;\n"));
+            (d_var, k_var)
         }
     }
 }
@@ -297,5 +369,45 @@ mod tests {
         let wgsl = scene.to_wgsl_4d();
         assert!(wgsl.contains("fn sdf4_p0(_p: vec4<f32>) -> f32"));
         assert!(wgsl.contains("return 1e9"));
+    }
+
+    /// `to_hyperslice_wgsl` emits the per-primitive identity layer:
+    /// kind constants, a `RyeSceneHit` struct, and `rye_scene_at`
+    /// returning both `dist` and `kind`. The hyperslice marcher uses
+    /// `kind` for floor classification (see the kernel's
+    /// `kernel_has_expected_entry_points` test).
+    #[test]
+    fn hyperslice_emits_per_primitive_identity_layer() {
+        let scene = Scene4::new(
+            SceneNode4::hypersphere(Vec4::ZERO, 0.5).union(SceneNode4::halfspace(Vec4::Y, 0.0)),
+        );
+        let wgsl = scene.to_hyperslice_wgsl("u.w_slice");
+        // Constants pinned by name and value; the kernel references them.
+        assert!(wgsl.contains("const RYE_PRIM_HYPERSPHERE4D: u32 = 0u;"));
+        assert!(wgsl.contains("const RYE_PRIM_HALFSPACE4D: u32 = 1u;"));
+        assert!(wgsl.contains("const RYE_PRIM_OTHER: u32 = 255u;"));
+        // Result struct + per-primitive entry point.
+        assert!(wgsl.contains("struct RyeSceneHit { dist: f32, kind: u32 }"));
+        assert!(wgsl.contains("fn rye_scene_at(p3: vec3<f32>) -> RyeSceneHit"));
+        // Each leaf must tag its kind constant.
+        assert!(wgsl.contains("RYE_PRIM_HYPERSPHERE4D"));
+        assert!(wgsl.contains("RYE_PRIM_HALFSPACE4D"));
+        // Union routes kind via `select(rhs, lhs, lhs <= rhs)`: closer leaf wins.
+        assert!(wgsl.contains("select("));
+        assert!(wgsl.contains("<="));
+    }
+
+    /// Difference's kind tracking is intentionally undefined (the
+    /// active surface alternates between left's outside and right's
+    /// inside). It emits `RYE_PRIM_OTHER` as a sentinel; pinning that
+    /// here so the choice is explicit and a future tightening fails
+    /// loudly.
+    #[test]
+    fn hyperslice_difference_emits_kind_sentinel() {
+        let scene = Scene4::new(
+            SceneNode4::hypersphere(Vec4::ZERO, 0.5).subtract(SceneNode4::halfspace(Vec4::Y, 0.0)),
+        );
+        let wgsl = scene.to_hyperslice_wgsl("u.w_slice");
+        assert!(wgsl.contains(": u32 = RYE_PRIM_OTHER;"));
     }
 }

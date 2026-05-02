@@ -1,0 +1,24 @@
+[package]
+name = "rye-egui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Rye + egui integration: ApplicationHandler glue, wgpu paint pass, world-anchored label helper. Wraps egui rather than abstracting over UI frameworks; the name reflects that."
+
+[dependencies]
+glam.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+
+# Pin all three egui crates to the same patch series. The trio share an
+# internal ABI; mixing minor versions silently breaks at runtime.
+egui = "0.33"
+egui-wgpu = { version = "0.33", default-features = false, features = ["winit"] }
+egui-winit = { version = "0.33", default-features = false, features = ["clipboard", "links"] }
+
+rye-camera = { path = "../rye-camera" }
+
+[dev-dependencies]
+glam = { workspace = true }

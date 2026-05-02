@@ -15,9 +15,10 @@
 //! labels); not adequate for typographic-quality text or non-Latin
 //! scripts.
 //!
-//! Eventual upgrade path is glyphon (cosmic-text + complex shaping),
-//! pending the wgpu 28 ecosystem bump. The [`TextRenderer`] surface
-//! is designed to survive that swap.
+//! For richer text (mixed fonts, layout, multiline word wrap, complex
+//! UI), apps should reach for `rye-egui` instead, which uses egui's
+//! own text system. `rye-text` exists for the minimal-deps case where
+//! an app wants screen-space ASCII text without the full egui stack.
 //!
 //! # Example
 //!

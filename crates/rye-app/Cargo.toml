@@ -23,3 +23,4 @@ rye-math   = { path = "../rye-math" }
 rye-render = { path = "../rye-render" }
 rye-shader = { path = "../rye-shader" }
 rye-time   = { path = "../rye-time" }
+rye-egui   = { path = "../rye-egui" }

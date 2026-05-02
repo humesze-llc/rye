@@ -54,8 +54,11 @@ impl RenderDevice {
                 label: Some("Rye Device"),
                 required_features: Features::empty(),
                 required_limits: Limits::default(),
-                memory_hints: MemoryHints::default(), // NEW in v26
-                trace: Trace::Off,                    // NEW in v26
+                memory_hints: MemoryHints::default(),
+                trace: Trace::Off,
+                // wgpu v27 requires opting in to experimental features explicitly;
+                // we don't use any.
+                experimental_features: Default::default(),
             })
             .await?;
 

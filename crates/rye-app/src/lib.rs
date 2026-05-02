@@ -38,17 +38,19 @@
 //!
 //! ```text
 //! run::<MyApp>()
-//!   └─ EventLoop::new
-//!   └─ on `resumed`:
+//!   * EventLoop::new
+//!   * on `resumed`:
 //!         create Window
 //!         create RenderDevice
 //!         create ShaderDb + AssetWatcher
+//!         create UiIntegration (egui)
 //!         A::setup(&mut SetupCtx) -> A
-//!   └─ on each redraw:
+//!   * on each redraw:
 //!         FixedTimestep::advance -> ticks
 //!         for each tick: A::tick(dt, &mut TickCtx)
 //!         input.take_frame()
 //!         A::update(&mut FrameCtx)
+//!         A::ui(&egui::Context, &mut FrameCtx)
 //!         A::on_event(...) for each WindowEvent
 //!         poll AssetWatcher -> if events:
 //!             shader_db.apply_events(events, app.space())
@@ -56,8 +58,10 @@
 //!         maybe update title (rate-limited to ~1 Hz)
 //!         RenderDevice::begin_frame
 //!         A::render(rd, view)
+//!         UiIntegration::paint  (egui overlay, LoadOp::Load)
 //!         frame.present
-//!   └─ on `Esc` or `CloseRequested`: exit cleanly
+//!   * on `Esc` or `CloseRequested`: exit cleanly
+//!     (Esc is suppressed when an egui TextEdit has keyboard focus)
 //! ```
 
 use std::borrow::Cow;
@@ -74,6 +78,7 @@ use winit::{
 };
 
 use rye_asset::AssetWatcher;
+use rye_egui::UiIntegration;
 use rye_input::{FrameInput, InputState};
 use rye_math::WgslSpace;
 use rye_render::device::RenderDevice;
@@ -86,6 +91,9 @@ pub use rye_camera::{
     Camera, CameraController, CameraView, FirstPersonController, OrbitController,
 };
 pub use rye_input::FrameInput as Input;
+// Re-export the egui surface so apps that override `App::ui` depend on
+// `rye-app` only and the version pin lives in `rye-egui`.
+pub use rye_egui::{egui, world_to_screen};
 
 // ---------------------------------------------------------------------------
 // App trait
@@ -174,6 +182,31 @@ pub trait App: Sized + 'static {
     /// returns.
     fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> anyhow::Result<()>;
 
+    /// Build this frame's egui UI. Called after [`App::update`] and
+    /// before [`App::render`]; the framework paints the resulting
+    /// widgets as a 2D overlay on the surface view.
+    ///
+    /// Default impl is a no-op; apps that want UI override this with
+    /// immediate-mode egui code:
+    ///
+    /// ```ignore
+    /// fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
+    ///     egui::Window::new("Settings").show(ctx, |ui| {
+    ///         ui.add(egui::Slider::new(&mut self.fov, 30.0..=120.0));
+    ///         if ui.button("Reset").clicked() { self.reset(); }
+    ///     });
+    /// }
+    /// ```
+    ///
+    /// Gameplay code that reads input should gate on
+    /// [`FrameCtx::ui_has_focus`] so a player typing into a settings
+    /// field doesn't also fire WASD movement.
+    ///
+    /// For "egui label that follows a 3D object," use
+    /// [`world_to_screen`] to project the world point and place an
+    /// `egui::Area` at the resulting pixel.
+    fn ui(&mut self, _ctx: &egui::Context, _frame: &mut FrameCtx<'_>) {}
+
     /// Title bar text. Default returns the static name
     /// `"rye app"`. Override for live FPS / state readouts; the
     /// framework rate-limits the actual `set_title` call to
@@ -218,6 +251,12 @@ pub struct FrameCtx<'a> {
     pub fps: f32,
     pub n_ticks: usize,
     pub tick: u64,
+    /// `true` if egui is consuming pointer or keyboard input this
+    /// frame (a widget is hovered, focused, or accepting text).
+    /// Gameplay code should gate movement / mouselook on
+    /// `!ctx.ui_has_focus` so typing into a settings field doesn't
+    /// also fire WASD or rotate the camera.
+    pub ui_has_focus: bool,
     /// Phantom for forward-compat: future fields here mustn't
     /// silently break code that pattern-matches on the struct.
     _non_exhaustive: PhantomData<()>,
@@ -315,6 +354,7 @@ struct Runner<A: App> {
     rd: Option<RenderDevice>,
     shader_db: Option<ShaderDb>,
     watcher: Option<AssetWatcher>,
+    ui: Option<UiIntegration>,
     app: Option<A>,
 
     minimized: bool,
@@ -346,6 +386,7 @@ impl<A: App> Runner<A> {
             rd: None,
             shader_db: None,
             watcher: None,
+            ui: None,
             app: None,
             minimized: false,
             last_fps_update: Instant::now(),
@@ -419,10 +460,18 @@ impl<A: App> ApplicationHandler for Runner<A> {
             }
         };
 
+        // 1 sample = no MSAA on the egui pass. Tracks the surface's
+        // own sample count, which is also 1 today (Rye doesn't
+        // configure MSAA on the swapchain). If a future render path
+        // enables MSAA on the main scene, this needs to bump in
+        // lockstep so egui paints into the same multisample target.
+        let ui = UiIntegration::new(&rd.device, &win, rd.surface_bundle.config.format, 1);
+
         self.window = Some(win.clone());
         self.rd = Some(rd);
         self.shader_db = Some(shader_db);
         self.watcher = watcher;
+        self.ui = Some(ui);
         self.app = Some(app);
         self.minimized = false;
         self.start = Instant::now();
@@ -442,7 +491,16 @@ impl<A: App> ApplicationHandler for Runner<A> {
             return;
         };
 
-        // Esc / close: exit cleanly.
+        // Forward to egui first so it can claim hover/focus/clicks
+        // before Rye's own routing translates the event for gameplay.
+        // egui consuming the event is informational; Rye still sees it.
+        if let Some(ui) = self.ui.as_mut() {
+            let _ = ui.handle_event(&win, &ev);
+        }
+
+        // Esc / close: exit cleanly. (When egui has keyboard focus,
+        // e.g. a TextEdit is active, swallow Esc so it dismisses the
+        // edit instead of exiting the app.)
         match &ev {
             WindowEvent::CloseRequested => {
                 elwt.exit();
@@ -451,7 +509,8 @@ impl<A: App> ApplicationHandler for Runner<A> {
             WindowEvent::KeyboardInput { event, .. }
                 if self.config.esc_exits
                     && event.state == ElementState::Pressed
-                    && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
+                    && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                    && !self.ui.as_ref().is_some_and(|u| u.ui_has_focus()) =>
             {
                 elwt.exit();
                 return;
@@ -502,6 +561,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
         let tick = self.tick_index;
         if let Some(app) = self.app.as_mut() {
             if let Some(rd) = self.rd.as_ref() {
+                let ui_has_focus = self.ui.as_ref().is_some_and(|u| u.ui_has_focus());
                 let mut ctx = FrameCtx {
                     rd,
                     input: FrameInput::default(),
@@ -509,6 +569,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
                     fps,
                     n_ticks: 0,
                     tick,
+                    ui_has_focus,
                     _non_exhaustive: PhantomData,
                 };
                 app.on_event(&ev, &mut ctx);
@@ -540,7 +601,13 @@ impl<A: App> Runner<A> {
             }
         }
 
-        // 2. Per-frame update with drained input.
+        // 2. Per-frame update with drained input + UI build.
+        // egui's focus reading reflects the *previous* frame's state
+        // (egui hasn't run yet for this frame). That one-frame
+        // staleness is fine: focus changes one frame at a time, and
+        // `App::update` needs to know "should I gate gameplay input"
+        // before this frame's UI runs.
+        let ui_has_focus = self.ui.as_ref().is_some_and(|u| u.ui_has_focus());
         let input = self.input.take_frame();
         if let Some(app) = self.app.as_mut() {
             let mut fctx = FrameCtx {
@@ -550,9 +617,17 @@ impl<A: App> Runner<A> {
                 fps: self.fps,
                 n_ticks: n_capped,
                 tick: self.tick_index,
+                ui_has_focus,
                 _non_exhaustive: PhantomData,
             };
             app.update(&mut fctx);
+
+            // Build this frame's UI. egui captures the widgets;
+            // `paint` later renders them after `App::render`.
+            if let Some(ui) = self.ui.as_mut() {
+                let egui_ctx = ui.begin_frame(win.as_ref()).clone();
+                app.ui(&egui_ctx, &mut fctx);
+            }
         }
 
         // 3. Hot-reload poll.
@@ -585,7 +660,7 @@ impl<A: App> Runner<A> {
             }
         }
 
-        // 5. Render.
+        // 5. Render: scene (App::render) then UI overlay.
         match rd.begin_frame() {
             Ok((frame, view)) => {
                 let mut last_err: Option<anyhow::Error> = None;
@@ -594,6 +669,26 @@ impl<A: App> Runner<A> {
                         tracing::error!("App::render error: {e:#}");
                         last_err = Some(e);
                     }
+                }
+                // Paint egui on top of whatever the app rendered.
+                // Uses `LoadOp::Load` internally so the scene shows
+                // through where no widgets cover it.
+                if let Some(ui) = self.ui.as_mut() {
+                    let mut encoder =
+                        rd.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("rye-app::ui-paint"),
+                            });
+                    let viewport = (rd.surface_bundle.size.width, rd.surface_bundle.size.height);
+                    ui.paint(
+                        &rd.device,
+                        &rd.queue,
+                        &mut encoder,
+                        &view,
+                        win.as_ref(),
+                        viewport,
+                    );
+                    rd.queue.submit(Some(encoder.finish()));
                 }
                 frame.present();
                 if let Some(err) = last_err {

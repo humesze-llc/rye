@@ -493,6 +493,29 @@ fn rye_dynamic_bodies_sdf(p3: vec3<f32>) -> f32 {
     return sdf;
 }
 
+// SDF of a single dynamic body at `p3`, evaluated at the slicing
+// hyperplane `w = u.w_slice`. Used by `estimate_normal` to compute
+// per-surface gradients without contamination from other SDFs that
+// happen to be nearby in chart space (issue #17: a polytope close
+// to the floor was contaminating the floor's normal estimate near
+// the polytope's silhouette, dropping `n.y` below the floor-checker
+// threshold and producing visible discoloration in the polytope's
+// xy-footprint).
+//
+// Returns +infinity for invalid indices or kinds.
+fn rye_body_sdf_at(p3: vec3<f32>, body_idx: u32) -> f32 {
+    if (body_idx >= MAX_BODIES) { return 1.0e9; }
+    let p4 = vec4<f32>(p3, u.w_slice);
+    let b = u.bodies[body_idx];
+    let kind = u32(b.kind + 0.5);
+    if (kind == BODY_KIND_SPHERE) {
+        return body_sphere_sdf_4d(p4, b);
+    } else if (kind == BODY_KIND_POLYTOPE) {
+        return body_polytope_sdf_4d(p4, b);
+    }
+    return 1.0e9;
+}
+
 // Per-pixel hit information: which body was hit (or MAX_BODIES
 // for the static scene; MAX_BODIES + 1 for nothing). The kernel
 // fills this in during ray march; the user's `fs_main` reads it
@@ -539,17 +562,35 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32
     return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
 }
 
-// Normal estimate via central differences on the *combined*
-// (static + dynamic) SDF, so dynamic-body surfaces shade correctly
-// when they're the closest hit.
-fn estimate_normal(p: vec3<f32>) -> vec3<f32> {
+// Normal estimate via central differences on the *dominating* SDF
+// at the hit point, dispatched by `body_idx`:
+//   body_idx >= MAX_BODIES => the static scene was closest; sample
+//                             only `rye_scene_sdf`.
+//   otherwise              => that body was closest; sample only
+//                             that body's SDF in isolation.
+//
+// Sampling the combined `rye_total_sdf` here (the previous
+// behaviour) blends contributions from neighbouring SDFs near
+// silhouettes, which produces a wrong normal exactly at the visible
+// edge of every dynamic body (issue #17). The dispatch keeps each
+// surface's normal honest at the price of one branch per fragment.
+fn estimate_normal(p: vec3<f32>, body_idx: u32) -> vec3<f32> {
     let h = 0.001;
-    let dx = rye_total_sdf(p + vec3<f32>(h, 0.0, 0.0)).dist
-           - rye_total_sdf(p - vec3<f32>(h, 0.0, 0.0)).dist;
-    let dy = rye_total_sdf(p + vec3<f32>(0.0, h, 0.0)).dist
-           - rye_total_sdf(p - vec3<f32>(0.0, h, 0.0)).dist;
-    let dz = rye_total_sdf(p + vec3<f32>(0.0, 0.0, h)).dist
-           - rye_total_sdf(p - vec3<f32>(0.0, 0.0, h)).dist;
+    if (body_idx >= MAX_BODIES) {
+        let dx = rye_scene_sdf(p + vec3<f32>(h, 0.0, 0.0))
+               - rye_scene_sdf(p - vec3<f32>(h, 0.0, 0.0));
+        let dy = rye_scene_sdf(p + vec3<f32>(0.0, h, 0.0))
+               - rye_scene_sdf(p - vec3<f32>(0.0, h, 0.0));
+        let dz = rye_scene_sdf(p + vec3<f32>(0.0, 0.0, h))
+               - rye_scene_sdf(p - vec3<f32>(0.0, 0.0, h));
+        return normalize(vec3<f32>(dx, dy, dz));
+    }
+    let dx = rye_body_sdf_at(p + vec3<f32>(h, 0.0, 0.0), body_idx)
+           - rye_body_sdf_at(p - vec3<f32>(h, 0.0, 0.0), body_idx);
+    let dy = rye_body_sdf_at(p + vec3<f32>(0.0, h, 0.0), body_idx)
+           - rye_body_sdf_at(p - vec3<f32>(0.0, h, 0.0), body_idx);
+    let dz = rye_body_sdf_at(p + vec3<f32>(0.0, 0.0, h), body_idx)
+           - rye_body_sdf_at(p - vec3<f32>(0.0, 0.0, h), body_idx);
     return normalize(vec3<f32>(dx, dy, dz));
 }
 
@@ -586,15 +627,29 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     let max_t = 60.0;
     var hit = false;
     var hit_idx: u32 = MAX_BODIES + 1u;
+    // Sphere-trace step calculus (issue #17):
+    //   * `hit_eps = 0.001` is the surface-hit gate.
+    //   * `step = max(h.dist * 0.85, min_step)`. The 0.85 under-step
+    //     factor matches the geodesic kernel and is the safety net
+    //     for SDFs that are bounded but not Lipschitz-1 (e.g. the
+    //     inlined polytope SDFs here, which underestimate true
+    //     Euclidean distance in corner regions).
+    //   * `min_step = 0.0001` is one tenth of `hit_eps`, deliberately.
+    //     The previous value (0.005) was *larger* than `hit_eps`, so
+    //     when an SDF dipped into the (0.001, 0.005) range -- which
+    //     happens on every approach to a polytope silhouette --
+    //     the marcher was forced to overshoot its actual clearance.
+    let hit_eps = 0.001;
+    let min_step = 0.0001;
     for (var i: i32 = 0; i < 192; i = i + 1) {
         let p = ro + rd * t;
         let h = rye_total_sdf(p);
-        if (h.dist < 0.001) {
+        if (h.dist < hit_eps) {
             hit = true;
             hit_idx = h.body_idx;
             break;
         }
-        t = t + max(h.dist, 0.005);
+        t = t + max(h.dist * 0.85, min_step);
         if (t > max_t) { break; }
     }
 
@@ -603,7 +658,7 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     }
 
     let p_hit = ro + rd * t;
-    let n = estimate_normal(p_hit);
+    let n = estimate_normal(p_hit, hit_idx);
     let light_dir = normalize(vec3<f32>(0.5, 0.85, 0.3));
     let lambert = max(dot(n, light_dir), 0.0);
     let ambient = 0.20;
@@ -829,6 +884,9 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("cell16_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("cell24_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rotor4_inverse_apply"));
+        // Per-body SDF accessor used by `estimate_normal` to avoid
+        // sampling the combined SDF at silhouettes (issue #17).
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_body_sdf_at"));
     }
 
     /// `BodyUniform` is exactly 80 bytes, the std140-aligned

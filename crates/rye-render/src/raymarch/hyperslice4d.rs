@@ -493,6 +493,22 @@ fn rye_dynamic_bodies_sdf(p3: vec3<f32>) -> f32 {
     return sdf;
 }
 
+// Single-body SDF at `p3`, evaluated at `w = u.w_slice`. Used by
+// `estimate_normal` to sample one body's gradient in isolation.
+// Returns +infinity for invalid indices or kinds.
+fn rye_body_sdf_at(p3: vec3<f32>, body_idx: u32) -> f32 {
+    if (body_idx >= MAX_BODIES) { return 1.0e9; }
+    let p4 = vec4<f32>(p3, u.w_slice);
+    let b = u.bodies[body_idx];
+    let kind = u32(b.kind + 0.5);
+    if (kind == BODY_KIND_SPHERE) {
+        return body_sphere_sdf_4d(p4, b);
+    } else if (kind == BODY_KIND_POLYTOPE) {
+        return body_polytope_sdf_4d(p4, b);
+    }
+    return 1.0e9;
+}
+
 // Per-pixel hit information: which body was hit (or MAX_BODIES
 // for the static scene; MAX_BODIES + 1 for nothing). The kernel
 // fills this in during ray march; the user's `fs_main` reads it
@@ -539,17 +555,27 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32
     return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
 }
 
-// Normal estimate via central differences on the *combined*
-// (static + dynamic) SDF, so dynamic-body surfaces shade correctly
-// when they're the closest hit.
-fn estimate_normal(p: vec3<f32>) -> vec3<f32> {
+// Normal via central differences on the dominating SDF only:
+// static-scene hits sample `rye_scene_sdf`, body hits sample that
+// body's SDF in isolation. Sampling the combined SDF blends
+// gradients at silhouettes (issue #17).
+fn estimate_normal(p: vec3<f32>, body_idx: u32) -> vec3<f32> {
     let h = 0.001;
-    let dx = rye_total_sdf(p + vec3<f32>(h, 0.0, 0.0)).dist
-           - rye_total_sdf(p - vec3<f32>(h, 0.0, 0.0)).dist;
-    let dy = rye_total_sdf(p + vec3<f32>(0.0, h, 0.0)).dist
-           - rye_total_sdf(p - vec3<f32>(0.0, h, 0.0)).dist;
-    let dz = rye_total_sdf(p + vec3<f32>(0.0, 0.0, h)).dist
-           - rye_total_sdf(p - vec3<f32>(0.0, 0.0, h)).dist;
+    if (body_idx >= MAX_BODIES) {
+        let dx = rye_scene_sdf(p + vec3<f32>(h, 0.0, 0.0))
+               - rye_scene_sdf(p - vec3<f32>(h, 0.0, 0.0));
+        let dy = rye_scene_sdf(p + vec3<f32>(0.0, h, 0.0))
+               - rye_scene_sdf(p - vec3<f32>(0.0, h, 0.0));
+        let dz = rye_scene_sdf(p + vec3<f32>(0.0, 0.0, h))
+               - rye_scene_sdf(p - vec3<f32>(0.0, 0.0, h));
+        return normalize(vec3<f32>(dx, dy, dz));
+    }
+    let dx = rye_body_sdf_at(p + vec3<f32>(h, 0.0, 0.0), body_idx)
+           - rye_body_sdf_at(p - vec3<f32>(h, 0.0, 0.0), body_idx);
+    let dy = rye_body_sdf_at(p + vec3<f32>(0.0, h, 0.0), body_idx)
+           - rye_body_sdf_at(p - vec3<f32>(0.0, h, 0.0), body_idx);
+    let dz = rye_body_sdf_at(p + vec3<f32>(0.0, 0.0, h), body_idx)
+           - rye_body_sdf_at(p - vec3<f32>(0.0, 0.0, h), body_idx);
     return normalize(vec3<f32>(dx, dy, dz));
 }
 
@@ -583,18 +609,29 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     let ro = u.camera_pos;
 
     var t: f32 = 0.0;
-    let max_t = 60.0;
+    // Analytical far-clip from any HalfSpace4D leaves; +1.0 buffer
+    // lets the marcher land its hit on the floor itself. Caps at
+    // 60.0 when no analytical contribution exists. Without this,
+    // near-horizon rays exhaust the iter budget and return sky.
+    let scene_max_t = rye_scene_max_t(ro, rd);
+    let max_t = min(60.0, scene_max_t + 1.0);
     var hit = false;
     var hit_idx: u32 = MAX_BODIES + 1u;
-    for (var i: i32 = 0; i < 192; i = i + 1) {
+    // Sphere-trace step: `max(d * 0.85, min_step)` with min_step <
+    // hit_eps. The 0.85 under-step factor handles SDFs that are
+    // Lipschitz-1 but not tight (polytope SDFs underestimate near
+    // corners). 384 iters covers tangent-grazing convergence.
+    let hit_eps = 0.001;
+    let min_step = 0.0001;
+    for (var i: i32 = 0; i < 384; i = i + 1) {
         let p = ro + rd * t;
         let h = rye_total_sdf(p);
-        if (h.dist < 0.001) {
+        if (h.dist < hit_eps) {
             hit = true;
             hit_idx = h.body_idx;
             break;
         }
-        t = t + max(h.dist, 0.005);
+        t = t + max(h.dist * 0.85, min_step);
         if (t > max_t) { break; }
     }
 
@@ -603,7 +640,7 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     }
 
     let p_hit = ro + rd * t;
-    let n = estimate_normal(p_hit);
+    let n = estimate_normal(p_hit, hit_idx);
     let light_dir = normalize(vec3<f32>(0.5, 0.85, 0.3));
     let lambert = max(dot(n, light_dir), 0.0);
     let ambient = 0.20;
@@ -615,7 +652,10 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     var base = vec3<f32>(0.65, 0.65, 0.72);
     if (hit_idx < MAX_BODIES) {
         base = u.bodies[hit_idx].color;
-    } else if (n.y > 0.95) {
+    } else if (rye_scene_at(p_hit).kind == RYE_PRIM_HALFSPACE4D) {
+        // Floor classification routes on the closest leaf's kind tag
+        // (set by Scene4's emit). Replaces a normal+y-position
+        // heuristic that mis-classified sphere tops at y=0.
         base = ground_color(p_hit);
     }
     let lit = base * (ambient + lambert * 0.85);
@@ -829,6 +869,13 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("cell16_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("cell24_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rotor4_inverse_apply"));
+        // Per-body SDF for normal sampling (issue #17).
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_body_sdf_at"));
+        // Floor classification by primitive kind, not normal/y.
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_scene_at(p_hit).kind == RYE_PRIM_HALFSPACE4D"));
+        assert!(!HYPERSLICE_KERNEL_WGSL.contains("abs(p_hit.y) < 0.01"));
+        // Analytical far-clip from HalfSpace4D leaves.
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("rye_scene_max_t(ro, rd)"));
     }
 
     /// `BodyUniform` is exactly 80 bytes, the std140-aligned
@@ -867,19 +914,26 @@ mod tests {
     }
 
     /// Naga-validate the full kernel concatenated with a minimal
-    /// scene stub. Catches WGSL syntax / type / binding mismatches
-    /// the string-presence assertions above can't see (e.g. a
-    /// rotor-sandwich edit that drops a swizzle, a uniform field
-    /// renamed without updating the WGSL struct).
-    ///
-    /// The stub `rye_scene_sdf` mirrors what `Scene4::to_hyperslice_wgsl`
-    /// emits at minimum: the kernel only requires the symbol exists
-    /// with the right signature.
+    /// Naga parse + validate the kernel against a minimal scene stub.
+    /// Catches WGSL syntax / type / binding errors the string-presence
+    /// tests can't see. Stub mirrors `Scene4::to_hyperslice_wgsl`'s
+    /// contract minimally: kind constants, `rye_scene_at`,
+    /// `rye_scene_sdf`, `rye_scene_max_t`.
     #[test]
     fn kernel_validates_with_minimal_scene() {
         const SCENE_STUB: &str = r#"
+const RYE_PRIM_HYPERSPHERE4D: u32 = 0u;
+const RYE_PRIM_HALFSPACE4D: u32 = 1u;
+const RYE_PRIM_OTHER: u32 = 255u;
+struct RyeSceneHit { dist: f32, kind: u32 }
+fn rye_scene_at(p: vec3<f32>) -> RyeSceneHit {
+    return RyeSceneHit(length(p) - 0.5, RYE_PRIM_OTHER);
+}
 fn rye_scene_sdf(p: vec3<f32>) -> f32 {
-    return length(p) - 0.5;
+    return rye_scene_at(p).dist;
+}
+fn rye_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
+    return 1.0e9;
 }
 "#;
         let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{SCENE_STUB}");
@@ -890,6 +944,33 @@ fn rye_scene_sdf(p: vec3<f32>) -> f32 {
         naga::valid::Validator::new(flags, caps)
             .validate(&module)
             .expect("hyperslice4d kernel + scene stub should validate");
+    }
+
+    /// Take a real `Scene4` (union of hyperspheres + halfspace),
+    /// emit its hyperslice WGSL, splice against the kernel, and
+    /// validate via naga. Catches drift between
+    /// `Scene4::to_hyperslice_wgsl` and the kernel's expectations
+    /// at the `rye_scene_sdf` / `rye_scene_at` boundary.
+    #[test]
+    fn kernel_validates_with_real_scene_union() {
+        use glam::Vec4;
+        use rye_sdf::{Scene4, SceneNode4};
+
+        let scene = Scene4::new(
+            SceneNode4::hypersphere(Vec4::new(-0.6, 0.7, -1.5, 0.0), 0.7)
+                .union(SceneNode4::hypersphere(Vec4::new(0.6, 0.7, -1.5, 0.0), 0.7))
+                .union(SceneNode4::hypersphere(Vec4::new(0.0, 1.0, 1.5, 0.0), 1.0))
+                .union(SceneNode4::halfspace(Vec4::Y, 0.0)),
+        );
+        let scene_wgsl = scene.to_hyperslice_wgsl("u.w_slice");
+        let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{scene_wgsl}");
+        let module = naga::front::wgsl::parse_str(&source)
+            .expect("hyperslice4d kernel + Scene4 emit should parse as WGSL");
+        let flags = naga::valid::ValidationFlags::all();
+        let caps = naga::valid::Capabilities::empty();
+        naga::valid::Validator::new(flags, caps)
+            .validate(&module)
+            .expect("hyperslice4d kernel + Scene4 emit should validate");
     }
 
     /// `BODY_KIND_INVALID` must not appear in either dispatch chain.
@@ -1155,5 +1236,145 @@ fn rye_scene_sdf(p: vec3<f32>) -> f32 {
                 "kernel missing `{wgsl_decl}` for Rust value {rust_const}"
             );
         }
+    }
+
+    // ---- CPU port of the hyperslice marcher -----------------------------
+    // 1:1 mirror of `fs_main`'s sphere-trace loop. Constants must
+    // match the kernel.
+
+    use glam::Vec3;
+
+    struct HyperHit {
+        hit_pos: Vec3,
+        body_idx: u32,
+        #[allow(dead_code)]
+        iter_count: u32,
+    }
+
+    fn march_hyperslice_cpu<F>(ro: Vec3, rd: Vec3, sdf: F) -> Option<HyperHit>
+    where
+        F: Fn(Vec3) -> (f32, u32),
+    {
+        let mut t: f32 = 0.0;
+        let max_t = 60.0_f32;
+        let hit_eps = 0.001_f32;
+        let min_step = 0.0001_f32;
+        for i in 0..384u32 {
+            let p = ro + rd * t;
+            let (d, body_idx) = sdf(p);
+            if d < hit_eps {
+                return Some(HyperHit {
+                    hit_pos: p,
+                    body_idx,
+                    iter_count: i,
+                });
+            }
+            t += (d * 0.85).max(min_step);
+            if t > max_t {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Test scene: three hyperspheres at `w = 0` plus a `y = 0` floor.
+    /// All hits attribute to static scene (`body_idx = MAX_BODIES`).
+    fn overlapping_sdfs_scene(p: Vec3, w_slice: f32) -> (f32, u32) {
+        use glam::Vec4;
+        let p4 = Vec4::new(p.x, p.y, p.z, w_slice);
+        let twin_l = (Vec4::new(-0.6, 0.7, -1.5, 0.0), 0.7_f32);
+        let twin_r = (Vec4::new(0.6, 0.7, -1.5, 0.0), 0.7_f32);
+        let solo = (Vec4::new(0.0, 1.0, 1.5, 0.0), 1.0_f32);
+        let d_twin_l = (p4 - twin_l.0).length() - twin_l.1;
+        let d_twin_r = (p4 - twin_r.0).length() - twin_r.1;
+        let d_solo = (p4 - solo.0).length() - solo.1;
+        let d_floor = p.y;
+        let d = d_twin_l.min(d_twin_r).min(d_solo).min(d_floor);
+        (d, MAX_BODIES as u32)
+    }
+
+    // ---- Integration tests against the CPU port -------------------------
+    // Exercise step calculus + SDF composition + hit attribution
+    // against the test scene. Each test pins one geometric property of
+    // the issue #17 fix.
+
+    /// Ray straight down through solo sphere centre hits its top.
+    #[test]
+    fn cpu_march_hits_solo_sphere_top() {
+        let ro = Vec3::new(0.0, 5.0, 1.5);
+        let rd = Vec3::new(0.0, -1.0, 0.0);
+        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
+            .expect("ray pointing at solo sphere should hit something");
+        assert_eq!(hit.body_idx, MAX_BODIES as u32, "static-scene hit");
+        // Solo sphere at (0, 1, 1.5) r=1; top at y=2.0. Hit registers
+        // when SDF < hit_eps = 0.001; under-step factor + min_step
+        // bound the residual at < 5e-3.
+        assert!(
+            (hit.hit_pos.y - 2.0).abs() < 5e-3,
+            "hit y {} should be near 2.0 (sphere top)",
+            hit.hit_pos.y
+        );
+    }
+
+    /// Ray straight down between spheres hits floor at y ≈ 0. Pins
+    /// the no-dimple property: `min(spheres, floor)` returns the
+    /// floor's distance when no sphere covers the path.
+    #[test]
+    fn cpu_march_hits_floor_in_gap_between_spheres() {
+        let ro = Vec3::new(0.0, 5.0, -3.5);
+        let rd = Vec3::new(0.0, -1.0, 0.0);
+        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
+            .expect("ray pointing at empty floor should hit");
+        assert_eq!(hit.body_idx, MAX_BODIES as u32, "static-scene hit");
+        // Floor at y=0; hit_eps=0.001 so the hit y is in [0, 0.001].
+        assert!(
+            hit.hit_pos.y.abs() < 5e-3,
+            "hit y {} should be near 0 (floor)",
+            hit.hit_pos.y
+        );
+    }
+
+    /// Ray at the twin-pair overlap (x=0, z=-1.5) hits a sphere top,
+    /// not the floor. Pins `min(sphere_l, sphere_r, floor)` at a point
+    /// where both sphere SDFs are small.
+    #[test]
+    fn cpu_march_hits_twin_overlap_top_not_floor() {
+        let ro = Vec3::new(0.0, 5.0, -1.5);
+        let rd = Vec3::new(0.0, -1.0, 0.0);
+        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
+            .expect("ray pointing at twin overlap should hit");
+        assert_eq!(hit.body_idx, MAX_BODIES as u32);
+        // Twin spheres at (+/-0.6, 0.7, -1.5) r=0.7. At x=z=-1.5, the
+        // intersection of the twin tops along the y-axis is at y where
+        // both spheres touch: solving (0.6)^2 + (y-0.7)^2 = 0.7^2 gives
+        // (y-0.7)^2 = 0.13, y ≈ 0.7 + 0.36 = 1.06 (the twin-saddle top).
+        // Hit must be above the floor by clearly more than hit_eps.
+        assert!(
+            hit.hit_pos.y > 0.5,
+            "hit y {} should be on a sphere surface (>0.5), not the floor",
+            hit.hit_pos.y
+        );
+    }
+
+    /// Shallow ray with clear path to floor converges within budget.
+    /// Pins the iteration-cap fix (192 → 384).
+    #[test]
+    fn cpu_march_converges_on_shallow_ray_to_floor() {
+        let ro = Vec3::new(0.0, 2.5, 5.0);
+        let rd = Vec3::new(0.0, -0.05, -1.0).normalize();
+        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
+            .expect("shallow ray with clear path to floor should converge");
+        assert_eq!(hit.body_idx, MAX_BODIES as u32);
+        assert!(hit.hit_pos.y.abs() < 5e-3);
+    }
+
+    /// Ray straight up into empty sky misses. Pins the iter-cap and
+    /// `max_t` exit paths.
+    #[test]
+    fn cpu_march_misses_into_empty_sky() {
+        let ro = Vec3::new(0.0, 5.0, 0.0);
+        let rd = Vec3::new(0.0, 1.0, 0.0);
+        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0));
+        assert!(hit.is_none(), "ray into sky should miss the scene");
     }
 }

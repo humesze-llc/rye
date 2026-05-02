@@ -21,3 +21,4 @@ bytemuck.workspace = true
 
 [dev-dependencies]
 naga.workspace = true
+rye-sdf = { path = "../rye-sdf" }

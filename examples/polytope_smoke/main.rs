@@ -380,6 +380,24 @@ impl PolytopeSmokeApp {
             self.node.set_body(slot, body);
         }
     }
+
+    /// Full reset: slice, rate, active set, orientation, time
+    /// accumulator. Slice resets to the row's Platonic-named
+    /// cross-section when applicable (120/600-cell), else to centre.
+    fn reset(&mut self) {
+        self.w_slice = if self.row.iter().any(|e| e.shape == SHAPE_120CELL) {
+            0.926 * BODY_SIZE
+        } else if self.row.iter().any(|e| e.shape == SHAPE_600CELL) {
+            0.85 * BODY_SIZE
+        } else {
+            0.0
+        };
+        self.rate_scale = 1.0;
+        self.active = [false; 6];
+        self.rot_state = Rotor4::IDENTITY;
+        self.rot_time = 0.0;
+        self.write_all(IDENTITY_ROTOR);
+    }
 }
 
 impl App for PolytopeSmokeApp {
@@ -527,77 +545,100 @@ impl App for PolytopeSmokeApp {
     }
 
     fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
-        // Top-left: live state readout.
-        egui::Area::new(egui::Id::new("polytope-smoke-state"))
-            .fixed_pos([16.0, 16.0])
+        egui::SidePanel::left("polytope-smoke-controls")
+            .resizable(false)
+            .default_width(280.0)
             .show(ctx, |ui| {
                 ui.heading("polytope smoke");
                 ui.label(format!("{:.0} fps", frame.fps));
-                ui.label(format!("w_slice = {:+.3}", self.w_slice));
 
-                let active_labels: Vec<&str> = PLANES
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| self.active[*i])
-                    .map(|(_, p)| p.label())
-                    .collect();
-                let active_str = if active_labels.is_empty() {
-                    "none".to_string()
-                } else {
-                    active_labels.join(" + ")
-                };
+                ui.separator();
+                ui.label("Slice");
+                ui.add(
+                    egui::Slider::new(&mut self.w_slice, -W_RANGE..=W_RANGE)
+                        .text("w")
+                        .fixed_decimals(3),
+                );
+                ui.weak("Up/Down arrow keys also scrub at 0.5 u/s.");
+
+                ui.separator();
+                ui.label("Rotation");
                 let (status_word, status_color) = if self.rotate {
                     ("spinning", egui::Color32::from_rgb(102, 255, 153))
                 } else {
                     ("paused", egui::Color32::from_rgb(242, 217, 76))
                 };
-                ui.colored_label(
-                    status_color,
-                    format!(
-                        "{status_word}: {active_str} | rate x{:.2} | t = {:.2} s",
-                        self.rate_scale, self.rot_time
-                    ),
+                ui.horizontal(|ui| {
+                    ui.colored_label(status_color, status_word);
+                    if ui
+                        .button(if self.rotate { "Pause" } else { "Spin" })
+                        .clicked()
+                    {
+                        self.rotate = !self.rotate;
+                    }
+                    ui.label(format!("t = {:.2}s", self.rot_time));
+                });
+                ui.add(
+                    egui::Slider::new(&mut self.rate_scale, 0.0..=8.0)
+                        .text("rate")
+                        .fixed_decimals(2),
                 );
 
-                let mut indicator = String::with_capacity(64);
-                for (i, p) in PLANES.iter().enumerate() {
-                    let on = self.active[i];
-                    indicator.push_str(&format!("[{}]{} ", if on { "x" } else { " " }, p.label()));
+                ui.separator();
+                ui.label("Planes");
+                ui.weak(
+                    "Checkbox: include the plane in the continuous-rotation \
+                     active set (commutative bivector sum). Buttons: compose \
+                     a fixed-angle rotation onto the current orientation via \
+                     rotor multiplication, independent of the spin state.",
+                );
+                let mut compose: Option<(Plane, f32)> = None;
+                for (i, plane) in PLANES.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.active[i], plane.label());
+                        if ui.small_button("+90°").clicked() {
+                            compose = Some((*plane, std::f32::consts::FRAC_PI_2));
+                        }
+                        if ui.small_button("-90°").clicked() {
+                            compose = Some((*plane, -std::f32::consts::FRAC_PI_2));
+                        }
+                        if ui.small_button("+30°").clicked() {
+                            compose = Some((*plane, std::f32::consts::FRAC_PI_6));
+                        }
+                    });
                 }
-                ui.monospace(indicator);
+                if let Some((plane, theta)) = compose {
+                    let delta = (plane.unit_bivector() * theta).exp();
+                    self.rot_state = (delta * self.rot_state).normalize();
+                    self.write_all(rotor_to_slot(self.rot_state));
+                }
 
-                let row_legend = self
-                    .row
-                    .iter()
-                    .map(|e| e.label)
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-                ui.label(format!("row: {row_legend}"));
-            });
-
-        // Top-right: named combo when the active set matches one.
-        if let Some(name) = combo_name(&self.active) {
-            egui::Area::new(egui::Id::new("polytope-smoke-combo"))
-                .anchor(egui::Align2::RIGHT_TOP, [-16.0, 16.0])
-                .show(ctx, |ui| {
+                if let Some(name) = combo_name(&self.active) {
                     ui.colored_label(egui::Color32::from_rgb(255, 217, 140), name);
-                });
-        }
+                }
 
-        // Bottom-left: controls help.
-        egui::Area::new(egui::Id::new("polytope-smoke-help"))
-            .anchor(egui::Align2::LEFT_BOTTOM, [16.0, -16.0])
-            .show(ctx, |ui| {
-                ui.label("drag-orbit  |  up/dn scrub w  |  t toggle spin");
-                ui.label("1..6 toggle planes (xy xz xw yz yw zw)  |  +/- rate  |  r reset");
+                ui.separator();
+                if ui.button("Reset orientation + slice").clicked() {
+                    self.reset();
+                }
+
+                ui.separator();
+                ui.label("Row");
+                for entry in &self.row {
+                    ui.label(format!("• {}", entry.label));
+                }
+
+                ui.separator();
+                ui.weak("Mouse drag in the viewport orbits the camera.");
             });
 
-        // Bottom-right: window size, handy for sizing screenshots.
-        let viewport = frame.rd.surface_bundle.config.clone();
+        // Bottom-right: window size, handy for screenshots.
+        let cfg = &frame.rd.surface_bundle.config;
+        let (w, h) = (cfg.width, cfg.height);
         egui::Area::new(egui::Id::new("polytope-smoke-size"))
             .anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -16.0])
             .show(ctx, |ui| {
-                ui.weak(format!("{}x{}", viewport.width, viewport.height));
+                ui.weak(format!("{w}x{h}"));
             });
     }
 
@@ -614,24 +655,7 @@ impl App for PolytopeSmokeApp {
         match kc {
             KeyCode::ArrowUp => self.slider_up_held = pressed,
             KeyCode::ArrowDown => self.slider_down_held = pressed,
-            KeyCode::KeyR if pressed => {
-                // Full reset: slice, rate, all toggles off, time
-                // accumulator, AND orientation back to canonical pose.
-                // Slice resets to the row's Platonic-named cross-section
-                // when applicable (120/600-cell), else to centre.
-                self.w_slice = if self.row.iter().any(|e| e.shape == SHAPE_120CELL) {
-                    0.926 * BODY_SIZE
-                } else if self.row.iter().any(|e| e.shape == SHAPE_600CELL) {
-                    0.85 * BODY_SIZE
-                } else {
-                    0.0
-                };
-                self.rate_scale = 1.0;
-                self.active = [false; 6];
-                self.rot_state = Rotor4::IDENTITY;
-                self.rot_time = 0.0;
-                self.write_all(IDENTITY_ROTOR);
-            }
+            KeyCode::KeyR if pressed => self.reset(),
             KeyCode::KeyT if pressed => {
                 // Pause / resume only, DO NOT touch rot_state. The
                 // bodies keep their current orientation when paused

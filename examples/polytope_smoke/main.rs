@@ -373,6 +373,15 @@ struct PolytopeSmokeApp {
     /// floats top-left. Toggle with **H** or the panel's "Hide"
     /// button.
     show_panel: bool,
+
+    /// Sequence of `(plane, angle)` entries the user is building in
+    /// the panel. Apply composes them onto `rot_state` left-to-right
+    /// via rotor multiplication, so order matters (non-commutative).
+    seq: Vec<(Plane, f32)>,
+    /// Default angle (in degrees) used when adding a new entry to
+    /// `seq`. Slider + `× φ` button live next to the per-plane add
+    /// buttons.
+    seq_angle_deg: f32,
 }
 
 impl PolytopeSmokeApp {
@@ -518,6 +527,8 @@ impl App for PolytopeSmokeApp {
             rate_scale: 1.0,
             rot_time: 0.0,
             show_panel: true,
+            seq: Vec::new(),
+            seq_angle_deg: 90.0,
         })
     }
 
@@ -647,6 +658,61 @@ impl App for PolytopeSmokeApp {
                     if let Some(name) = combo_name(&self.active) {
                         ui.colored_label(egui::Color32::from_rgb(255, 217, 140), name);
                     }
+
+                    ui.separator();
+                    ui.label("Sequence");
+                    ui.weak(
+                        "Compose a list of (plane, angle) steps; Apply runs \
+                         them left-to-right via rotor multiplication. Order \
+                         matters.",
+                    );
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Slider::new(&mut self.seq_angle_deg, -180.0..=180.0)
+                                .text("angle°")
+                                .fixed_decimals(1),
+                        );
+                        if ui.small_button("× φ").clicked() {
+                            // Multiply by golden ratio, wrapped into (-180, 180].
+                            self.seq_angle_deg *= 1.618_034;
+                            self.seq_angle_deg =
+                                ((self.seq_angle_deg + 180.0).rem_euclid(360.0)) - 180.0;
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        for plane in PLANES.iter() {
+                            if ui.small_button(format!("+{}", plane.label())).clicked() {
+                                self.seq.push((*plane, self.seq_angle_deg.to_radians()));
+                            }
+                        }
+                    });
+                    let mut remove_seq_idx: Option<usize> = None;
+                    ui.horizontal_wrapped(|ui| {
+                        for (i, (plane, angle)) in self.seq.iter().enumerate() {
+                            let label = format!("{} {:+.1}°  X", plane.label(), angle.to_degrees());
+                            if ui.small_button(label).clicked() {
+                                remove_seq_idx = Some(i);
+                            }
+                        }
+                    });
+                    if let Some(i) = remove_seq_idx {
+                        self.seq.remove(i);
+                    }
+                    ui.horizontal(|ui| {
+                        let apply = ui
+                            .add_enabled(!self.seq.is_empty(), egui::Button::new("Apply"))
+                            .clicked();
+                        if apply {
+                            for (plane, angle) in self.seq.clone().iter() {
+                                let delta = (plane.unit_bivector() * *angle).exp();
+                                self.rot_state = (delta * self.rot_state).normalize();
+                            }
+                            self.write_all(rotor_to_slot(self.rot_state));
+                        }
+                        if ui.button("Clear").clicked() {
+                            self.seq.clear();
+                        }
+                    });
 
                     ui.separator();
                     if ui.button("Reset orientation + slice").clicked() {

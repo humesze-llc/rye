@@ -362,6 +362,12 @@ struct PolytopeSmokeApp {
     /// `rotate == true`; resets on **R**). Useful for spotting
     /// periodicities in compound-bivector animations.
     rot_time: f32,
+
+    /// Whether the egui control panel is visible. When false the
+    /// scene fills the full window and a tiny "Show controls" button
+    /// floats top-left. Toggle with **H** or the panel's "Hide"
+    /// button.
+    show_panel: bool,
 }
 
 impl PolytopeSmokeApp {
@@ -489,6 +495,7 @@ impl App for PolytopeSmokeApp {
             active: [false; 6],
             rate_scale: 1.0,
             rot_time: 0.0,
+            show_panel: true,
         })
     }
 
@@ -521,10 +528,13 @@ impl App for PolytopeSmokeApp {
             }
         }
 
-        // Camera.
+        // Camera. Gate the orbit on `!ui_has_focus` so dragging the
+        // egui w-slice slider doesn't also rotate the camera.
         use rye_camera::CameraController;
-        self.orbit
-            .advance(ctx.input, &mut self.camera, &EuclideanR3, 0.0);
+        if !ctx.ui_has_focus {
+            self.orbit
+                .advance(ctx.input, &mut self.camera, &EuclideanR3, 0.0);
+        }
         let view = self.camera.view();
 
         // Hyperslice uniforms.
@@ -545,92 +555,111 @@ impl App for PolytopeSmokeApp {
     }
 
     fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
-        egui::SidePanel::left("polytope-smoke-controls")
-            .resizable(false)
-            .default_width(280.0)
-            .show(ctx, |ui| {
-                ui.heading("polytope smoke");
-                ui.label(format!("{:.0} fps", frame.fps));
-
-                ui.separator();
-                ui.label("Slice");
-                ui.add(
-                    egui::Slider::new(&mut self.w_slice, -W_RANGE..=W_RANGE)
-                        .text("w")
-                        .fixed_decimals(3),
-                );
-                ui.weak("Up/Down arrow keys also scrub at 0.5 u/s.");
-
-                ui.separator();
-                ui.label("Rotation");
-                let (status_word, status_color) = if self.rotate {
-                    ("spinning", egui::Color32::from_rgb(102, 255, 153))
-                } else {
-                    ("paused", egui::Color32::from_rgb(242, 217, 76))
-                };
-                ui.horizontal(|ui| {
-                    ui.colored_label(status_color, status_word);
-                    if ui
-                        .button(if self.rotate { "Pause" } else { "Spin" })
-                        .clicked()
-                    {
-                        self.rotate = !self.rotate;
-                    }
-                    ui.label(format!("t = {:.2}s", self.rot_time));
-                });
-                ui.add(
-                    egui::Slider::new(&mut self.rate_scale, 0.0..=8.0)
-                        .text("rate")
-                        .fixed_decimals(2),
-                );
-
-                ui.separator();
-                ui.label("Planes");
-                ui.weak(
-                    "Checkbox: include the plane in the continuous-rotation \
-                     active set (commutative bivector sum). Buttons: compose \
-                     a fixed-angle rotation onto the current orientation via \
-                     rotor multiplication, independent of the spin state.",
-                );
-                let mut compose: Option<(Plane, f32)> = None;
-                for (i, plane) in PLANES.iter().enumerate() {
+        if self.show_panel {
+            egui::SidePanel::left("polytope-smoke-controls")
+                .resizable(false)
+                .default_width(280.0)
+                .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.active[i], plane.label());
-                        if ui.small_button("+90°").clicked() {
-                            compose = Some((*plane, std::f32::consts::FRAC_PI_2));
-                        }
-                        if ui.small_button("-90°").clicked() {
-                            compose = Some((*plane, -std::f32::consts::FRAC_PI_2));
-                        }
-                        if ui.small_button("+30°").clicked() {
-                            compose = Some((*plane, std::f32::consts::FRAC_PI_6));
+                        ui.heading("polytope smoke");
+                        if ui.button("Hide").clicked() {
+                            self.show_panel = false;
                         }
                     });
-                }
-                if let Some((plane, theta)) = compose {
-                    let delta = (plane.unit_bivector() * theta).exp();
-                    self.rot_state = (delta * self.rot_state).normalize();
-                    self.write_all(rotor_to_slot(self.rot_state));
-                }
+                    ui.label(format!("{:.0} fps", frame.fps));
 
-                if let Some(name) = combo_name(&self.active) {
-                    ui.colored_label(egui::Color32::from_rgb(255, 217, 140), name);
-                }
+                    ui.separator();
+                    ui.label("Slice");
+                    ui.add(
+                        egui::Slider::new(&mut self.w_slice, -W_RANGE..=W_RANGE)
+                            .text("w")
+                            .fixed_decimals(3),
+                    );
 
-                ui.separator();
-                if ui.button("Reset orientation + slice").clicked() {
-                    self.reset();
-                }
+                    ui.separator();
+                    ui.label("Rotation");
+                    let (status_word, status_color) = if self.rotate {
+                        ("spinning", egui::Color32::from_rgb(102, 255, 153))
+                    } else {
+                        ("paused", egui::Color32::from_rgb(242, 217, 76))
+                    };
+                    ui.horizontal(|ui| {
+                        ui.colored_label(status_color, status_word);
+                        if ui
+                            .button(if self.rotate { "Pause" } else { "Spin" })
+                            .clicked()
+                        {
+                            self.rotate = !self.rotate;
+                        }
+                        ui.label(format!("t = {:.2}s", self.rot_time));
+                    });
+                    ui.add(
+                        egui::Slider::new(&mut self.rate_scale, 0.0..=8.0)
+                            .text("rate")
+                            .fixed_decimals(2),
+                    );
 
-                ui.separator();
-                ui.label("Row");
-                for entry in &self.row {
-                    ui.label(format!("• {}", entry.label));
-                }
+                    ui.separator();
+                    ui.label("Planes");
+                    let mut compose: Option<(Plane, f32)> = None;
+                    for (i, plane) in PLANES.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.active[i], plane.label());
+                            if ui.small_button("+90°").clicked() {
+                                compose = Some((*plane, std::f32::consts::FRAC_PI_2));
+                            }
+                            if ui.small_button("-90°").clicked() {
+                                compose = Some((*plane, -std::f32::consts::FRAC_PI_2));
+                            }
+                            if ui.small_button("+30°").clicked() {
+                                compose = Some((*plane, std::f32::consts::FRAC_PI_6));
+                            }
+                        });
+                    }
+                    if let Some((plane, theta)) = compose {
+                        let delta = (plane.unit_bivector() * theta).exp();
+                        self.rot_state = (delta * self.rot_state).normalize();
+                        self.write_all(rotor_to_slot(self.rot_state));
+                    }
 
-                ui.separator();
-                ui.weak("Mouse drag in the viewport orbits the camera.");
-            });
+                    if let Some(name) = combo_name(&self.active) {
+                        ui.colored_label(egui::Color32::from_rgb(255, 217, 140), name);
+                    }
+
+                    ui.separator();
+                    if ui.button("Reset orientation + slice").clicked() {
+                        self.reset();
+                    }
+
+                    ui.separator();
+                    ui.label("Row");
+                    for entry in &self.row {
+                        ui.label(format!("• {}", entry.label));
+                    }
+
+                    ui.separator();
+                    egui::CollapsingHeader::new("Hotkeys")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.label("Up / Down: scrub w-slice");
+                            ui.label("T: toggle spin");
+                            ui.label("R: reset");
+                            ui.label("1..6: toggle plane in active set (xy xz xw yz yw zw)");
+                            ui.label("+ / −: rate scale");
+                            ui.label("H: hide / show this panel");
+                            ui.label("Esc: exit");
+                            ui.label("Mouse drag in viewport: orbit camera");
+                        });
+                });
+        } else {
+            egui::Area::new(egui::Id::new("polytope-smoke-show"))
+                .anchor(egui::Align2::LEFT_TOP, [16.0, 16.0])
+                .show(ctx, |ui| {
+                    if ui.button("Show controls").clicked() {
+                        self.show_panel = true;
+                    }
+                });
+        }
 
         // Bottom-right: window size, handy for screenshots.
         let cfg = &frame.rd.surface_bundle.config;
@@ -656,6 +685,7 @@ impl App for PolytopeSmokeApp {
             KeyCode::ArrowUp => self.slider_up_held = pressed,
             KeyCode::ArrowDown => self.slider_down_held = pressed,
             KeyCode::KeyR if pressed => self.reset(),
+            KeyCode::KeyH if pressed => self.show_panel = !self.show_panel,
             KeyCode::KeyT if pressed => {
                 // Pause / resume only, DO NOT touch rot_state. The
                 // bodies keep their current orientation when paused

@@ -487,6 +487,21 @@ impl App for PolytopeSmokeApp {
         // default zoom; user can scroll-zoom in.
         orbit.set_orbit(9.5, -0.25);
 
+        // Initial w-slice: pick a value that lands on a "Platonic-named"
+        // cross-section when one of the H4-symmetric polytopes is in the
+        // row. The 120-cell's dodecahedral face cell is centered at
+        // w = inradius * size = 0.926 * size; for the 600-cell, the
+        // icosahedral cross-section appears near a vertex (w = size).
+        // For 5/8/16/24-cell rows, w=0 already gives the Platonic-shaped
+        // central slice, so leave the default at 0.
+        let initial_w = if row.iter().any(|e| e.shape == SHAPE_120CELL) {
+            0.926 * BODY_SIZE
+        } else if row.iter().any(|e| e.shape == SHAPE_600CELL) {
+            0.85 * BODY_SIZE
+        } else {
+            0.0
+        };
+
         Ok(Self {
             space: EuclideanR3,
             camera,
@@ -494,7 +509,7 @@ impl App for PolytopeSmokeApp {
             node,
             text,
             row,
-            w_slice: 0.0,
+            w_slice: initial_w,
             slider_up_held: false,
             slider_down_held: false,
             rotate: false,
@@ -678,7 +693,15 @@ impl App for PolytopeSmokeApp {
             KeyCode::KeyR if pressed => {
                 // Full reset: slice, rate, all toggles off, time
                 // accumulator, AND orientation back to canonical pose.
-                self.w_slice = 0.0;
+                // Slice resets to the row's Platonic-named cross-section
+                // when applicable (120/600-cell), else to centre.
+                self.w_slice = if self.row.iter().any(|e| e.shape == SHAPE_120CELL) {
+                    0.926 * BODY_SIZE
+                } else if self.row.iter().any(|e| e.shape == SHAPE_600CELL) {
+                    0.85 * BODY_SIZE
+                } else {
+                    0.0
+                };
                 self.rate_scale = 1.0;
                 self.active = [false; 6];
                 self.rot_state = Rotor4::IDENTITY;

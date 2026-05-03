@@ -10,10 +10,11 @@
 //! so toggle-order doesn't matter and the result is always
 //! predictable from the visible "active" set.
 //!
-//! (120-cell and 600-cell are the remaining two regular polychora;
-//! their face-hyperplane sets are large enough to want a Rust-side
-//! generator before they go into the kernel, deferred until the
-//! demo or game needs them.)
+//! All six convex regular 4-polytopes ship; the 120-cell and 600-cell
+//! use a Rust-side face-hyperplane generator (their orbit sets are
+//! too large to inline as WGSL literals). Their SDFs run a
+//! true-Euclidean Wolfe greedy hyperplane projection, not a
+//! max-plane lower bound.
 //!
 //! Doubles as the integration showcase for `rye-text`, all live
 //! state and the controls help are drawn in-window via the text
@@ -55,12 +56,9 @@
 //!
 //! - `--shapes name1 name2 ...`: choose the polytopes to render
 //!   in left-to-right order. Names accepted include the math form
-//!   (`5-cell`, `tesseract`, `16-cell`, `24-cell`) and Platonic-
-//!   slice aliases (`tetrahedron`, `cube`, `octahedron`,
-//!   `cuboctahedron`). The `dodecahedron` (120-cell) and
-//!   `icosahedron` (600-cell) names produce an explanatory error
-//!   today, their face-hyperplane tables ship in a follow-up
-//!   branch.
+//!   (`5-cell`, `tesseract`, `16-cell`, `24-cell`, `120-cell`,
+//!   `600-cell`) and Platonic-slice aliases (`tetrahedron`, `cube`,
+//!   `octahedron`, `cuboctahedron`, `dodecahedron`, `icosahedron`).
 
 use std::path::Path;
 
@@ -72,7 +70,8 @@ use rye_render::{
     device::RenderDevice,
     graph::RenderNode,
     raymarch::{
-        BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL, SHAPE_16CELL, SHAPE_24CELL,
+        polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode,
+        HYPERSLICE_KERNEL_WGSL, SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_600CELL,
         SHAPE_PENTATOPE, SHAPE_TESSERACT,
     },
 };
@@ -172,25 +171,22 @@ fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
             color: [0.95, 0.45, 0.85],
             label: "24-cell",
         },
-        "120-cell" | "120cell" | "hecatonicosachoron" | "dodecahedron" => {
-            return Err(anyhow!(
-                "120-cell (dodecahedron-slice) not yet implemented; \
-                 face-hyperplane table pending in a follow-up branch"
-            ))
-        }
-        "600-cell" | "600cell" | "hexacosichoron" | "icosahedron" => {
-            return Err(anyhow!(
-                "600-cell (icosahedron-slice) not yet implemented; \
-                 face-hyperplane table pending in a follow-up branch"
-            ))
-        }
+        "120-cell" | "120cell" | "hecatonicosachoron" | "dodecahedron" => ShapeEntry {
+            shape: SHAPE_120CELL,
+            color: [0.40, 0.85, 0.85],
+            label: "120-cell",
+        },
+        "600-cell" | "600cell" | "hexacosichoron" | "icosahedron" => ShapeEntry {
+            shape: SHAPE_600CELL,
+            color: [0.95, 0.85, 0.40],
+            label: "600-cell",
+        },
         _ => {
             return Err(anyhow!(
                 "unknown shape name {name:?}; valid names: 5-cell, \
-                 tesseract, 16-cell, 24-cell, 120-cell*, 600-cell* \
+                 tesseract, 16-cell, 24-cell, 120-cell, 600-cell \
                  (or Platonic aliases: tetrahedron, cube, octahedron, \
-                 cuboctahedron, dodecahedron*, icosahedron*) \
-                 (* deferred)"
+                 cuboctahedron, dodecahedron, icosahedron)"
             ))
         }
     })
@@ -432,8 +428,20 @@ impl App for PolytopeSmokeApp {
         }
 
         let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, 0.0));
+        // Only pay the ~24 KB polytope-data compile cost if the row
+        // actually contains a 120-cell or 600-cell. Otherwise the
+        // kernel's dispatch branches for those shapes are unreachable
+        // at runtime and the stubs are enough to satisfy naga.
+        let needs_extended = row
+            .iter()
+            .any(|e| e.shape == SHAPE_120CELL || e.shape == SHAPE_600CELL);
+        let polytope_wgsl = if needs_extended {
+            polytope_extended_sdfs_wgsl()
+        } else {
+            polytope_stub_sdfs_wgsl().to_owned()
+        };
         let shader_source = format!(
-            "{kernel}\n{scene}\n",
+            "{kernel}\n{polytope_wgsl}\n{scene}\n",
             kernel = HYPERSLICE_KERNEL_WGSL,
             scene = scene.to_hyperslice_wgsl("u.w_slice"),
         );
@@ -479,6 +487,21 @@ impl App for PolytopeSmokeApp {
         // default zoom; user can scroll-zoom in.
         orbit.set_orbit(9.5, -0.25);
 
+        // Initial w-slice: pick a value that lands on a "Platonic-named"
+        // cross-section when one of the H4-symmetric polytopes is in the
+        // row. The 120-cell's dodecahedral face cell is centered at
+        // w = inradius * size = 0.926 * size; for the 600-cell, the
+        // icosahedral cross-section appears near a vertex (w = size).
+        // For 5/8/16/24-cell rows, w=0 already gives the Platonic-shaped
+        // central slice, so leave the default at 0.
+        let initial_w = if row.iter().any(|e| e.shape == SHAPE_120CELL) {
+            0.926 * BODY_SIZE
+        } else if row.iter().any(|e| e.shape == SHAPE_600CELL) {
+            0.85 * BODY_SIZE
+        } else {
+            0.0
+        };
+
         Ok(Self {
             space: EuclideanR3,
             camera,
@@ -486,7 +509,7 @@ impl App for PolytopeSmokeApp {
             node,
             text,
             row,
-            w_slice: 0.0,
+            w_slice: initial_w,
             slider_up_held: false,
             slider_down_held: false,
             rotate: false,
@@ -670,7 +693,15 @@ impl App for PolytopeSmokeApp {
             KeyCode::KeyR if pressed => {
                 // Full reset: slice, rate, all toggles off, time
                 // accumulator, AND orientation back to canonical pose.
-                self.w_slice = 0.0;
+                // Slice resets to the row's Platonic-named cross-section
+                // when applicable (120/600-cell), else to centre.
+                self.w_slice = if self.row.iter().any(|e| e.shape == SHAPE_120CELL) {
+                    0.926 * BODY_SIZE
+                } else if self.row.iter().any(|e| e.shape == SHAPE_600CELL) {
+                    0.85 * BODY_SIZE
+                } else {
+                    0.0
+                };
                 self.rate_scale = 1.0;
                 self.active = [false; 6];
                 self.rot_state = Rotor4::IDENTITY;

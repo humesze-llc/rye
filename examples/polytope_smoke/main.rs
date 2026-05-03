@@ -16,9 +16,8 @@
 //! true-Euclidean Wolfe greedy hyperplane projection, not a
 //! max-plane lower bound.
 //!
-//! Doubles as the integration showcase for `rye-text`, all live
-//! state and the controls help are drawn in-window via the text
-//! crate, no window-title stuffing.
+//! All live state and controls help are drawn as a `rye-egui`
+//! overlay via the `App::ui` hook; the window title stays static.
 //!
 //! What this verifies (visually):
 //!
@@ -30,9 +29,9 @@
 //!   points into body-local for evaluating the polytope SDF,
 //!   single-plane and compound 4D rotations both produce coherent
 //!   slice morphs.
-//! - `rye-text` renders ASCII glyphs over a hyperslice scene
-//!   (atlas + textured-quad pipeline composes cleanly with
-//!   `Hyperslice4DNode`).
+//! - `rye-egui` overlay composes cleanly on top of
+//!   `Hyperslice4DNode`'s output (the framework paints the egui
+//!   pass after `App::render` returns).
 //!
 //! ## Controls
 //!
@@ -60,11 +59,9 @@
 //!   `600-cell`) and Platonic-slice aliases (`tetrahedron`, `cube`,
 //!   `octahedron`, `cuboctahedron`, `dodecahedron`, `icosahedron`).
 
-use std::path::Path;
-
 use anyhow::{anyhow, Result};
 use glam::{Vec3, Vec4};
-use rye_app::{run_with_config, App, Camera, FrameCtx, OrbitController, RunConfig, SetupCtx};
+use rye_app::{egui, run_with_config, App, Camera, FrameCtx, OrbitController, RunConfig, SetupCtx};
 use rye_math::{Bivector, Bivector4, EuclideanR3, Rotor4};
 use rye_render::{
     device::RenderDevice,
@@ -76,12 +73,7 @@ use rye_render::{
     },
 };
 use rye_sdf::{Scene4, SceneNode4};
-use rye_text::TextRenderer;
 use winit::window::WindowAttributes;
-
-// 120-cell / 600-cell shape indices are deliberately unallocated; the
-// SDFs land in a follow-up branch. `parse_shape_name` returns a
-// friendly error if a user asks for them by name today.
 
 const W_SCRUB_RATE: f32 = 0.5;
 const W_RANGE: f32 = 1.5;
@@ -111,17 +103,9 @@ struct ShapeEntry {
     label: &'static str,
 }
 
-/// Default row when no `--shapes` argument is given. Kept to the
-/// shapes whose SDFs are currently in the kernel.
-///
-/// The "Platonic-solid analogue" set the user tends to want is
-/// `tetrahedron, cube, octahedron, dodecahedron, icosahedron`,
-/// matching the regular convex 4-polytope ladder. Tetrahedron /
-/// cube / octahedron are already wired (5-cell / tesseract /
-/// 16-cell). Dodecahedron (120-cell) and icosahedron (600-cell)
-/// need their face-hyperplane tables built; they're tracked for a
-/// follow-up branch and produce a friendly error today if
-/// requested by name.
+/// Default row when no `--shapes` argument is given. The four
+/// non-H4 polytopes; pass `--shapes 120-cell 600-cell` to render
+/// the H4 pair instead.
 const DEFAULT_ROW: &[ShapeEntry] = &[
     ShapeEntry {
         shape: SHAPE_PENTATOPE,
@@ -349,25 +333,6 @@ fn rotor_to_slot(r: Rotor4) -> [f32; 8] {
 // Font discovery (portable system-font fallback)
 // ---------------------------------------------------------------------------
 
-fn load_system_font() -> Result<Vec<u8>> {
-    const CANDIDATES: &[&str] = &[
-        r"C:\Windows\Fonts\arial.ttf",
-        r"C:\Windows\Fonts\segoeui.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/Library/Fonts/Arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-    ];
-    for &p in CANDIDATES {
-        if Path::new(p).exists() {
-            return Ok(std::fs::read(p)?);
-        }
-    }
-    Err(anyhow!(
-        "no candidate system font found; tried {CANDIDATES:?}"
-    ))
-}
-
 // ---------------------------------------------------------------------------
 // PolytopeSmokeApp
 // ---------------------------------------------------------------------------
@@ -377,7 +342,6 @@ struct PolytopeSmokeApp {
     camera: Camera<EuclideanR3>,
     orbit: OrbitController<EuclideanR3>,
     node: Hyperslice4DNode,
-    text: TextRenderer,
     /// Polytope row built at startup from `--shapes` CLI args (or
     /// `DEFAULT_ROW`); drives both the body uniforms and per-body
     /// label lookups in the overlay.
@@ -471,15 +435,6 @@ impl App for PolytopeSmokeApp {
             .collect();
         node.set_bodies(&bodies);
 
-        let font = load_system_font()?;
-        let text = TextRenderer::new(
-            &ctx.rd.device,
-            &ctx.rd.queue,
-            ctx.rd.surface_bundle.config.format,
-            &font,
-            48.0,
-        )?;
-
         let mut camera = Camera::<EuclideanR3>::at_origin();
         camera.position = Vec3::new(0.0, 3.0, 9.0);
         let mut orbit: OrbitController<EuclideanR3> = OrbitController::default();
@@ -507,7 +462,6 @@ impl App for PolytopeSmokeApp {
             camera,
             orbit,
             node,
-            text,
             row,
             w_slice: initial_w,
             slider_up_held: false,
@@ -570,111 +524,81 @@ impl App for PolytopeSmokeApp {
             u.w_slice = self.w_slice;
         }
         self.node.flush_uniforms(&ctx.rd.queue);
+    }
 
-        // Text overlay, built fresh each frame; rye-text resets
-        // its queue on render so leftover labels don't accumulate.
-        let w = cfg.width as f32;
-        let h = cfg.height as f32;
-
+    fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
         // Top-left: live state readout.
-        let white = [1.0, 1.0, 1.0, 1.0];
-        let dim = [0.85, 0.85, 0.95, 0.85];
-        self.text.queue("polytope smoke", [16.0, 16.0], 26.0, white);
-        self.text
-            .queue(&format!("{:.0} fps", ctx.fps), [16.0, 48.0], 18.0, dim);
-        self.text.queue(
-            &format!("w_slice = {:+.3}", self.w_slice),
-            [16.0, 72.0],
-            18.0,
-            dim,
-        );
-        // Row legend: which polytopes are loaded, in display order.
-        let row_legend = self
-            .row
-            .iter()
-            .map(|e| e.label)
-            .collect::<Vec<_>>()
-            .join(" | ");
-        self.text
-            .queue(&format!("row: {row_legend}"), [16.0, 144.0], 14.0, dim);
-        // Active planes summary (shown whether spinning or paused
-        // so the user can compose a set before pressing T).
-        let active_labels: Vec<&str> = PLANES
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| self.active[*i])
-            .map(|(_, p)| p.label())
-            .collect();
-        let active_str = if active_labels.is_empty() {
-            "none".to_string()
-        } else {
-            active_labels.join(" + ")
-        };
-        let (status, color) = if self.rotate {
-            ("spinning", [0.40, 1.0, 0.60, 1.0])
-        } else {
-            ("paused", [0.95, 0.85, 0.30, 1.0])
-        };
-        self.text.queue(
-            &format!(
-                "{status}: {active_str} | rate x{:.2} | t = {:.2} s",
-                self.rate_scale, self.rot_time
-            ),
-            [16.0, 96.0],
-            18.0,
-            color,
-        );
+        egui::Area::new(egui::Id::new("polytope-smoke-state"))
+            .fixed_pos([16.0, 16.0])
+            .show(ctx, |ui| {
+                ui.heading("polytope smoke");
+                ui.label(format!("{:.0} fps", frame.fps));
+                ui.label(format!("w_slice = {:+.3}", self.w_slice));
 
-        // Per-plane indicator row so the user can see at a glance
-        // which keys (1..6) are currently held active.
-        let mut indicator = String::with_capacity(64);
-        for (i, p) in PLANES.iter().enumerate() {
-            let on = self.active[i];
-            indicator.push_str(&format!("[{}]{} ", if on { "x" } else { " " }, p.label()));
-        }
-        self.text.queue(&indicator, [16.0, 122.0], 16.0, dim);
+                let active_labels: Vec<&str> = PLANES
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| self.active[*i])
+                    .map(|(_, p)| p.label())
+                    .collect();
+                let active_str = if active_labels.is_empty() {
+                    "none".to_string()
+                } else {
+                    active_labels.join(" + ")
+                };
+                let (status_word, status_color) = if self.rotate {
+                    ("spinning", egui::Color32::from_rgb(102, 255, 153))
+                } else {
+                    ("paused", egui::Color32::from_rgb(242, 217, 76))
+                };
+                ui.colored_label(
+                    status_color,
+                    format!(
+                        "{status_word}: {active_str} | rate x{:.2} | t = {:.2} s",
+                        self.rate_scale, self.rot_time
+                    ),
+                );
 
-        // Top-right: named combo (when the active set matches a
-        // recognized composition). Right-edge alignment is by
-        // character-count estimate, rye-text doesn't ship a
-        // measurement helper yet, so use ~0.5 × size px per char
-        // as a serviceable approximation for the chosen Latin font.
+                let mut indicator = String::with_capacity(64);
+                for (i, p) in PLANES.iter().enumerate() {
+                    let on = self.active[i];
+                    indicator.push_str(&format!("[{}]{} ", if on { "x" } else { " " }, p.label()));
+                }
+                ui.monospace(indicator);
+
+                let row_legend = self
+                    .row
+                    .iter()
+                    .map(|e| e.label)
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                ui.label(format!("row: {row_legend}"));
+            });
+
+        // Top-right: named combo when the active set matches one.
         if let Some(name) = combo_name(&self.active) {
-            let combo_size = 18.0;
-            let est_width = name.len() as f32 * combo_size * 0.5;
-            self.text.queue(
-                name,
-                [w - est_width - 16.0, 16.0],
-                combo_size,
-                [1.0, 0.85, 0.55, 1.0],
-            );
+            egui::Area::new(egui::Id::new("polytope-smoke-combo"))
+                .anchor(egui::Align2::RIGHT_TOP, [-16.0, 16.0])
+                .show(ctx, |ui| {
+                    ui.colored_label(egui::Color32::from_rgb(255, 217, 140), name);
+                });
         }
 
         // Bottom-left: controls help.
-        let help_lines = [
-            "drag-orbit  |  up/dn scrub w  |  t toggle spin",
-            "1..6 toggle planes (xy xz xw yz yw zw)  |  +/- rate  |  r reset",
-        ];
-        let help_size = 16.0;
-        let line_h = help_size * 1.3;
-        let bottom = h - 16.0 - line_h * help_lines.len() as f32;
-        for (i, line) in help_lines.iter().enumerate() {
-            self.text.queue(
-                line,
-                [16.0, bottom + i as f32 * line_h],
-                help_size,
-                [0.05, 0.10, 0.45, 1.0],
-            );
-        }
+        egui::Area::new(egui::Id::new("polytope-smoke-help"))
+            .anchor(egui::Align2::LEFT_BOTTOM, [16.0, -16.0])
+            .show(ctx, |ui| {
+                ui.label("drag-orbit  |  up/dn scrub w  |  t toggle spin");
+                ui.label("1..6 toggle planes (xy xz xw yz yw zw)  |  +/- rate  |  r reset");
+            });
 
-        // Bottom-right: window size, handy when sizing for
-        // screenshots.
-        self.text.queue(
-            &format!("{w:.0}x{h:.0}"),
-            [w - 110.0, h - 28.0],
-            14.0,
-            [1.0, 1.0, 1.0, 0.5],
-        );
+        // Bottom-right: window size, handy for sizing screenshots.
+        let viewport = frame.rd.surface_bundle.config.clone();
+        egui::Area::new(egui::Id::new("polytope-smoke-size"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -16.0])
+            .show(ctx, |ui| {
+                ui.weak(format!("{}x{}", viewport.width, viewport.height));
+            });
     }
 
     fn on_event(&mut self, ev: &winit::event::WindowEvent, _ctx: &mut FrameCtx<'_>) {
@@ -738,16 +662,9 @@ impl App for PolytopeSmokeApp {
     }
 
     fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
-        // Hyperslice scene first; text overlay on top.
-        self.node.execute(rd, view)?;
-        let cfg = &rd.surface_bundle.config;
-        self.text.render(
-            &rd.device,
-            &rd.queue,
-            view,
-            [cfg.width as f32, cfg.height as f32],
-        )?;
-        Ok(())
+        // Hyperslice scene; the rye-app framework paints the egui overlay
+        // on top after this returns.
+        self.node.execute(rd, view)
     }
 
     fn title(&self, _fps: f32) -> std::borrow::Cow<'static, str> {

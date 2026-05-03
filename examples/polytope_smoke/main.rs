@@ -67,13 +67,18 @@ use rye_render::{
     device::RenderDevice,
     graph::RenderNode,
     raymarch::{
-        polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode,
-        HYPERSLICE_KERNEL_WGSL, SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_600CELL,
-        SHAPE_PENTATOPE, SHAPE_TESSERACT,
+        polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
+        SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_600CELL, SHAPE_PENTATOPE, SHAPE_TESSERACT,
     },
 };
 use rye_sdf::{Scene4, SceneNode4};
 use winit::window::WindowAttributes;
+
+/// Cap on shapes per row from the runtime "Add" buttons. Keeps the
+/// scene visible without scroll-zoom and bounds the per-frame body
+/// loop. The CLI `--shapes` argument can still spawn up to
+/// `MAX_BODIES` (32) at startup.
+const MAX_ROW_LEN: usize = 8;
 
 const W_SCRUB_RATE: f32 = 0.5;
 const W_RANGE: f32 = 1.5;
@@ -387,6 +392,30 @@ impl PolytopeSmokeApp {
         }
     }
 
+    /// Rebuild the full body uniform array from the current row +
+    /// rotor. Use this when the row's length or order changes; the
+    /// per-body position depends on the row's `n` and the body's slot
+    /// index, so a single body update is not enough.
+    fn rebuild_bodies(&mut self) {
+        let n = self.row.len();
+        let rotor = rotor_to_slot(self.rot_state);
+        let bodies: Vec<BodyUniform> = self
+            .row
+            .iter()
+            .enumerate()
+            .map(|(slot, entry)| {
+                BodyUniform::polytope(
+                    body_position(slot, n),
+                    entry.shape,
+                    BODY_SIZE,
+                    rotor,
+                    entry.color,
+                )
+            })
+            .collect();
+        self.node.set_bodies(&bodies);
+    }
+
     /// Full reset: slice, rate, active set, orientation, time
     /// accumulator. Slice resets to the row's Platonic-named
     /// cross-section when applicable (120/600-cell), else to centre.
@@ -416,21 +445,14 @@ impl App for PolytopeSmokeApp {
         }
 
         let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, 0.0));
-        // Only pay the ~24 KB polytope-data compile cost if the row
-        // actually contains a 120-cell or 600-cell. Otherwise the
-        // kernel's dispatch branches for those shapes are unreachable
-        // at runtime and the stubs are enough to satisfy naga.
-        let needs_extended = row
-            .iter()
-            .any(|e| e.shape == SHAPE_120CELL || e.shape == SHAPE_600CELL);
-        let polytope_wgsl = if needs_extended {
-            polytope_extended_sdfs_wgsl()
-        } else {
-            polytope_stub_sdfs_wgsl().to_owned()
-        };
+        // Always include the extended polytope WGSL so any of the six
+        // shapes can be added to the row at runtime via the panel.
+        // The ~24 KB const-array cost is fixed per app and acceptable
+        // for a viz/demo target.
         let shader_source = format!(
-            "{kernel}\n{polytope_wgsl}\n{scene}\n",
+            "{kernel}\n{polytope}\n{scene}\n",
             kernel = HYPERSLICE_KERNEL_WGSL,
+            polytope = polytope_extended_sdfs_wgsl(),
             scene = scene.to_hyperslice_wgsl("u.w_slice"),
         );
         let module = ctx
@@ -632,9 +654,67 @@ impl App for PolytopeSmokeApp {
                     }
 
                     ui.separator();
-                    ui.label("Row");
-                    for entry in &self.row {
-                        ui.label(format!("• {}", entry.label));
+                    ui.label("Shapes in row");
+                    let has_heavy = self
+                        .row
+                        .iter()
+                        .any(|e| e.shape == SHAPE_120CELL || e.shape == SHAPE_600CELL);
+                    if has_heavy {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(242, 130, 70),
+                            "120/600-cell SDFs are heavy; expect <60 fps.",
+                        );
+                    }
+                    let mut remove_idx: Option<usize> = None;
+                    let mut move_up_idx: Option<usize> = None;
+                    let mut move_down_idx: Option<usize> = None;
+                    let row_len = self.row.len();
+                    for (i, entry) in self.row.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}. {}", i + 1, entry.label));
+                            if ui.small_button("up").clicked() && i > 0 {
+                                move_up_idx = Some(i);
+                            }
+                            if ui.small_button("dn").clicked() && i + 1 < row_len {
+                                move_down_idx = Some(i);
+                            }
+                            if row_len > 1 && ui.small_button("X").clicked() {
+                                remove_idx = Some(i);
+                            }
+                        });
+                    }
+                    let mut row_changed = false;
+                    if let Some(i) = remove_idx {
+                        self.row.remove(i);
+                        row_changed = true;
+                    }
+                    if let Some(i) = move_up_idx {
+                        self.row.swap(i, i - 1);
+                        row_changed = true;
+                    }
+                    if let Some(i) = move_down_idx {
+                        self.row.swap(i, i + 1);
+                        row_changed = true;
+                    }
+
+                    if self.row.len() < MAX_ROW_LEN {
+                        ui.label("Add:");
+                        ui.horizontal_wrapped(|ui| {
+                            for shape_name in [
+                                "5-cell", "8-cell", "16-cell", "24-cell", "120-cell", "600-cell",
+                            ] {
+                                if ui.small_button(shape_name).clicked() {
+                                    if let Ok(entry) = parse_shape_name(shape_name) {
+                                        self.row.push(entry);
+                                        row_changed = true;
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    if row_changed {
+                        self.rebuild_bodies();
                     }
 
                     ui.separator();

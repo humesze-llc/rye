@@ -772,19 +772,30 @@ impl App for PolytopeSmokeApp {
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.heading("polytope smoke");
-                        ui.button("?").on_hover_ui(|ui| {
-                            ui.label("Up / Down: scrub w-slice");
-                            ui.label("T: toggle spin");
-                            ui.label("R: reset");
-                            ui.label("1..6: toggle plane in active set (xy xz xw yz yw zw)");
-                            ui.label("+ / -: rate scale");
-                            ui.label("H: hide / show this panel");
-                            ui.label("Esc: exit");
-                            ui.label("Mouse drag in viewport: orbit camera");
+                        // Right-aligned cluster: ?-circle and < collapse.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(egui::Button::new("<").min_size(egui::vec2(22.0, 22.0)))
+                                .on_hover_text("Hide controls panel (H)")
+                                .clicked()
+                            {
+                                self.show_panel = false;
+                            }
+                            ui.add(
+                                egui::Button::new(egui::RichText::new("?").strong())
+                                    .min_size(egui::vec2(22.0, 22.0)),
+                            )
+                            .on_hover_ui(|ui| {
+                                ui.label("Up / Down: scrub w-slice");
+                                ui.label("T: toggle spin");
+                                ui.label("R: reset");
+                                ui.label("1..6: toggle plane in active set (xy xz xw yz yw zw)");
+                                ui.label("+ / -: rate scale");
+                                ui.label("H: hide / show this panel");
+                                ui.label("Esc: exit");
+                                ui.label("Mouse drag in viewport: orbit camera");
+                            });
                         });
-                        if ui.button("Hide").clicked() {
-                            self.show_panel = false;
-                        }
                     });
                     ui.label(format!("{:.0} fps", frame.fps));
 
@@ -794,9 +805,13 @@ impl App for PolytopeSmokeApp {
                 });
         } else {
             egui::Area::new(egui::Id::new("polytope-smoke-show"))
-                .anchor(egui::Align2::LEFT_TOP, [16.0, 16.0])
+                .anchor(egui::Align2::LEFT_TOP, [8.0, 8.0])
                 .show(ctx, |ui| {
-                    if ui.button("Show controls").clicked() {
+                    if ui
+                        .add(egui::Button::new(">").min_size(egui::vec2(24.0, 24.0)))
+                        .on_hover_text("Show controls panel (H)")
+                        .clicked()
+                    {
                         self.show_panel = true;
                     }
                 });

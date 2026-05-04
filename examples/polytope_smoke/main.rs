@@ -444,7 +444,7 @@ impl PolytopeSmokeApp {
         );
 
         ui.separator();
-        ui.label("Rotation");
+        ui.label("Rotation (continuous)");
         let (status_word, status_color) = if self.rotate {
             ("spinning", egui::Color32::from_rgb(102, 255, 153))
         } else {
@@ -465,44 +465,35 @@ impl PolytopeSmokeApp {
                 .text("rate")
                 .fixed_decimals(2),
         );
-
-        ui.separator();
-        ui.label("Planes");
-        let mut compose: Option<(Plane, f32)> = None;
-        for (i, plane) in PLANES.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.active[i], plane.label());
-                if ui.small_button("+90").clicked() {
-                    compose = Some((*plane, std::f32::consts::FRAC_PI_2));
-                }
-                if ui.small_button("-90").clicked() {
-                    compose = Some((*plane, -std::f32::consts::FRAC_PI_2));
-                }
-                if ui.small_button("+30").clicked() {
-                    compose = Some((*plane, std::f32::consts::FRAC_PI_6));
+        // Active-set checkboxes: which planes contribute to the
+        // angular velocity while spinning. Two columns of three.
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                for (active, plane) in self.active[..3].iter_mut().zip(&PLANES[..3]) {
+                    ui.checkbox(active, plane.label());
                 }
             });
-        }
-        if let Some((plane, theta)) = compose {
-            let delta = (plane.unit_bivector() * theta).exp();
-            self.rot_state = (delta * self.rot_state).normalize();
-            self.write_all(rotor_to_slot(self.rot_state));
-        }
+            ui.vertical(|ui| {
+                for (active, plane) in self.active[3..].iter_mut().zip(&PLANES[3..]) {
+                    ui.checkbox(active, plane.label());
+                }
+            });
+        });
         if let Some(name) = combo_name(&self.active) {
             ui.colored_label(egui::Color32::from_rgb(255, 217, 140), name);
         }
 
         ui.separator();
-        ui.label("Sequence");
-        ui.weak(
-            "Add singletons; drag to reorder; click Group to merge two singletons \
-             into a parenthesised additive group (commutative bivector sum). \
-             Apply composes left-to-right via rotor multiplication.",
-        );
-        // Add buttons: append a Single with default 90° to the sequence.
+        ui.label("Compose (one-shot)");
+        // Add buttons sit at the top of the section so the user
+        // builds a sequence by appending downward.
         ui.horizontal_wrapped(|ui| {
             for plane in PLANES.iter() {
-                if ui.small_button(format!("+{}", plane.label())).clicked() {
+                if ui
+                    .small_button(format!("+{}", plane.label()))
+                    .on_hover_text("Append a 90° term to the sequence")
+                    .clicked()
+                {
                     self.seq.push(RotorTerm::Single {
                         plane: *plane,
                         angle: std::f32::consts::FRAC_PI_2,
@@ -511,22 +502,24 @@ impl PolytopeSmokeApp {
             }
         });
 
-        // Render sequence: each term is a drag source; drop zones
-        // between/after terms reorder.
+        // Per-term row: drag handle, plane(s) + angle(s), Group/Ungroup, X.
         let mut moves: Vec<(usize, usize)> = Vec::new();
         let mut remove_term: Option<usize> = None;
         let mut group_with_prev: Option<usize> = None;
         let mut ungroup: Option<usize> = None;
-        let n_terms = self.seq.len();
         for (i, term) in self.seq.iter_mut().enumerate() {
             let drag_id = ui.make_persistent_id(("seq-term", i));
             ui.horizontal(|ui| {
-                ui.dnd_drag_source(drag_id, i, |ui| {
-                    ui.label("⋮⋮").on_hover_text("Drag to reorder");
+                let drag_resp = ui.dnd_drag_source(drag_id, i, |ui| {
+                    ui.label(egui::RichText::new("⠿").size(16.0).strong());
                 });
+                drag_resp
+                    .response
+                    .on_hover_cursor(egui::CursorIcon::Grab)
+                    .on_hover_text("Drag to reorder");
                 match term {
                     RotorTerm::Single { plane, angle } => {
-                        ui.label(plane.label());
+                        ui.monospace(plane.label());
                         let mut deg = angle.to_degrees();
                         if ui
                             .add(
@@ -535,18 +528,27 @@ impl PolytopeSmokeApp {
                                     .speed(1.0)
                                     .range(-360.0..=360.0),
                             )
+                            .on_hover_text("Drag to scrub; double-click to type")
                             .changed()
                         {
                             *angle = deg.to_radians();
                         }
-                        if i > 0 && ui.small_button("Group").clicked() {
+                        if i > 0
+                            && ui
+                                .small_button("(+)")
+                                .on_hover_text("Group with previous (additive bivector sum)")
+                                .clicked()
+                        {
                             group_with_prev = Some(i);
                         }
                     }
                     RotorTerm::Group(entries) => {
-                        ui.label("(");
-                        for (plane, angle) in entries.iter_mut() {
-                            ui.label(plane.label());
+                        ui.monospace("(");
+                        for (k, (plane, angle)) in entries.iter_mut().enumerate() {
+                            if k > 0 {
+                                ui.monospace("+");
+                            }
+                            ui.monospace(plane.label());
                             let mut deg = angle.to_degrees();
                             if ui
                                 .add(
@@ -559,10 +561,13 @@ impl PolytopeSmokeApp {
                             {
                                 *angle = deg.to_radians();
                             }
-                            ui.label("+");
                         }
-                        ui.label(")");
-                        if ui.small_button("Ungroup").clicked() {
+                        ui.monospace(")");
+                        if ui
+                            .small_button("ungrp")
+                            .on_hover_text("Split back into singletons")
+                            .clicked()
+                        {
                             ungroup = Some(i);
                         }
                     }
@@ -571,11 +576,10 @@ impl PolytopeSmokeApp {
                     remove_term = Some(i);
                 }
             });
-
-            // Drop zone immediately after this term for "insert after i".
+            // Drop zone after each term.
             let (_, payload) =
-                ui.dnd_drop_zone::<usize, ()>(egui::Frame::default().inner_margin(2.0), |ui| {
-                    ui.allocate_space(egui::vec2(ui.available_width(), 4.0));
+                ui.dnd_drop_zone::<usize, ()>(egui::Frame::default().inner_margin(1.0), |ui| {
+                    ui.allocate_space(egui::vec2(ui.available_width(), 3.0));
                 });
             if let Some(src) = payload {
                 let from = *src;
@@ -584,13 +588,9 @@ impl PolytopeSmokeApp {
                     moves.push((from, to));
                 }
             }
-            // Avoid unused warning on n_terms when zero.
-            let _ = n_terms;
         }
 
-        // Apply the structural mutations.
         if let Some(i) = group_with_prev {
-            // Merge term at i with term at i-1 into one Group.
             let cur = self.seq.remove(i);
             let prev = self.seq.remove(i - 1);
             let mut entries = Vec::new();
@@ -639,12 +639,7 @@ impl PolytopeSmokeApp {
         });
 
         ui.separator();
-        if ui.button("Reset orientation + slice").clicked() {
-            self.reset();
-        }
-
-        ui.separator();
-        ui.label("Shapes (drag to reorder; left-to-right matches scene)");
+        ui.label("Shapes (drag to reorder)");
         let has_heavy = self
             .row
             .iter()
@@ -655,13 +650,32 @@ impl PolytopeSmokeApp {
                 "120/600-cell SDFs are heavy; expect <60 fps.",
             );
         }
+        // Add buttons FIRST so the user enters a shape and sees it
+        // appear at the right end of the cards row immediately.
+        let mut row_changed = false;
+        if self.row.len() < MAX_ROW_LEN {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Add:");
+                for shape_name in [
+                    "5-cell", "8-cell", "16-cell", "24-cell", "120-cell", "600-cell",
+                ] {
+                    if ui.small_button(shape_name).clicked() {
+                        if let Ok(entry) = parse_shape_name(shape_name) {
+                            self.row.push(entry);
+                            row_changed = true;
+                        }
+                    }
+                }
+            });
+        }
+
         let mut remove_idx: Option<usize> = None;
         let mut shape_moves: Vec<(usize, usize)> = Vec::new();
         let row_len = self.row.len();
         ui.horizontal_wrapped(|ui| {
             for (i, entry) in self.row.iter().enumerate() {
                 let drag_id = ui.make_persistent_id(("shape-card", i));
-                ui.dnd_drag_source(drag_id, i, |ui| {
+                let drag_resp = ui.dnd_drag_source(drag_id, i, |ui| {
                     ui.group(|ui| {
                         ui.vertical(|ui| {
                             ui.label(entry.label);
@@ -671,6 +685,7 @@ impl PolytopeSmokeApp {
                         });
                     });
                 });
+                drag_resp.response.on_hover_cursor(egui::CursorIcon::Grab);
                 let (_, payload) =
                     ui.dnd_drop_zone::<usize, ()>(egui::Frame::default().inner_margin(2.0), |ui| {
                         ui.allocate_space(egui::vec2(4.0, 30.0));
@@ -684,7 +699,6 @@ impl PolytopeSmokeApp {
                 }
             }
         });
-        let mut row_changed = false;
         if let Some(i) = remove_idx {
             self.row.remove(i);
             row_changed = true;
@@ -696,21 +710,6 @@ impl PolytopeSmokeApp {
                 self.row.insert(dest.min(self.row.len()), item);
                 row_changed = true;
             }
-        }
-        if self.row.len() < MAX_ROW_LEN {
-            ui.label("Add:");
-            ui.horizontal_wrapped(|ui| {
-                for shape_name in [
-                    "5-cell", "8-cell", "16-cell", "24-cell", "120-cell", "600-cell",
-                ] {
-                    if ui.small_button(shape_name).clicked() {
-                        if let Ok(entry) = parse_shape_name(shape_name) {
-                            self.row.push(entry);
-                            row_changed = true;
-                        }
-                    }
-                }
-            });
         }
         if row_changed {
             self.rebuild_bodies();

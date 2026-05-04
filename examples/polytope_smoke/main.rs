@@ -996,16 +996,22 @@ impl App for PolytopeSmokeApp {
 
     fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
         // Hyperslice scene rendered into the area not covered by the
-        // egui panel (when shown). u.resolution is updated to match
-        // the viewport so the camera aspect stays correct; the egui
-        // overlay paints on top after this returns.
+        // egui panel. `u.resolution` is the viewport size and
+        // `u.viewport_origin` is its top-left in framebuffer pixels;
+        // together they let the kernel compute the correct UV inside
+        // the carved-out region. The egui overlay paints on top
+        // after this returns.
         let cfg = &rd.surface_bundle.config;
         let viewport = if self.show_panel {
             Viewport::right_of_left_panel(PANEL_WIDTH, [cfg.width, cfg.height])
         } else {
             Viewport::full([cfg.width, cfg.height])
         };
-        self.node.uniforms_mut().resolution = viewport.resolution_f32();
+        {
+            let u = self.node.uniforms_mut();
+            u.resolution = viewport.resolution_f32();
+            u.viewport_origin = [viewport.x as f32, viewport.y as f32];
+        }
         self.node.flush_uniforms(&rd.queue);
         self.node.execute_in_viewport(rd, view, viewport)
     }

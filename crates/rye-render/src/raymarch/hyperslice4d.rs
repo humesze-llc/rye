@@ -214,8 +214,14 @@ pub struct Hyperslice4DUniforms {
     /// Number of active body slots. Cast from `u32` to `f32` for
     /// std140 alignment (the kernel rounds back to integer).
     pub body_count: f32,
-    pub _pad3: f32,
-    pub _pad4: f32,
+    /// Pixel offset of the viewport's top-left corner within the
+    /// framebuffer. Lets the fragment shader convert `frag_pos.xy`
+    /// (always framebuffer-space) into normalised viewport
+    /// coordinates: `uv = (frag_pos.xy - viewport_origin) /
+    /// resolution`. Both axes are zero when the scene fills the
+    /// full framebuffer; the side-panel case sets `viewport_origin =
+    /// [panel_width, 0]` and `resolution` to the carved-out region.
+    pub viewport_origin: [f32; 2],
     /// Four scalar knobs for user-shader-side parameters. Same
     /// shape as `RayMarchUniforms::params` for symmetry.
     pub params: [f32; 4],
@@ -240,8 +246,7 @@ impl Default for Hyperslice4DUniforms {
             tick: 0.0,
             w_slice: 0.0,
             body_count: 0.0,
-            _pad3: 0.0,
-            _pad4: 0.0,
+            viewport_origin: [0.0, 0.0],
             params: [0.0; 4],
             bodies: [BodyUniform::default(); MAX_BODIES],
         }
@@ -305,8 +310,7 @@ struct Uniforms {
     tick: f32,
     w_slice: f32,
     body_count: f32,
-    _pad3: f32,
-    _pad4: f32,
+    viewport_origin: vec2<f32>,
     params: vec4<f32>,
     bodies: array<BodyUniform, MAX_BODIES>,
 };
@@ -618,7 +622,12 @@ fn ground_color(p: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let uv = (frag_pos.xy / u.resolution) * 2.0 - vec2<f32>(1.0, 1.0);
+    // `frag_pos.xy` is in framebuffer coordinates regardless of any
+    // `set_viewport` carve-out. Subtract the viewport's top-left
+    // origin and normalise by the viewport size (passed in
+    // `u.resolution`) so the centre of the visible region maps to
+    // NDC (0, 0) and the camera stays centred.
+    let uv = ((frag_pos.xy - u.viewport_origin) / u.resolution) * 2.0 - vec2<f32>(1.0, 1.0);
     let aspect = u.resolution.x / u.resolution.y;
     let ndc = vec2<f32>(uv.x * aspect, -uv.y);
     let rd = normalize(

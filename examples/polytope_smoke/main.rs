@@ -65,11 +65,11 @@ use rye_app::{egui, run_with_config, App, Camera, FrameCtx, OrbitController, Run
 use rye_math::{Bivector, Bivector4, EuclideanR3, Rotor4};
 use rye_render::{
     device::RenderDevice,
-    graph::RenderNode,
     raymarch::{
         polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
         SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_600CELL, SHAPE_PENTATOPE, SHAPE_TESSERACT,
     },
+    Viewport,
 };
 use rye_sdf::{Scene4, SceneNode4};
 use winit::window::WindowAttributes;
@@ -79,6 +79,12 @@ use winit::window::WindowAttributes;
 /// loop. The CLI `--shapes` argument can still spawn up to
 /// `MAX_BODIES` (32) at startup.
 const MAX_ROW_LEN: usize = 8;
+
+/// Width in pixels of the egui side panel; used to compute the
+/// scene viewport so the polytope render fills only the area to
+/// the right of the panel. Must match the `default_width` passed
+/// to `egui::SidePanel::left` below.
+const PANEL_WIDTH: u32 = 300;
 
 const W_SCRUB_RATE: f32 = 0.5;
 const W_RANGE: f32 = 1.5;
@@ -762,7 +768,7 @@ impl App for PolytopeSmokeApp {
         if self.show_panel {
             egui::SidePanel::left("polytope-smoke-controls")
                 .resizable(false)
-                .default_width(300.0)
+                .default_width(PANEL_WIDTH as f32)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.heading("polytope smoke");
@@ -851,9 +857,19 @@ impl App for PolytopeSmokeApp {
     }
 
     fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
-        // Hyperslice scene; the rye-app framework paints the egui overlay
-        // on top after this returns.
-        self.node.execute(rd, view)
+        // Hyperslice scene rendered into the area not covered by the
+        // egui panel (when shown). u.resolution is updated to match
+        // the viewport so the camera aspect stays correct; the egui
+        // overlay paints on top after this returns.
+        let cfg = &rd.surface_bundle.config;
+        let viewport = if self.show_panel {
+            Viewport::right_of_left_panel(PANEL_WIDTH, [cfg.width, cfg.height])
+        } else {
+            Viewport::full([cfg.width, cfg.height])
+        };
+        self.node.uniforms_mut().resolution = viewport.resolution_f32();
+        self.node.flush_uniforms(&rd.queue);
+        self.node.execute_in_viewport(rd, view, viewport)
     }
 
     fn title(&self, _fps: f32) -> std::borrow::Cow<'static, str> {

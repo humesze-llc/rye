@@ -820,6 +820,50 @@ impl Hyperslice4DNode {
     }
 }
 
+impl Hyperslice4DNode {
+    /// Like [`RenderNode::execute`] but draws into a sub-region of the
+    /// framebuffer instead of fullscreen. The clear still covers the
+    /// whole attached area; only the fragment shader is restricted to
+    /// the viewport. Use this when an egui side-panel occludes part
+    /// of the window: pass the panel-aware viewport (typically
+    /// [`crate::Viewport::right_of_left_panel`]) and update the
+    /// scene's `u.resolution` to match so the camera aspect stays
+    /// correct.
+    pub fn execute_in_viewport(
+        &mut self,
+        rd: &RenderDevice,
+        view: &wgpu::TextureView,
+        viewport: crate::Viewport,
+    ) -> Result<()> {
+        let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("hyperslice4d encoder"),
+        });
+        {
+            let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("hyperslice4d pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(self.clear_color),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            viewport.apply(&mut rp);
+            rp.set_pipeline(&self.pipeline);
+            rp.set_bind_group(0, &self.bind_group, &[]);
+            rp.draw(0..3, 0..1);
+        }
+        rd.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+}
+
 impl RenderNode for Hyperslice4DNode {
     fn name(&self) -> &'static str {
         "hyperslice4d"

@@ -401,6 +401,192 @@ impl PolytopeSmokeApp {
         }
     }
 
+    /// Body of the egui control panel, rendered inside a vertical
+    /// scroll area so a long panel doesn't clip on small windows.
+    fn render_panel_body(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.label("Slice");
+        ui.add(
+            egui::Slider::new(&mut self.w_slice, -W_RANGE..=W_RANGE)
+                .text("w")
+                .fixed_decimals(3),
+        );
+
+        ui.separator();
+        ui.label("Rotation");
+        let (status_word, status_color) = if self.rotate {
+            ("spinning", egui::Color32::from_rgb(102, 255, 153))
+        } else {
+            ("paused", egui::Color32::from_rgb(242, 217, 76))
+        };
+        ui.horizontal(|ui| {
+            ui.colored_label(status_color, status_word);
+            if ui
+                .button(if self.rotate { "Pause" } else { "Spin" })
+                .clicked()
+            {
+                self.rotate = !self.rotate;
+            }
+            ui.label(format!("t = {:.2}s", self.rot_time));
+        });
+        ui.add(
+            egui::Slider::new(&mut self.rate_scale, 0.0..=8.0)
+                .text("rate")
+                .fixed_decimals(2),
+        );
+
+        ui.separator();
+        ui.label("Planes");
+        let mut compose: Option<(Plane, f32)> = None;
+        for (i, plane) in PLANES.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.active[i], plane.label());
+                if ui.small_button("+90").clicked() {
+                    compose = Some((*plane, std::f32::consts::FRAC_PI_2));
+                }
+                if ui.small_button("-90").clicked() {
+                    compose = Some((*plane, -std::f32::consts::FRAC_PI_2));
+                }
+                if ui.small_button("+30").clicked() {
+                    compose = Some((*plane, std::f32::consts::FRAC_PI_6));
+                }
+            });
+        }
+        if let Some((plane, theta)) = compose {
+            let delta = (plane.unit_bivector() * theta).exp();
+            self.rot_state = (delta * self.rot_state).normalize();
+            self.write_all(rotor_to_slot(self.rot_state));
+        }
+        if let Some(name) = combo_name(&self.active) {
+            ui.colored_label(egui::Color32::from_rgb(255, 217, 140), name);
+        }
+
+        ui.separator();
+        ui.label("Sequence");
+        ui.weak(
+            "Compose a list of (plane, angle) steps; Apply runs them \
+             left-to-right via rotor multiplication. Order matters.",
+        );
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Slider::new(&mut self.seq_angle_deg, -180.0..=180.0)
+                    .text("angle")
+                    .fixed_decimals(1),
+            );
+            if ui.small_button("x phi").clicked() {
+                self.seq_angle_deg *= 1.618_034;
+                self.seq_angle_deg = ((self.seq_angle_deg + 180.0).rem_euclid(360.0)) - 180.0;
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            for plane in PLANES.iter() {
+                if ui.small_button(format!("+{}", plane.label())).clicked() {
+                    self.seq.push((*plane, self.seq_angle_deg.to_radians()));
+                }
+            }
+        });
+        let mut remove_seq_idx: Option<usize> = None;
+        ui.horizontal_wrapped(|ui| {
+            for (i, (plane, angle)) in self.seq.iter().enumerate() {
+                let label = format!("{} {:+.1} X", plane.label(), angle.to_degrees());
+                if ui.small_button(label).clicked() {
+                    remove_seq_idx = Some(i);
+                }
+            }
+        });
+        if let Some(i) = remove_seq_idx {
+            self.seq.remove(i);
+        }
+        ui.horizontal(|ui| {
+            let apply = ui
+                .add_enabled(!self.seq.is_empty(), egui::Button::new("Apply"))
+                .clicked();
+            if apply {
+                for (plane, angle) in self.seq.clone().iter() {
+                    let delta = (plane.unit_bivector() * *angle).exp();
+                    self.rot_state = (delta * self.rot_state).normalize();
+                }
+                self.write_all(rotor_to_slot(self.rot_state));
+            }
+            if ui.button("Clear").clicked() {
+                self.seq.clear();
+            }
+        });
+
+        ui.separator();
+        if ui.button("Reset orientation + slice").clicked() {
+            self.reset();
+        }
+
+        ui.separator();
+        ui.label("Shapes (left-to-right matches scene)");
+        let has_heavy = self
+            .row
+            .iter()
+            .any(|e| e.shape == SHAPE_120CELL || e.shape == SHAPE_600CELL);
+        if has_heavy {
+            ui.colored_label(
+                egui::Color32::from_rgb(242, 130, 70),
+                "120/600-cell SDFs are heavy; expect <60 fps.",
+            );
+        }
+        let mut remove_idx: Option<usize> = None;
+        let mut move_left_idx: Option<usize> = None;
+        let mut move_right_idx: Option<usize> = None;
+        let row_len = self.row.len();
+        ui.horizontal_wrapped(|ui| {
+            for (i, entry) in self.row.iter().enumerate() {
+                ui.group(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(entry.label);
+                        ui.horizontal(|ui| {
+                            if ui.small_button("<").clicked() && i > 0 {
+                                move_left_idx = Some(i);
+                            }
+                            if ui.small_button(">").clicked() && i + 1 < row_len {
+                                move_right_idx = Some(i);
+                            }
+                            if row_len > 1 && ui.small_button("X").clicked() {
+                                remove_idx = Some(i);
+                            }
+                        });
+                    });
+                });
+            }
+        });
+        let mut row_changed = false;
+        if let Some(i) = remove_idx {
+            self.row.remove(i);
+            row_changed = true;
+        }
+        if let Some(i) = move_left_idx {
+            self.row.swap(i, i - 1);
+            row_changed = true;
+        }
+        if let Some(i) = move_right_idx {
+            self.row.swap(i, i + 1);
+            row_changed = true;
+        }
+        if self.row.len() < MAX_ROW_LEN {
+            ui.label("Add:");
+            ui.horizontal_wrapped(|ui| {
+                for shape_name in [
+                    "5-cell", "8-cell", "16-cell", "24-cell", "120-cell", "600-cell",
+                ] {
+                    if ui.small_button(shape_name).clicked() {
+                        if let Ok(entry) = parse_shape_name(shape_name) {
+                            self.row.push(entry);
+                            row_changed = true;
+                        }
+                    }
+                }
+            });
+        }
+        if row_changed {
+            self.rebuild_bodies();
+        }
+    }
+
     /// Rebuild the full body uniform array from the current row +
     /// rotor. Use this when the row's length or order changes; the
     /// per-body position depends on the row's `n` and the body's slot
@@ -426,16 +612,9 @@ impl PolytopeSmokeApp {
     }
 
     /// Full reset: slice, rate, active set, orientation, time
-    /// accumulator. Slice resets to the row's Platonic-named
-    /// cross-section when applicable (120/600-cell), else to centre.
+    /// accumulator. Slice resets to centre regardless of row.
     fn reset(&mut self) {
-        self.w_slice = if self.row.iter().any(|e| e.shape == SHAPE_120CELL) {
-            0.926 * BODY_SIZE
-        } else if self.row.iter().any(|e| e.shape == SHAPE_600CELL) {
-            0.85 * BODY_SIZE
-        } else {
-            0.0
-        };
+        self.w_slice = 0.0;
         self.rate_scale = 1.0;
         self.active = [false; 6];
         self.rot_state = Rotor4::IDENTITY;
@@ -497,20 +676,12 @@ impl App for PolytopeSmokeApp {
         // default zoom; user can scroll-zoom in.
         orbit.set_orbit(9.5, -0.25);
 
-        // Initial w-slice: pick a value that lands on a "Platonic-named"
-        // cross-section when one of the H4-symmetric polytopes is in the
-        // row. The 120-cell's dodecahedral face cell is centered at
-        // w = inradius * size = 0.926 * size; for the 600-cell, the
-        // icosahedral cross-section appears near a vertex (w = size).
-        // For 5/8/16/24-cell rows, w=0 already gives the Platonic-shaped
-        // central slice, so leave the default at 0.
-        let initial_w = if row.iter().any(|e| e.shape == SHAPE_120CELL) {
-            0.926 * BODY_SIZE
-        } else if row.iter().any(|e| e.shape == SHAPE_600CELL) {
-            0.85 * BODY_SIZE
-        } else {
-            0.0
-        };
+        // Always start at w=0 regardless of row contents. Auto-shifting
+        // to the 120/600-cell's "Platonic-named" cross-section was
+        // confusing in mixed rows: the other shapes' slices got pulled
+        // off-centre. Users who want the dodecahedral / icosahedral
+        // view scrub there with the slider.
+        let initial_w = 0.0;
 
         Ok(Self {
             space: EuclideanR3,
@@ -591,211 +762,29 @@ impl App for PolytopeSmokeApp {
         if self.show_panel {
             egui::SidePanel::left("polytope-smoke-controls")
                 .resizable(false)
-                .default_width(280.0)
+                .default_width(300.0)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.heading("polytope smoke");
+                        ui.button("?").on_hover_ui(|ui| {
+                            ui.label("Up / Down: scrub w-slice");
+                            ui.label("T: toggle spin");
+                            ui.label("R: reset");
+                            ui.label("1..6: toggle plane in active set (xy xz xw yz yw zw)");
+                            ui.label("+ / -: rate scale");
+                            ui.label("H: hide / show this panel");
+                            ui.label("Esc: exit");
+                            ui.label("Mouse drag in viewport: orbit camera");
+                        });
                         if ui.button("Hide").clicked() {
                             self.show_panel = false;
                         }
                     });
                     ui.label(format!("{:.0} fps", frame.fps));
 
-                    ui.separator();
-                    ui.label("Slice");
-                    ui.add(
-                        egui::Slider::new(&mut self.w_slice, -W_RANGE..=W_RANGE)
-                            .text("w")
-                            .fixed_decimals(3),
-                    );
-
-                    ui.separator();
-                    ui.label("Rotation");
-                    let (status_word, status_color) = if self.rotate {
-                        ("spinning", egui::Color32::from_rgb(102, 255, 153))
-                    } else {
-                        ("paused", egui::Color32::from_rgb(242, 217, 76))
-                    };
-                    ui.horizontal(|ui| {
-                        ui.colored_label(status_color, status_word);
-                        if ui
-                            .button(if self.rotate { "Pause" } else { "Spin" })
-                            .clicked()
-                        {
-                            self.rotate = !self.rotate;
-                        }
-                        ui.label(format!("t = {:.2}s", self.rot_time));
-                    });
-                    ui.add(
-                        egui::Slider::new(&mut self.rate_scale, 0.0..=8.0)
-                            .text("rate")
-                            .fixed_decimals(2),
-                    );
-
-                    ui.separator();
-                    ui.label("Planes");
-                    let mut compose: Option<(Plane, f32)> = None;
-                    for (i, plane) in PLANES.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut self.active[i], plane.label());
-                            if ui.small_button("+90°").clicked() {
-                                compose = Some((*plane, std::f32::consts::FRAC_PI_2));
-                            }
-                            if ui.small_button("-90°").clicked() {
-                                compose = Some((*plane, -std::f32::consts::FRAC_PI_2));
-                            }
-                            if ui.small_button("+30°").clicked() {
-                                compose = Some((*plane, std::f32::consts::FRAC_PI_6));
-                            }
-                        });
-                    }
-                    if let Some((plane, theta)) = compose {
-                        let delta = (plane.unit_bivector() * theta).exp();
-                        self.rot_state = (delta * self.rot_state).normalize();
-                        self.write_all(rotor_to_slot(self.rot_state));
-                    }
-
-                    if let Some(name) = combo_name(&self.active) {
-                        ui.colored_label(egui::Color32::from_rgb(255, 217, 140), name);
-                    }
-
-                    ui.separator();
-                    ui.label("Sequence");
-                    ui.weak(
-                        "Compose a list of (plane, angle) steps; Apply runs \
-                         them left-to-right via rotor multiplication. Order \
-                         matters.",
-                    );
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::Slider::new(&mut self.seq_angle_deg, -180.0..=180.0)
-                                .text("angle°")
-                                .fixed_decimals(1),
-                        );
-                        if ui.small_button("× φ").clicked() {
-                            // Multiply by golden ratio, wrapped into (-180, 180].
-                            self.seq_angle_deg *= 1.618_034;
-                            self.seq_angle_deg =
-                                ((self.seq_angle_deg + 180.0).rem_euclid(360.0)) - 180.0;
-                        }
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        for plane in PLANES.iter() {
-                            if ui.small_button(format!("+{}", plane.label())).clicked() {
-                                self.seq.push((*plane, self.seq_angle_deg.to_radians()));
-                            }
-                        }
-                    });
-                    let mut remove_seq_idx: Option<usize> = None;
-                    ui.horizontal_wrapped(|ui| {
-                        for (i, (plane, angle)) in self.seq.iter().enumerate() {
-                            let label = format!("{} {:+.1}°  X", plane.label(), angle.to_degrees());
-                            if ui.small_button(label).clicked() {
-                                remove_seq_idx = Some(i);
-                            }
-                        }
-                    });
-                    if let Some(i) = remove_seq_idx {
-                        self.seq.remove(i);
-                    }
-                    ui.horizontal(|ui| {
-                        let apply = ui
-                            .add_enabled(!self.seq.is_empty(), egui::Button::new("Apply"))
-                            .clicked();
-                        if apply {
-                            for (plane, angle) in self.seq.clone().iter() {
-                                let delta = (plane.unit_bivector() * *angle).exp();
-                                self.rot_state = (delta * self.rot_state).normalize();
-                            }
-                            self.write_all(rotor_to_slot(self.rot_state));
-                        }
-                        if ui.button("Clear").clicked() {
-                            self.seq.clear();
-                        }
-                    });
-
-                    ui.separator();
-                    if ui.button("Reset orientation + slice").clicked() {
-                        self.reset();
-                    }
-
-                    ui.separator();
-                    ui.label("Shapes in row");
-                    let has_heavy = self
-                        .row
-                        .iter()
-                        .any(|e| e.shape == SHAPE_120CELL || e.shape == SHAPE_600CELL);
-                    if has_heavy {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(242, 130, 70),
-                            "120/600-cell SDFs are heavy; expect <60 fps.",
-                        );
-                    }
-                    let mut remove_idx: Option<usize> = None;
-                    let mut move_up_idx: Option<usize> = None;
-                    let mut move_down_idx: Option<usize> = None;
-                    let row_len = self.row.len();
-                    for (i, entry) in self.row.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("{}. {}", i + 1, entry.label));
-                            if ui.small_button("up").clicked() && i > 0 {
-                                move_up_idx = Some(i);
-                            }
-                            if ui.small_button("dn").clicked() && i + 1 < row_len {
-                                move_down_idx = Some(i);
-                            }
-                            if row_len > 1 && ui.small_button("X").clicked() {
-                                remove_idx = Some(i);
-                            }
-                        });
-                    }
-                    let mut row_changed = false;
-                    if let Some(i) = remove_idx {
-                        self.row.remove(i);
-                        row_changed = true;
-                    }
-                    if let Some(i) = move_up_idx {
-                        self.row.swap(i, i - 1);
-                        row_changed = true;
-                    }
-                    if let Some(i) = move_down_idx {
-                        self.row.swap(i, i + 1);
-                        row_changed = true;
-                    }
-
-                    if self.row.len() < MAX_ROW_LEN {
-                        ui.label("Add:");
-                        ui.horizontal_wrapped(|ui| {
-                            for shape_name in [
-                                "5-cell", "8-cell", "16-cell", "24-cell", "120-cell", "600-cell",
-                            ] {
-                                if ui.small_button(shape_name).clicked() {
-                                    if let Ok(entry) = parse_shape_name(shape_name) {
-                                        self.row.push(entry);
-                                        row_changed = true;
-                                    }
-                                }
-                            }
-                        });
-                    }
-
-                    if row_changed {
-                        self.rebuild_bodies();
-                    }
-
-                    ui.separator();
-                    egui::CollapsingHeader::new("Hotkeys")
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            ui.label("Up / Down: scrub w-slice");
-                            ui.label("T: toggle spin");
-                            ui.label("R: reset");
-                            ui.label("1..6: toggle plane in active set (xy xz xw yz yw zw)");
-                            ui.label("+ / −: rate scale");
-                            ui.label("H: hide / show this panel");
-                            ui.label("Esc: exit");
-                            ui.label("Mouse drag in viewport: orbit camera");
-                        });
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| self.render_panel_body(ui));
                 });
         } else {
             egui::Area::new(egui::Id::new("polytope-smoke-show"))

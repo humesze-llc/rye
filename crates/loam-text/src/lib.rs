@@ -9,6 +9,10 @@
 //! sizes scale the quads bilinearly. For HUD readouts only, not typographic or
 //! non-Latin text; reach for `loam-egui` when an app needs more.
 //!
+//! [`glyph`] is the other consumer of the same `ab_glyph` font handle: a
+//! build-time pipeline turning letters into extruded, slab-embedded 4D solids
+//! that are simultaneously render geometry and physics colliders.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -16,6 +20,8 @@
 //! text.queue("Score: 1234", [16.0, 16.0], 32.0, [1.0, 1.0, 1.0, 1.0]);
 //! text.render(device, queue, &surface_view, [width, height])?;
 //! ```
+
+pub mod glyph;
 
 use std::collections::HashMap;
 

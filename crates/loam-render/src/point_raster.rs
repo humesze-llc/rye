@@ -33,15 +33,13 @@ use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState,
     Buffer, BufferBindingType, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
-    CommandEncoderDescriptor, CompareFunction, DepthStencilState, Device, FragmentState, LoadOp,
-    MultisampleState, Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology,
-    Queue, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
+    CompareFunction, DepthStencilState, Device, FragmentState, LoadOp, MultisampleState,
+    Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
+    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
     RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
     StencilState, StoreOp, TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat,
     VertexState, VertexStepMode,
 };
-
-use crate::device::RenderDevice;
 
 /// Embedded WGSL source. Naga-validated in tests to catch ABI drift between the Rust-side
 /// vertex layout and the shader's `@location` declarations.
@@ -103,12 +101,12 @@ pub struct PointRasterNode {
     /// Per-instance buffer (one [`PointInstance`] per point). Grows on demand via
     /// [`Self::upload`].
     instance_buf: Buffer,
-    /// Number of points currently uploaded; `0` means [`Self::execute`] is a no-op.
+    /// Number of points currently uploaded; `0` means [`Self::record`] is a no-op.
     instance_count: u32,
     /// Allocated capacity of `instance_buf` in instances. The buffer is re-created if a future
     /// upload exceeds this.
     instance_capacity: u32,
-    /// Tracks whether the pipeline was created with a depth attachment so [`Self::execute`]
+    /// Tracks whether the pipeline was created with a depth attachment so [`Self::record`]
     /// can validate the caller's depth-view argument.
     has_depth: bool,
 }
@@ -286,7 +284,7 @@ impl PointRasterNode {
         }
     }
 
-    /// Update the camera uniform. Call once per frame before [`Self::execute`].
+    /// Update the camera uniform. Call once per frame before [`Self::record`].
     pub fn set_camera(&self, queue: &Queue, view_projection: Mat4, viewport_size: Vec2) {
         let uniforms = PointRasterUniforms {
             view_projection: view_projection.to_cols_array_2d(),
@@ -300,7 +298,7 @@ impl PointRasterNode {
     /// [`RasterizableSpace::project_point`]; copies the color and size attributes verbatim.
     ///
     /// Positions / colors / sizes must have the same length per the [`PointMesh`] invariant;
-    /// empty meshes upload nothing and make the next [`Self::execute`] a no-op.
+    /// empty meshes upload nothing and make the next [`Self::record`] a no-op.
     pub fn upload<S, const N: usize>(
         &mut self,
         device: &Device,
@@ -367,72 +365,69 @@ impl PointRasterNode {
         self.instance_count = instances.len() as u32;
     }
 
-    /// Draw the uploaded points onto `view`. `LoadOp::Load` for both color and depth, matching
-    /// the other rasterizer nodes so multiple passes share one cleared color + depth buffer
-    /// within a frame.
+    /// Record a pass drawing the uploaded points into `view` on the caller's
+    /// `encoder`. **Does NOT call `encoder.finish()` or `queue.submit`**; the
+    /// runner owns one encoder per frame and submits it once.
+    ///
+    /// `LoadOp::Load` for both color and depth, matching the other rasterizer
+    /// nodes so multiple passes share one cleared color + depth buffer within a
+    /// frame.
     ///
     /// `depth_view` must be `Some` when the pipeline was constructed with a depth format and
     /// `None` otherwise. Mismatch panics with a descriptive message.
-    pub fn execute(
+    pub fn record(
         &self,
-        rd: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         depth_view: Option<&wgpu::TextureView>,
         viewport: Option<&crate::Viewport>,
-    ) -> anyhow::Result<()> {
+    ) {
         match (self.has_depth, depth_view.is_some()) {
             (true, false) => panic!(
-                "PointRasterNode::execute: pipeline was created with a depth format but no \
+                "PointRasterNode::record: pipeline was created with a depth format but no \
                  depth view was provided"
             ),
             (false, true) => panic!(
-                "PointRasterNode::execute: pipeline was created without a depth format but a \
+                "PointRasterNode::record: pipeline was created without a depth format but a \
                  depth view was provided"
             ),
             _ => {}
         }
         if self.instance_count == 0 {
-            return Ok(());
+            return;
         }
-        let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("point_raster encoder"),
+        let depth_attachment = depth_view.map(|dv| RenderPassDepthStencilAttachment {
+            view: dv,
+            depth_ops: Some(Operations {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+            }),
+            stencil_ops: None,
         });
-        {
-            let depth_attachment = depth_view.map(|dv| RenderPassDepthStencilAttachment {
-                view: dv,
-                depth_ops: Some(Operations {
+        let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("point_raster pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
                     load: LoadOp::Load,
                     store: StoreOp::Store,
-                }),
-                stencil_ops: None,
-            });
-            let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("point_raster pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Load,
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: depth_attachment,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            if let Some(vp) = viewport {
-                vp.apply(&mut rp);
-            }
-            rp.set_pipeline(&self.pipeline);
-            rp.set_bind_group(0, &self.bind_group, &[]);
-            rp.set_vertex_buffer(0, self.corner_buf.slice(..));
-            rp.set_vertex_buffer(1, self.instance_buf.slice(..));
-            rp.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-            rp.draw_indexed(0..6, 0, 0..self.instance_count);
+                },
+            })],
+            depth_stencil_attachment: depth_attachment,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        if let Some(vp) = viewport {
+            vp.apply(&mut rp);
         }
-        rd.queue.submit(Some(encoder.finish()));
-        Ok(())
+        rp.set_pipeline(&self.pipeline);
+        rp.set_bind_group(0, &self.bind_group, &[]);
+        rp.set_vertex_buffer(0, self.corner_buf.slice(..));
+        rp.set_vertex_buffer(1, self.instance_buf.slice(..));
+        rp.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+        rp.draw_indexed(0..6, 0, 0..self.instance_count);
     }
 }
 

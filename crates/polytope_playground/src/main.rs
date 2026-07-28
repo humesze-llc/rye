@@ -898,8 +898,8 @@ impl shell::Scene for RotateScene {
         }
     }
 
-    fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
-        self.demo.render(rd, view)
+    fn record(&mut self, ctx: &mut loam_app::RenderCtx<'_>) -> Result<()> {
+        self.demo.record(ctx.rd, ctx.encoder, ctx.view)
     }
 
     fn title(&self, fps: f32) -> std::borrow::Cow<'static, str> {

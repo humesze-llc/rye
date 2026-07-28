@@ -3,12 +3,24 @@
 //!
 //! Each pass splits in two: a CPU mesh build over the frame's
 //! [`state::RowFrame`], written as a free function so it runs (and is pinned)
-//! without a device, and the upload + execute half that needs one.
+//! without a device, and the upload + record half that needs one.
+//!
+//! Every pass records into the runner's frame-wide encoder, which the runner
+//! submits once (`loam_app::App::record`). Two consequences bind the code here:
+//! nothing may call `queue.submit`, and no node may be uploaded twice in a
+//! frame, because `Queue::write_buffer` lands before the whole command buffer
+//! and the second upload would feed both passes. See
+//! [`section_layers_share_a_node`].
 
 use crate::*;
 
 impl Demo {
-    pub(crate) fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
+    pub(crate) fn record(
+        &mut self,
+        rd: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+    ) -> Result<()> {
         // Scene renders to the full window; the overlay and Render modal float on
         // top without reserving pixels, so the viewport is always the framebuffer.
         let cfg = &rd.surface_bundle.config;
@@ -78,6 +90,10 @@ impl Demo {
                     grid_cells.push((cell_vp, cell_w_slice, body));
                 }
             }
+            // The one path that still submits per pass: each cell rewrites the
+            // node's uniform buffer, which a single encoder cannot interleave
+            // (see `Hyperslice4DNode::execute_strip`). Its submits land before
+            // the runner's, so the strip still composites under the UI.
             let result = self.node.execute_strip(rd, view, &grid_cells);
             // Restore the full row for any non-strip consumer.
             self.rebuild_bodies();
@@ -101,41 +117,45 @@ impl Demo {
                     self.node.flush_uniforms(&rd.queue);
                     self.sdf_upload_pending = false;
                 }
-                self.node.execute_in_viewport(rd, view, viewport)?;
+                self.node.record_in_viewport(encoder, view, viewport);
             }
             // Shared depth for the section pass + the wireframe's depth-test.
             // Order: SDF (color only) -> section_faces (writes depth in Raster) ->
             // wireframe (tests, no write). In SDF mode no pass writes depth, so the
             // cleared `1.0` lets every wireframe fragment pass.
             if shared_depth_is_read(self.surface_mode, self.wireframe_enabled) {
-                self.ensure_and_clear_shared_depth(rd)?;
+                self.ensure_and_clear_shared_depth(rd, encoder);
             }
             if matches!(self.surface_mode, SurfaceMode::Raster) {
                 let _scope = loam_time::frame_trace::scope("pp-section-faces");
-                self.render_section_faces(rd, view)?;
+                self.record_section_faces(rd, encoder, view);
             }
             // Cross-section + wireframe overlay. Shapes view only: Filmstrip's
             // per-cell composition would need per-cell depth-clear + uploads not
             // worth the v1 plumbing.
             if self.wireframe_enabled {
                 let _scope = loam_time::frame_trace::scope("pp-wireframe");
-                self.render_wireframe_overlay(rd, view)?;
+                self.record_wireframe_overlay(rd, encoder, view);
             }
             // Points overlay, drawn last so discs sit on top of edges and caps.
             if self.points_enabled {
                 let _scope = loam_time::frame_trace::scope("pp-points");
-                self.render_points(rd, view)?;
+                self.record_points(rd, encoder, view);
             }
             Ok(())
         }
     }
 
     /// Ensure the shared section-faces depth attachment exists at the current
-    /// swapchain size + sample count, then clear it to `1.0`. Shared between
-    /// `section_faces` (writes depth in Raster) and `parent_wireframe` (tests, no
-    /// write), so one ensure + clear covers both. Skipped on a frame where
-    /// neither runs; see [`shared_depth_is_read`].
-    fn ensure_and_clear_shared_depth(&mut self, rd: &RenderDevice) -> Result<()> {
+    /// swapchain size + sample count, then record its clear to `1.0`. Shared
+    /// between `section_faces` (writes depth in Raster) and `parent_wireframe`
+    /// (tests, no write), so one ensure + clear covers both. Skipped on a frame
+    /// where neither runs; see [`shared_depth_is_read`].
+    fn ensure_and_clear_shared_depth(
+        &mut self,
+        rd: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
         let cfg = &rd.surface_bundle.config;
         DepthBuffer::ensure(
             &mut self.section_faces_depth,
@@ -148,11 +168,6 @@ impl Demo {
             .section_faces_depth
             .as_ref()
             .expect("ensure() guarantees Some");
-        let mut encoder = rd
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("shared depth clear"),
-            });
         let _ = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("shared depth clear pass"),
             color_attachments: &[],
@@ -167,13 +182,16 @@ impl Demo {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        rd.queue.submit(Some(encoder.finish()));
-        Ok(())
     }
 
     /// Build the point sprites mesh ([`build_points_mesh`]), upload it, and
-    /// execute the point-disc raster pass.
-    fn render_points(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
+    /// record the point-disc raster pass.
+    fn record_points(
+        &mut self,
+        rd: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+    ) {
         let cfg = &rd.surface_bundle.config;
         let style = PointsStyle {
             color_mode: self.wireframe_color_mode,
@@ -220,8 +238,7 @@ impl Demo {
         self.points_mesh_scratch = mesh;
         // No depth attachment: see `PointRasterNode::new` (drop-w + ReadOnly
         // LessEqual occluded non-w=0 vertices behind their own caps).
-        self.points_node.execute(rd, view, None, None)?;
-        Ok(())
+        self.points_node.record(encoder, view, None, None);
     }
 
     /// Render the rasterized section as TWO independent overlaid layers in one
@@ -235,18 +252,27 @@ impl Demo {
     ///   wireframe).
     ///
     /// Each layer's fill alpha is its own switch (`SectionLayer::fill_visible`):
-    /// a layer with alpha 0 submits no triangles. The honest layer draws first so
+    /// a layer with alpha 0 draws no triangles. The honest layer draws first so
     /// the opt-in projected cap composites over it when both are on. Defaults draw
     /// only the honest layer, so selecting a distorting projection never silently
     /// reshapes the slice the user reads as "the cross-section."
-    fn render_section_faces(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
+    ///
+    /// When both layers land on the same node ([`section_layers_share_a_node`])
+    /// they are merged into one pass, cap indices after cross indices, which is
+    /// pixel-identical to two passes on one pipeline with one set of depth ops.
+    fn record_section_faces(
+        &mut self,
+        rd: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+    ) {
         let cfg = &rd.surface_bundle.config;
         let cross = self.cross_section;
         let cap = self.projected_cap;
         // Both layers off: perimeter outlines belong to the wireframe overlay,
         // so an all-alpha-zero section skips the triangle passes entirely.
         if !cross.fill_visible() && !cap.fill_visible() {
-            return Ok(());
+            return;
         }
 
         // Scratch + layer meshes taken out of `self` for the build: the row
@@ -269,6 +295,10 @@ impl Demo {
                 section_scratch: &mut section_scratch,
             },
         );
+        let merged = section_layers_share_a_node(cross, cap);
+        if merged {
+            append_triangle_mesh(&mut cross_mesh, &cap_mesh);
+        }
         self.section_cap_scratch = section_scratch;
         self.section_world_vertices_scratch = local_vertices;
         self.section_clip_projected_scratch = proj_scratch;
@@ -284,26 +314,26 @@ impl Demo {
 
         // Honest cross-section first, then the projected cap on top.
         if cross.fill_visible() {
-            self.execute_section_layer(rd, view, view_proj, cross.surface_alpha, true)?;
+            self.record_section_layer(rd, encoder, view, view_proj, cross.surface_alpha, true);
         }
-        if cap.fill_visible() {
-            self.execute_section_layer(rd, view, view_proj, cap.surface_alpha, false)?;
+        if cap.fill_visible() && !merged {
+            self.record_section_layer(rd, encoder, view, view_proj, cap.surface_alpha, false);
         }
-        Ok(())
     }
 
-    /// Upload + execute one built section layer's mesh. Picks the opaque vs
-    /// translucent node by `alpha`: opaque (>= 1.0) writes depth so caps occlude
-    /// within a polytope; translucent (< 1.0) skips depth-write so layers behind
+    /// Upload + record one built section layer's mesh. Picks the opaque vs
+    /// translucent node by `alpha`: opaque writes depth so caps occlude
+    /// within a polytope; translucent skips depth-write so layers behind
     /// show through. `is_cross_section` selects the scratch mesh.
-    fn execute_section_layer(
+    fn record_section_layer(
         &mut self,
         rd: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         view_proj: Mat4,
         alpha: f32,
         is_cross_section: bool,
-    ) -> Result<()> {
+    ) {
         // Disjoint field borrows let the immutable depth + scratch reads coexist
         // with the `&mut` node. The shared depth is ensured + cleared per frame by
         // `ensure_and_clear_shared_depth`; here we consume its view.
@@ -317,8 +347,8 @@ impl Demo {
         } else {
             &self.section_faces_projected_scratch
         };
-        // Empty-mesh short-circuit lives in `TriangleRasterNode::execute`.
-        let node = if alpha >= 1.0 {
+        // Empty-mesh short-circuit lives in `TriangleRasterNode::record`.
+        let node = if section_alpha_is_opaque(alpha) {
             &mut self.section_faces
         } else {
             &mut self.section_faces_translucent
@@ -330,8 +360,7 @@ impl Demo {
             mesh,
             &loam_math::Projection::Identity,
         );
-        node.execute(rd, view, Some(depth_view), None)?;
-        Ok(())
+        node.record(encoder, view, Some(depth_view), None);
     }
 
     /// Distance from the camera eye to the orbit target, used to scale the
@@ -342,13 +371,14 @@ impl Demo {
     }
 
     /// Build the section-perimeter and parent-wireframe overlay meshes
-    /// ([`build_wireframe_meshes`]), upload them, and execute the raster passes
+    /// ([`build_wireframe_meshes`]), upload them, and record the raster passes
     /// over the SDF render.
-    fn render_wireframe_overlay(
+    fn record_wireframe_overlay(
         &mut self,
         rd: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-    ) -> Result<()> {
+    ) {
         let cfg = &rd.surface_bundle.config;
         let style = WireframeStyle {
             color_mode: self.wireframe_color_mode,
@@ -435,11 +465,51 @@ impl Demo {
             .map(|b| &b.view)
             .expect("shared depth buffer must be ensured before wireframe overlay");
         self.section_edges
-            .execute(rd, view, Some(depth_view), None)?;
+            .record(encoder, view, Some(depth_view), None);
         self.parent_wireframe
-            .execute(rd, view, Some(depth_view), None)?;
-        Ok(())
+            .record(encoder, view, Some(depth_view), None);
     }
+}
+
+/// Whether `alpha` selects the opaque, depth-writing section node rather than
+/// the translucent one. Single-sourced so the node pick in
+/// [`Demo::record_section_layer`] and the merge test in
+/// [`section_layers_share_a_node`] cannot drift apart.
+pub(crate) fn section_alpha_is_opaque(alpha: f32) -> bool {
+    alpha >= 1.0
+}
+
+/// Whether both section layers are visible AND draw through the same
+/// [`loam_render::TriangleRasterNode`], which forces them into one mesh and one
+/// pass: a node owns one vertex buffer, and every `Queue::write_buffer` of a
+/// frame is applied before the frame's single command buffer runs, so uploading
+/// twice would leave BOTH passes reading the second mesh (the honest
+/// cross-section would silently render as the projected cap).
+pub(crate) fn section_layers_share_a_node(
+    cross: state::SectionLayer,
+    cap: state::SectionLayer,
+) -> bool {
+    cross.fill_visible()
+        && cap.fill_visible()
+        && section_alpha_is_opaque(cross.surface_alpha)
+            == section_alpha_is_opaque(cap.surface_alpha)
+}
+
+/// Append `src`'s triangles onto `dst`, rebasing `src`'s indices onto `dst`'s
+/// vertex count. Order is preserved, so a merged pass rasterizes `dst`'s
+/// triangles before `src`'s exactly as two passes in that order would.
+pub(crate) fn append_triangle_mesh(
+    dst: &mut loam_shape::TriangleMesh<3>,
+    src: &loam_shape::TriangleMesh<3>,
+) {
+    let base = dst.vertices.len() as u32;
+    dst.vertices.extend_from_slice(&src.vertices);
+    dst.colors.extend_from_slice(&src.colors);
+    dst.indices.extend(
+        src.indices
+            .iter()
+            .map(|&[i, j, k]| [i + base, j + base, k + base]),
+    );
 }
 
 /// Whether any pass this frame samples the shared section-faces depth
@@ -1050,8 +1120,8 @@ mod tests {
     /// The shared depth attachment is ensured and cleared on exactly the frames
     /// a pass reads it. Skipping a frame that reads it leaves the previous
     /// frame's depth standing and occludes caps against stale geometry;
-    /// clearing a frame that does not read it is the encoder + submit this
-    /// predicate exists to elide.
+    /// clearing a frame that does not read it is the render pass this predicate
+    /// exists to elide.
     #[test]
     fn shared_depth_is_cleared_exactly_when_a_pass_reads_it() {
         for wireframe_enabled in [false, true] {
@@ -1060,6 +1130,105 @@ mod tests {
         for surface_mode in [SurfaceMode::Sdf, SurfaceMode::Off] {
             assert!(shared_depth_is_read(surface_mode, true));
             assert!(!shared_depth_is_read(surface_mode, false));
+        }
+    }
+
+    /// Two visible section layers merge into one pass exactly when they draw
+    /// through the same node. That is the whole guard against uploading one
+    /// `TriangleRasterNode` twice in a frame: the frame's queue writes all land
+    /// before its single command buffer, so a second upload would feed BOTH
+    /// passes and the honest cross-section would render as the projected cap.
+    /// Merging when the nodes differ is the opposite defect, silently moving a
+    /// translucent layer onto the depth-writing pipeline.
+    #[test]
+    fn section_layers_merge_exactly_when_they_share_a_node() {
+        // Straddles the opaque threshold in both directions, plus the invisible
+        // alpha that takes a layer out of the frame entirely.
+        const ALPHAS: [f32; 4] = [0.0, 0.5, 1.0, 1.5];
+        for cross_alpha in ALPHAS {
+            for cap_alpha in ALPHAS {
+                let layer = |surface_alpha| SectionLayer {
+                    perimeter: false,
+                    surface_alpha,
+                };
+                let cross = layer(cross_alpha);
+                let cap = layer(cap_alpha);
+                let both_drawn = cross.fill_visible() && cap.fill_visible();
+                let same_node =
+                    section_alpha_is_opaque(cross_alpha) == section_alpha_is_opaque(cap_alpha);
+                assert_eq!(
+                    section_layers_share_a_node(cross, cap),
+                    both_drawn && same_node,
+                    "cross alpha {cross_alpha}, cap alpha {cap_alpha}"
+                );
+            }
+        }
+    }
+
+    /// The merge is a concatenation: every triangle of both layers survives,
+    /// the appended indices address the appended vertices, and the destination's
+    /// triangles still come first (draw order is what layers the projected cap
+    /// over the honest cross-section).
+    #[test]
+    fn appending_a_section_mesh_rebases_its_indices_and_keeps_draw_order() {
+        let mesh = |offset: f32, tris: &[[u32; 3]], verts: usize| loam_shape::TriangleMesh::<3> {
+            vertices: (0..verts).map(|i| [offset + i as f32, 0.0, 0.0]).collect(),
+            colors: (0..verts).map(|_| [offset, 0.0, 0.0, 1.0]).collect(),
+            indices: tris.to_vec(),
+        };
+        let mut dst = mesh(0.0, &[[0, 1, 2]], 3);
+        let src = mesh(10.0, &[[1, 2, 3], [0, 1, 2]], 4);
+        append_triangle_mesh(&mut dst, &src);
+
+        assert_eq!(dst.vertices.len(), 7);
+        assert_eq!(dst.colors.len(), dst.vertices.len());
+        assert_eq!(dst.indices, vec![[0, 1, 2], [4, 5, 6], [3, 4, 5]]);
+        // Every rebased index still resolves to the vertex it named in `src`.
+        for (tri, src_tri) in dst.indices[1..].iter().zip(&src.indices) {
+            for (&i, &si) in tri.iter().zip(src_tri.iter()) {
+                assert_eq!(dst.vertices[i as usize], src.vertices[si as usize]);
+            }
+        }
+    }
+
+    /// The merged mesh a frame with both layers opaque uploads carries exactly
+    /// the triangles the two separate passes carried. A merge that dropped the
+    /// cap, or double-counted the cross-section, shows here as a count.
+    #[test]
+    fn a_merged_opaque_frame_draws_both_layers_triangles() {
+        let physics = PlaygroundPhysics::new(1, BODY_SIZE);
+        let frame = frame_of(
+            &physics,
+            ROW_16,
+            Rotor4::IDENTITY,
+            Projection::Perspective4D {
+                focal_distance: 3.0,
+            },
+            SLICE_W,
+            CAMERA_DISTANCE,
+        );
+        // Both layers opaque: the case that puts two uploads on one node.
+        let opaque = SectionLayer {
+            perimeter: false,
+            surface_alpha: 1.0,
+        };
+        assert!(section_layers_share_a_node(opaque, opaque));
+
+        let mut buffers = OverlayBuffers::default();
+        buffers.sections(&frame, opaque, opaque);
+        let cross_tris = buffers.cross_faces.indices.len();
+        let cap_tris = buffers.cap_faces.indices.len();
+        assert!(
+            cross_tris > 0 && cap_tris > 0,
+            "fixture must build both layers, got {cross_tris} and {cap_tris}"
+        );
+
+        append_triangle_mesh(&mut buffers.cross_faces, &buffers.cap_faces);
+        assert_eq!(buffers.cross_faces.indices.len(), cross_tris + cap_tris);
+        for tri in &buffers.cross_faces.indices {
+            for &i in tri {
+                assert!((i as usize) < buffers.cross_faces.vertices.len());
+            }
         }
     }
 

@@ -5,7 +5,7 @@
 //! Vertex buffer is per-vertex [`TriangleVertex`] (R³ position + color), uniform
 //! is [`TriangleRasterUniforms`] (view-projection only). Depth is opt-in via
 //! [`crate::DepthMode`]; the caller owns the depth texture and clears it once per
-//! frame ([`TriangleRasterNode::execute`] uses `LoadOp::Load`).
+//! frame ([`TriangleRasterNode::record`] uses `LoadOp::Load`).
 //!
 //! Normals are omitted because R⁴ has no standard lighting convention (see
 //! `TriangleMesh<N>`). For lit shading [`FragmentShading::FaceNormalLambert`]
@@ -20,15 +20,13 @@ use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState,
     Buffer, BufferBindingType, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
-    CommandEncoderDescriptor, CompareFunction, DepthStencilState, Device, FragmentState, LoadOp,
-    MultisampleState, Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology,
-    Queue, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
+    CompareFunction, DepthStencilState, Device, FragmentState, LoadOp, MultisampleState,
+    Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
+    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
     RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
     StencilState, StoreOp, TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat,
     VertexState, VertexStepMode,
 };
-
-use crate::device::RenderDevice;
 
 /// Embedded WGSL source. Naga-validated in tests for ABI drift detection.
 const TRIANGLE_RASTER_WGSL: &str = include_str!("triangle_raster.wgsl");
@@ -95,10 +93,10 @@ pub struct TriangleRasterNode {
     /// Index buffer (u32). Grown on demand by [`Self::upload`].
     index_buf: Buffer,
     index_capacity: u32,
-    /// Number of indices currently uploaded; `0` means [`Self::execute`] is a no-op.
+    /// Number of indices currently uploaded; `0` means [`Self::record`] is a no-op.
     index_count: u32,
 
-    /// Whether the pipeline has a depth attachment; [`Self::execute`] validates
+    /// Whether the pipeline has a depth attachment; [`Self::record`] validates
     /// the caller's depth-view argument against it.
     has_depth: bool,
 }
@@ -254,7 +252,7 @@ impl TriangleRasterNode {
         }
     }
 
-    /// Update the camera uniform. Call once per frame before [`Self::execute`].
+    /// Update the camera uniform. Call once per frame before [`Self::record`].
     pub fn set_camera(&self, queue: &Queue, view_projection: Mat4) {
         let uniforms = TriangleRasterUniforms {
             view_projection: view_projection.to_cols_array_2d(),
@@ -328,72 +326,75 @@ impl TriangleRasterNode {
         self.index_count = indices.len() as u32;
     }
 
-    /// Draw the uploaded triangles onto `view`. `LoadOp::Load` for color and
-    /// depth so raster nodes share one cleared buffer per frame. `depth_view`
-    /// must be `Some` iff the pipeline has a depth format; mismatch panics.
-    pub fn execute(
+    /// Record a pass drawing the uploaded triangles into `view` on the caller's
+    /// `encoder`. **Does NOT call `encoder.finish()` or `queue.submit`**; the
+    /// runner owns one encoder per frame and submits it once.
+    ///
+    /// `LoadOp::Load` for color and depth so raster nodes share one cleared
+    /// buffer per frame. `depth_view` must be `Some` iff the pipeline has a
+    /// depth format; mismatch panics.
+    ///
+    /// One node holds one vertex buffer, and `Queue::write_buffer` lands before
+    /// the frame's whole command buffer, so a caller must not
+    /// [`upload`](Self::upload) between two `record` calls on the same node in
+    /// one frame: both passes would read the second mesh. Merge the meshes
+    /// instead.
+    pub fn record(
         &self,
-        rd: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         depth_view: Option<&wgpu::TextureView>,
         viewport: Option<&crate::Viewport>,
-    ) -> anyhow::Result<()> {
+    ) {
         match (self.has_depth, depth_view.is_some()) {
             (true, false) => {
                 panic!(
-                    "TriangleRasterNode::execute: pipeline was created with a depth format but \
+                    "TriangleRasterNode::record: pipeline was created with a depth format but \
                      no depth view was provided"
                 )
             }
             (false, true) => {
                 panic!(
-                    "TriangleRasterNode::execute: pipeline was created without a depth format \
+                    "TriangleRasterNode::record: pipeline was created without a depth format \
                      but a depth view was provided"
                 )
             }
             _ => {}
         }
         if self.index_count == 0 {
-            return Ok(());
+            return;
         }
-        let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("triangle_raster encoder"),
+        let depth_attachment = depth_view.map(|dv| RenderPassDepthStencilAttachment {
+            view: dv,
+            depth_ops: Some(Operations {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+            }),
+            stencil_ops: None,
         });
-        {
-            let depth_attachment = depth_view.map(|dv| RenderPassDepthStencilAttachment {
-                view: dv,
-                depth_ops: Some(Operations {
+        let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("triangle_raster pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
                     load: LoadOp::Load,
                     store: StoreOp::Store,
-                }),
-                stencil_ops: None,
-            });
-            let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("triangle_raster pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Load,
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: depth_attachment,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            if let Some(vp) = viewport {
-                vp.apply(&mut rp);
-            }
-            rp.set_pipeline(&self.pipeline);
-            rp.set_bind_group(0, &self.bind_group, &[]);
-            rp.set_vertex_buffer(0, self.vertex_buf.slice(..));
-            rp.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-            rp.draw_indexed(0..self.index_count, 0, 0..1);
+                },
+            })],
+            depth_stencil_attachment: depth_attachment,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        if let Some(vp) = viewport {
+            vp.apply(&mut rp);
         }
-        rd.queue.submit(Some(encoder.finish()));
-        Ok(())
+        rp.set_pipeline(&self.pipeline);
+        rp.set_bind_group(0, &self.bind_group, &[]);
+        rp.set_vertex_buffer(0, self.vertex_buf.slice(..));
+        rp.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+        rp.draw_indexed(0..self.index_count, 0, 0..1);
     }
 }
 

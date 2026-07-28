@@ -857,43 +857,37 @@ impl Hyperslice4DNode {
 }
 
 impl Hyperslice4DNode {
-    /// Like [`RenderNode::execute`] but restricts the fragment shader to a
-    /// sub-region (the clear still covers the whole attachment). For an egui
-    /// side-panel layout: pass the panel-aware viewport (typically
-    /// [`crate::Viewport::right_of_left_panel`]) and update `u.resolution` to
-    /// match so the camera aspect stays correct.
-    pub fn execute_in_viewport(
+    /// Like [`RenderNode::execute`] but records into the caller's `encoder` and
+    /// restricts the fragment shader to a sub-region (the clear still covers the
+    /// whole attachment). **Does NOT submit**; the runner owns one encoder per
+    /// frame. For an egui side-panel layout: pass the panel-aware viewport
+    /// (typically [`crate::Viewport::right_of_left_panel`]) and update
+    /// `u.resolution` to match so the camera aspect stays correct.
+    pub fn record_in_viewport(
         &mut self,
-        rd: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         viewport: crate::Viewport,
-    ) -> Result<()> {
-        let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("hyperslice4d encoder"),
+    ) {
+        let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("hyperslice4d pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
+                    load: LoadOp::Clear(self.clear_color),
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
         });
-        {
-            let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("hyperslice4d pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(self.clear_color),
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            viewport.apply(&mut rp);
-            rp.set_pipeline(&self.pipeline);
-            rp.set_bind_group(0, &self.bind_group, &[]);
-            rp.draw(0..3, 0..1);
-        }
-        rd.queue.submit(Some(encoder.finish()));
-        Ok(())
+        viewport.apply(&mut rp);
+        rp.set_pipeline(&self.pipeline);
+        rp.set_bind_group(0, &self.bind_group, &[]);
+        rp.draw(0..3, 0..1);
     }
 
     /// Render N independent slices into one texture, each cell at a different
@@ -902,6 +896,12 @@ impl Hyperslice4DNode {
     /// Each cell is its own pass with `LoadOp::Load` (the first clears). The
     /// uniform buffer is rewritten per cell, so `self.uniforms()` holds the last
     /// cell's state afterward. Zero-size cells are skipped.
+    ///
+    /// One encoder + submit per cell, the one pass in the frame that keeps them:
+    /// `Queue::write_buffer` lands before the whole command buffer it precedes,
+    /// so N cells recorded into one encoder would all read the last cell's
+    /// uniforms. Batching needs per-cell bind groups or a dynamic-offset UBO,
+    /// which the single-slice path (the common one) does not want.
     pub fn execute_strip(
         &mut self,
         rd: &RenderDevice,

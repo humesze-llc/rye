@@ -25,6 +25,7 @@ use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, OffscreenCanvas};
 
 use super::input_queue::{self, InputMessage};
 use super::messages;
+use super::modifier_sync::{ModifierFlags, ModifierSync};
 use super::worker_ui::WorkerUi;
 use crate::{App, FrameCtx, RenderCtx, SetupCtx};
 use loam_asset::AssetWatcher;
@@ -163,6 +164,7 @@ where
             .and_then(|v| v.as_f64())
             .map(|f| f as u32)
             .unwrap_or(600);
+        let dpr = messages::read_device_pixel_ratio(&data);
         let read_str = |key: &str| {
             js_sys::Reflect::get(&data, &JsValue::from_str(key))
                 .ok()
@@ -172,11 +174,12 @@ where
         crate::args::set_query_override(read_str("search"), read_str("hash"));
 
         tracing::info!(
-            "loam_app::wasm::worker: received init ({width}x{height}); spawning wgpu setup"
+            "loam_app::wasm::worker: received init ({width}x{height} @ DPR {dpr}); \
+             spawning wgpu setup"
         );
         let scope_for_render = scope.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) = init_renderer::<A>(scope_for_render, canvas, width, height).await {
+            if let Err(e) = init_renderer::<A>(scope_for_render, canvas, width, height, dpr).await {
                 tracing::error!("loam_app::wasm::worker: init_renderer failed: {e:#}");
             }
         });
@@ -202,6 +205,7 @@ async fn init_renderer<A: App + 'static>(
     canvas: OffscreenCanvas,
     width: u32,
     height: u32,
+    device_pixel_ratio: f32,
 ) -> Result<()>
 where
     A::Space: 'static,
@@ -233,12 +237,8 @@ where
         rd.sample_count()
     );
 
-    // Workers have no Window, so no `window.devicePixelRatio`. Until DPR is
-    // plumbed through the init message, egui renders at 1pt:1px.
-    let pixels_per_point = 1.0;
-
     let mut runner =
-        WorkerRunner::<A>::setup(rd, canvas_for_runner, width, height, pixels_per_point)
+        WorkerRunner::<A>::setup(rd, canvas_for_runner, width, height, device_pixel_ratio)
             .await
             .context("WorkerRunner::setup")?;
 
@@ -423,6 +423,9 @@ where
     /// Converts the typed InputMessage stream into the FrameInput shape
     /// loam-camera + loam-input expect. Drained by `take_frame` per frame.
     input: InputState,
+    /// Corrects `input`'s derived modifier set against the flags the
+    /// browser stamps on every key event.
+    modifier_sync: ModifierSync,
     /// Worker-side egui integration (parallel to loam-egui's UiIntegration
     /// but without the winit dependency).
     ui: WorkerUi,
@@ -430,7 +433,11 @@ where
     /// without a round-trip through RenderDevice.
     width_px: u32,
     height_px: u32,
-    pixels_per_point: f32,
+    /// Physical pixels per CSS pixel. Doubles as egui's
+    /// `pixels_per_point` (egui points are CSS pixels here) and as the
+    /// scale from the DOM's CSS-pixel cursor stream to the physical
+    /// pixels `FrameInput::cursor_pos` is specified in.
+    device_pixel_ratio: f32,
     start: web_time::Instant,
     last_update_at: Option<web_time::Instant>,
     /// FPS-cap anchor: the previous frame's IDEAL deadline (not its wake-up
@@ -460,7 +467,7 @@ where
         canvas: OffscreenCanvas,
         width_px: u32,
         height_px: u32,
-        pixels_per_point: f32,
+        device_pixel_ratio: f32,
     ) -> Result<Self> {
         let mut shader_db = ShaderDb::new(rd.device.clone());
         // Watcher failure isn't fatal (demos work without hot-reload); the
@@ -489,7 +496,7 @@ where
             rd.sample_count(),
             width_px,
             height_px,
-            pixels_per_point,
+            device_pixel_ratio,
         );
 
         Ok(Self {
@@ -499,10 +506,11 @@ where
             watcher,
             app,
             input: InputState::default(),
+            modifier_sync: ModifierSync::default(),
             ui,
             width_px,
             height_px,
-            pixels_per_point,
+            device_pixel_ratio,
             start: web_time::Instant::now(),
             last_update_at: None,
             last_redraw_anchor: None,
@@ -523,7 +531,7 @@ where
 
     /// Resize the canvas backing store, reconfigure the surface, and update
     /// egui's screen rect. Zero-sized resizes are no-ops.
-    fn resize(&mut self, width: u32, height: u32) {
+    fn resize(&mut self, width: u32, height: u32, device_pixel_ratio: f32) {
         if width == 0 || height == 0 {
             return;
         }
@@ -532,8 +540,20 @@ where
         self.rd.resize(winit::dpi::PhysicalSize::new(width, height));
         self.width_px = width;
         self.height_px = height;
-        self.ui.resize(width, height, self.pixels_per_point);
-        tracing::info!("loam_app::wasm::worker: resized to {width}x{height}");
+        self.device_pixel_ratio = device_pixel_ratio;
+        self.ui.resize(width, height, device_pixel_ratio);
+        tracing::info!(
+            "loam_app::wasm::worker: resized to {width}x{height} @ DPR {device_pixel_ratio}"
+        );
+    }
+
+    /// CSS pixels, which is what the DOM pointer events report, to the
+    /// physical pixels `FrameInput::cursor_pos` is specified in.
+    fn physical_cursor(&self, x: f32, y: f32) -> (f64, f64) {
+        (
+            (x * self.device_pixel_ratio) as f64,
+            (y * self.device_pixel_ratio) as f64,
+        )
     }
 
     /// Apply one `InputMessage`. Resize updates the surface; other variants
@@ -548,8 +568,8 @@ where
         self.ui.record_input(&msg);
 
         match msg {
-            InputMessage::Resize { width, height } => {
-                self.resize(width, height);
+            InputMessage::Resize { width, height, dpr } => {
+                self.resize(width, height, dpr);
                 // Render once only in pre-Start preview mode (to refresh the
                 // backdrop-blur thumbnail). Once the RAF loop runs, the next
                 // tick renders at the new size; calling frame() here would
@@ -568,11 +588,22 @@ where
                 // correct raw-motion source under Pointer Lock too, where
                 // `offsetX/Y` pins to the locked center and would read zero.
                 self.input.accumulate_raw_motion(dx as f64, dy as f64);
-                self.input.cursor_moved(x as f64, y as f64);
+                let (x, y) = self.physical_cursor(x, y);
+                self.input.cursor_moved(x, y);
             }
             InputMessage::MouseButton {
-                button, pressed, ..
+                x,
+                y,
+                button,
+                pressed,
             } => {
+                // Position the cursor from the button event itself before
+                // recording the transition: `mouse_input` anchors
+                // `press_pos` at the current position, and the move stream
+                // is rAF-coalesced, so its last sample can predate the
+                // click by a frame of motion.
+                let (x, y) = self.physical_cursor(x, y);
+                self.input.cursor_moved(x, y);
                 let button = crate::keymap::mouse_button_winit(button);
                 let state = if pressed {
                     ElementState::Pressed
@@ -585,14 +616,37 @@ where
                 self.input.mouse_wheel(MouseScrollDelta::LineDelta(dx, dy));
             }
             InputMessage::Key {
-                ref code, pressed, ..
+                ref code,
+                pressed,
+                ctrl,
+                shift,
+                alt,
+                meta,
+                ..
             } => {
-                if let Some(code) = crate::keymap::keycode_winit(code) {
-                    let state = if pressed {
+                let to_state = |pressed| {
+                    if pressed {
                         ElementState::Pressed
                     } else {
                         ElementState::Released
-                    };
+                    }
+                };
+                let state = to_state(pressed);
+                // The flags are the browser's own view of what is held, so
+                // they outrank the transition stream: the OS eats the keyup
+                // when a chord switches windows (Alt+Tab), and `keymap` has
+                // no code for Meta at all.
+                let (modifier_sync, input) = (&mut self.modifier_sync, &mut self.input);
+                modifier_sync.reconcile(
+                    ModifierFlags {
+                        ctrl,
+                        shift,
+                        alt,
+                        meta,
+                    },
+                    |code, pressed| input.key_input(PhysicalKey::Code(code), to_state(pressed)),
+                );
+                if let Some(code) = crate::keymap::keycode_winit(code) {
                     self.input.key_input(PhysicalKey::Code(code), state);
                     // Route to `App::on_key` so hotkeys work like native.
                     // `App::on_event` can't run here: winit's `KeyEvent` has

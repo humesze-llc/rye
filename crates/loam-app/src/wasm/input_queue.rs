@@ -13,8 +13,10 @@ use std::collections::VecDeque;
 #[derive(Debug)]
 pub enum InputMessage {
     /// New canvas pixel dimensions (DPR-multiplied to physical pixels).
-    /// Triggers a wgpu surface reconfigure on the next frame.
-    Resize { width: u32, height: u32 },
+    /// Triggers a wgpu surface reconfigure on the next frame. `dpr` rides
+    /// along because the worker has no `window.devicePixelRatio` and a
+    /// monitor change alters the ratio and the size together.
+    Resize { width: u32, height: u32, dpr: f32 },
 
     /// Pointer moved to (x, y) in canvas-local CSS pixels. `buttons` is
     /// the `MouseEvent.buttons` bitmask. `dx`/`dy` are raw

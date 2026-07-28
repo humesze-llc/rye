@@ -147,6 +147,14 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
             &JsValue::from_str("height"),
             &JsValue::from_f64(height as f64),
         );
+        // Workers have no `window.devicePixelRatio` either, and the
+        // width/height above are already multiplied by it, so the worker
+        // cannot recover it from the pair.
+        let _ = js_sys::Reflect::set(
+            &msg,
+            &JsValue::from_str("dpr"),
+            &JsValue::from_f64(dpr as f64),
+        );
         // Workers have no `window.location`; forward the page query so
         // `Args::current` works inside `App::setup`.
         let (search, hash) = web_sys::window()
@@ -426,9 +434,11 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
     // 6 frames at 60Hz coalesces a sustained drag yet still feels prompt.
     const RESIZE_DEBOUNCE_FRAMES: u32 = 6;
     {
-        // `Some((w, h, frames_since_last_event))` while in flight, `None`
-        // when settled; each new event resets the counter to 0.
-        let pending: Rc<RefCell<Option<(u32, u32, u32)>>> = Rc::new(RefCell::new(None));
+        // `Some((w, h, dpr, frames_since_last_event))` while in flight,
+        // `None` when settled; each new event resets the counter to 0.
+        // `dpr` is carried rather than re-read at commit time so the
+        // ratio the worker receives is the one w/h were computed with.
+        let pending: Rc<RefCell<Option<(u32, u32, f32, u32)>>> = Rc::new(RefCell::new(None));
         let pending_for_listener = pending.clone();
         let canvas_for_listener = canvas.clone();
         let window_for_listener = window.clone();
@@ -436,7 +446,7 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
             let dpr = window_for_listener.device_pixel_ratio() as f32;
             let w = (canvas_for_listener.client_width() as f32 * dpr).max(1.0) as u32;
             let h = (canvas_for_listener.client_height() as f32 * dpr).max(1.0) as u32;
-            *pending_for_listener.borrow_mut() = Some((w, h, 0));
+            *pending_for_listener.borrow_mut() = Some((w, h, dpr, 0));
         }) as Box<dyn FnMut()>);
         window
             .add_event_listener_with_callback("resize", cb.as_ref().unchecked_ref())
@@ -453,10 +463,10 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
             let commit = {
                 let mut p = pending_for_raf.borrow_mut();
                 match p.as_mut() {
-                    Some((_, _, frames)) => {
+                    Some((_, _, _, frames)) => {
                         *frames += 1;
                         if *frames >= RESIZE_DEBOUNCE_FRAMES {
-                            p.take().map(|(w, h, _)| (w, h))
+                            p.take().map(|(w, h, dpr, _)| (w, h, dpr))
                         } else {
                             None
                         }
@@ -464,10 +474,11 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
                     None => None,
                 }
             };
-            if let Some((w, h)) = commit {
+            if let Some((w, h, dpr)) = commit {
                 let msg = build_msg("resize");
                 set_msg_u32(&msg, "width", w);
                 set_msg_u32(&msg, "height", h);
+                set_msg_f32(&msg, "dpr", dpr);
                 let _ = worker_for_raf.post_message(&msg);
             }
             let cb_ref = raf_cb_for_closure.borrow();

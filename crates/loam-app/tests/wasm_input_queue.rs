@@ -17,7 +17,11 @@ use input_queue::{drain_messages, enqueue, InputMessage, MESSAGE_QUEUE_CAPACITY}
 fn queue_caps_at_capacity_keeping_newest_in_arrival_order() {
     const OVERFLOW: u32 = 37;
     for width in 0..(MESSAGE_QUEUE_CAPACITY as u32 + OVERFLOW) {
-        enqueue(InputMessage::Resize { width, height: 0 });
+        enqueue(InputMessage::Resize {
+            width,
+            height: 0,
+            dpr: 1.0,
+        });
     }
 
     let drained = drain_messages();

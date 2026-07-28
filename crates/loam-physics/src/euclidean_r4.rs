@@ -453,10 +453,11 @@ pub use loam_shape::polytope_geom::*;
 mod tests {
     use super::*;
     use crate::determinism_fixture::{
-        determinism_scenario_trajectory, fnv1a64, GOLDEN_TRAJECTORY_HASH,
+        assert_scenario_stays_physical, determinism_scenario_run, determinism_scenario_trajectory,
+        fnv1a64, GOLDEN_TRAJECTORY_HASH,
     };
     use crate::field::Gravity;
-    use crate::world::World;
+    use crate::world::{Schedule, World};
 
     fn assert_close(a: f32, b: f32, tol: f32) {
         assert!(
@@ -1148,16 +1149,33 @@ mod tests {
         }
     }
 
+    /// The scenario is chaotic by design, so its hash is sensitive but mute:
+    /// a mismatch alone cannot say whether the simulation changed on purpose.
+    /// Named separately from the hash so one `cargo test` run reports both
+    /// verdicts: sanity plus hash means a regression, hash alone means an
+    /// intended change.
+    #[test]
+    fn determinism_scenario_stays_above_the_floor_and_never_gains_energy() {
+        assert_scenario_stays_physical(&determinism_scenario_run(Schedule::default()));
+    }
+
     /// The replay pin above passes for any change that is merely
     /// self-consistent. This one pins the trajectory itself against a value
     /// committed to the repository, so a behavior change has to be declared.
+    ///
+    /// The sanity pin runs first so a regression never reports itself as a
+    /// hash to re-record.
     #[test]
     fn fixed_scenario_trajectory_matches_golden_determinism_hash() {
-        let hash = fnv1a64(&determinism_scenario_trajectory());
+        let run = determinism_scenario_run(Schedule::default());
+        assert_scenario_stays_physical(&run);
+        let hash = fnv1a64(&run.trajectory);
         assert_eq!(
             hash, GOLDEN_TRAJECTORY_HASH,
             "trajectory hash {hash:#018x} does not match the committed golden \
-             {GOLDEN_TRAJECTORY_HASH:#018x}"
+             {GOLDEN_TRAJECTORY_HASH:#018x}; the sanity pin above passed, so \
+             this is an intended simulation change and the constant should be \
+             re-recorded to {hash:#018x}"
         );
     }
 }

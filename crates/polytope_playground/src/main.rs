@@ -47,7 +47,7 @@ use loam_app::{
     args::Args,
     egui,
     freecam::{CursorMode, Freecam},
-    Camera, CameraController, FrameCtx, OrbitController, RunConfig, SetupCtx,
+    AssetEvent, Camera, CameraController, FrameCtx, OrbitController, RunConfig, SetupCtx, ShaderDb,
 };
 use loam_egui::{Console, ConsoleUi};
 use loam_math::WPlane;
@@ -839,8 +839,8 @@ impl RotateScene {
 }
 
 impl shell::Scene for RotateScene {
-    fn space(&self) -> &EuclideanR3 {
-        self.demo.space()
+    fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
+        shader_db.apply_events(events, self.demo.space());
     }
 
     fn menus(&mut self, ui: &mut egui::Ui) {

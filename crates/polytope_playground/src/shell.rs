@@ -4,14 +4,16 @@
 //! mode leaves the `scene` console command as the only in-app switcher.
 
 use anyhow::{anyhow, Result};
-use loam_app::{args::Args, egui, App, FrameCtx, SetupCtx};
+use loam_app::{args::Args, egui, App, AssetEvent, FrameCtx, SetupCtx, ShaderDb};
 use loam_egui::Console;
 use loam_math::EuclideanR3;
 use loam_render::device::RenderDevice;
 use std::sync::Mutex;
 
 pub(crate) trait Scene {
-    fn space(&self) -> &EuclideanR3;
+    /// Recompile this scene's shaders against the Space the scene itself owns.
+    /// Scenes with no shaders of their own keep the no-op default.
+    fn apply_shader_events(&mut self, _events: &[AssetEvent], _shader_db: &mut ShaderDb) {}
     /// Contributions to the shared menu bar, rendered after the Demo menu.
     fn menus(&mut self, ui: &mut egui::Ui);
     fn update(&mut self, ctx: &mut FrameCtx<'_>);
@@ -160,8 +162,19 @@ impl App for ShellApp {
         })
     }
 
+    /// The shell owns no shaders of its own, so this satisfies the prelude-axis
+    /// bound and nothing else; recompiles route through `apply_shader_events`.
     fn space(&self) -> &EuclideanR3 {
-        self.scenes[self.active].space()
+        &EuclideanR3
+    }
+
+    /// Fanned out rather than applied once db-wide: one db-wide apply rebuilds
+    /// every module against a single prelude, which would retune a scene in
+    /// another Space to whichever metric the shell happened to name.
+    fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
+        for scene in &mut self.scenes {
+            scene.apply_shader_events(events, shader_db);
+        }
     }
 
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
@@ -222,6 +235,62 @@ impl App for ShellApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loam_math::HyperbolicH3;
+
+    /// A scene whose geometry is not the shell's, written to be compiled: no
+    /// `EuclideanR3` appears anywhere in the impl, and the reload hook recompiles
+    /// against the scene's own Space.
+    struct HyperbolicScene {
+        space: HyperbolicH3,
+    }
+
+    impl Scene for HyperbolicScene {
+        fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
+            shader_db.apply_events(events, &self.space);
+        }
+
+        fn menus(&mut self, _ui: &mut egui::Ui) {}
+
+        fn update(&mut self, _ctx: &mut FrameCtx<'_>) {}
+
+        fn ui(&mut self, _ctx: &egui::Context, _frame: &mut FrameCtx<'_>) {}
+
+        fn on_key(
+            &mut self,
+            _code: winit::keyboard::KeyCode,
+            _state: winit::event::ElementState,
+            _ctx: &mut FrameCtx<'_>,
+        ) {
+        }
+
+        fn render(&mut self, _rd: &RenderDevice, _view: &wgpu::TextureView) -> Result<()> {
+            Ok(())
+        }
+
+        fn title(&self, _fps: f32) -> std::borrow::Cow<'static, str> {
+            "hyperbolic".into()
+        }
+    }
+
+    /// Pins that [`Scene`]'s required surface names no Space: the fixture above
+    /// erases into a `SceneEntry` the shell resolves like any other. A `Scene`
+    /// method returning the shell's Space would make this unwritable.
+    #[test]
+    fn registry_admits_a_scene_outside_the_shell_space() {
+        const ENTRY: SceneEntry = SceneEntry {
+            slug: "hyperbolic",
+            label: "Hyperbolic",
+            build: |_| {
+                Ok(Box::new(HyperbolicScene {
+                    space: HyperbolicH3,
+                }))
+            },
+        };
+        assert_eq!(
+            resolve_boot(&[ENTRY], &Args::from_pairs([("scene", ENTRY.slug)])).0,
+            0
+        );
+    }
 
     /// Stand-in registry. [`SCENES`] holds a single entry, so every slug in it
     /// resolves to 0 and a lookup asserted against it is indistinguishable

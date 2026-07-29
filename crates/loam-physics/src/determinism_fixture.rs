@@ -438,9 +438,13 @@ pub fn multi_island_scenario_run(schedule: Schedule) -> ScenarioRun {
 
 /// FNV-1a of [`multi_island_scenario_run`]'s trajectory under the default
 /// schedule, recorded on x86_64 on the same terms as
-/// [`GOLDEN_TRAJECTORY_HASH`], and re-recorded on the same terms:
-/// [`assert_scenario_stays_physical`] runs first and decides whether a
-/// mismatch is an intended change or a regression.
+/// [`GOLDEN_TRAJECTORY_HASH`].
+///
+/// Re-recording: [`assert_scenario_stays_physical`] runs first and is what
+/// tells the two cases apart. If it passed and only the hash moved, the
+/// change is intended: replace this constant with the value the hash
+/// assertion prints. If it failed, the scenario stopped being physical and no
+/// re-recorded hash is correct.
 pub const GOLDEN_MULTI_ISLAND_HASH: u64 = 0x56fd_21a0_2e4f_76e2;
 
 /// Both fixtures pass [`assert_scenario_stays_physical`], so nothing else in

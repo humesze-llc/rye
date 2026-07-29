@@ -1038,10 +1038,17 @@ mod tests {
     /// establishes it reaches contacts and that the hash observes them.
     fn assert_phase_order_does_not_reach_the_state_hash(phase: SchedulePhase) {
         let canonical = run_with(OrderPolicy::Canonical);
+        // An intended simulation change breaks this link too, so this site
+        // owes the same triage as the re-record test rather than reporting a
+        // schedule failure for something the schedule did not do.
+        assert_scenario_stays_physical(&canonical);
+        let canonical_hash = fnv1a64(&canonical.trajectory);
         assert_eq!(
-            fnv1a64(&canonical.trajectory),
-            GOLDEN_TRAJECTORY_HASH,
-            "canonical run no longer matches the committed golden hash"
+            canonical_hash, GOLDEN_TRAJECTORY_HASH,
+            "canonical run hashed {canonical_hash:#018x} against the committed \
+             {GOLDEN_TRAJECTORY_HASH:#018x}; the sanity pin above passed, so \
+             this is an intended simulation change and GOLDEN_TRAJECTORY_HASH \
+             should be re-recorded to {canonical_hash:#018x}"
         );
 
         for order in order_variants(phase) {

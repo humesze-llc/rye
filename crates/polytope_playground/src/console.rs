@@ -25,6 +25,27 @@ impl RotateScene {
                 Ok(())
             },
         ));
+        // Scripted flick. Takes the drag in pixels rather than an impulse so
+        // there is exactly one drag-to-impulse mapping in the demo, and so a
+        // capture or a bug report can name the same gesture the mouse makes.
+        c.register(loam_egui::cmd(
+            "throw",
+            "throw a body: `throw <slot> <drag_x_px> <drag_y_px>` through the mouse flick's own mapping",
+            |args, demo: &mut Demo, out| {
+                let [slot, dx, dy] = args else {
+                    anyhow::bail!("usage: throw <slot> <drag_x_px> <drag_y_px>");
+                };
+                let slot: usize = slot
+                    .parse()
+                    .map_err(|e| anyhow!("invalid slot `{slot}`: {e}"))?;
+                let drag = glam::Vec2::new(
+                    dx.parse().map_err(|e| anyhow!("invalid drag x `{dx}`: {e}"))?,
+                    dy.parse().map_err(|e| anyhow!("invalid drag y `{dy}`: {e}"))?,
+                );
+                out.line(demo.throw_slot(slot, drag)?);
+                Ok(())
+            },
+        ));
         c.register(loam_egui::cmd(
             "controls",
             "toggle the bottom controls overlay (H)",

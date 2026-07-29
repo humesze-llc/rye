@@ -427,6 +427,26 @@ impl Demo {
     pub(crate) fn throw_enabled(&self, ui_has_focus: bool) -> bool {
         !ui_has_focus && self.camera_mode == CameraMode::Orbit
     }
+
+    /// Throw `slot` as if a flick had dragged `drag_pixels`, and report the
+    /// speed and per-step displacement it produced. The mouse path's own
+    /// [`throw_impulse`] and [`PlaygroundPhysics::throw`], so a scripted throw
+    /// is the same throw; the `throw` console command is the caller, and it is
+    /// what makes a trajectory reproducible without a hand on the mouse.
+    pub(crate) fn throw_slot(&mut self, slot: usize, drag_pixels: Vec2) -> anyhow::Result<String> {
+        let slots = self.render_row().len();
+        if slot >= slots {
+            anyhow::bail!("slot {slot} is outside the rendered row of {slots}");
+        }
+        let view = self.camera.view();
+        self.physics
+            .throw(slot, throw_impulse(drag_pixels, view.right, view.up));
+        let speed = self.physics.world.bodies[slot].velocity.length();
+        Ok(format!(
+            "throw: slot {slot} at {speed:.2} u/s ({:.4} per step, bound {MAX_PER_STEP_DISPLACEMENT})",
+            speed * PHYSICS_DT
+        ))
+    }
 }
 
 #[cfg(test)]

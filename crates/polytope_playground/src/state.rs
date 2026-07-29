@@ -16,7 +16,7 @@ use loam_render::raymarch::{BodyUniform, Hyperslice4DNode};
 
 use crate::catalog::ShapeEntry;
 use crate::consts::{BASE_ROTATION_RATE, BODY_SIZE, BODY_X_SPACING, BODY_Y, T_SLIDER_INITIAL};
-use crate::physics::{BodyPose, PlaygroundPhysics};
+use crate::physics::{BodyPose, PlaygroundPhysics, ThrowDrag};
 
 // Projection modes live in `projections.rs`; re-export so `impl Demo`, the test
 // module, and the other playground modules keep importing them from `state`.
@@ -436,6 +436,12 @@ pub(crate) struct Demo {
     /// Rigid-body state for the rendered row, one body per slot. Drives every
     /// render path's pose; see [`crate::physics`].
     pub(crate) physics: PlaygroundPhysics,
+    /// Flick in progress, from the press that picked a body to the release
+    /// that throws it. See [`Demo::update_throw`].
+    pub(crate) throw_drag: Option<ThrowDrag>,
+    /// Last frame's left-button state, so the flick can act on the press and
+    /// release EDGES; `FrameInput` reports the level.
+    pub(crate) left_was_down: bool,
     pub(crate) camera: Camera<EuclideanR3>,
     pub(crate) orbit: OrbitController<EuclideanR3>,
     /// Freecam preset (mouse-look + WASD + cursor grab); drives the camera in
@@ -1005,6 +1011,9 @@ impl Demo {
         self.cross_section = SectionLayer::CROSS_SECTION_DEFAULT;
         self.projected_cap = SectionLayer::PROJECTED_CAP_DEFAULT;
         self.draft.clear();
+        // Drop an aim in progress: its slot names a body the respawn below
+        // despawns, and releasing over the fresh row would throw a stranger.
+        self.throw_drag = None;
         let slots = self.render_row().len();
         self.physics.respawn(slots, self.effective_body_size());
         self.write_all(Rotor4::IDENTITY);

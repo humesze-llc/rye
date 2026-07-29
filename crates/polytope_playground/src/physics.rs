@@ -8,16 +8,20 @@
 //! behind them.
 //!
 //! The chamber is zero-g and empty of static geometry: no [`ForceField`] is
-//! registered, so a body only moves once something throws it.
+//! registered, so a body only moves once a flick throws it (see
+//! [`Demo::update_throw`]) and nothing but [`VELOCITY_DECAY_TAU`] slows it
+//! down again.
 //!
 //! [`ForceField`]: loam_physics::ForceField
 
-use glam::{Vec3, Vec4};
-use loam_math::{EuclideanR4, Rotor, Rotor4};
+use glam::{Vec2, Vec3, Vec4};
+use loam_app::Input;
+use loam_camera::Ray;
+use loam_math::{Bivector4, EuclideanR4, Rotor, Rotor4};
 use loam_physics::euclidean_r4::{ball4_inertia, register_default_narrowphase, sphere_body_r4};
 use loam_physics::{Collider, World};
 
-use crate::state::body_position;
+use crate::state::{body_position, CameraMode, Demo};
 
 /// Physics tick, matching the app's fixed 60 Hz sim tick. The world advances
 /// `FrameCtx::n_ticks` steps of this rather than one step of the frame's wall
@@ -28,6 +32,99 @@ const PHYSICS_DT: f32 = 1.0 / 60.0;
 /// quantity the bounding-sphere collider prices, so a per-shape mass would be
 /// a number with nothing behind it.
 const BODY_MASS: f32 = 1.0;
+
+/// Largest per-step displacement the R⁴ step still resolves against a thin
+/// static wall, as measured by the tunneling gate in `loam_physics::world`
+/// (`RECORDED_R4`, scanned over 64 launch alignments). The bound is geometric
+/// (`wall_half_thickness + body_radius` for the fixture that recorded it), so
+/// no impulse magnitude or solver iteration count moves it: the only way to
+/// stay inside it is to bound the speed a throw can leave a body at.
+const MAX_PER_STEP_DISPLACEMENT: f32 = 0.150;
+
+/// Fraction of [`MAX_PER_STEP_DISPLACEMENT`] a throw is allowed to use. The
+/// recorded bound is a scanned FLOOR at 0.0025 resolution, not a two-sided
+/// pin, and it was measured against a 0.1-radius projectile rather than this
+/// row's bodies; a throw sized exactly at it would have no margin for either.
+const TUNNELING_MARGIN: f32 = 0.9;
+
+/// Speed ceiling for a thrown body: the usable share of the tunneling
+/// displacement spread over one [`PHYSICS_DT`]. Enforced on the post-impulse
+/// velocity rather than on the impulse, so repeated flicks at a body already
+/// in flight cannot sum past it.
+pub(crate) const MAX_THROW_SPEED: f32 = TUNNELING_MARGIN * MAX_PER_STEP_DISPLACEMENT / PHYSICS_DT;
+
+/// Cursor travel, in physical pixels, that a flick needs to reach
+/// [`MAX_THROW_SPEED`]. Roughly a quarter of a 1080p window's height, so a
+/// full-power throw is a deliberate gesture and an idle click is nearly zero.
+const FULL_SCALE_DRAG_PIXELS: f32 = 240.0;
+
+/// Time constant of the velocity decay, in seconds. Zero-g and frictionless,
+/// a thrown body would otherwise never re-enter the exact-zero fixpoint
+/// [`PlaygroundPhysics::at_rest`] tests for, so the step's skip would never
+/// re-engage and the body would leave the chamber for good. Travel from a
+/// throw is bounded by `speed · TAU`, which at [`MAX_THROW_SPEED`] is 4.9
+/// units: under the width of a full eight-slot row, so a flick stays in frame.
+const VELOCITY_DECAY_TAU: f32 = 0.6;
+
+/// Speeds under which a decaying body is snapped to exact rest. Exponential
+/// decay approaches zero without reaching it, and `at_rest` compares against
+/// exact zero; these are the thresholds that close the gap. Sized well under
+/// one pixel of motion per second at the demo's framing.
+const REST_SPEED: f32 = 0.02;
+const REST_ANGULAR_SPEED: f32 = 0.02;
+
+/// Impulse for a flick of `drag_pixels` under the camera's screen basis.
+///
+/// The mapping, in one line: **direction is the drag projected onto the camera
+/// plane, speed is linear in drag length and saturates at
+/// [`FULL_SCALE_DRAG_PIXELS`] pixels = [`MAX_THROW_SPEED`]**. Window
+/// coordinates are y-down, so the vertical term negates `up`; the impulse is
+/// `m · speed · direction` because [`loam_physics::RigidBody::apply_impulse`]
+/// divides by the same mass.
+///
+/// The result stays in the `w = 0` slice the row lives on. A flick with a `w`
+/// component would be the more 4D gesture, but it has no drag axis to come
+/// from and it would move bodies off the slice, which the stereographic arc
+/// path documented on [`BodyPose::body_local`] assumes it can rely on.
+pub(crate) fn throw_impulse(drag_pixels: Vec2, right: Vec3, up: Vec3) -> Vec4 {
+    // `right` and `up` are orthonormal, so this has length `drag_pixels`
+    // and a zero drag is the only input `try_normalize` has to reject.
+    let Some(direction) = (right * drag_pixels.x - up * drag_pixels.y).try_normalize() else {
+        return Vec4::ZERO;
+    };
+    let speed = MAX_THROW_SPEED * (drag_pixels.length() / FULL_SCALE_DRAG_PIXELS).min(1.0);
+    (direction * (speed * BODY_MASS)).extend(0.0)
+}
+
+/// Normalised device coordinates of a window-relative pixel position, y up.
+/// The inverse of what [`loam_camera::Camera::ray_from_ndc`] consumes.
+pub(crate) fn ndc_from_pixels(pixels: Vec2, viewport: (u32, u32)) -> Vec2 {
+    let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+    Vec2::new(2.0 * pixels.x / width - 1.0, 1.0 - 2.0 * pixels.y / height)
+}
+
+/// Ray parameter at which `ray` first enters the sphere `(centre, radius)`, or
+/// `None` when it misses. A ray starting inside returns the exit distance, so
+/// a click from within a body still picks it.
+///
+/// Ericson, *Real-Time Collision Detection* (2005), §5.3.2; `ray.direction` is
+/// unit, which is what drops the quadratic's leading coefficient.
+fn ray_sphere_distance(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
+    let offset = ray.origin - centre;
+    let along = offset.dot(ray.direction);
+    let outside = offset.length_squared() - radius * radius;
+    // Pointing away from a sphere it is already outside of: no root can be
+    // positive, and the discriminant would not say so.
+    if outside > 0.0 && along > 0.0 {
+        return None;
+    }
+    let discriminant = along * along - outside;
+    if discriminant < 0.0 {
+        return None;
+    }
+    let near = -along - discriminant.sqrt();
+    Some(near.max(0.0))
+}
 
 /// Rendered orientation for a body: the UI spin applied first, then the
 /// body's physics orientation. [`Rotor4`] multiplies left-first
@@ -122,10 +219,10 @@ impl PlaygroundPhysics {
     }
 
     /// True while no body carries motion. Exact zero rather than a sleep
-    /// threshold: with no force field and no damping the resting row is an
-    /// exact fixpoint of the integrator, so this reads as "nothing is moving
-    /// right now". It is not a record of whether anything was ever thrown; a
-    /// throw the contact solver has fully cancelled reads at rest again.
+    /// threshold, which the decay in [`Self::damp`] is what makes reachable:
+    /// a resting row is an exact fixpoint of the integrator, so this reads as
+    /// "nothing is moving right now". It is not a record of whether anything
+    /// was ever thrown; a throw that has decayed away reads at rest again.
     pub(crate) fn at_rest(&self) -> bool {
         self.world
             .bodies
@@ -142,8 +239,61 @@ impl PlaygroundPhysics {
         if self.at_rest() {
             return;
         }
+        // One `exp` per call rather than per tick; the exponent is a pair of
+        // constants, so this is the same number every frame.
+        let decay = (-PHYSICS_DT / VELOCITY_DECAY_TAU).exp();
         for _ in 0..ticks {
             self.world.step(PHYSICS_DT);
+            self.damp(decay);
+        }
+    }
+
+    /// Scale every body's velocity by `decay` and snap the ones under
+    /// [`REST_SPEED`] / [`REST_ANGULAR_SPEED`] to exact zero, which is what
+    /// returns a thrown row to the fixpoint [`Self::at_rest`] tests for.
+    fn damp(&mut self, decay: f32) {
+        for body in self.world.bodies.iter_mut() {
+            body.velocity *= decay;
+            if body.velocity.length_squared() < REST_SPEED * REST_SPEED {
+                body.velocity = Vec4::ZERO;
+            }
+            body.angular_velocity = body.angular_velocity * decay;
+            if body.angular_velocity.magnitude_squared() < REST_ANGULAR_SPEED * REST_ANGULAR_SPEED {
+                body.angular_velocity = Bivector4::ZERO;
+            }
+        }
+    }
+
+    /// Slot whose bounding sphere `ray` enters first, or `None` when it enters
+    /// none. `slots` and `radius` are the rendered row's, so a pick agrees
+    /// with what the render paths drew rather than with the static layout.
+    pub(crate) fn pick(&self, ray: &Ray, slots: usize, radius: f32) -> Option<usize> {
+        let mut nearest: Option<(usize, f32)> = None;
+        for slot in 0..slots {
+            let centre = self.pose(slot, slots, Rotor4::IDENTITY).position_r3();
+            let Some(distance) = ray_sphere_distance(ray, centre, radius) else {
+                continue;
+            };
+            if nearest.is_none_or(|(_, best)| distance < best) {
+                nearest = Some((slot, distance));
+            }
+        }
+        nearest.map(|(slot, _)| slot)
+    }
+
+    /// Throw `slot`: apply `impulse` and clamp the resulting speed to
+    /// [`MAX_THROW_SPEED`], which is the tunneling bound expressed as a
+    /// velocity. Out-of-range slots are ignored, because a row edit can
+    /// retire the slot a drag started on.
+    pub(crate) fn throw(&mut self, slot: usize, impulse: Vec4) {
+        if slot >= self.world.bodies.len() {
+            return;
+        }
+        let body = &mut self.world.bodies[slot];
+        body.apply_impulse(impulse);
+        let speed = body.velocity.length();
+        if speed > MAX_THROW_SPEED {
+            body.velocity *= MAX_THROW_SPEED / speed;
         }
     }
 
@@ -190,6 +340,92 @@ impl PlaygroundPhysics {
         out.clear();
         out.extend(canonical.iter().map(|v| pose.body_local(*v, size)));
         pose.position_r3()
+    }
+}
+
+/// A flick in progress: the slot the press ray picked and the drag it has
+/// travelled so far, both in window-relative physical pixels. Held across
+/// frames because the release edge is the only frame that knows the gesture
+/// is finished, and `FrameInput` drops its press anchor at that edge.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct ThrowDrag {
+    pub(crate) slot: usize,
+    pub(crate) press_px: Vec2,
+    pub(crate) cursor_px: Vec2,
+}
+
+impl ThrowDrag {
+    pub(crate) fn drag_pixels(&self) -> Vec2 {
+        self.cursor_px - self.press_px
+    }
+
+    /// Fraction of [`MAX_THROW_SPEED`] this drag has wound up, in `[0, 1]`.
+    /// The aim overlay's only reading of the mapping.
+    pub(crate) fn charge(&self) -> f32 {
+        (self.drag_pixels().length() / FULL_SCALE_DRAG_PIXELS).min(1.0)
+    }
+}
+
+impl Demo {
+    /// Drive one frame of the pick / aim / release cycle and report whether a
+    /// flick currently owns the left button.
+    ///
+    /// `viewport` is in physical pixels, matching `FrameInput::cursor_pos`.
+    /// Freecam holds the cursor, so it has no position a ray can be built
+    /// from; the caller passes `enabled = false` there and while egui has the
+    /// pointer, and the button edges are still tracked so the next viewport
+    /// press is a press and not the tail of a click that landed elsewhere.
+    pub(crate) fn update_throw(
+        &mut self,
+        enabled: bool,
+        input: &Input,
+        viewport: (u32, u32),
+    ) -> bool {
+        let down = input.buttons.left.down;
+        let pressed = down && !self.left_was_down;
+        let released = !down && self.left_was_down;
+        self.left_was_down = down;
+
+        if !enabled {
+            self.throw_drag = None;
+            return false;
+        }
+
+        if pressed {
+            // A press whose anchor is unknown (the cursor position was
+            // invalidated before it arrived) has nothing to aim from.
+            self.throw_drag = input.buttons.left.press_pos.and_then(|press_px| {
+                let ray = self
+                    .camera
+                    .ray_from_ndc(ndc_from_pixels(press_px, viewport));
+                let slots = self.render_row().len();
+                self.physics
+                    .pick(&ray, slots, self.effective_body_size())
+                    .map(|slot| ThrowDrag {
+                        slot,
+                        press_px,
+                        cursor_px: press_px,
+                    })
+            });
+        } else if let (Some(drag), Some(cursor_px)) = (self.throw_drag.as_mut(), input.cursor_pos) {
+            drag.cursor_px = cursor_px;
+        }
+
+        if released {
+            if let Some(drag) = self.throw_drag.take() {
+                let view = self.camera.view();
+                let impulse = throw_impulse(drag.drag_pixels(), view.right, view.up);
+                self.physics.throw(drag.slot, impulse);
+            }
+        }
+        self.throw_drag.is_some()
+    }
+
+    /// Whether the flick gesture may run this frame. Orbit is the only camera
+    /// mode with a free cursor, and egui owning the pointer means the press
+    /// belongs to a widget.
+    pub(crate) fn throw_enabled(&self, ui_has_focus: bool) -> bool {
+        !ui_has_focus && self.camera_mode == CameraMode::Orbit
     }
 }
 
@@ -282,9 +518,13 @@ mod tests {
         );
     }
 
-    /// An impulse moves the thrown body's rendered pose by `J/m · t` and
-    /// leaves every other slot on the layout: poses follow the bodies, and
-    /// only the bodies that were thrown.
+    /// An impulse moves the thrown body's rendered pose along the decaying
+    /// trajectory and leaves every other slot on the layout: poses follow the
+    /// bodies, and only the bodies that were thrown.
+    ///
+    /// The closed form is the geometric sum of the per-step decay: `damp` runs
+    /// after each `world.step`, so step `k` integrates `v₀·decayᵏ` and
+    /// `x_n = x₀ + dt·v₀·(1 − decayⁿ)/(1 − decay)`.
     #[test]
     fn impulse_drives_the_thrown_slot_and_only_that_slot() {
         let slots = 3;
@@ -297,8 +537,9 @@ mod tests {
         assert!(!physics.at_rest());
         physics.step(ticks);
 
-        let expected =
-            Vec4::from_array(body_position(1, slots)) + impulse * (ticks as f32 * PHYSICS_DT);
+        let decay = (-PHYSICS_DT / VELOCITY_DECAY_TAU).exp();
+        let travel = PHYSICS_DT * (1.0 - decay.powi(ticks as i32)) / (1.0 - decay);
+        let expected = Vec4::from_array(body_position(1, slots)) + impulse * travel;
         let moved = physics.pose(1, slots, Rotor4::IDENTITY).position;
         assert!(
             (moved - expected).length() < 1e-5,
@@ -480,5 +721,238 @@ mod tests {
     fn pose_rejects_a_row_the_world_was_not_synced_to() {
         let physics = PlaygroundPhysics::new(3, RADIUS);
         physics.pose(0, 4, Rotor4::IDENTITY);
+    }
+
+    // ---- the flick ------------------------------------------------------
+
+    /// Camera basis for the drag tests: the demo's boot framing looks down
+    /// −Z, so screen right is +X and screen up is +Y.
+    const RIGHT: Vec3 = Vec3::X;
+    const UP: Vec3 = Vec3::Y;
+
+    /// The contract every throw is sized against: whatever the drag, the
+    /// resulting per-step displacement stays inside the tunneling bound the
+    /// physics gate recorded for R⁴. Sweeps drags an order of magnitude past
+    /// full scale and stacks flicks on a body already at the ceiling, which
+    /// is the case a clamp on the IMPULSE rather than on the velocity misses.
+    #[test]
+    fn throw_speed_never_exceeds_the_measured_tunneling_bound() {
+        let mut physics = PlaygroundPhysics::new(2, RADIUS);
+        for drag in [
+            Vec2::ZERO,
+            Vec2::new(30.0, 0.0),
+            Vec2::new(FULL_SCALE_DRAG_PIXELS, 0.0),
+            Vec2::new(0.0, -4000.0),
+            Vec2::new(9000.0, -9000.0),
+        ] {
+            for _ in 0..8 {
+                physics.throw(0, throw_impulse(drag, RIGHT, UP));
+                let displacement = physics.world.bodies[0].velocity.length() * PHYSICS_DT;
+                assert!(
+                    displacement <= MAX_PER_STEP_DISPLACEMENT,
+                    "drag {drag} left {displacement} of travel per step, past the \
+                     recorded {MAX_PER_STEP_DISPLACEMENT}"
+                );
+            }
+        }
+    }
+
+    /// The half of "throw feels proportional to drag" a test can hold: speed
+    /// is linear in drag length below full scale and flat above it. A mapping
+    /// that squared the drag, or that ignored its length entirely, fails here.
+    #[test]
+    fn throw_speed_is_linear_in_drag_length_until_it_saturates() {
+        for fraction in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+            let drag = Vec2::new(fraction * FULL_SCALE_DRAG_PIXELS, 0.0);
+            let speed = throw_impulse(drag, RIGHT, UP).length() / BODY_MASS;
+            assert!(
+                (speed - fraction * MAX_THROW_SPEED).abs() < 1e-4,
+                "drag at {fraction} of full scale gave {speed}, not \
+                 {} of the ceiling",
+                fraction
+            );
+        }
+        for over in [1.5_f32, 4.0, 40.0] {
+            let drag = Vec2::new(over * FULL_SCALE_DRAG_PIXELS, 0.0);
+            let speed = throw_impulse(drag, RIGHT, UP).length() / BODY_MASS;
+            assert!(
+                (speed - MAX_THROW_SPEED).abs() < 1e-4,
+                "drag at {over}x full scale gave {speed}, not the ceiling"
+            );
+        }
+    }
+
+    /// Direction is the drag carried into the camera plane, with the y-down
+    /// window convention inverted, and it never leaves the `w = 0` slice.
+    /// Catches a dropped negation (a flick that throws the wrong way
+    /// vertically) and a `w` component leaking into the throw.
+    #[test]
+    fn throw_direction_is_the_drag_in_the_camera_plane_on_the_w_zero_slice() {
+        let cases = [
+            (Vec2::new(100.0, 0.0), RIGHT),
+            (Vec2::new(-100.0, 0.0), -RIGHT),
+            // Window y grows downward, so a downward drag throws down.
+            (Vec2::new(0.0, 100.0), -UP),
+            (Vec2::new(0.0, -100.0), UP),
+        ];
+        for (drag, expected) in cases {
+            let impulse = throw_impulse(drag, RIGHT, UP);
+            assert_eq!(impulse.w, 0.0, "drag {drag} threw off the slice");
+            let direction = impulse.truncate().normalize();
+            assert!(
+                (direction - expected).length() < 1e-5,
+                "drag {drag} threw toward {direction}, not {expected}"
+            );
+        }
+        // A press with no travel is not a throw.
+        assert_eq!(throw_impulse(Vec2::ZERO, RIGHT, UP), Vec4::ZERO);
+    }
+
+    /// A screen ray picks the first body it enters and nothing else: the slot
+    /// nearest the eye when several line up, and `None` through empty space.
+    /// A pick that returned the last hit instead would throw the body behind
+    /// the one the user clicked.
+    #[test]
+    fn screen_ray_picks_the_nearest_body_it_enters_and_nothing_else() {
+        let slots = 3;
+        let physics = PlaygroundPhysics::new(slots, RADIUS);
+        let centre = |slot: usize| Vec4::from_array(body_position(slot, slots)).truncate();
+
+        for slot in 0..slots {
+            let ray = Ray {
+                origin: centre(slot) + Vec3::Z * 10.0,
+                direction: -Vec3::Z,
+            };
+            assert_eq!(physics.pick(&ray, slots, RADIUS), Some(slot));
+        }
+
+        // Down the row: three bodies on one line, nearest wins.
+        let along_row = Ray {
+            origin: centre(0) - Vec3::X * 10.0,
+            direction: Vec3::X,
+        };
+        assert_eq!(physics.pick(&along_row, slots, RADIUS), Some(0));
+        let reversed = Ray {
+            origin: centre(2) + Vec3::X * 10.0,
+            direction: -Vec3::X,
+        };
+        assert_eq!(physics.pick(&reversed, slots, RADIUS), Some(2));
+
+        // Clear of every bounding sphere, and pointing away from all of them.
+        let sky = Ray {
+            origin: centre(1) + Vec3::Y * 6.0,
+            direction: -Vec3::Z,
+        };
+        assert_eq!(physics.pick(&sky, slots, RADIUS), None);
+        let behind = Ray {
+            origin: centre(1) + Vec3::Z * 10.0,
+            direction: Vec3::Z,
+        };
+        assert_eq!(physics.pick(&behind, slots, RADIUS), None);
+    }
+
+    /// The whole point of the node, as one property: a thrown body leaves the
+    /// at-rest fixpoint, actually advances through `World::step` (so the sim
+    /// tick stops reading as the early return), and decays back into the
+    /// fixpoint so the skip re-engages.
+    #[test]
+    fn a_thrown_body_advances_the_world_and_returns_to_the_at_rest_fixpoint() {
+        let mut physics = PlaygroundPhysics::new(1, RADIUS);
+        let layout = Vec4::from_array(body_position(0, 1));
+        physics.throw(0, throw_impulse(Vec2::new(400.0, 0.0), RIGHT, UP));
+        assert!(!physics.at_rest(), "a throw left the world at rest");
+
+        physics.step(6);
+        let moved = physics.pose(0, 1, Rotor4::IDENTITY).position;
+        assert!(
+            (moved - layout).length() > 0.1,
+            "six ticks of a full-power throw moved the body only {}",
+            (moved - layout).length()
+        );
+
+        // 0.6 s time constant from MAX_THROW_SPEED down to REST_SPEED needs
+        // ~3.7 s; ten seconds of ticks is comfortably past it.
+        physics.step(600);
+        assert!(physics.at_rest(), "the throw never decayed back to rest");
+        let settled = physics.pose(0, 1, Rotor4::IDENTITY).position;
+        physics.step(600);
+        assert_eq!(
+            physics.pose(0, 1, Rotor4::IDENTITY).position,
+            settled,
+            "a settled body kept drifting"
+        );
+    }
+
+    /// A body that has come to rest is throwable again. The step's at-rest
+    /// skip returns before touching the world, so a throw applied to a
+    /// sleeping row has to wake it or the second flick is inert.
+    #[test]
+    fn a_body_that_has_come_to_rest_is_throwable_again() {
+        let mut physics = PlaygroundPhysics::new(1, RADIUS);
+        physics.throw(0, throw_impulse(Vec2::new(200.0, 0.0), RIGHT, UP));
+        physics.step(600);
+        assert!(physics.at_rest());
+        let settled = physics.pose(0, 1, Rotor4::IDENTITY).position;
+
+        physics.throw(0, throw_impulse(Vec2::new(0.0, -200.0), RIGHT, UP));
+        assert!(!physics.at_rest(), "the second flick did not wake the row");
+        physics.step(6);
+        let after = physics.pose(0, 1, Rotor4::IDENTITY).position;
+        assert!(
+            after.y - settled.y > 0.1,
+            "the second flick moved the body {} in y",
+            after.y - settled.y
+        );
+    }
+
+    /// The impact: a body thrown at the ceiling speed down the row reaches
+    /// its neighbour and drives it, rather than passing through it. The
+    /// neighbour ends up faster than the thrower, which is what an
+    /// equal-mass collision at restitution 0.2 produces.
+    #[test]
+    fn a_full_speed_throw_transfers_momentum_to_the_neighbour_it_hits() {
+        let slots = 2;
+        let mut physics = PlaygroundPhysics::new(slots, RADIUS);
+        let target_layout = Vec4::from_array(body_position(1, slots));
+        physics.throw(
+            0,
+            throw_impulse(Vec2::new(FULL_SCALE_DRAG_PIXELS, 0.0), RIGHT, UP),
+        );
+        // The 0.4 surface gap closes in three ticks at the ceiling speed;
+        // twelve leaves the contact fully resolved and the target moving.
+        physics.step(12);
+
+        let thrower = physics.world.bodies[0].velocity;
+        let target = physics.world.bodies[1].velocity;
+        assert!(
+            target.x > 1.0,
+            "the neighbour was left at {target}: the throw passed through it"
+        );
+        assert!(
+            target.x > thrower.x,
+            "the thrower kept more speed ({thrower}) than the body it hit ({target})"
+        );
+        let moved = physics.pose(1, slots, Rotor4::IDENTITY).position - target_layout;
+        assert!(moved.x > 0.0, "the neighbour never left its layout");
+    }
+
+    /// Pixel-to-NDC is the exact inverse the ray builder expects: centre maps
+    /// to the origin, and the y flip puts window-top at NDC +1.
+    #[test]
+    fn ndc_from_pixels_centres_the_viewport_and_flips_y() {
+        let viewport = (800, 600);
+        assert_eq!(
+            ndc_from_pixels(Vec2::new(400.0, 300.0), viewport),
+            Vec2::ZERO
+        );
+        assert_eq!(
+            ndc_from_pixels(Vec2::ZERO, viewport),
+            Vec2::new(-1.0, 1.0),
+            "window top-left is NDC (-1, +1)"
+        );
+        assert_eq!(
+            ndc_from_pixels(Vec2::new(800.0, 600.0), viewport),
+            Vec2::new(1.0, -1.0)
+        );
     }
 }

@@ -718,10 +718,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ParityCase { corner, a, b, v }
     }
 
-    /// Corners for the two flat charts: coincident points, a separation under
-    /// one ulp of the coordinates, and a wide one. Nothing here is a domain
-    /// boundary because ℝⁿ has none, so these pin the plumbing and the
-    /// exp/log/transport algebra rather than a conditioning class.
+    /// Corners for the two flat charts: coincident, separated below one ulp of
+    /// the coordinates, at 1e-4 radius, generic, and widely separated. Nothing
+    /// here is a domain boundary because ℝⁿ has none, so these pin the plumbing
+    /// and the exp/log/transport algebra rather than a conditioning class.
+    ///
+    /// The ℝ⁴ probe reuses these and supplies `w` from [`FLAT_CORNER_W`].
     fn flat_corners() -> Vec<ParityCase> {
         vec![
             corner(
@@ -789,9 +791,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 Vec3::new(0.2, -0.1, 0.05),
                 Vec3::new(0.01, 0.02, -0.03),
             ),
-            // Two points just inside the equator on opposite sides: arc ≈ π
-            // minus 0.03, the largest separation this chart represents, where
-            // the transport denominator `|qf + qt|²/2` is at its smallest.
+            // Two points near the equator on opposite sides: arc ≈ π − 0.028,
+            // driving the transport denominator `|qf + qt|²/2 = 2w²` to 4e-4,
+            // the smallest of any corner here. Deliberately short of the
+            // chart's own extreme (π − 0.002, at the saturation shell), so a
+            // retune of that shell cannot turn this into a clamp probe.
             corner(
                 "near-antipodal across the equator",
                 Vec3::new(0.9999, 0.0, 0.0),
@@ -809,8 +813,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     /// Interior corners of the H³ Poincaré-ball chart. Same regimes and the
     /// same literal-radius discipline as [`hemisphere_corners`]; near-antipodal
-    /// here means opposite sides of the ideal boundary, where the conformal
-    /// ratio spans 10⁴ between the two endpoints.
+    /// here means opposite sides of the ideal boundary, along a segment whose
+    /// conformal factor runs from 4 at its centre to 1.0e4 at each endpoint.
     fn ball_corners() -> Vec<ParityCase> {
         vec![
             corner(
@@ -838,7 +842,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 Vec3::new(0.02, 0.03, -0.01),
             ),
             corner(
-                "both endpoints on the outermost represented shell",
+                "both endpoints at r = 0.9999",
                 Vec3::new(0.9999, 0.0, 0.0),
                 Vec3::new(0.0, -0.9999, 0.0),
                 Vec3::new(0.02, -0.015, 0.01),
@@ -926,45 +930,63 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_prelude_matches_cpu(&EuclideanR3, &flat_corners(), 1e-6);
     }
 
+    /// The `w` component each [`flat_corners`] entry carries in ℝ⁴, as
+    /// `[a, b, v]` in that fixture's order. Per-corner rather than one constant
+    /// triple because a constant one destroys the two regimes the fixture
+    /// exists for: it separates the coincident pair and swamps the sub-ulp one.
+    /// Away from those two, `a`, `b` and `v` carry distinct nonzero `w`, so a
+    /// dropped or duplicated component still cannot pass.
+    const FLAT_CORNER_W: [[f32; 3]; 5] = [
+        [0.0, 0.0, 0.125],
+        [1.0, 1.0 + 1e-8, 1e-8],
+        [1e-4, -1e-4, 2e-5],
+        [-0.75, 2.5, 0.125],
+        [-6.0, 9.0, 40.0],
+    ];
+
     /// Same chart in `vec4<f32>`. No render node consumes this prelude yet, so
     /// this is the only thing standing between it and a silent divergence.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
     fn euclidean_r4_wgsl_matches_the_rust_space_at_the_domain_corners() {
         let space = EuclideanR4;
-        let cases: Vec<GpuCase> = flat_corners()
+        let corners = flat_corners();
+        assert_eq!(corners.len(), FLAT_CORNER_W.len());
+        let cases: Vec<GpuCase> = corners
             .iter()
-            .map(|c| GpuCase {
-                a: c.a.extend(-0.75).to_array(),
-                b: c.b.extend(2.5).to_array(),
-                v: c.v.extend(0.125).to_array(),
+            .zip(FLAT_CORNER_W)
+            .map(|(c, w)| GpuCase {
+                a: c.a.extend(w[0]).to_array(),
+                b: c.b.extend(w[1]).to_array(),
+                v: c.v.extend(w[2]).to_array(),
             })
             .collect();
         let rows = pollster::block_on(run_probe_body(&space, GPU_PROBE_VEC4, &cases))
             .expect("EuclideanR4 GPU probe");
-        for (case, row) in cases.iter().zip(&rows) {
+        for ((corner, case), row) in corners.iter().zip(&cases).zip(&rows) {
             let (a, b, v) = (
                 Vec4::from_array(case.a),
                 Vec4::from_array(case.b),
                 Vec4::from_array(case.v),
             );
-            assert_near("distance", row.scalars[0], space.distance(a, b), 1e-6);
+            let at = |what| format!("{} :: {what}", corner.corner);
+            assert_near(&at("distance"), row.scalars[0], space.distance(a, b), 1e-6);
             assert_near(
-                "origin_distance(a)",
+                &at("origin_distance(a)"),
                 row.scalars[1],
                 space.distance(Vec4::ZERO, a),
                 1e-6,
             );
             assert_near(
-                "origin_distance(b)",
+                &at("origin_distance(b)"),
                 row.scalars[2],
                 space.distance(Vec4::ZERO, b),
                 1e-6,
             );
-            assert_vec_near("exp", row.exp_point, space.exp(a, v), 1e-6);
-            assert_vec_near("log", row.log_vec, space.log(a, b), 1e-6);
+            assert_vec_near(&at("exp"), row.exp_point, space.exp(a, v), 1e-6);
+            assert_vec_near(&at("log"), row.log_vec, space.log(a, b), 1e-6);
             assert_vec_near(
-                "parallel_transport",
+                &at("parallel_transport"),
                 row.transported,
                 space.parallel_transport(a, b, v),
                 1e-6,
@@ -974,8 +996,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     /// Tolerance 2e-4 relative: `asin` and the chord half-angle are evaluated
     /// by two different compilers' intrinsics, and the near-antipodal corner
-    /// divides by a transport denominator of order `w²`, which the equator
-    /// cases drive to 2e-8.
+    /// divides by the transport denominator `2w²`, which the equator case
+    /// drives to 4e-4.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
     fn spherical_s3_wgsl_matches_the_rust_space_at_the_domain_corners() {
@@ -983,8 +1005,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     /// Tolerance 2e-4 relative, for `artanh`'s two-compiler gap; at the
-    /// outermost shell `artanh` itself carries a derivative of 10⁷, so the
-    /// relative form of the bound is doing the work here.
+    /// outermost corner the `2·artanh` origin distance carries a derivative of
+    /// 1e4 in `r`, so the relative form of the bound is doing the work here.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
     fn hyperbolic_h3_wgsl_matches_the_rust_space_at_the_domain_corners() {

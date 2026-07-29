@@ -489,4 +489,39 @@ mod tests {
         envelope.peak_energy = f32::from_bits(envelope.initial_energy.to_bits() + 1);
         assert_scenario_stays_physical(&run_with(envelope));
     }
+
+    /// The two pins above cover the comparison but not the extremum scan that
+    /// feeds it: reverse either search and both fixtures still pass a pin
+    /// that has stopped meaning anything. Recomputed from the trajectory the
+    /// run already returned, and [`run_scenario`] is shared, so pinning one
+    /// fixture's scan pins it for both.
+    #[test]
+    fn the_recorded_envelope_is_the_trajectory_extremum_determinism() {
+        let run = multi_island_scenario_run(Schedule::default());
+        let world = multi_island_world(Schedule::default());
+        let words = words_per_body(3);
+        let per_step = world.bodies.len() * words;
+
+        let peak = run
+            .trajectory
+            .chunks_exact(per_step)
+            .map(|step| configuration_energy(&world, step, 3))
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert_eq!(
+            run.envelope.peak_energy, peak,
+            "recorded peak energy is not the trajectory's maximum"
+        );
+
+        let lowest = run
+            .trajectory
+            .chunks_exact(per_step)
+            .flat_map(|step| world.bodies.iter().zip(step.chunks_exact(words)))
+            .filter(|(body, _)| body.inv_mass != 0.0)
+            .map(|(_, sampled)| f32::from_bits(sampled[UP_COMPONENT]))
+            .fold(f32::INFINITY, f32::min);
+        assert_eq!(
+            run.envelope.lowest_height, lowest,
+            "recorded lowest height is not the trajectory's dynamic minimum"
+        );
+    }
 }

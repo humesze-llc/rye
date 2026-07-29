@@ -2,8 +2,8 @@
 //! [`super::messages::parse_non_init`] produces, and the bounded ring the
 //! message handler pushes them onto for `WorkerRunner::frame` to drain.
 //!
-//! Free of `web-sys` and `js-sys` so the queue policy is exercisable off
-//! target; see `tests/wasm_input_queue.rs`.
+//! Free of `web-sys` and `js-sys` so the queue policy and the pixel units
+//! the messages carry are exercisable off target.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -111,4 +111,16 @@ pub fn enqueue(msg: InputMessage) {
 /// Drain all queued messages in arrival order. Called once per frame.
 pub fn drain_messages() -> Vec<InputMessage> {
     MESSAGE_QUEUE.with(|q| q.borrow_mut().drain(..).collect())
+}
+
+/// The CSS pixels [`InputMessage::MouseMove`] / [`InputMessage::MouseButton`]
+/// carry, scaled to the physical pixels `FrameInput::cursor_pos` is
+/// specified in. `device_pixel_ratio` is the ratio the canvas backing
+/// store was sized with, so a pick ray built from the result indexes the
+/// same pixel grid the frame was rendered on.
+pub fn physical_cursor(x: f32, y: f32, device_pixel_ratio: f32) -> (f64, f64) {
+    (
+        (x * device_pixel_ratio) as f64,
+        (y * device_pixel_ratio) as f64,
+    )
 }

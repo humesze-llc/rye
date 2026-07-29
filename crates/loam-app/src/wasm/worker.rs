@@ -547,15 +547,6 @@ where
         );
     }
 
-    /// CSS pixels, which is what the DOM pointer events report, to the
-    /// physical pixels `FrameInput::cursor_pos` is specified in.
-    fn physical_cursor(&self, x: f32, y: f32) -> (f64, f64) {
-        (
-            (x * self.device_pixel_ratio) as f64,
-            (y * self.device_pixel_ratio) as f64,
-        )
-    }
-
     /// Apply one `InputMessage`. Resize updates the surface; other variants
     /// route into `InputState` and fan out to egui via `RawInput`.
     ///
@@ -588,7 +579,7 @@ where
                 // correct raw-motion source under Pointer Lock too, where
                 // `offsetX/Y` pins to the locked center and would read zero.
                 self.input.accumulate_raw_motion(dx as f64, dy as f64);
-                let (x, y) = self.physical_cursor(x, y);
+                let (x, y) = input_queue::physical_cursor(x, y, self.device_pixel_ratio);
                 self.input.cursor_moved(x, y);
             }
             InputMessage::MouseButton {
@@ -602,7 +593,7 @@ where
                 // `press_pos` at the current position, and the move stream
                 // is rAF-coalesced, so its last sample can predate the
                 // click by a frame of motion.
-                let (x, y) = self.physical_cursor(x, y);
+                let (x, y) = input_queue::physical_cursor(x, y, self.device_pixel_ratio);
                 self.input.cursor_moved(x, y);
                 let button = crate::keymap::mouse_button_winit(button);
                 let state = if pressed {

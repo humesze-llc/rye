@@ -516,8 +516,9 @@ pub(crate) fn append_triangle_mesh(
 /// attachment: `section_faces` writes it in [`SurfaceMode::Raster`], and both
 /// wireframe layers depth-test against it. The points overlay is
 /// `DepthMode::Off` and the SDF pass has no depth attachment, so with raster
-/// faces and the wireframe both off, ensuring and clearing the buffer is an
-/// encoder and a submit nothing reads.
+/// faces and the wireframe both off, ensuring and clearing the buffer is a
+/// texture allocation and a render pass nothing reads. It stopped costing its
+/// own encoder and submit when the frame moved to one of each.
 ///
 /// Free function so the "clear exactly when something reads it" pairing is
 /// unit-testable without a device.

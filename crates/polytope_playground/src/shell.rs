@@ -267,7 +267,7 @@ mod tests {
         ) {
         }
 
-        fn render(&mut self, _rd: &RenderDevice, _view: &wgpu::TextureView) -> Result<()> {
+        fn record(&mut self, _ctx: &mut loam_app::RenderCtx<'_>) -> Result<()> {
             Ok(())
         }
 

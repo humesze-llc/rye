@@ -11,11 +11,14 @@ keywords = ["text", "overlay", "glyph", "wgpu", "gamedev"]
 categories = ["game-development", "graphics"]
 
 [dependencies]
-wgpu      = { workspace = true }
-bytemuck  = { workspace = true }
-ab_glyph  = "0.2"
-anyhow    = { workspace = true }
-tracing   = { workspace = true }
+loam-shape = { path = "../loam-shape" }
+wgpu       = { workspace = true }
+bytemuck   = { workspace = true }
+ab_glyph   = "0.2"
+anyhow     = { workspace = true }
+thiserror  = { workspace = true }
+tracing    = { workspace = true }
+glam       = { workspace = true }
 
 [dev-dependencies]
 pollster.workspace = true

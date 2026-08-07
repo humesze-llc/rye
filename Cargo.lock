@@ -1517,7 +1517,10 @@ dependencies = [
  "ab_glyph",
  "anyhow",
  "bytemuck",
+ "glam",
+ "loam-shape",
  "pollster",
+ "thiserror 1.0.69",
  "tracing",
  "wgpu",
 ]

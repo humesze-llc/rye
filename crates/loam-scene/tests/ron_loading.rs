@@ -183,30 +183,73 @@ fn a_non_finite_constant_is_rejected_at_load_rather_than_reaching_the_emitter() 
     }
 }
 
-/// A non-finite constant nested under combinators is still caught: the check
-/// walks the tree rather than inspecting the root.
+/// A non-finite constant nested under combinators is still caught, whichever
+/// arm holds it and whichever combinator sits above it. Sweeping the placement
+/// rather than fixing one nesting is what makes this a pin: a walk that
+/// recurses into a single child, or that treats a `SmoothUnion`'s subtrees as
+/// covered by its `k` test, satisfies any one fixed tree.
 #[test]
-fn a_non_finite_constant_below_a_combinator_is_still_rejected() {
-    let err = Scene::from_ron(
-        "nested_non_finite",
-        "(root: Union(\
-            Leaf(Sphere(center: (0.0, 0.0, 0.0), radius: 0.3)),\
-            Difference(\
-                Leaf(Box3(half_extents: (1.0, 1.0, 1.0))),\
-                Leaf(HalfSpace(normal: (0.0, 1.0, 0.0), offset: inf)),\
-            ),\
-        ))",
-    )
-    .expect_err("a non-finite offset cannot load, however deep it sits");
-    assert!(matches!(err, SceneLoadError::Invalid { .. }), "{err:?}");
+fn a_non_finite_constant_below_any_combinator_arm_is_rejected() {
+    const GOOD: &str = "Leaf(Sphere(center: (0.0, 0.0, 0.0), radius: 0.3))";
+    const BAD: &str = "Leaf(HalfSpace(normal: (0.0, 1.0, 0.0), offset: inf))";
+
+    for combinator in ["Union", "Intersection", "Difference", "SmoothUnion"] {
+        for (inner_side, (left, right)) in [("left", (BAD, GOOD)), ("right", (GOOD, BAD))] {
+            let inner = if combinator == "SmoothUnion" {
+                format!("SmoothUnion(k: 0.08, left: {left}, right: {right})")
+            } else {
+                format!("{combinator}({left}, {right})")
+            };
+            for (outer_side, src) in [
+                ("left", format!("(root: Union({inner}, {GOOD}))")),
+                ("right", format!("(root: Union({GOOD}, {inner}))")),
+            ] {
+                let err = Scene::from_ron("nested_non_finite", &src)
+                    .expect_err("a non-finite offset cannot load, however deep it sits");
+                assert!(
+                    matches!(err, SceneLoadError::Invalid { .. }),
+                    "{combinator} {inner_side} arm under the outer {outer_side} arm: \
+                     expected an invalid-description error, got {err:?}",
+                );
+            }
+        }
+    }
+}
+
+/// `Scene4` is walked by its own recursion over its own node type, so the 3D
+/// sweep above constrains none of it.
+#[test]
+fn a_non_finite_constant_below_any_4d_combinator_arm_is_rejected() {
+    const GOOD: &str = "Leaf(HyperSphere4D(center: (0.0, 0.0, 0.0, 0.0), radius: 0.3))";
+    const BAD: &str = "Leaf(HalfSpace4D(normal: (0.0, 1.0, 0.0, 0.0), offset: inf))";
+
+    for combinator in ["Union", "Intersection", "Difference"] {
+        for (inner_side, (left, right)) in [("left", (BAD, GOOD)), ("right", (GOOD, BAD))] {
+            let inner = format!("{combinator}({left}, {right})");
+            for (outer_side, src) in [
+                ("left", format!("(root: Union({inner}, {GOOD}))")),
+                ("right", format!("(root: Union({GOOD}, {inner}))")),
+            ] {
+                let err = Scene4::from_ron("nested_non_finite_4d", &src)
+                    .expect_err("a non-finite offset cannot load, however deep it sits");
+                assert!(
+                    matches!(err, SceneLoadError::Invalid { .. }),
+                    "{combinator} {inner_side} arm under the outer {outer_side} arm: \
+                     expected an invalid-description error, got {err:?}",
+                );
+            }
+        }
+    }
 }
 
 /// `k` divides in both the emitted `smin` and its CPU twin, and a negative `k`
 /// stops the result being an underestimate of `min`, so neither is a scene the
-/// loader may hand on.
+/// loader may hand on. A non-finite `k` is the third case and fails differently
+/// if unchecked: it reaches `wgsl_f32` and panics rather than emitting a bad
+/// field.
 #[test]
-fn a_non_positive_blend_radius_is_rejected() {
-    for k in ["0.0", "-0.5"] {
+fn a_blend_radius_that_is_not_finite_and_positive_is_rejected() {
+    for k in ["0.0", "-0.5", "inf", "-inf", "NaN"] {
         let err = Scene::from_ron(
             "blend_radius",
             &format!(

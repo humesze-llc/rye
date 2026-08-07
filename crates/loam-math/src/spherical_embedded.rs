@@ -18,7 +18,7 @@
 use glam::Vec4;
 
 use crate::rasterizable::{Projection, RasterizableSpace};
-use crate::space::Space;
+use crate::space::{IsometryGroup, Space};
 use crate::spherical::Iso4;
 use crate::EuclideanR4;
 
@@ -31,9 +31,10 @@ use crate::EuclideanR4;
 ///
 /// Reading the residual as `sin(ω)` assumes unit points. That is the contract
 /// on [`SphericalS3Embedded`], enforced at the two entrances that produce
-/// points ([`RasterizableSpace::array_to_point`] normalizes, [`Space::iso_apply`]
-/// re-normalizes to shed drift) and deliberately not re-checked per call; the
-/// guards themselves are norm comparisons and stay finite for any input.
+/// points ([`RasterizableSpace::array_to_point`] normalizes,
+/// [`IsometryGroup::iso_apply`] re-normalizes to shed drift) and deliberately
+/// not re-checked per call; the guards themselves are norm comparisons and stay
+/// finite for any input.
 const GEODESIC_DIRECTION_MIN: f32 = 1e-7;
 
 /// Floor on the transport denominator `|from + to|² / 2`. Conditioning class:
@@ -64,7 +65,6 @@ impl Space for SphericalS3Embedded {
     /// Ambient tangent vector in R⁴, perpendicular to its base point.
     /// [`Self::exp`] projects out any radial component.
     type Vector = Vec4;
-    type Iso = Iso4;
 
     fn distance(&self, a: Vec4, b: Vec4) -> f32 {
         // Chord half-angle `d = 2·asin(|a − b| / 2)`: better conditioned near
@@ -116,6 +116,10 @@ impl Space for SphericalS3Embedded {
         let denom = (sum.length_squared() * 0.5).max(TRANSPORT_DENOM_MIN);
         v - (v.dot(to) / denom) * sum
     }
+}
+
+impl IsometryGroup for SphericalS3Embedded {
+    type Iso = Iso4;
 
     fn iso_identity(&self) -> Iso4 {
         Iso4::IDENTITY

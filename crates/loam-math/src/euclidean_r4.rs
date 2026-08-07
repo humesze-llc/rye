@@ -14,7 +14,7 @@ use glam::Vec4;
 use serde::{Deserialize, Serialize};
 
 use crate::bivector::{Rotor, Rotor4};
-use crate::space::{Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslSpace};
 
 /// Rigid motion of R⁴: a rotor-rotation followed by a translation.
 ///
@@ -64,7 +64,6 @@ pub struct EuclideanR4;
 impl Space for EuclideanR4 {
     type Point = Vec4;
     type Vector = Vec4;
-    type Iso = Iso4Flat;
 
     fn distance(&self, a: Vec4, b: Vec4) -> f32 {
         (a - b).length()
@@ -82,6 +81,16 @@ impl Space for EuclideanR4 {
         // R⁴ is flat; parallel transport along any path is the identity.
         v
     }
+
+    /// ℝ⁴ is globally flat: chart-coord 4D SDFs (hyperplanes, hyperboxes) are mathematically
+    /// correct.
+    fn is_chart_flat(&self) -> bool {
+        true
+    }
+}
+
+impl IsometryGroup for EuclideanR4 {
+    type Iso = Iso4Flat;
 
     fn iso_identity(&self) -> Iso4Flat {
         Iso4Flat::IDENTITY
@@ -114,12 +123,6 @@ impl Space for EuclideanR4 {
     fn iso_transport(&self, iso: Iso4Flat, _at: Vec4, v: Vec4) -> Vec4 {
         // Tangent vectors are unaffected by translation; rotation acts.
         iso.rotation.apply(v)
-    }
-
-    /// ℝ⁴ is globally flat: chart-coord 4D SDFs (hyperplanes, hyperboxes) are mathematically
-    /// correct.
-    fn is_chart_flat(&self) -> bool {
-        true
     }
 }
 

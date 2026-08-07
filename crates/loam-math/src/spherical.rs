@@ -19,7 +19,7 @@ use std::borrow::Cow;
 use glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslSpace};
 
 /// Saturation shell for `|p|²`. Conditioning class: divisor floor. The lift's
 /// `w = √(1 − |p|²)` divides every tangent formula (`vw = −dot(v, p)/w`) and
@@ -170,7 +170,6 @@ pub struct SphericalS3;
 impl Space for SphericalS3 {
     type Point = Vec3;
     type Vector = Vec3;
-    type Iso = Iso4;
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         let qa = to_sphere(clamp_to_hemisphere(a));
@@ -235,6 +234,10 @@ impl Space for SphericalS3 {
         let v4_transported = v4 - v4.dot(qt) / denom * sum;
         v4_transported.truncate()
     }
+}
+
+impl IsometryGroup for SphericalS3 {
+    type Iso = Iso4;
 
     fn iso_identity(&self) -> Iso4 {
         Iso4::IDENTITY

@@ -8,7 +8,7 @@ use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::bivector::{Rotor, Rotor2};
-use crate::space::Space;
+use crate::space::{IsometryGroup, Space};
 
 /// A rigid motion of R²: a rotation followed by a translation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -66,7 +66,6 @@ pub struct EuclideanR2;
 impl Space for EuclideanR2 {
     type Point = Vec2;
     type Vector = Vec2;
-    type Iso = Iso2;
 
     fn distance(&self, a: Vec2, b: Vec2) -> f32 {
         (a - b).length()
@@ -83,6 +82,16 @@ impl Space for EuclideanR2 {
     fn parallel_transport(&self, _from: Vec2, _to: Vec2, v: Vec2) -> Vec2 {
         v
     }
+
+    /// ℝ² is globally flat: chart-coord SDFs (half-planes, axis-aligned boxes) are
+    /// mathematically correct.
+    fn is_chart_flat(&self) -> bool {
+        true
+    }
+}
+
+impl IsometryGroup for EuclideanR2 {
+    type Iso = Iso2;
 
     fn iso_identity(&self) -> Iso2 {
         Iso2::IDENTITY
@@ -112,12 +121,6 @@ impl Space for EuclideanR2 {
     fn iso_transport(&self, iso: Iso2, _at: Vec2, v: Vec2) -> Vec2 {
         // Translation drops out for tangent vectors; rotation acts.
         iso.rotation.apply(v)
-    }
-
-    /// ℝ² is globally flat: chart-coord SDFs (half-planes, axis-aligned boxes) are
-    /// mathematically correct.
-    fn is_chart_flat(&self) -> bool {
-        true
     }
 }
 

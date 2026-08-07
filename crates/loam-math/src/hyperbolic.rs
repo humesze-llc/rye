@@ -15,7 +15,7 @@ use std::borrow::Cow;
 use glam::{Mat4, Quat, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslSpace};
 
 /// Max `|p|²` before the conformal factor `λ = 2/(1-|p|²)` saturates. `1 - 1e-7`
 /// keeps `λ ≲ 2 × 10⁷`, well inside f32 dynamic range.
@@ -110,7 +110,6 @@ pub struct HyperbolicH3;
 impl Space for HyperbolicH3 {
     type Point = Vec3;
     type Vector = Vec3;
-    type Iso = Iso3H;
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         // Möbius (artanh) form, not acosh: acosh(1 + δ) quantizes small distances
@@ -154,6 +153,10 @@ impl Space for HyperbolicH3 {
         let conformal = (1.0 - to.length_squared()) / (1.0 - from.length_squared());
         conformal * gyr_apply(to, -from, v)
     }
+}
+
+impl IsometryGroup for HyperbolicH3 {
+    type Iso = Iso3H;
 
     fn iso_identity(&self) -> Iso3H {
         Iso3H::IDENTITY

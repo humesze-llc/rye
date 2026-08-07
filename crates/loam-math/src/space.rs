@@ -1,7 +1,9 @@
 //! The [`Space`] trait, Loam's interface to geometry.
 //!
-//! A `Space` is a Riemannian manifold equipped with an isometry group. The
-//! GPU-facing half of the contract lives on [`WgslSpace`].
+//! A `Space` is a Riemannian manifold: a metric and its Levi-Civita
+//! connection. Isometries are a separate contract on [`IsometryGroup`],
+//! because a Space need not have any. The GPU-facing half of the contract
+//! lives on [`WgslSpace`].
 //!
 //! Methods take `&self` so parametric geometries (curvature scalar, radius) can
 //! store their parameter; stateless ones monomorphize to direct calls.
@@ -12,20 +14,24 @@
 
 use std::borrow::Cow;
 
-/// A Riemannian manifold with a transitive isometry group. Shader integration
-/// lives on [`WgslSpace`]. All methods must be deterministic and side-effect-free.
+/// A Riemannian manifold: a metric and the Levi-Civita connection it induces.
+/// Isometries live on [`IsometryGroup`], shader integration on [`WgslSpace`].
+/// All methods must be deterministic and side-effect-free.
 pub trait Space {
     /// A point on the manifold.
     type Point: Copy + Send + Sync + 'static;
     /// A tangent vector at *some* point; the base point is tracked by the caller.
     /// Use [`crate::Tangent`] to enforce that tracking.
     type Vector: Copy + Send + Sync + 'static;
-    /// An orientation-preserving isometry of the manifold.
-    type Iso: Copy + Send + Sync + 'static;
 
     // ---- Riemannian primitives ----------------------------------------
 
     /// Geodesic distance between two points.
+    ///
+    /// The metric is positive-definite. An indefinite (Lorentzian) metric is
+    /// out of contract here rather than merely untested: it has no such
+    /// distance, and a sibling trait carrying a signed interval would be the
+    /// way in.
     fn distance(&self, a: Self::Point, b: Self::Point) -> f32;
 
     /// Exponential map: travel from `at` along the geodesic with initial velocity `v` for
@@ -67,7 +73,40 @@ pub trait Space {
         current
     }
 
-    // ---- Isometry group -----------------------------------------------
+    // ---- Chart properties ---------------------------------------------
+
+    /// Whether the chart is globally flat: chart-coord arithmetic computes the
+    /// correct geometry without the Riemannian machinery. False for curved
+    /// Spaces (Poincaré ball H³, stereographic S³, `BlendedSpace`).
+    ///
+    /// A statement about the geometry, not about any rendering backend, so it
+    /// lives here rather than on [`WgslSpace`]: the SDF emitter and the CPU SDF
+    /// evaluator both gate chart-coord fast paths on it, and only the former
+    /// speaks WGSL. Defaults to `false` so a new Space must opt in.
+    fn is_chart_flat(&self) -> bool {
+        false
+    }
+}
+
+/// A [`Space`] that has isometries: metric-preserving self-maps forming a
+/// group under composition.
+///
+/// Split from [`Space`] because not every Space has any. `BlendedSpace`'s
+/// blending field breaks translation and rotation symmetry, so its group is
+/// trivial; omitting this impl is how that is said in the type system rather
+/// than in a comment.
+///
+/// The laws, stated as actions on points because `Iso` carries no equality
+/// bound and a rotor representation double-covers its rotation group:
+/// `iso_compose` is associative with `iso_identity` neutral and `iso_inverse`
+/// two-sided, `iso_apply` preserves [`Space::distance`], and `iso_transport`
+/// is the differential of `iso_apply`, so
+/// `iso_apply(g, exp(p, v)) == exp(iso_apply(g, p), iso_transport(g, p, v))`.
+/// Transitivity is not required here; an impl whose action is transitive says
+/// so in its own docs.
+pub trait IsometryGroup: Space {
+    /// An orientation-preserving isometry of the manifold.
+    type Iso: Copy + Send + Sync + 'static;
 
     /// The identity isometry.
     fn iso_identity(&self) -> Self::Iso;
@@ -84,20 +123,6 @@ pub trait Space {
     /// Apply an isometry's differential to a tangent vector at `at`. The result is a tangent
     /// vector at `iso_apply(iso, at)`.
     fn iso_transport(&self, iso: Self::Iso, at: Self::Point, v: Self::Vector) -> Self::Vector;
-
-    // ---- Chart properties ---------------------------------------------
-
-    /// Whether the chart is globally flat: chart-coord arithmetic computes the
-    /// correct geometry without the Riemannian machinery. False for curved
-    /// Spaces (Poincaré ball H³, stereographic S³, `BlendedSpace`).
-    ///
-    /// A statement about the geometry, not about any rendering backend, so it
-    /// lives here rather than on [`WgslSpace`]: the SDF emitter and the CPU SDF
-    /// evaluator both gate chart-coord fast paths on it, and only the former
-    /// speaks WGSL. Defaults to `false` so a new Space must opt in.
-    fn is_chart_flat(&self) -> bool {
-        false
-    }
 }
 
 /// A [`Space`] that additionally exposes its primitives as WGSL for inlining

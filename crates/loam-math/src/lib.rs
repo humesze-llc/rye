@@ -4,8 +4,9 @@
 //! things are* (scene graph, physics, render, shaders) routes through it, so that swapping
 //! `EuclideanR3` for `HyperbolicH3` or `Spherical S3` is a type-level decision, not a fork.
 //!
-//! [`WgslSpace`] is a separate subtrait for the GPU half of the contract; CPU-only consumers
-//! never need to implement it.
+//! [`IsometryGroup`] is a separate subtrait for the spaces that have isometries, and
+//! [`WgslSpace`] for the GPU half of the contract; CPU-only consumers never need to
+//! implement the latter.
 //!
 //! [`Tangent`] bundles a tangent vector with its base point, the recommended holder outside
 //! tight numerical kernels.
@@ -48,7 +49,7 @@ pub use rasterizable::{Projection, RasterizableSpace, STEREOGRAPHIC_POLE_EPSILON
 pub use sectionable::{
     SectionableSpace, WPlane, EDGE_PARALLEL_EPSILON, SLICE_PERTURBATION_EPSILON,
 };
-pub use space::{Space, WgslSpace};
+pub use space::{IsometryGroup, Space, WgslSpace};
 pub use spherical::{Iso4, SphericalS3};
 pub use spherical_embedded::SphericalS3Embedded;
 pub use tangent::Tangent;

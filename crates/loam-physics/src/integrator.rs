@@ -7,18 +7,22 @@
 
 use std::ops::Mul;
 
-use loam_math::{Bivector, Space};
+use loam_math::{Bivector, IsometryGroup, Space};
 
 use crate::body::RigidBody;
 
 /// A [`Space`] equipped with rotation dynamics: angular velocity, inertia, and
 /// orientation integration.
 ///
+/// [`IsometryGroup`] is a supertrait because a body's orientation is an
+/// isometry of the whole manifold ([`RigidBody::orientation`]), which restricts
+/// physics to the spaces that have one.
+///
 /// New spaces opt into physics by implementing this. Sphere-sphere collision
 /// works immediately via [`loam_math::Space::distance`] and
 /// [`loam_math::Space::log`]; polygon/polyhedron collision needs per-space
 /// narrowphase functions registered in [`crate::Narrowphase`].
-pub trait PhysicsSpace: Space {
+pub trait PhysicsSpace: Space + IsometryGroup {
     /// Angular-velocity bivector (e.g. [`loam_math::Bivector2`],
     /// [`loam_math::Bivector3`]).
     type AngVel: Bivector;

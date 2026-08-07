@@ -9,7 +9,7 @@ use std::borrow::Cow;
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslSpace};
 
 /// A rigid motion of R³: a rotation followed by a translation.
 ///
@@ -51,7 +51,6 @@ pub struct EuclideanR3;
 impl Space for EuclideanR3 {
     type Point = Vec3;
     type Vector = Vec3;
-    type Iso = Iso3;
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         (a - b).length()
@@ -69,6 +68,16 @@ impl Space for EuclideanR3 {
         // R³ is flat; parallel transport is the identity.
         v
     }
+
+    /// ℝ³ is globally flat: chart-coord SDFs (planes, axis-aligned boxes) are mathematically
+    /// correct.
+    fn is_chart_flat(&self) -> bool {
+        true
+    }
+}
+
+impl IsometryGroup for EuclideanR3 {
+    type Iso = Iso3;
 
     fn iso_identity(&self) -> Iso3 {
         Iso3::IDENTITY
@@ -98,12 +107,6 @@ impl Space for EuclideanR3 {
     fn iso_transport(&self, iso: Iso3, _at: Vec3, v: Vec3) -> Vec3 {
         // Translation drops out for tangent vectors; rotation acts.
         iso.rotation * v
-    }
-
-    /// ℝ³ is globally flat: chart-coord SDFs (planes, axis-aligned boxes) are mathematically
-    /// correct.
-    fn is_chart_flat(&self) -> bool {
-        true
     }
 }
 

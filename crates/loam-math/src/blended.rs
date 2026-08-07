@@ -150,8 +150,9 @@ impl ConformallyFlat for crate::HyperbolicH3 {
 /// At zone extremes the metric reduces to pure g_A or g_B; in between it is a
 /// variable-metric Riemannian manifold. Sources must use ℝ³ points/vectors and
 /// be [`ConformallyFlat`] (so the blend is too, the integrator's fast path).
-/// No non-trivial isometries (the field breaks translation/rotation symmetry):
-/// `Iso = ()`, `iso_apply` is the identity.
+/// The field breaks translation and rotation symmetry, so there are no
+/// non-trivial isometries and this Space does not implement
+/// [`crate::IsometryGroup`].
 pub struct BlendedSpace<A, B, F>
 where
     A: Space<Point = Vec3, Vector = Vec3>,
@@ -188,9 +189,6 @@ where
 {
     type Point = Vec3;
     type Vector = Vec3;
-    /// No non-trivial isometries; see type-level docs.
-    /// No non-trivial isometries.
-    type Iso = ();
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         // Both endpoints at the same zone extreme: exact source-Space distance.
@@ -237,16 +235,6 @@ where
             );
         }
         current
-    }
-
-    fn iso_identity(&self) {}
-    fn iso_compose(&self, _a: (), _b: ()) {}
-    fn iso_inverse(&self, _a: ()) {}
-    fn iso_apply(&self, _iso: (), p: Vec3) -> Vec3 {
-        p
-    }
-    fn iso_transport(&self, _iso: (), _at: Vec3, v: Vec3) -> Vec3 {
-        v
     }
 }
 
@@ -1126,18 +1114,6 @@ mod tests {
         close(d_blend, d_b, 1e-6);
     }
 
-    /// `BlendedSpace::iso_apply` is the identity (`Iso = ()`).
-    #[test]
-    fn blended_space_iso_is_trivial() {
-        use crate::EuclideanR3;
-        use crate::Space;
-        let bs = BlendedSpace::new(EuclideanR3, EuclideanR3, LinearBlendX::new(-1.0, 1.0));
-        let p = Vec3::new(1.0, 2.0, 3.0);
-        assert_eq!(bs.iso_apply((), p), p);
-        let v = Vec3::new(0.5, -0.5, 0.5);
-        assert_eq!(bs.iso_transport((), p, v), v);
-    }
-
     /// `BlendedSpace` conformal factor: source value at a zone extreme,
     /// alpha-weighted blend of the two in between.
     #[test]
@@ -1563,7 +1539,6 @@ mod tests {
         impl crate::space::Space for H3FdOnly {
             type Point = Vec3;
             type Vector = Vec3;
-            type Iso = ();
             fn distance(&self, _: Vec3, _: Vec3) -> f32 {
                 0.0
             }
@@ -1574,15 +1549,6 @@ mod tests {
                 Vec3::ZERO
             }
             fn parallel_transport(&self, _: Vec3, _: Vec3, v: Vec3) -> Vec3 {
-                v
-            }
-            fn iso_identity(&self) {}
-            fn iso_compose(&self, _: (), _: ()) {}
-            fn iso_inverse(&self, _: ()) {}
-            fn iso_apply(&self, _: (), p: Vec3) -> Vec3 {
-                p
-            }
-            fn iso_transport(&self, _: (), _: Vec3, v: Vec3) -> Vec3 {
                 v
             }
         }

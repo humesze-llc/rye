@@ -1,9 +1,10 @@
 //! One invariant harness over every [`Space`] impl in the crate.
 //!
-//! A [`SpaceFixture`] supplies a Space's domain samples, its metric, its
-//! isometries and its tolerances; [`conformance_suite!`] expands to one named
-//! `#[test]` per invariant per fixture, so a failure names the property it
-//! broke rather than the harness.
+//! A [`SpaceFixture`] supplies a Space's domain samples, its metric and its
+//! tolerances, and an [`IsometryFixture`] adds the isometries for the Spaces
+//! that have any; [`conformance_suite!`] and [`isometry_conformance_suite!`]
+//! expand to one named `#[test]` per invariant per fixture, so a failure names
+//! the property it broke rather than the harness.
 //!
 //! The single hook that separates flat from curved is the metric inner product
 //! [`SpaceFixture::inner`]. Every length in this file is measured with it, so
@@ -14,7 +15,7 @@
 //! residuals are always `distance`, because a geodesic residual is a physical
 //! quantity and a chart residual is not.
 //!
-//! Group laws are stated as actions on points: `Space::Iso` carries no
+//! Group laws are stated as actions on points: `IsometryGroup::Iso` carries no
 //! `PartialEq` bound and `Rotor4` double-covers SO(4), so comparing composed
 //! `Iso` values would be both uncompilable in the generic and wrong if it
 //! compiled.
@@ -26,8 +27,8 @@
 use glam::{Quat, Vec2, Vec3, Vec4};
 use loam_math::{
     Bivector, Bivector2, Bivector4, BlendedSpace, ConformallyFlat, EuclideanR2, EuclideanR3,
-    EuclideanR4, HyperbolicH3, Iso2, Iso3, Iso3H, Iso4, Iso4Flat, LinearBlendX, Space, SphericalS3,
-    SphericalS3Embedded,
+    EuclideanR4, HyperbolicH3, Iso2, Iso3, Iso3H, Iso4, Iso4Flat, IsometryGroup, LinearBlendX,
+    Space, SphericalS3, SphericalS3Embedded,
 };
 
 // ---------------------------------------------------------------------------
@@ -67,15 +68,7 @@ struct Tol {
 trait SpaceFixture {
     type Point: Copy;
     type Vector: Copy;
-    type Iso: Copy;
-    type S: Space<Point = Self::Point, Vector = Self::Vector, Iso = Self::Iso>;
-
-    /// Declared by the one fixture whose Space has no non-trivial isometry
-    /// group. Not defaulted silently: a vacuously-passing invariant is the
-    /// failure class this suite exists to remove, so the exemption is written
-    /// down and the group-law tests assert the triviality instead of assuming
-    /// it.
-    const ISOMETRY_GROUP_IS_TRIVIAL: bool = false;
+    type S: Space<Point = Self::Point, Vector = Self::Vector>;
 
     /// Whether `parallel_transport` follows the geodesic from `a` to `b`.
     /// `Space` leaves the path implementation-defined, so a fixture whose impl
@@ -94,10 +87,6 @@ trait SpaceFixture {
     /// Tangents at `at`, short enough that `exp` stays inside the injectivity
     /// radius so the reverse round trip is well posed.
     fn tangents(&self, at: Self::Point) -> Vec<Self::Vector>;
-
-    /// At least three isometries, pairwise non-commuting, chosen so the sampled
-    /// points stay in the chart under every one of them.
-    fn isos(&self) -> Vec<Self::Iso>;
 
     /// Riemannian inner product at `at`. The one hook that separates flat from
     /// curved; flat fixtures return the dot product and are thereby not a
@@ -127,6 +116,25 @@ trait SpaceFixture {
 
     /// Chart coordinates of `v`, trailing lanes zero.
     fn vector_components(&self, v: Self::Vector) -> [f32; 4];
+}
+
+/// The extra surface the group items need, implemented only by the fixtures
+/// whose Space has isometries. A Space with no group does not implement
+/// [`IsometryGroup`], so its fixture cannot implement this and the group items
+/// do not compile against it: the absence is a build-time fact, with no
+/// exemption constant to keep honest and no invariant left to pass vacuously.
+///
+/// The where-clause below is not elaborated into the environment of a generic
+/// bounded on this trait, unlike a supertrait, so every group item repeats it.
+trait IsometryFixture: SpaceFixture
+where
+    Self::S: IsometryGroup<Iso = Self::Iso>,
+{
+    type Iso: Copy;
+
+    /// At least three isometries, pairwise non-commuting, chosen so the sampled
+    /// points stay in the chart under every one of them.
+    fn isos(&self) -> Vec<Self::Iso>;
 }
 
 // ---------------------------------------------------------------------------
@@ -373,14 +381,14 @@ mod invariants {
 
     /// `d(g.a, g.b) = d(a, b)`. The one item that ties the isometry surface to
     /// the metric: without it an `Iso` can be any invertible map at all.
-    pub fn distance_is_invariant_under_isometry<F: SpaceFixture>(f: &F) {
-        if declared_trivial_group(f) {
-            return;
-        }
+    pub fn distance_is_invariant_under_isometry<F: IsometryFixture>(f: &F)
+    where
+        F::S: IsometryGroup<Iso = F::Iso>,
+    {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
-        for g in f.isos() {
+        for g in sampled_isos(f) {
             for &a in &points {
                 for &b in &points {
                     let before = s.distance(a, b);
@@ -397,14 +405,14 @@ mod invariants {
     }
 
     /// `id.p = p`, and `id . g` and `g . id` act as `g`.
-    pub fn iso_identity_is_neutral<F: SpaceFixture>(f: &F) {
-        if declared_trivial_group(f) {
-            return;
-        }
+    pub fn iso_identity_is_neutral<F: IsometryFixture>(f: &F)
+    where
+        F::S: IsometryGroup<Iso = F::Iso>,
+    {
         let s = f.space();
         let tol = f.tol();
         let id = s.iso_identity();
-        let isos = f.isos();
+        let isos = sampled_isos(f);
         for p in f.points() {
             assert_point_agrees(f, &s, s.iso_apply(id, p), p, tol.point, "id.p");
             for &g in &isos {
@@ -430,13 +438,13 @@ mod invariants {
     }
 
     /// `g . g^-1` and `g^-1 . g` both act as the identity.
-    pub fn iso_inverse_is_two_sided<F: SpaceFixture>(f: &F) {
-        if declared_trivial_group(f) {
-            return;
-        }
+    pub fn iso_inverse_is_two_sided<F: IsometryFixture>(f: &F)
+    where
+        F::S: IsometryGroup<Iso = F::Iso>,
+    {
         let s = f.space();
         let tol = f.tol();
-        for g in f.isos() {
+        for g in sampled_isos(f) {
             let inv = s.iso_inverse(g);
             for p in f.points() {
                 assert_point_agrees(
@@ -461,13 +469,13 @@ mod invariants {
 
     /// `(a . b) . c` and `a . (b . c)` act alike. Asserted for no impl in the
     /// workspace before this suite.
-    pub fn iso_compose_is_associative<F: SpaceFixture>(f: &F) {
-        if declared_trivial_group(f) {
-            return;
-        }
+    pub fn iso_compose_is_associative<F: IsometryFixture>(f: &F)
+    where
+        F::S: IsometryGroup<Iso = F::Iso>,
+    {
         let s = f.space();
         let tol = f.tol();
-        let isos = f.isos();
+        let isos = sampled_isos(f);
         let points = f.points();
         for &a in &isos {
             for &b in &isos {
@@ -491,13 +499,13 @@ mod invariants {
 
     /// `(a . b).p = a.(b.p)`, the item that pins the `Quat`-versus-`Rotor4`
     /// composition-order divergence between the R³ and R⁴ isometries.
-    pub fn iso_compose_matches_sequential_apply<F: SpaceFixture>(f: &F) {
-        if declared_trivial_group(f) {
-            return;
-        }
+    pub fn iso_compose_matches_sequential_apply<F: IsometryFixture>(f: &F)
+    where
+        F::S: IsometryGroup<Iso = F::Iso>,
+    {
         let s = f.space();
         let tol = f.tol();
-        let isos = f.isos();
+        let isos = sampled_isos(f);
         for &a in &isos {
             for &b in &isos {
                 for p in f.points() {
@@ -520,13 +528,13 @@ mod invariants {
     /// Degenerates into an `exp`/`log` consistency check for the two impls that
     /// *define* `iso_transport` as that round trip; the flat impls and the
     /// ambient S³ use closed forms, and so will every future impl that can.
-    pub fn iso_transport_is_the_differential_of_iso_apply<F: SpaceFixture>(f: &F) {
-        if declared_trivial_group(f) {
-            return;
-        }
+    pub fn iso_transport_is_the_differential_of_iso_apply<F: IsometryFixture>(f: &F)
+    where
+        F::S: IsometryGroup<Iso = F::Iso>,
+    {
         let s = f.space();
         let tol = f.tol();
-        for g in f.isos() {
+        for g in sampled_isos(f) {
             for p in f.points() {
                 for v in f.tangents(p) {
                     let moved = s.iso_apply(g, s.exp(p, v));
@@ -545,13 +553,13 @@ mod invariants {
     }
 
     /// `|dg(v)|_{at g.p} = |v|_{at p}`.
-    pub fn iso_transport_preserves_the_metric_norm<F: SpaceFixture>(f: &F) {
-        if declared_trivial_group(f) {
-            return;
-        }
+    pub fn iso_transport_preserves_the_metric_norm<F: IsometryFixture>(f: &F)
+    where
+        F::S: IsometryGroup<Iso = F::Iso>,
+    {
         let s = f.space();
         let tol = f.tol();
-        for g in f.isos() {
+        for g in sampled_isos(f) {
             for p in f.points() {
                 let moved = s.iso_apply(g, p);
                 for v in f.tangents(p) {
@@ -859,7 +867,21 @@ mod invariants {
                     f.vector_components(w)
                 );
             }
-            for g in f.isos() {
+        }
+    }
+
+    /// The group half of the item above: no isometry turns a degenerate input
+    /// into a NaN or an infinity. Separate because the fixture's degenerate set
+    /// is a property of its chart, which every Space has, while the isometries
+    /// are not.
+    pub fn isometries_of_degenerate_inputs_stay_finite<F: IsometryFixture>(f: &F)
+    where
+        F::S: IsometryGroup<Iso = F::Iso>,
+    {
+        let s = f.space();
+        let isos = sampled_isos(f);
+        for (a, _) in f.degenerate_pairs() {
+            for &g in &isos {
                 assert_point_is_finite(f, s.iso_apply(g, a), "iso_apply");
                 for w in f.tangents(a) {
                     assert_vector_is_finite(f, s.iso_transport(g, a, w), "iso_transport");
@@ -909,7 +931,21 @@ mod invariants {
                     f.point_components(a),
                     f.vector_components(v)
                 );
-                for g in f.isos() {
+            }
+        }
+    }
+
+    /// The group half of the item above: repeating an isometry's action on the
+    /// same input returns the same bits.
+    pub fn sampled_isometry_calls_are_bit_reproducible<F: IsometryFixture>(f: &F)
+    where
+        F::S: IsometryGroup<Iso = F::Iso>,
+    {
+        let s = f.space();
+        let isos = sampled_isos(f);
+        for a in f.points() {
+            for v in f.tangents(a) {
+                for &g in &isos {
                     assert_eq!(
                         point_bits(f, s.iso_apply(g, a)),
                         point_bits(f, s.iso_apply(g, a)),
@@ -930,36 +966,22 @@ mod invariants {
 
     // ---- shared machinery ------------------------------------------------
 
-    /// Returns whether the fixture claims a trivial isometry group, asserting
-    /// the claim on the way out so the group-law items report a real hole
-    /// instead of passing vacuously. Also enforces the floor of three
-    /// isometries: two operands cannot distinguish a composition convention
-    /// from its transpose in a group that is nearly abelian on the sample.
-    fn declared_trivial_group<F: SpaceFixture>(f: &F) -> bool {
+    /// The fixture's isometries, with the floor of three enforced: two operands
+    /// cannot distinguish a composition convention from its transpose in a
+    /// group that is nearly abelian on the sample. Every group item reads its
+    /// isometries through here, so no fixture can shrink its sample into a
+    /// vacuous pass.
+    fn sampled_isos<F: IsometryFixture>(f: &F) -> Vec<F::Iso>
+    where
+        F::S: IsometryGroup<Iso = F::Iso>,
+    {
         let isos = f.isos();
-        if !F::ISOMETRY_GROUP_IS_TRIVIAL {
-            assert!(
-                isos.len() >= 3,
-                "a non-trivial isometry group needs at least three sampled \
-                 isometries, got {}",
-                isos.len()
-            );
-            return false;
-        }
-        let s = f.space();
-        assert_eq!(
-            isos.len(),
-            1,
-            "a trivial isometry group has exactly one element"
+        assert!(
+            isos.len() >= 3,
+            "an isometry group needs at least three sampled isometries, got {}",
+            isos.len()
         );
-        for p in f.points() {
-            assert_eq!(
-                point_bits(f, s.iso_apply(isos[0], p)),
-                point_bits(f, p),
-                "a trivial isometry group acts as the identity"
-            );
-        }
-        true
+        isos
     }
 
     /// Worst `|PT(a, b, log(a, b)) - (-log(b, a))|_b` over the sampled pairs,
@@ -1114,13 +1136,6 @@ macro_rules! conformance_suite {
                 log_inverts_exp_on_sampled_tangents,
                 log_magnitude_equals_geodesic_distance,
                 exp_advances_by_the_metric_norm_of_its_tangent,
-                distance_is_invariant_under_isometry,
-                iso_identity_is_neutral,
-                iso_inverse_is_two_sided,
-                iso_compose_is_associative,
-                iso_compose_matches_sequential_apply,
-                iso_transport_is_the_differential_of_iso_apply,
-                iso_transport_preserves_the_metric_norm,
                 parallel_transport_preserves_the_metric_norm,
                 parallel_transport_is_linear_in_the_transported_vector,
                 parallel_transport_along_one_segment_matches_parallel_transport,
@@ -1129,6 +1144,29 @@ macro_rules! conformance_suite {
                 geodesic_triangle_angle_excess_matches_gauss_bonnet,
                 degenerate_inputs_stay_finite,
                 sampled_calls_are_bit_reproducible,
+            );
+        }
+    };
+}
+
+/// The group items, for the fixtures whose Space implements
+/// [`IsometryGroup`]. Invoked next to [`conformance_suite!`], never instead of
+/// it: an isometry fixture owes both halves.
+macro_rules! isometry_conformance_suite {
+    ($suite:ident, $fixture:expr) => {
+        mod $suite {
+            use super::*;
+
+            conformance_tests!($fixture;
+                distance_is_invariant_under_isometry,
+                iso_identity_is_neutral,
+                iso_inverse_is_two_sided,
+                iso_compose_is_associative,
+                iso_compose_matches_sequential_apply,
+                iso_transport_is_the_differential_of_iso_apply,
+                iso_transport_preserves_the_metric_norm,
+                isometries_of_degenerate_inputs_stay_finite,
+                sampled_isometry_calls_are_bit_reproducible,
             );
         }
     };
@@ -1145,7 +1183,6 @@ struct EuclideanR2Fixture;
 impl SpaceFixture for EuclideanR2Fixture {
     type Point = Vec2;
     type Vector = Vec2;
-    type Iso = Iso2;
     type S = EuclideanR2;
 
     fn space(&self) -> EuclideanR2 {
@@ -1164,20 +1201,6 @@ impl SpaceFixture for EuclideanR2Fixture {
         (0..3)
             .map(|_| Vec2::new(rng.signed_unit(), rng.signed_unit()) * 0.4)
             .collect()
-    }
-
-    fn isos(&self) -> Vec<Iso2> {
-        vec![
-            Iso2 {
-                rotation: Bivector2(0.5).exp(),
-                translation: Vec2::new(1.0, 0.0),
-            },
-            Iso2 {
-                rotation: Bivector2(-0.9).exp(),
-                translation: Vec2::new(0.0, 2.0),
-            },
-            Iso2::from_translation(Vec2::new(-0.7, 0.3)),
-        ]
     }
 
     fn inner(&self, _at: Vec2, u: Vec2, v: Vec2) -> f32 {
@@ -1220,13 +1243,30 @@ impl SpaceFixture for EuclideanR2Fixture {
     }
 }
 
+impl IsometryFixture for EuclideanR2Fixture {
+    type Iso = Iso2;
+
+    fn isos(&self) -> Vec<Iso2> {
+        vec![
+            Iso2 {
+                rotation: Bivector2(0.5).exp(),
+                translation: Vec2::new(1.0, 0.0),
+            },
+            Iso2 {
+                rotation: Bivector2(-0.9).exp(),
+                translation: Vec2::new(0.0, 2.0),
+            },
+            Iso2::from_translation(Vec2::new(-0.7, 0.3)),
+        ]
+    }
+}
+
 /// Euclidean R³. Extent: coordinates of order 1.
 struct EuclideanR3Fixture;
 
 impl SpaceFixture for EuclideanR3Fixture {
     type Point = Vec3;
     type Vector = Vec3;
-    type Iso = Iso3;
     type S = EuclideanR3;
 
     fn space(&self) -> EuclideanR3 {
@@ -1245,23 +1285,6 @@ impl SpaceFixture for EuclideanR3Fixture {
         (0..3)
             .map(|_| Vec3::new(rng.signed_unit(), rng.signed_unit(), rng.signed_unit()) * 0.4)
             .collect()
-    }
-
-    fn isos(&self) -> Vec<Iso3> {
-        vec![
-            Iso3 {
-                rotation: Quat::from_rotation_z(0.4),
-                translation: Vec3::new(1.0, 0.0, 0.0),
-            },
-            Iso3 {
-                rotation: Quat::from_rotation_x(0.9),
-                translation: Vec3::new(0.0, 2.0, -1.0),
-            },
-            Iso3 {
-                rotation: Quat::from_rotation_y(-0.6),
-                translation: Vec3::new(-0.5, 0.25, 3.0),
-            },
-        ]
     }
 
     fn inner(&self, _at: Vec3, u: Vec3, v: Vec3) -> f32 {
@@ -1304,6 +1327,27 @@ impl SpaceFixture for EuclideanR3Fixture {
     }
 }
 
+impl IsometryFixture for EuclideanR3Fixture {
+    type Iso = Iso3;
+
+    fn isos(&self) -> Vec<Iso3> {
+        vec![
+            Iso3 {
+                rotation: Quat::from_rotation_z(0.4),
+                translation: Vec3::new(1.0, 0.0, 0.0),
+            },
+            Iso3 {
+                rotation: Quat::from_rotation_x(0.9),
+                translation: Vec3::new(0.0, 2.0, -1.0),
+            },
+            Iso3 {
+                rotation: Quat::from_rotation_y(-0.6),
+                translation: Vec3::new(-0.5, 0.25, 3.0),
+            },
+        ]
+    }
+}
+
 /// Euclidean R⁴. Extent: coordinates of order 1. The isometries carry compound
 /// (two-plane) rotors, the case where a `Rotor4` composition order error does
 /// not cancel.
@@ -1312,7 +1356,6 @@ struct EuclideanR4Fixture;
 impl SpaceFixture for EuclideanR4Fixture {
     type Point = Vec4;
     type Vector = Vec4;
-    type Iso = Iso4Flat;
     type S = EuclideanR4;
 
     fn space(&self) -> EuclideanR4 {
@@ -1345,23 +1388,6 @@ impl SpaceFixture for EuclideanR4Fixture {
                 ) * 0.4
             })
             .collect()
-    }
-
-    fn isos(&self) -> Vec<Iso4Flat> {
-        vec![
-            Iso4Flat {
-                rotation: Bivector4::new(0.4, 0.0, 0.0, 0.0, 0.0, 0.2).exp(),
-                translation: Vec4::new(1.0, 0.0, 0.0, 0.0),
-            },
-            Iso4Flat {
-                rotation: Bivector4::new(0.0, 0.0, 0.0, 0.9, 0.0, 0.0).exp(),
-                translation: Vec4::new(0.0, 2.0, -1.0, 0.5),
-            },
-            Iso4Flat {
-                rotation: Bivector4::new(0.3, 0.1, -0.2, 0.4, 0.0, 0.15).exp(),
-                translation: Vec4::new(-0.5, 0.25, 3.0, -2.0),
-            },
-        ]
     }
 
     fn inner(&self, _at: Vec4, u: Vec4, v: Vec4) -> f32 {
@@ -1404,6 +1430,27 @@ impl SpaceFixture for EuclideanR4Fixture {
     }
 }
 
+impl IsometryFixture for EuclideanR4Fixture {
+    type Iso = Iso4Flat;
+
+    fn isos(&self) -> Vec<Iso4Flat> {
+        vec![
+            Iso4Flat {
+                rotation: Bivector4::new(0.4, 0.0, 0.0, 0.0, 0.0, 0.2).exp(),
+                translation: Vec4::new(1.0, 0.0, 0.0, 0.0),
+            },
+            Iso4Flat {
+                rotation: Bivector4::new(0.0, 0.0, 0.0, 0.9, 0.0, 0.0).exp(),
+                translation: Vec4::new(0.0, 2.0, -1.0, 0.5),
+            },
+            Iso4Flat {
+                rotation: Bivector4::new(0.3, 0.1, -0.2, 0.4, 0.0, 0.15).exp(),
+                translation: Vec4::new(-0.5, 0.25, 3.0, -2.0),
+            },
+        ]
+    }
+}
+
 /// Hyperbolic H³, Poincaré ball. Extent: `|p| <= 0.4`, where the inline tests'
 /// 1e-4 holds; the Möbius chains compound, so it is a decade looser than the
 /// flat trio at the same extent.
@@ -1416,7 +1463,6 @@ struct HyperbolicH3Fixture;
 impl SpaceFixture for HyperbolicH3Fixture {
     type Point = Vec3;
     type Vector = Vec3;
-    type Iso = Iso3H;
     type S = HyperbolicH3;
 
     fn space(&self) -> HyperbolicH3 {
@@ -1432,14 +1478,6 @@ impl SpaceFixture for HyperbolicH3Fixture {
         (0..3)
             .map(|_| Vec3::new(rng.signed_unit(), rng.signed_unit(), rng.signed_unit()) * 0.06)
             .collect()
-    }
-
-    fn isos(&self) -> Vec<Iso3H> {
-        vec![
-            Iso3H::from_translation(Vec3::new(0.15, 0.0, 0.0)),
-            Iso3H::from_rotation(Quat::from_rotation_z(0.4)),
-            Iso3H::from_translation(Vec3::new(-0.05, 0.2, 0.1)),
-        ]
     }
 
     fn inner(&self, at: Vec3, u: Vec3, v: Vec3) -> f32 {
@@ -1502,6 +1540,18 @@ impl SpaceFixture for HyperbolicH3Fixture {
     }
 }
 
+impl IsometryFixture for HyperbolicH3Fixture {
+    type Iso = Iso3H;
+
+    fn isos(&self) -> Vec<Iso3H> {
+        vec![
+            Iso3H::from_translation(Vec3::new(0.15, 0.0, 0.0)),
+            Iso3H::from_rotation(Quat::from_rotation_z(0.4)),
+            Iso3H::from_translation(Vec3::new(-0.05, 0.2, 0.1)),
+        ]
+    }
+}
+
 /// Spherical S³, upper-hemisphere chart. Extent: `|p| <= 0.4`, matching the
 /// inline tests' 1e-5.
 ///
@@ -1525,7 +1575,6 @@ impl SphericalS3Fixture {
 impl SpaceFixture for SphericalS3Fixture {
     type Point = Vec3;
     type Vector = Vec3;
-    type Iso = Iso4;
     type S = SphericalS3;
 
     fn space(&self) -> SphericalS3 {
@@ -1541,16 +1590,6 @@ impl SpaceFixture for SphericalS3Fixture {
         (0..3)
             .map(|_| Vec3::new(rng.signed_unit(), rng.signed_unit(), rng.signed_unit()) * 0.15)
             .collect()
-    }
-
-    fn isos(&self) -> Vec<Iso4> {
-        // Small enough that no sampled point crosses the equator, the chart's
-        // documented failure mode.
-        vec![
-            Iso4::from_translation(Vec3::new(0.15, 0.0, 0.0)),
-            Iso4::from_rotation(Quat::from_rotation_z(0.4)),
-            Iso4::from_translation(Vec3::new(-0.05, 0.2, 0.1)),
-        ]
     }
 
     fn inner(&self, at: Vec3, u: Vec3, v: Vec3) -> f32 {
@@ -1600,6 +1639,20 @@ impl SpaceFixture for SphericalS3Fixture {
     }
 }
 
+impl IsometryFixture for SphericalS3Fixture {
+    type Iso = Iso4;
+
+    fn isos(&self) -> Vec<Iso4> {
+        // Small enough that no sampled point crosses the equator, the chart's
+        // documented failure mode.
+        vec![
+            Iso4::from_translation(Vec3::new(0.15, 0.0, 0.0)),
+            Iso4::from_rotation(Quat::from_rotation_z(0.4)),
+            Iso4::from_translation(Vec3::new(-0.05, 0.2, 0.1)),
+        ]
+    }
+}
+
 /// Spherical S³, full ambient embedding. Extent: a cap around `+w` of angular
 /// radius ~0.7 rad, so every sampled pair is well inside the injectivity
 /// radius `pi`.
@@ -1608,7 +1661,6 @@ struct SphericalS3EmbeddedFixture;
 impl SpaceFixture for SphericalS3EmbeddedFixture {
     type Point = Vec4;
     type Vector = Vec4;
-    type Iso = Iso4;
     type S = SphericalS3Embedded;
 
     fn space(&self) -> SphericalS3Embedded {
@@ -1648,14 +1700,6 @@ impl SpaceFixture for SphericalS3EmbeddedFixture {
                 (raw - raw.dot(at) * at) * 0.2
             })
             .collect()
-    }
-
-    fn isos(&self) -> Vec<Iso4> {
-        vec![
-            Iso4::from_translation(Vec3::new(0.3, 0.1, -0.2)),
-            Iso4::from_rotation(Quat::from_rotation_z(0.4)),
-            Iso4::from_translation(Vec3::new(-0.05, 0.2, 0.1)),
-        ]
     }
 
     fn inner(&self, _at: Vec4, u: Vec4, v: Vec4) -> f32 {
@@ -1702,6 +1746,18 @@ impl SpaceFixture for SphericalS3EmbeddedFixture {
     }
 }
 
+impl IsometryFixture for SphericalS3EmbeddedFixture {
+    type Iso = Iso4;
+
+    fn isos(&self) -> Vec<Iso4> {
+        vec![
+            Iso4::from_translation(Vec3::new(0.3, 0.1, -0.2)),
+            Iso4::from_rotation(Quat::from_rotation_z(0.4)),
+            Iso4::from_translation(Vec3::new(-0.05, 0.2, 0.1)),
+        ]
+    }
+}
+
 /// `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>`, the variable-metric
 /// case. Tolerances are the ones the inline integrator tests already meet; they
 /// are two to three decades looser than the closed-form impls because `exp` is
@@ -1723,15 +1779,7 @@ struct BlendedSpaceFixture;
 impl SpaceFixture for BlendedSpaceFixture {
     type Point = Vec3;
     type Vector = Vec3;
-    type Iso = ();
     type S = BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>;
-
-    /// `Iso = ()`: the blending field breaks translation and rotation symmetry,
-    /// so this Space ships no isometries at all. Declared rather than left to
-    /// pass vacuously, because a silently-vacuous invariant is exactly the hole
-    /// this suite exists to close, and this one blocks face-pairing
-    /// identifications on composed spaces.
-    const ISOMETRY_GROUP_IS_TRIVIAL: bool = true;
 
     /// `parallel_transport` integrates the transport ODE along the
     /// chart-coordinate straight line, which is not this Space's geodesic; the
@@ -1790,10 +1838,6 @@ impl SpaceFixture for BlendedSpaceFixture {
             .collect()
     }
 
-    fn isos(&self) -> Vec<()> {
-        vec![()]
-    }
-
     fn inner(&self, at: Vec3, u: Vec3, v: Vec3) -> f32 {
         self.space().conformal_factor(at) * u.dot(v)
     }
@@ -1844,3 +1888,12 @@ conformance_suite!(hyperbolic_h3, HyperbolicH3Fixture);
 conformance_suite!(spherical_s3, SphericalS3Fixture);
 conformance_suite!(spherical_s3_embedded, SphericalS3EmbeddedFixture);
 conformance_suite!(blended_space, BlendedSpaceFixture);
+
+// `BlendedSpace` is absent by construction: it does not implement
+// `IsometryGroup`, so naming it here would not compile.
+isometry_conformance_suite!(euclidean_r2_isometries, EuclideanR2Fixture);
+isometry_conformance_suite!(euclidean_r3_isometries, EuclideanR3Fixture);
+isometry_conformance_suite!(euclidean_r4_isometries, EuclideanR4Fixture);
+isometry_conformance_suite!(hyperbolic_h3_isometries, HyperbolicH3Fixture);
+isometry_conformance_suite!(spherical_s3_isometries, SphericalS3Fixture);
+isometry_conformance_suite!(spherical_s3_embedded_isometries, SphericalS3EmbeddedFixture);

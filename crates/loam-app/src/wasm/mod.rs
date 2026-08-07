@@ -28,6 +28,7 @@ pub mod input_queue;
 pub mod launch;
 pub mod main_launcher;
 pub mod messages;
+pub mod modifier_sync;
 pub mod worker;
 pub mod worker_ui;
 

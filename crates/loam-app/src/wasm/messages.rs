@@ -29,6 +29,7 @@ pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
         "resize" => InputMessage::Resize {
             width: read_u32_field(data, "width").unwrap_or(0),
             height: read_u32_field(data, "height").unwrap_or(0),
+            dpr: read_device_pixel_ratio(data),
         },
         "mouse_move" => InputMessage::MouseMove {
             x: read_f32_field(data, "x").unwrap_or(0.0),
@@ -67,6 +68,18 @@ pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
     };
 
     Ok(Some(msg))
+}
+
+/// Read the `dpr` field of an `init` or `resize` payload. Shared with the
+/// worker's `init` handler, which parses outside [`parse_non_init`].
+///
+/// A missing, zero, or non-finite ratio falls back to 1.0: it divides
+/// egui's `size_in_pixels` into points, so anything else poisons the whole
+/// screen rect rather than merely mis-scaling it.
+pub fn read_device_pixel_ratio(obj: &JsValue) -> f32 {
+    read_f32_field(obj, "dpr")
+        .filter(|dpr| dpr.is_finite() && *dpr > 0.0)
+        .unwrap_or(1.0)
 }
 
 // ---------------------------------------------------------------------------

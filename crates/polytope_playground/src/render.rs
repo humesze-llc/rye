@@ -142,6 +142,12 @@ impl Demo {
                 let _scope = loam_time::frame_trace::scope("pp-points");
                 self.record_points(rd, encoder, view);
             }
+            // Physics readout on top of everything, and only when a layer is
+            // on: one boolean OR is the whole cost of a hidden overlay.
+            if self.physics_overlay.any_layer() {
+                let _scope = loam_time::frame_trace::scope("pp-physics-overlay");
+                self.record_physics_overlay(rd, encoder, view);
+            }
             Ok(())
         }
     }
@@ -239,6 +245,44 @@ impl Demo {
         // No depth attachment: see `PointRasterNode::new` (drop-w + ReadOnly
         // LessEqual occluded non-w=0 vertices behind their own caps).
         self.points_node.record(encoder, view, None, None);
+    }
+
+    /// Build the physics readout mesh ([`build_physics_overlay_mesh`]), upload
+    /// it, and record the line pass. No depth attachment, for the same reason
+    /// [`Demo::record_points`] has none: a solver readout occluded by the body
+    /// it describes reports nothing.
+    fn record_physics_overlay(
+        &mut self,
+        rd: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+    ) {
+        let cfg = &rd.surface_bundle.config;
+        let overlay = self.physics_overlay;
+        // Mesh taken out of `self` for the build: the row frame borrows the
+        // physics world for as long as the buffer it fills is borrowed. Put
+        // back so its capacity persists across frames.
+        let mut mesh = std::mem::take(&mut self.physics_overlay_mesh_scratch);
+        build_physics_overlay_mesh(&self.row_frame(), &overlay, &mut mesh);
+
+        // Camera matches the wireframe overlay / section faces.
+        let view_dir = self.camera.view();
+        let aspect = cfg.width as f32 / cfg.height as f32;
+        let view_mat = Mat4::look_to_rh(view_dir.position, view_dir.forward, view_dir.up);
+        let proj_mat = Mat4::perspective_rh(60.0_f32.to_radians(), aspect, 0.1, 100.0);
+        let view_proj = proj_mat * view_mat;
+        let vp_size = Vec2::new(cfg.width as f32, cfg.height as f32);
+        self.physics_overlay_node
+            .set_camera(&rd.queue, view_proj, vp_size);
+        self.physics_overlay_node.upload::<EuclideanR3, 3>(
+            &rd.device,
+            &rd.queue,
+            &mesh,
+            &loam_math::Projection::Identity,
+            1,
+        );
+        self.physics_overlay_mesh_scratch = mesh;
+        self.physics_overlay_node.record(encoder, view, None, None);
     }
 
     /// Render the rasterized section as TWO independent overlaid layers in one
@@ -1104,6 +1148,246 @@ pub(crate) fn build_wireframe_meshes(
                 slerp_scratch,
                 view_radius,
             );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Physics debug overlay
+// ---------------------------------------------------------------------------
+
+/// Which of the solver's quantities the debug overlay draws. Four independent
+/// switches rather than one master: the overlay exists to isolate a suspect
+/// quantity, and a contact cloud drawn over the normals hides exactly the
+/// direction error it was turned on to find.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) struct PhysicsOverlay {
+    /// Axis cross at each contact's world point.
+    pub(crate) contacts: bool,
+    /// Ray from each contact along its normal, which points body A toward B.
+    pub(crate) normals: bool,
+    /// Bars whose length is the accumulated normal and tangent impulse.
+    pub(crate) impulses: bool,
+    /// Per-island colouring of the member bodies and the constraints coupling
+    /// them.
+    pub(crate) islands: bool,
+    /// World units of bar length per unit of accumulated impulse. Impulse is
+    /// mass times velocity and carries no length scale of its own, so this is
+    /// the one number a reader has to set for their own scene.
+    pub(crate) impulse_scale: f32,
+    pub(crate) width_px: f32,
+}
+
+/// Bar length per unit impulse. A head-on flick at
+/// [`crate::physics::MAX_THROW_SPEED`] against an equal mass transfers about
+/// eight units of impulse into one contact, which this puts at roughly half a
+/// body radius.
+const DEFAULT_IMPULSE_SCALE: f32 = 0.05;
+
+/// Contact-marker arm half-length, as a fraction of the body radius. Small
+/// enough that a full four-slot manifold reads as four marks and not a blob.
+const CONTACT_CROSS_FRACTION: f32 = 0.15;
+
+/// Drawn normal length, as a fraction of the body radius. Taken off the body
+/// rather than fixed so `surface scale` cannot bury the arrows inside the
+/// geometry they point away from.
+const NORMAL_LEN_FRACTION: f32 = 0.9;
+
+/// Island-marker arm half-length, as a fraction of the body radius: the marker
+/// spans the body it labels.
+const ISLAND_CROSS_FRACTION: f32 = 1.0;
+
+const CONTACT_COLOR: [f32; 4] = [1.00, 0.95, 0.35, 1.0];
+/// Normals run dark at the contact and bright at the tip, so the sign of the
+/// normal reads off one segment without an arrowhead the line raster has no
+/// primitive for.
+const NORMAL_TAIL_COLOR: [f32; 4] = [0.06, 0.24, 0.42, 1.0];
+const NORMAL_TIP_COLOR: [f32; 4] = [0.40, 0.95, 1.00, 1.0];
+const NORMAL_IMPULSE_COLOR: [f32; 4] = [1.00, 0.30, 0.22, 1.0];
+const TANGENT_IMPULSE_COLOR: [f32; 4] = [0.70, 0.40, 1.00, 1.0];
+
+/// Island colours, indexed by the island's ordinal in the ascending partition
+/// and wrapped past the end. Six hues, because the partition is read by eye and
+/// a longer palette stops being separable at overlay alpha; a scene with more
+/// than six simultaneous islands repeats a colour, which misreads two islands
+/// as one, so the count is the ceiling on what this layer can claim.
+const ISLAND_PALETTE: [[f32; 4]; 6] = [
+    [0.35, 0.85, 0.45, 1.0],
+    [0.95, 0.55, 0.20, 1.0],
+    [0.45, 0.60, 1.00, 1.0],
+    [0.95, 0.40, 0.75, 1.0],
+    [0.90, 0.90, 0.35, 1.0],
+    [0.35, 0.90, 0.90, 1.0],
+];
+
+impl Default for PhysicsOverlay {
+    fn default() -> Self {
+        Self {
+            contacts: false,
+            normals: false,
+            impulses: false,
+            islands: false,
+            impulse_scale: DEFAULT_IMPULSE_SCALE,
+            width_px: 2.0,
+        }
+    }
+}
+
+impl PhysicsOverlay {
+    /// Whether any layer draws. This is the overlay's entire cost while it is
+    /// hidden: [`Demo::record`] never builds a mesh, reads a manifold, or
+    /// touches the raster node unless this returns true.
+    pub(crate) fn any_layer(self) -> bool {
+        self.contacts || self.normals || self.impulses || self.islands
+    }
+}
+
+fn push_overlay_segment(
+    mesh: &mut LineMesh<3>,
+    from: Vec3,
+    to: Vec3,
+    from_color: [f32; 4],
+    to_color: [f32; 4],
+    width: f32,
+) {
+    mesh.segments.push((from.to_array(), to.to_array()));
+    mesh.colors.push((from_color, to_color));
+    mesh.widths.push(width);
+}
+
+/// Three axis-aligned segments centred on `centre`. Axis-aligned rather than
+/// carried into the body frame: the marker reports a position, and an
+/// orientation it does not actually track would read as one it does.
+fn push_axis_cross(mesh: &mut LineMesh<3>, centre: Vec3, half: f32, color: [f32; 4], width: f32) {
+    for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+        push_overlay_segment(
+            mesh,
+            centre - axis * half,
+            centre + axis * half,
+            color,
+            color,
+            width,
+        );
+    }
+}
+
+/// Fill `mesh` with the enabled layers of the physics debug overlay, in world
+/// R³. Cleared on entry, reusing the caller's allocation.
+///
+/// Every quantity drawn here is a world-frame quantity of the
+/// [`loam_physics::World`], not body-local geometry, so none of it goes through
+/// the body-local project-then-translate path the shape passes use: a contact
+/// between two bodies belongs to neither one's frame. R⁴ maps to R³ by dropping
+/// w, which is the honest cross-section layer's projection and agrees with
+/// every other projection on the `w = 0` slice the chamber's bodies live on. A
+/// contact that leaves that slice therefore draws where drop-w puts it rather
+/// than where the active projection put the surfaces, and a normal pointing
+/// along w draws as a zero-length tick, which is itself the readout that the
+/// separating direction left the slice.
+///
+/// Free function over [`RowFrame`] so the mapping from solver state to emitted
+/// geometry is pinned without a device; [`Demo::record_physics_overlay`] is the
+/// one production caller.
+pub(crate) fn build_physics_overlay_mesh(
+    frame: &RowFrame<'_>,
+    overlay: &PhysicsOverlay,
+    mesh: &mut LineMesh<3>,
+) {
+    mesh.segments.clear();
+    mesh.colors.clear();
+    mesh.widths.clear();
+    if !overlay.any_layer() {
+        return;
+    }
+
+    let world = &frame.physics.world;
+    let radius = frame.body_size;
+    let width = overlay.width_px;
+
+    if overlay.contacts || overlay.normals || overlay.impulses {
+        for manifold in world.manifolds.values() {
+            for cp in &manifold.points {
+                let point = cp.world_point.truncate();
+                let normal = cp.normal.truncate();
+                if overlay.contacts {
+                    push_axis_cross(
+                        mesh,
+                        point,
+                        CONTACT_CROSS_FRACTION * radius,
+                        CONTACT_COLOR,
+                        width,
+                    );
+                }
+                if overlay.normals {
+                    push_overlay_segment(
+                        mesh,
+                        point,
+                        point + normal * (NORMAL_LEN_FRACTION * radius),
+                        NORMAL_TAIL_COLOR,
+                        NORMAL_TIP_COLOR,
+                        width,
+                    );
+                }
+                if overlay.impulses {
+                    // Drawn along −normal, which is the direction the
+                    // accumulated impulse pushes A, and which keeps the bar off
+                    // the normal ray above so a short bar under a long arrow
+                    // still reads.
+                    push_overlay_segment(
+                        mesh,
+                        point,
+                        point - normal * (cp.normal_impulse * overlay.impulse_scale),
+                        NORMAL_IMPULSE_COLOR,
+                        NORMAL_IMPULSE_COLOR,
+                        width,
+                    );
+                    // `tangent_dir` is the slide direction and the impulse
+                    // brakes against it, so the bar runs backward along it for
+                    // the same reason.
+                    push_overlay_segment(
+                        mesh,
+                        point,
+                        point
+                            - cp.tangent_dir.truncate()
+                                * (cp.tangent_impulse * overlay.impulse_scale),
+                        TANGENT_IMPULSE_COLOR,
+                        TANGENT_IMPULSE_COLOR,
+                        width,
+                    );
+                }
+            }
+        }
+    }
+
+    if overlay.islands {
+        // `islands()` allocates its partition per call. It is the only form
+        // that yields the components ascending, which is what makes an island's
+        // colour a function of the partition rather than of whichever body the
+        // union-find left as a root; the layer is off by default, so the cost
+        // is paid only by a frame that asked for it.
+        for (ordinal, island) in world.islands().iter().enumerate() {
+            let color = ISLAND_PALETTE[ordinal % ISLAND_PALETTE.len()];
+            for &id in &island.bodies {
+                push_axis_cross(
+                    mesh,
+                    world.bodies[id].position.truncate(),
+                    ISLAND_CROSS_FRACTION * radius,
+                    color,
+                    width,
+                );
+            }
+            // The coupling edges, so the partition reads as a graph and not as
+            // a set of independently tinted bodies.
+            for &(a, b) in &island.constraints {
+                push_overlay_segment(
+                    mesh,
+                    world.bodies[a].position.truncate(),
+                    world.bodies[b].position.truncate(),
+                    color,
+                    color,
+                    width,
+                );
+            }
         }
     }
 }
@@ -2291,5 +2575,383 @@ mod tests {
                 "{what} point {i}: {s:?} is not {b:?} scaled by {scale} about {centre:?}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Physics debug overlay
+    // -----------------------------------------------------------------------
+
+    /// Any positive step fills the manifolds from the positions the fixture
+    /// wrote, since the integrator runs before the narrowphase and the fixture
+    /// bodies carry no velocity. Deliberately not the production tick: nothing
+    /// pinned below is a function of it.
+    const FIXTURE_DT: f32 = 1.0 / 60.0;
+
+    /// Overlap depth of a fixture pair, in world units. Comfortably past
+    /// `PENETRATION_SLOP` so the narrowphase reports rather than grazes.
+    const FIXTURE_OVERLAP: f32 = 0.2;
+
+    /// Separation between fixture pairs. Far past the sum of two bounding
+    /// radii, so the broadphase cannot couple two pairs into one island however
+    /// the sweep prunes.
+    const FIXTURE_GROUP_GAP: f32 = 20.0;
+
+    /// A world whose contact set is known by construction: `pairs` disjoint
+    /// pairs of overlapping spheres, one island each. Positions are written
+    /// rather than thrown into place because the property under test is the map
+    /// from solver state to geometry, and routing through a throw would make
+    /// the contact set a function of the integrator and the decay instead.
+    fn contacting_world(pairs: usize) -> PlaygroundPhysics {
+        let mut physics = PlaygroundPhysics::new(2 * pairs, BODY_SIZE);
+        for pair in 0..pairs {
+            let base = Vec4::X * (FIXTURE_GROUP_GAP * pair as f32);
+            physics.world.bodies[2 * pair].position = base;
+            physics.world.bodies[2 * pair + 1].position =
+                base + Vec4::X * (2.0 * BODY_SIZE - FIXTURE_OVERLAP);
+        }
+        physics.world.step(FIXTURE_DT);
+        assert_eq!(
+            physics.world.manifolds.len(),
+            pairs,
+            "the fixture layout did not produce one manifold per pair"
+        );
+        physics
+    }
+
+    /// All four layers on, so no branch of the builder sits outside a pin.
+    fn every_layer() -> PhysicsOverlay {
+        PhysicsOverlay {
+            contacts: true,
+            normals: true,
+            impulses: true,
+            islands: true,
+            ..PhysicsOverlay::default()
+        }
+    }
+
+    fn only(layer: fn(&mut PhysicsOverlay)) -> PhysicsOverlay {
+        let mut overlay = PhysicsOverlay::default();
+        layer(&mut overlay);
+        overlay
+    }
+
+    /// Fixture rows matching [`contacting_world`]'s body counts. The overlay
+    /// reads the world and not the row, but a frame whose row disagreed with
+    /// the world would be one no production path can build.
+    const ROW_PAIR: &[ShapeEntry] = &[ROW[0], ROW[0]];
+    const ROW_FOUR: &[ShapeEntry] = &[ROW[0], ROW[0], ROW[0], ROW[0]];
+
+    fn overlay_frame(physics: &PlaygroundPhysics) -> RowFrame<'_> {
+        let row = match physics.world.bodies.len() {
+            2 => ROW_PAIR,
+            4 => ROW_FOUR,
+            n => panic!("no fixture row of {n} slots"),
+        };
+        RowFrame {
+            physics,
+            row,
+            spin: Rotor4::IDENTITY,
+            body_size: BODY_SIZE,
+            projection: Projection::Identity,
+            w_slice: 0.0,
+            camera_distance: CAMERA_DISTANCE,
+        }
+    }
+
+    fn overlay_mesh(physics: &PlaygroundPhysics, overlay: &PhysicsOverlay) -> LineMesh<3> {
+        let mut mesh = LineMesh::<3>::default();
+        build_physics_overlay_mesh(&overlay_frame(physics), overlay, &mut mesh);
+        assert_eq!(mesh.colors.len(), mesh.segments.len());
+        assert_eq!(mesh.widths.len(), mesh.segments.len());
+        mesh
+    }
+
+    /// Every contact in the world gets exactly one normal segment, running from
+    /// the contact point along the stored normal. The count is the shape of the
+    /// mapping; the direction assert is the point of the layer, since a normal
+    /// that renders backwards would misreport the very defect class the overlay
+    /// exists to expose.
+    #[test]
+    fn every_contact_emits_one_normal_along_the_stored_direction() {
+        let physics = contacting_world(2);
+        let mesh = overlay_mesh(&physics, &only(|o| o.normals = true));
+        let world = &physics.world;
+
+        let contacts: usize = world.manifolds.values().map(|m| m.points.len()).sum();
+        assert!(contacts > 0, "fixture produced no contacts");
+        assert_eq!(
+            mesh.segments.len(),
+            contacts,
+            "the normals layer emitted {} segments for {contacts} contacts",
+            mesh.segments.len()
+        );
+
+        let mut segments = mesh.segments.iter();
+        for (&(a, b), manifold) in world.manifolds.iter() {
+            let separation = (world.bodies[b].position - world.bodies[a].position).truncate();
+            for cp in &manifold.points {
+                let &(from, to) = segments.next().expect("one segment per contact");
+                let point = cp.world_point.truncate();
+                assert!(
+                    (Vec3::from_array(from) - point).length() < TRANSLATE_TOL,
+                    "normal starts at {from:?}, not at the contact point {point:?}"
+                );
+                let drawn = Vec3::from_array(to) - Vec3::from_array(from);
+                let expected = cp.normal.truncate() * (NORMAL_LEN_FRACTION * BODY_SIZE);
+                assert!(
+                    (drawn - expected).length() < TRANSLATE_TOL,
+                    "normal drawn as {drawn:?}, not {expected:?}"
+                );
+                assert!(
+                    drawn.dot(separation) > 0.0,
+                    "normal points body B toward A; the layer would misreport a flipped normal"
+                );
+            }
+        }
+    }
+
+    /// The impulse bars carry the accumulated magnitudes, one bar each for
+    /// normal and tangent, drawn against their own direction (the direction the
+    /// impulse pushes A, and the direction friction brakes). A bar whose length
+    /// ignored `impulse_scale`, or read `penetration` instead of the
+    /// accumulator, fails on the doubling.
+    #[test]
+    fn impulse_bar_length_tracks_the_accumulated_impulse() {
+        let physics = contacting_world(1);
+        let world = &physics.world;
+        let contacts: usize = world.manifolds.values().map(|m| m.points.len()).sum();
+        let solved: f32 = world
+            .manifolds
+            .values()
+            .flat_map(|m| m.points.iter())
+            .map(|cp| cp.normal_impulse)
+            .sum();
+        assert!(
+            solved > 0.0,
+            "fixture accumulated no normal impulse, so the length pin is vacuous"
+        );
+
+        let base = only(|o| o.impulses = true);
+        let mesh = overlay_mesh(&physics, &base);
+        assert_eq!(
+            mesh.segments.len(),
+            2 * contacts,
+            "the impulses layer emits a normal and a tangent bar per contact"
+        );
+
+        let doubled = overlay_mesh(
+            &physics,
+            &PhysicsOverlay {
+                impulse_scale: base.impulse_scale * 2.0,
+                ..base
+            },
+        );
+        for (i, (&(from, to), &(from2, to2))) in
+            mesh.segments.iter().zip(&doubled.segments).enumerate()
+        {
+            let short = Vec3::from_array(to) - Vec3::from_array(from);
+            let long = Vec3::from_array(to2) - Vec3::from_array(from2);
+            assert!(
+                (long - short * 2.0).length() < TRANSLATE_TOL,
+                "bar {i} did not scale with impulse_scale: {short:?} then {long:?}"
+            );
+        }
+
+        // Sign: the normal bar runs against the normal, which is the direction
+        // the accumulated impulse pushes body A.
+        for (manifold, chunk) in world.manifolds.values().zip(mesh.segments.chunks_exact(2)) {
+            for cp in &manifold.points {
+                let bar = Vec3::from_array(chunk[0].1) - Vec3::from_array(chunk[0].0);
+                let expected = cp.normal.truncate() * (-cp.normal_impulse * base.impulse_scale);
+                assert!(
+                    (bar - expected).length() < TRANSLATE_TOL,
+                    "normal-impulse bar drawn as {bar:?}, not {expected:?}"
+                );
+            }
+        }
+    }
+
+    /// Every body of one island is marked in one colour, and two islands never
+    /// share one. This is the whole claim the layer makes: that the partition
+    /// the solver computed is the partition the eye reads.
+    #[test]
+    fn one_island_marks_its_bodies_in_one_colour() {
+        let physics = contacting_world(2);
+        let world = &physics.world;
+        let islands = world.islands();
+        assert_eq!(islands.len(), 2, "fixture did not split into two islands");
+
+        let mesh = overlay_mesh(&physics, &only(|o| o.islands = true));
+        // Three cross arms per member body, plus one link per constraint.
+        let expected: usize = islands
+            .iter()
+            .map(|i| 3 * i.bodies.len() + i.constraints.len())
+            .sum();
+        assert_eq!(mesh.segments.len(), expected);
+
+        // Colours compared as bit patterns: the palette is a table lookup, so
+        // two entries are the same colour or they are not.
+        let mut per_island: Vec<[u32; 4]> = Vec::new();
+        for island in &islands {
+            let mut colors = std::collections::BTreeSet::new();
+            for &id in &island.bodies {
+                let centre = world.bodies[id].position.truncate();
+                let mut arms = 0;
+                for (&(from, to), &(color, _)) in mesh.segments.iter().zip(&mesh.colors) {
+                    let mid = (Vec3::from_array(from) + Vec3::from_array(to)) * 0.5;
+                    if (mid - centre).length() < TRANSLATE_TOL
+                        && Vec3::from_array(from) != Vec3::from_array(to)
+                    {
+                        arms += 1;
+                        colors.insert(color.map(f32::to_bits));
+                    }
+                }
+                assert_eq!(arms, 3, "body {id:?} is not marked by a three-arm cross");
+            }
+            assert_eq!(
+                colors.len(),
+                1,
+                "island {:?} marked its bodies in {} colours",
+                island.id,
+                colors.len()
+            );
+            let color = *colors.iter().next().expect("one colour");
+            assert!(
+                !per_island.contains(&color),
+                "two islands share a colour, so the partition cannot be read off the overlay"
+            );
+            per_island.push(color);
+        }
+    }
+
+    /// A world nothing has touched draws nothing, whatever is switched on. The
+    /// chamber's resting state is the overlay's zero, so a layer that painted
+    /// the static layout would read as a solver that is doing work it is not.
+    #[test]
+    fn a_world_at_rest_draws_no_physics_overlay() {
+        let physics = PlaygroundPhysics::new(4, BODY_SIZE);
+        assert!(physics.at_rest());
+        assert!(physics.world.manifolds.is_empty());
+        let mesh = overlay_mesh(&physics, &every_layer());
+        assert!(
+            mesh.segments.is_empty(),
+            "a resting world emitted {} segments",
+            mesh.segments.len()
+        );
+    }
+
+    /// Every layer is its own switch: alone, each emits exactly its own
+    /// geometry, and all four together emit each layer's segments and nothing
+    /// besides. A layer wired to another's flag passes a count-only pin whenever
+    /// the counts happen to agree, which is why membership is checked too.
+    #[test]
+    fn each_overlay_layer_draws_only_its_own_geometry() {
+        let physics = contacting_world(2);
+        let contacts: usize = physics
+            .world
+            .manifolds
+            .values()
+            .map(|m| m.points.len())
+            .sum();
+
+        let layers: [(&str, PhysicsOverlay, usize); 4] = [
+            ("contacts", only(|o| o.contacts = true), 3 * contacts),
+            ("normals", only(|o| o.normals = true), contacts),
+            ("impulses", only(|o| o.impulses = true), 2 * contacts),
+            ("islands", only(|o| o.islands = true), {
+                let islands = physics.world.islands();
+                islands
+                    .iter()
+                    .map(|i| 3 * i.bodies.len() + i.constraints.len())
+                    .sum()
+            }),
+        ];
+
+        let all = overlay_mesh(&physics, &every_layer());
+        let mut total = 0;
+        for (name, overlay, expected) in layers {
+            let mesh = overlay_mesh(&physics, &overlay);
+            assert_eq!(
+                mesh.segments.len(),
+                expected,
+                "the {name} layer alone emitted {} segments, expected {expected}",
+                mesh.segments.len()
+            );
+            for segment in &mesh.segments {
+                assert!(
+                    all.segments.contains(segment),
+                    "the {name} layer's {segment:?} is missing when every layer is on"
+                );
+            }
+            total += expected;
+        }
+        assert_eq!(
+            all.segments.len(),
+            total,
+            "the all-layers build is not exactly the four layers"
+        );
+    }
+
+    /// A hidden overlay costs one boolean OR: the builder returns before it
+    /// reads a manifold, and the frame's mesh buffer keeps its capacity. Pinned
+    /// against a world that DOES have contacts, so the zero is the early return
+    /// and not an empty world.
+    ///
+    /// [`Demo::record`] gates the whole call on the same predicate, so the
+    /// hidden frame does not reach here at all; this pins the builder in case
+    /// that gate is ever softened.
+    #[test]
+    fn a_hidden_physics_overlay_reaches_the_allocator_zero_times() {
+        let physics = contacting_world(2);
+        let frame = overlay_frame(&physics);
+        let mut mesh = LineMesh::<3>::default();
+
+        build_physics_overlay_mesh(&frame, &every_layer(), &mut mesh);
+        assert!(!mesh.segments.is_empty(), "the fixture emitted nothing");
+        let warm = mesh.segments.capacity();
+
+        let hidden = PhysicsOverlay::default();
+        assert!(!hidden.any_layer(), "the overlay ships with a layer on");
+        let bytes = alloc_probe::bytes_allocated_by(|| {
+            build_physics_overlay_mesh(&frame, &hidden, &mut mesh)
+        });
+        assert_eq!(
+            bytes, 0,
+            "a hidden overlay asked the allocator for {bytes} bytes"
+        );
+        assert!(mesh.segments.is_empty());
+        assert_eq!(
+            mesh.segments.capacity(),
+            warm,
+            "the hidden path dropped the buffer it will need again"
+        );
+    }
+
+    /// The contact layers run out of the caller's buffer: a warm frame with
+    /// contacts, normals and impulses on reaches the allocator zero times. The
+    /// island layer is excluded on purpose; `World::islands` allocates its
+    /// partition per call, which is documented at the call site and is the one
+    /// layer that pays for a frame.
+    #[test]
+    fn the_contact_overlay_layers_reach_the_allocator_zero_times() {
+        let physics = contacting_world(2);
+        let frame = overlay_frame(&physics);
+        let overlay = PhysicsOverlay {
+            contacts: true,
+            normals: true,
+            impulses: true,
+            ..PhysicsOverlay::default()
+        };
+        let mut mesh = LineMesh::<3>::default();
+        build_physics_overlay_mesh(&frame, &overlay, &mut mesh);
+        assert!(!mesh.segments.is_empty(), "the fixture emitted nothing");
+
+        let warm = alloc_probe::bytes_allocated_by(|| {
+            build_physics_overlay_mesh(&frame, &overlay, &mut mesh)
+        });
+        assert_eq!(
+            warm, 0,
+            "a warm contact overlay asked the allocator for {warm} bytes"
+        );
     }
 }

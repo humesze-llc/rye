@@ -1285,9 +1285,10 @@ mod tests {
             let canonical_pairs = world.broadphase();
             let canonical_constraints: Vec<PairKey> = world.manifolds.keys().copied().collect();
             // A buffer of fewer than two units is fixed by every policy, which
-            // would satisfy the assertions below without the seam existing.
-            // Above two, only a permutation can still land on the identity, and
-            // `assert_buffer_matches_policy` catches that case per buffer.
+            // would satisfy the assertions below without the seam existing. At
+            // two or more, reversal is never the identity but a permutation
+            // still can be, and `assert_buffer_matches_policy` catches that
+            // case per buffer.
             assert!(
                 canonical_bodies.len() >= 2
                     && canonical_pairs.len() >= 2

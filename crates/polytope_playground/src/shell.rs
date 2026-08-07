@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 use loam_app::{args::Args, egui, App, AssetEvent, FrameCtx, SetupCtx, ShaderDb};
 use loam_egui::Console;
 use loam_math::EuclideanR3;
+use loam_render::device::RenderDevice;
 use std::sync::Mutex;
 
 pub(crate) trait Scene {
@@ -118,16 +119,89 @@ pub(crate) fn register_scene_command<Ctx: 'static>(console: &mut Console<Ctx>) {
     );
 }
 
+/// Slot per [`SCENES`] entry, filled on the entry's first activation.
+type SceneSlots = Vec<Option<Box<dyn Scene>>>;
+
+const ACTIVE_IS_BUILT: &str = "a scene is built before it becomes active";
+
+/// One empty slot per registry entry with `boot` filled. Deferring the rest is
+/// the point: a cold start pays one scene's shader compile and VRAM instead of
+/// the whole registry's.
+fn build_boot_only(
+    count: usize,
+    boot: usize,
+    build: impl FnOnce() -> Result<Box<dyn Scene>>,
+) -> Result<SceneSlots> {
+    let mut slots: SceneSlots = std::iter::repeat_with(|| None).take(count).collect();
+    slots[boot] = Some(build()?);
+    Ok(slots)
+}
+
+/// Make `next` the active index, constructing it on first activation and
+/// serving the cached instance after. Returns the index actually active:
+/// `current` when the build failed, since every frame unwraps the active slot
+/// and a switch is not worth tearing the process down for.
+fn activate(
+    slots: &mut SceneSlots,
+    current: usize,
+    next: usize,
+    slug: &str,
+    build: impl FnOnce() -> Result<Box<dyn Scene>>,
+) -> usize {
+    if slots[next].is_none() {
+        match build() {
+            Ok(scene) => slots[next] = Some(scene),
+            Err(err) => {
+                tracing::error!("scene '{slug}' failed to build: {err:#}");
+                return current;
+            }
+        }
+    }
+    next
+}
+
 pub(crate) struct ShellApp {
-    /// All scenes are built at setup: `SetupCtx` (shader db, watcher) is not
-    /// reachable after `App::setup`, so switching selects among live
-    /// instances rather than constructing on demand.
-    scenes: Vec<Box<dyn Scene>>,
+    scenes: SceneSlots,
+    /// Scene shader entries live here, not in the runner's db: the runner's
+    /// `&mut ShaderDb` dies with `App::setup`, and a scene built on a later
+    /// switch still has to mint an owner and compile against its own Space.
+    /// The runner's db stays empty because the shell loads no shaders itself.
+    shader_db: ShaderDb,
     active: usize,
     /// Embed mode: no menu bar; the page chrome owns navigation.
     embed: bool,
     capture_panel: loam_app::capture::CapturePanel,
     perf: loam_app::trace::PerfOverlay,
+}
+
+impl ShellApp {
+    fn active_scene(&mut self) -> &mut dyn Scene {
+        self.scenes[self.active]
+            .as_deref_mut()
+            .expect(ACTIVE_IS_BUILT)
+    }
+
+    /// Rebuild a `SetupCtx` around the frame's `RenderDevice` and the retained
+    /// db. `watcher` is `None`: the runner owns it and only lends it for the
+    /// duration of `setup`, so a scene built later cannot register new watch
+    /// paths. Reload events still reach it through `apply_shader_events`.
+    fn switch_to(&mut self, next: usize, rd: &RenderDevice, time: f32) {
+        let Self {
+            scenes,
+            shader_db,
+            active,
+            ..
+        } = self;
+        *active = activate(scenes, *active, next, SCENES[next].slug, || {
+            let mut setup = SetupCtx {
+                rd,
+                shader_db,
+                watcher: None,
+                time,
+            };
+            (SCENES[next].build)(&mut setup)
+        });
+    }
 }
 
 /// (boot scene index, embed). Unknown slugs fall back to scene 0. Takes the
@@ -150,13 +224,20 @@ impl App for ShellApp {
 
     fn setup(ctx: &mut SetupCtx<'_>) -> Result<Self> {
         let (active, embed) = resolve_boot(SCENES, &Args::current());
-        let scenes = SCENES
-            .iter()
-            .map(|entry| (entry.build)(ctx))
-            .collect::<Result<Vec<_>>>()?;
+        let mut shader_db = ShaderDb::new(ctx.rd.device.clone());
+        let scenes = build_boot_only(SCENES.len(), active, || {
+            let mut setup = SetupCtx {
+                rd: ctx.rd,
+                shader_db: &mut shader_db,
+                watcher: ctx.watcher.as_deref_mut(),
+                time: ctx.time,
+            };
+            (SCENES[active].build)(&mut setup)
+        })?;
         with_switcher(|s| s.active = active);
         Ok(Self {
             scenes,
+            shader_db,
             active,
             embed,
             capture_panel: loam_app::capture::CapturePanel::new(),
@@ -173,14 +254,19 @@ impl App for ShellApp {
     /// Fanned out because each scene's apply is scoped to its own owner: a
     /// scene reached here recompiles only the modules it loaded, against the
     /// Space it holds, never the shell's `EuclideanR3`.
-    fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
-        for scene in &mut self.scenes {
+    /// The runner's `shader_db` goes unused; scene owners were minted from the
+    /// shell's own db, and applying against the wrong db would find no entries.
+    fn apply_shader_events(&mut self, events: &[AssetEvent], _shader_db: &mut ShaderDb) {
+        let Self {
+            scenes, shader_db, ..
+        } = self;
+        for scene in scenes.iter_mut().flatten() {
             scene.apply_shader_events(events, shader_db);
         }
     }
 
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
-        self.scenes[self.active].update(ctx);
+        self.active_scene().update(ctx);
     }
 
     fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
@@ -188,32 +274,36 @@ impl App for ShellApp {
             // Bar renders first so the scene's own windows see it in
             // `available_rect()`. `content_rect()` is the viewport minus OS
             // safe-area insets and never shrinks for a panel.
-            let Self { scenes, active, .. } = self;
+            let active = self.active;
+            let scene = self.active_scene();
             egui::TopBottomPanel::top("shell-menu-bar").show(ctx, |ui| {
                 egui::MenuBar::new().ui(ui, |ui| {
                     ui.menu_button("Demo", |ui| {
                         for (i, entry) in SCENES.iter().enumerate() {
-                            if ui.selectable_label(*active == i, entry.label).clicked() {
-                                *active = i;
+                            if ui.selectable_label(active == i, entry.label).clicked() {
+                                // Queued, not applied: a first activation
+                                // constructs the scene, which needs the `&mut
+                                // self` this closure has borrowed away.
+                                with_switcher(|s| s.pending = Some(i));
                                 ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                     });
-                    scenes[*active].menus(ui);
+                    scene.menus(ui);
                 });
             });
         }
-        self.scenes[self.active].ui(ctx, frame);
+        self.active_scene().ui(ctx, frame);
         self.capture_panel.show(ctx);
         self.perf.show(ctx);
         // Drained after the scene's `ui` returns: the `scene` command runs
-        // inside it, holding the borrow a switch would invalidate. The
-        // republish also carries a menu-bar click back to the console.
-        let active = self.active;
-        self.active = with_switcher(|s| {
-            s.active = s.pending.take().unwrap_or(active);
-            s.active
-        });
+        // inside it, holding the borrow a switch would invalidate. Menu-bar
+        // clicks queue through the same slot, so both paths land here and the
+        // republish carries the outcome back to the console.
+        if let Some(next) = with_switcher(|s| s.pending.take()) {
+            self.switch_to(next, frame.rd, frame.time);
+            with_switcher(|s| s.active = self.active);
+        }
     }
 
     fn on_key(
@@ -222,15 +312,18 @@ impl App for ShellApp {
         state: winit::event::ElementState,
         ctx: &mut FrameCtx<'_>,
     ) {
-        self.scenes[self.active].on_key(code, state, ctx);
+        self.active_scene().on_key(code, state, ctx);
     }
 
     fn record(&mut self, ctx: &mut loam_app::RenderCtx<'_>) -> Result<()> {
-        self.scenes[self.active].record(ctx)
+        self.active_scene().record(ctx)
     }
 
     fn title(&self, fps: f32) -> std::borrow::Cow<'static, str> {
-        self.scenes[self.active].title(fps)
+        self.scenes[self.active]
+            .as_deref()
+            .expect(ACTIVE_IS_BUILT)
+            .title(fps)
     }
 }
 
@@ -239,6 +332,7 @@ mod tests {
     use super::*;
     use loam_app::ShaderOwner;
     use loam_math::HyperbolicH3;
+    use std::cell::Cell;
 
     /// A scene whose geometry is not the shell's, written to be compiled: no
     /// `EuclideanR3` appears anywhere in the impl, and the reload hook recompiles
@@ -352,6 +446,66 @@ mod tests {
         assert!(resolve_boot(REGISTRY, &Args::from_pairs([("embed", "true")])).1);
         assert!(!resolve_boot(REGISTRY, &Args::from_pairs([("embed", "0")])).1);
         assert!(!resolve_boot(REGISTRY, &Args::from_pairs([("embed", "false")])).1);
+    }
+
+    /// GPU-free stand-in for a built scene; the lazy table's contract is about
+    /// when a builder runs, not what it returns.
+    fn stub_scene() -> Box<dyn Scene> {
+        Box::new(HyperbolicScene {
+            space: HyperbolicH3,
+            owner: ShaderDb::ROOT_OWNER,
+        })
+    }
+
+    /// Startup fills exactly one slot. Building the registry eagerly is what
+    /// made a cold start pay every demo's shader compile and VRAM.
+    #[test]
+    fn startup_builds_the_boot_entry_and_no_other() {
+        let builds = Cell::new(0);
+        let slots = build_boot_only(REGISTRY.len(), 1, || {
+            builds.set(builds.get() + 1);
+            Ok(stub_scene())
+        })
+        .expect("boot build");
+        assert_eq!(builds.get(), 1);
+        assert_eq!(
+            slots.iter().map(Option::is_some).collect::<Vec<_>>(),
+            [false, true, false]
+        );
+    }
+
+    /// Re-entering a scene must hit the cache: the builder runs on the first
+    /// activation and never again, however much the user switches around.
+    #[test]
+    fn activation_builds_once_and_serves_the_cache_after() {
+        let mut slots =
+            build_boot_only(REGISTRY.len(), 0, || Ok(stub_scene())).expect("boot build");
+        let builds = Cell::new(0);
+        let mut active = 0;
+        for _ in 0..3 {
+            active = activate(&mut slots, active, 2, REGISTRY[2].slug, || {
+                builds.set(builds.get() + 1);
+                Ok(stub_scene())
+            });
+            assert_eq!(active, 2);
+            active = activate(&mut slots, active, 0, REGISTRY[0].slug, || {
+                unreachable!("the boot scene is already built")
+            });
+        }
+        assert_eq!(builds.get(), 1);
+    }
+
+    /// A builder that fails must leave the shell on a filled slot: every frame
+    /// unwraps the active scene.
+    #[test]
+    fn a_failed_build_keeps_the_current_scene_active() {
+        let mut slots =
+            build_boot_only(REGISTRY.len(), 0, || Ok(stub_scene())).expect("boot build");
+        let active = activate(&mut slots, 0, 1, REGISTRY[1].slug, || {
+            Err(anyhow!("no device"))
+        });
+        assert_eq!(active, 0);
+        assert!(slots[1].is_none());
     }
 
     /// The `scene` command must reject a slug no scene claims instead of

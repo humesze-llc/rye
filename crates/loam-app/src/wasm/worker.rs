@@ -252,6 +252,11 @@ where
     // 11 frames (1 + 10) empirically covers polytope_playground's
     // first-frame compilation on Chrome and Firefox WebGPU. Each frame
     // posts `preview_progress` to advance the `#loam-page-loader` bar.
+    //
+    // Scope: this warms only what these frames render. An app that builds
+    // its scenes on demand (polytope_playground's shell) has constructed
+    // just the booted one by now, so a later switch pays its own compile on
+    // the frame it first renders rather than at load.
     const WARMUP_FRAMES: usize = 10;
     const TOTAL_FRAMES: usize = 1 + WARMUP_FRAMES;
     let post_progress = |step: usize| {

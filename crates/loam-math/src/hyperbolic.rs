@@ -50,10 +50,14 @@ fn clamp_to_ball(p: Vec3) -> Vec3 {
 /// Composition is matmul; inverse is `J Mᵀ J`, `J = diag(-1, -1, -1, +1)`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3H {
+    /// Lorentz matrix in hyperboloid coordinates, column-major per `glam`.
+    /// Membership in SO⁺(3,1) is a precondition, not checked on use; a matrix
+    /// outside the group silently moves points off the hyperboloid.
     pub matrix: Mat4,
 }
 
 impl Iso3H {
+    /// Fixes every point of H³; the neutral element of `iso_compose`.
     pub const IDENTITY: Self = Self {
         matrix: Mat4::IDENTITY,
     };

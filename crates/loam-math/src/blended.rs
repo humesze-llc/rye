@@ -159,8 +159,12 @@ where
     B: Space<Point = Vec3, Vector = Vec3>,
     F: BlendingField,
 {
+    /// Source metric reached at weight 0.
     pub a: A,
+    /// Source metric reached at weight 1.
     pub b: B,
+    /// Supplies α(p). Changing it changes the metric itself, so state
+    /// integrated under the old field is no longer on the same manifold.
     pub field: F,
     _marker: PhantomData<(A, B, F)>,
 }
@@ -171,6 +175,9 @@ where
     B: Space<Point = Vec3, Vector = Vec3>,
     F: BlendingField,
 {
+    /// Construction is total and does not require [`ConformallyFlat`]; the
+    /// [`Space`] impl does, so a pair that builds here may still have no
+    /// `Space` behavior.
     pub fn new(a: A, b: B, field: F) -> Self {
         Self {
             a,
@@ -542,7 +549,13 @@ pub trait BlendingField: Copy + Send + Sync + 'static {
 /// exactly to g_A / g_B outside the zone with no curvature kick.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct LinearBlendX {
+    /// Lower zone edge; on a positive-width zone `weight` is exactly 0 at and
+    /// below it. The degenerate zone below inverts that at `start` itself.
     pub start: f32,
+    /// Upper zone edge; `weight` is exactly 1 at and above it. When
+    /// `end <= start` the field degenerates to a step at `start` with a zero
+    /// gradient everywhere; [`LinearBlendX::new`] swaps reversed inputs to
+    /// avoid that, a struct literal does not.
     pub end: f32,
 }
 
@@ -863,6 +876,32 @@ mod tests {
         let f = LinearBlendX::new(1.0, -1.0);
         close(f.weight(Vec3::new(-1.0, 0.0, 0.0)), 0.0, 1e-6);
         close(f.weight(Vec3::new(1.0, 0.0, 0.0)), 1.0, 1e-6);
+    }
+
+    /// The fields are `pub`, so a struct literal can install `end <= start`
+    /// without passing through `new`'s swap. That configuration is defined,
+    /// not undefined: a step at `start` with a zero gradient everywhere, so
+    /// the integrator sees no curvature kick instead of a division by a
+    /// non-positive width.
+    #[test]
+    fn linear_blend_x_literal_with_non_positive_width_is_a_step_at_start() {
+        for f in [
+            LinearBlendX {
+                start: 2.0,
+                end: -1.0,
+            },
+            LinearBlendX {
+                start: 2.0,
+                end: 2.0,
+            },
+        ] {
+            close(f.weight(Vec3::new(1.999, 0.0, 0.0)), 0.0, 1e-6);
+            close(f.weight(Vec3::new(2.0, 0.0, 0.0)), 1.0, 1e-6);
+            close(f.weight(Vec3::new(9.0, 0.0, 0.0)), 1.0, 1e-6);
+            for x in [-5.0, 2.0, 5.0] {
+                assert_eq!(f.gradient(Vec3::new(x, 0.0, 0.0)), Vec3::ZERO);
+            }
+        }
     }
 
     // ------ ConformallyFlat impls ------

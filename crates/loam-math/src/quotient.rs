@@ -93,6 +93,8 @@ impl FlatTorus3 {
         Self::new(Vec3::splat(side))
     }
 
+    /// The three side lengths of the fundamental box; finite and strictly
+    /// positive, since that is checked on construction.
     pub fn cell(&self) -> Vec3 {
         self.cell
     }

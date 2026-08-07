@@ -26,6 +26,8 @@
 //!   sits in this crate: it reads only the topology this crate owns, which lets the renderer
 //!   draw a polychoron without depending on the simulation layer. The dep graph stays a tree.
 
+#![warn(missing_docs)]
+
 pub mod isovolume;
 pub mod polytope;
 pub mod polytope_geom;
@@ -44,40 +46,81 @@ pub enum Shape {
     /// Sphere with a local center and radius. In SDF scenes `center` is the geodesic center; in
     /// physics `center` is ignored (body position is the center) and conventionally set to
     /// [`Vec3::ZERO`].
-    Sphere { center: Vec3, radius: f32 },
+    Sphere {
+        /// Geodesic center in the shape frame. Ignored by physics.
+        center: Vec3,
+        /// Positive; a zero or negative radius is not rejected here and
+        /// yields a degenerate SDF and no contact manifold.
+        radius: f32,
+    },
 
     /// A half-space `{ p : dot(p, normal) − offset ≤ 0 }`, equivalent to a totally-geodesic plane
     /// with the "solid" side picked by sign convention. Unifies SDF's `Plane` and physics's
     /// `HalfSpace`.
-    HalfSpace { normal: Vec3, offset: f32 },
+    HalfSpace {
+        /// Assumed unit: `dot(p, normal) - offset` is read directly as a
+        /// signed distance, which a non-unit normal rescales.
+        normal: Vec3,
+        /// Signed distance from the origin to the plane along `normal`.
+        offset: f32,
+    },
 
     /// 4D half-space: same convention as [`Shape::HalfSpace`] but with a `Vec4` normal, used by
     /// the 4D physics ground in the pentatope-falls demo. Only meaningful on a static body
     /// (`inv_mass = 0`); a dynamic half-space isn't physically sensible.
-    HalfSpace4D { normal: Vec4, offset: f32 },
+    HalfSpace4D {
+        /// Assumed unit, as in [`Shape::HalfSpace`].
+        normal: Vec4,
+        /// Signed distance from the origin to the 3-flat along `normal`.
+        offset: f32,
+    },
 
     /// Axis-aligned 3D box, centered at the origin of its local frame. SDF emits the standard
     /// Euclidean-box formula; physics prefers the equivalent 8-vertex [`Shape::ConvexPolytope3D`]
     /// today but may grow a dedicated narrowphase later.
-    Box3 { half_extents: Vec3 },
+    Box3 {
+        /// Per-axis distance from the local origin to each face, so the box
+        /// spans `[-half_extents, half_extents]`.
+        half_extents: Vec3,
+    },
 
     /// Convex 2D polygon, counter-clockwise vertices in the local frame. Physics 2D narrowphase
     /// uses SAT on this.
-    Polygon2D { vertices: Vec<Vec2> },
+    Polygon2D {
+        /// Boundary loop in the local frame. Convexity is a precondition
+        /// SAT cannot detect the violation of; fewer than three vertices
+        /// yields no contact at all rather than an error.
+        vertices: Vec<Vec2>,
+    },
 
     /// Convex 3D polytope, arbitrary vertex list, assumed convex. Physics 3D narrowphase uses
     /// GJK+EPA; SDF has no emission for this variant today.
-    ConvexPolytope3D { vertices: Vec<Vec3> },
+    ConvexPolytope3D {
+        /// Unordered point set in the shape frame. The collider is its
+        /// convex hull, so a non-convex list silently collides as the hull
+        /// and interior points only cost support-function time.
+        vertices: Vec<Vec3>,
+    },
 
     /// Convex 4D polytope. Physics 4D narrowphase uses 4D GJK+EPA; SDF emission via
     /// `loam_scene::Primitive4` (max-of-half-spaces).
-    ConvexPolytope4D { vertices: Vec<Vec4> },
+    ConvexPolytope4D {
+        /// Unordered point set in R⁴; same hull semantics as
+        /// [`Shape::ConvexPolytope3D`].
+        vertices: Vec<Vec4>,
+    },
 
     /// 4D ball with a local centre and radius, the 4D analogue of [`Shape::Sphere`]. SDF:
     /// `length(p - center) - radius` in `vec4`. Physics narrowphase reuses the `Sphere` path
     /// with a `Vec4` centre via the body position; this variant is for SDF scene authoring
     /// (`Scene4`) where pose is encoded in the shape rather than a transform combinator.
-    HyperSphere4D { center: Vec4, radius: f32 },
+    HyperSphere4D {
+        /// Center in the shape frame; unlike [`Shape::Sphere`] this is the
+        /// pose, since `Scene4` has no transform combinator to carry it.
+        center: Vec4,
+        /// Positive; same non-enforcement as [`Shape::Sphere`].
+        radius: f32,
+    },
 }
 
 impl Shape {
@@ -114,15 +157,26 @@ impl Shape {
 
 /// Runtime discriminant of [`Shape`]. Keyed into dispatch tables by physics narrowphase and
 /// (eventually) any other consumer that needs O(1) variant routing.
+///
+/// One variant per `Shape` variant and [`Shape::kind`] is total, so a dispatch table indexed
+/// by this enum is exhaustive over shapes by construction.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ShapeKind {
+    /// Selects [`Shape::Sphere`].
     Sphere,
+    /// Selects [`Shape::HalfSpace`].
     HalfSpace,
+    /// Selects [`Shape::HalfSpace4D`].
     HalfSpace4D,
+    /// Selects [`Shape::Box3`].
     Box3,
+    /// Selects [`Shape::Polygon2D`].
     Polygon2D,
+    /// Selects [`Shape::ConvexPolytope3D`].
     ConvexPolytope3D,
+    /// Selects [`Shape::ConvexPolytope4D`].
     ConvexPolytope4D,
+    /// Selects [`Shape::HyperSphere4D`].
     HyperSphere4D,
 }
 

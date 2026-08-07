@@ -139,7 +139,10 @@ pub enum Projection<const N: usize> {
     /// Drop one axis by 0-based index; remaining `N - 1` components fill R³ in
     /// order, zero-padded if short. R⁴ `drop_axis: 3` gives `(x, y, z)`, the
     /// standard R⁴-into-R³ convention. Out-of-range (>= `N`) returns `Vec3::ZERO`.
-    Orthographic { drop_axis: usize },
+    Orthographic {
+        /// 0-based index into the source `R^N` axes.
+        drop_axis: usize,
+    },
 
     /// 4D pinhole from a viewer at `(0, 0, 0, focal_distance)` looking in -w:
     /// `(x, y, z, w) -> (x, y, z) * focal_distance / (focal_distance - w)`. For a

@@ -18,21 +18,27 @@ use crate::space::{IsometryGroup, Space, WgslSpace};
 
 /// Rigid motion of R⁴: a rotor-rotation followed by a translation.
 ///
-/// Pure isometry, scale and shear are excluded by construction. The rotor is normalized on
-/// construction from [`IsometryGroup::iso_compose`] / `iso_inverse` only when numerical drift
-/// warrants it; per-call renormalization would regress determinism on the fast path.
+/// Pure isometry, scale and shear are excluded by construction. Unit-norm of the rotor is a
+/// precondition this type never restores: [`IsometryGroup::iso_compose`] and `iso_inverse`
+/// multiply and conjugate without renormalizing, so a caller that integrates a long chain
+/// calls [`Rotor4::normalize`] itself at whatever cadence its drift budget allows.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso4Flat {
+    /// Rotation about the origin, applied first. Unit norm is a precondition;
+    /// composition propagates drift rather than correcting it.
     pub rotation: Rotor4,
+    /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec4,
 }
 
 impl Iso4Flat {
+    /// Fixes every point; the neutral element of `iso_compose`.
     pub const IDENTITY: Self = Self {
         rotation: Rotor4::IDENTITY,
         translation: Vec4::ZERO,
     };
 
+    /// Rotation about the origin, no translation.
     pub fn from_rotation(rotation: Rotor4) -> Self {
         Self {
             rotation,
@@ -40,6 +46,8 @@ impl Iso4Flat {
         }
     }
 
+    /// Pure translation. [`IsometryGroup::iso_transport`] is the identity for
+    /// these, since translation does not act on tangent vectors in R⁴.
     pub fn from_translation(translation: Vec4) -> Self {
         Self {
             rotation: Rotor4::IDENTITY,
@@ -154,6 +162,25 @@ mod tests {
 
     fn r4() -> EuclideanR4 {
         EuclideanR4
+    }
+
+    /// `iso_compose` propagates rotor drift instead of correcting it, which is
+    /// what makes the per-step `Rotor4::normalize` in the physics integrator
+    /// load-bearing rather than redundant. Composing with the identity is the
+    /// sharpest probe: any renormalization inside `iso_compose` would pull the
+    /// off-manifold rotor back to unit norm and erase the defect.
+    #[test]
+    fn iso_compose_leaves_rotor_drift_uncorrected() {
+        let s = r4();
+        let drifted = Rotor4 {
+            s: 1.02,
+            ..Rotor4::IDENTITY
+        };
+        let composed = s.iso_compose(
+            Iso4Flat::from_rotation(drifted),
+            Iso4Flat::from_rotation(Rotor4::IDENTITY),
+        );
+        assert_relative_eq!(composed.rotation.s, 1.02);
     }
 
     #[test]

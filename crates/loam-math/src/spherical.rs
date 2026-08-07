@@ -112,10 +112,14 @@ fn from_sphere(q: Vec4) -> Vec3 {
 /// matmul; inverse is transpose.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso4 {
+    /// SO(4) matrix in ambient R⁴ coordinates, column-major per `glam`.
+    /// Orthogonality is a precondition, not checked on use; `iso_inverse`
+    /// returns the transpose, which is only the inverse if it holds.
     pub matrix: Mat4,
 }
 
 impl Iso4 {
+    /// Fixes every point of S³; the neutral element of `iso_compose`.
     pub const IDENTITY: Self = Self {
         matrix: Mat4::IDENTITY,
     };

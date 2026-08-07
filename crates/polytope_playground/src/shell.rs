@@ -7,7 +7,6 @@ use anyhow::{anyhow, Result};
 use loam_app::{args::Args, egui, App, FrameCtx, SetupCtx};
 use loam_egui::Console;
 use loam_math::EuclideanR3;
-use loam_render::device::RenderDevice;
 use std::sync::Mutex;
 
 pub(crate) trait Scene {
@@ -22,7 +21,9 @@ pub(crate) trait Scene {
         state: winit::event::ElementState,
         ctx: &mut FrameCtx<'_>,
     );
-    fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()>;
+    /// Record this scene's passes into the runner's frame-wide encoder. Must
+    /// not submit; see [`loam_app::RenderCtx`].
+    fn record(&mut self, ctx: &mut loam_app::RenderCtx<'_>) -> Result<()>;
     fn title(&self, fps: f32) -> std::borrow::Cow<'static, str>;
 }
 
@@ -210,8 +211,8 @@ impl App for ShellApp {
         self.scenes[self.active].on_key(code, state, ctx);
     }
 
-    fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
-        self.scenes[self.active].render(rd, view)
+    fn record(&mut self, ctx: &mut loam_app::RenderCtx<'_>) -> Result<()> {
+        self.scenes[self.active].record(ctx)
     }
 
     fn title(&self, fps: f32) -> std::borrow::Cow<'static, str> {

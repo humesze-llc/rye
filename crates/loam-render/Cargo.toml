@@ -41,3 +41,6 @@ loam-scene = { path = "../loam-scene", version = "0.1.0" }
 loam-shader = { path = "../loam-shader", version = "0.1.0" }
 pollster.workspace = true
 tempfile = "3"
+# Capture encoder for the `flat_torus_room` example. Same version loam-app
+# pulls in, so the workspace resolves one copy.
+png = "0.17"

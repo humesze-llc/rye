@@ -26,6 +26,7 @@
 
 use std::collections::BTreeMap;
 
+use loam_math::{EuclideanR2, EuclideanR3, EuclideanR4};
 use loam_time::StateHash;
 
 use crate::body::{BodyArena, BodyId, RigidBody};
@@ -242,6 +243,26 @@ struct VisitLog {
     solve_sweeps: Vec<PairKey>,
 }
 
+/// The whole simulation state, and the unit a scheduler would hand across a
+/// thread boundary. `Send + Sync` is part of that contract:
+///
+/// ```
+/// # use loam_math::EuclideanR3;
+/// # use loam_physics::World;
+/// const fn assert_send_sync<T: Send + Sync>() {}
+/// const _: () = assert_send_sync::<World<EuclideanR3>>();
+/// ```
+///
+/// The `compile_fail` block below differs from the passing one only in the
+/// `Rc`, which stands for a field a `World` might grow, so what it pins is the
+/// `Rc` being rejected and not a broken fixture:
+///
+/// ```compile_fail
+/// # use loam_math::EuclideanR3;
+/// # use loam_physics::World;
+/// const fn assert_send_sync<T: Send + Sync>() {}
+/// const _: () = assert_send_sync::<(World<EuclideanR3>, std::rc::Rc<u32>)>();
+/// ```
 pub struct World<S: PhysicsSpace> {
     pub space: S,
     pub bodies: BodyArena<S>,
@@ -277,6 +298,20 @@ pub struct World<S: PhysicsSpace> {
     #[cfg(test)]
     visit_log: VisitLog,
 }
+
+/// One assertion per space that implements [`PhysicsSpace`], because
+/// `World<S>`'s auto traits are a function of `S`'s associated types and
+/// [`PhysicsSpace`] bounds neither `AngVel` nor `Inertia`: a generic pin would
+/// have to invent bounds the trait does not carry, and would then be proving
+/// something about a `World` nobody instantiates. Ships outside `cfg(test)`
+/// because the claim is about the shipping binary and because a `cargo check`
+/// is the cheapest place to hear about it.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<World<EuclideanR2>>();
+    assert_send_sync::<World<EuclideanR3>>();
+    assert_send_sync::<World<EuclideanR4>>();
+};
 
 impl<S: PhysicsSpace> World<S> {
     pub fn new(space: S) -> Self {

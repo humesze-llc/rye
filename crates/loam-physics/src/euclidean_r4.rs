@@ -1114,6 +1114,47 @@ mod tests {
         assert!(world.narrowphase.test(&a[0], &b[0], &EuclideanR4).is_none());
     }
 
+    /// The rotor composition has to agree with the world-frame angular
+    /// velocity the solver reads through [`omega_cross_r`]: a body-fixed point
+    /// advances along `ω⌋r` to first order. Inverting the composition reads `ω`
+    /// as a body-frame rate, which coincides with the world-frame field only
+    /// where the starting orientation commutes with `ω`. The start here
+    /// exponentiates a non-simple bivector (`B ∧ B ≠ 0`), so it is a double
+    /// rotation, and its planes share axes with `ω`'s.
+    ///
+    /// Tolerance 1e-5, against a residual budget of ~5e-7: the comparison is a
+    /// forward difference, so it carries the truncation term `½·|ω|²·|r|·dt²` =
+    /// 3.7e-7 here, plus ~1e-7 from cancelling two nearly equal unit-length
+    /// vectors in f32. libm `sin`/`cos` reach the result only through `delta`,
+    /// whose arguments are `|ω|·dt/2` ≈ 4e-4, so a last-ULP spread between
+    /// platform libms moves the residual by ~1e-7 and cannot approach the
+    /// bound. The inverted composition leaves a residual of `6.2e-4`, 62x the
+    /// bound, so the pin discriminates from both sides.
+    #[test]
+    fn integrated_orientation_advances_a_body_point_along_the_world_frame_omega() {
+        let space = EuclideanR4;
+        let start = Iso4Flat {
+            rotation: Bivector4::new(0.8, 0.0, 0.0, std::f32::consts::FRAC_PI_2, 0.0, 0.9).exp(),
+            translation: Vec4::ZERO,
+        };
+        let omega = Bivector4::new(0.7, 0.0, 0.0, 0.0, 0.5, 0.0);
+        let local = Vec4::new(0.5, -0.5, 0.5, 0.5);
+        let dt = 1e-3;
+
+        let before = start.rotation.apply(local);
+        let after = space
+            .integrate_orientation(start, omega, dt)
+            .rotation
+            .apply(local);
+        let residual = (after - (before + omega_cross_r(omega, before) * dt)).length();
+        assert!(
+            residual < 1e-5,
+            "integrated orientation left the world-frame field ω⌋r: residual \
+             {residual} over a step of {}",
+            (after - before).length()
+        );
+    }
+
     #[test]
     fn orientation_integration_preserves_unit_rotor() {
         let space = EuclideanR4;

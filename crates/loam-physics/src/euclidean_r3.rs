@@ -684,6 +684,43 @@ mod tests {
         );
     }
 
+    /// The R3 half of the same contract the R4 pin covers: the quaternion
+    /// composition has to agree with the world-frame angular velocity
+    /// [`omega_cross_r`] hands the solver, so a body-fixed point advances along
+    /// `ω⌋r` to first order. Inverting the composition reads `ω` as a
+    /// body-frame rate, which coincides with the world-frame field only where
+    /// the starting orientation commutes with `ω`; the start here is a 1.7 rad
+    /// rotation about an axis 46° off `ω`'s, so it moves that axis a long way.
+    ///
+    /// Tolerance 1e-5, against a residual budget of ~4e-7: the forward
+    /// difference carries the truncation term `½·|ω|²·|r|·dt²` = 3.2e-7 here,
+    /// plus ~1e-7 from cancelling two nearly equal length-0.87 vectors in f32.
+    /// libm `sin`/`cos` reach the result only through `delta_quat`, whose
+    /// arguments are `|ω|·dt/2` ≈ 4e-4, so a last-ULP spread between platform
+    /// libms moves the residual by ~1e-7. The inverted composition leaves a
+    /// residual of `7.1e-4`, 71x the bound.
+    #[test]
+    fn integrated_orientation_advances_a_body_point_along_the_world_frame_omega() {
+        let space = EuclideanR3;
+        let start = Iso3 {
+            rotation: rotor_to_quat(Bivector3::new(0.8, 1.2, 0.9).exp()),
+            translation: Vec3::ZERO,
+        };
+        let omega = Bivector3::new(0.7, 0.0, 0.5);
+        let local = Vec3::new(0.5, -0.5, 0.5);
+        let dt = 1e-3;
+
+        let before = start.rotation * local;
+        let after = space.integrate_orientation(start, omega, dt).rotation * local;
+        let residual = (after - (before + omega_cross_r(omega, before) * dt)).length();
+        assert!(
+            residual < 1e-5,
+            "integrated orientation left the world-frame field ω⌋r: residual \
+             {residual} over a step of {}",
+            (after - before).length()
+        );
+    }
+
     #[test]
     fn integration_preserves_unit_rotor() {
         // Many ticks must not drift off the unit-quat manifold.

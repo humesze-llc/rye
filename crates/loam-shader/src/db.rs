@@ -1470,6 +1470,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_eq!(db.generation(in_h3), 1, "no event named H3's shader");
     }
 
+    /// [`ShaderDb::load`]'s stability contract, now conditional on the owner:
+    /// one owner naming one path twice must land on its existing entry and
+    /// recompile it. Minting a second ID instead would strand the first behind
+    /// whatever pipeline already holds it, unreachable by any later apply.
+    #[test]
+    fn a_second_load_by_the_same_owner_keeps_the_id_and_recompiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.wgsl");
+        std::fs::write(&path, ABI_PROBE).unwrap();
+
+        let mut db = ShaderDb::new(noop_device());
+        let scene = db.new_owner();
+        let first = db.load(scene, &path, &SphericalS3).unwrap();
+        let second = db.load(scene, &path, &SphericalS3).unwrap();
+
+        assert_eq!(first, second, "one owner's path must map to one entry");
+        assert_eq!(db.generation(first), 2, "the second load must recompile");
+    }
+
     /// The shipped pairing: a host applies under [`ShaderDb::ROOT_OWNER`] via
     /// the `App` default while a sub-scene applies under a minted owner. A
     /// `new_owner` that handed back the root would put both in one path space,

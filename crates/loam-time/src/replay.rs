@@ -271,12 +271,12 @@ impl Tape {
         let word_count = (input_bytes / 4) as usize;
         let mut inputs = Vec::with_capacity(word_count);
         for _ in 0..word_count {
-            inputs.push(reader.u32().expect("length checked above"));
+            inputs.push(reader.u32().expect("length checked above")); // ok: byte count validated at the header check
         }
         let mut checkpoints = Vec::with_capacity(checkpoint_count as usize);
         for index in 0..checkpoint_count as usize {
-            let tick = reader.u64().expect("length checked above");
-            let state_hash = reader.u64().expect("length checked above");
+            let tick = reader.u64().expect("length checked above"); // ok: byte count validated at the header check
+            let state_hash = reader.u64().expect("length checked above"); // ok: byte count validated at the header check
             if let Some(last) = checkpoints.last() {
                 let Checkpoint { tick: prev, .. } = *last;
                 if tick <= prev {
@@ -326,7 +326,7 @@ impl<'a> Reader<'a> {
         let end = self.at.checked_add(N)?;
         let slice = self.bytes.get(self.at..end)?;
         self.at = end;
-        Some(slice.try_into().expect("slice is N bytes"))
+        Some(slice.try_into().expect("slice is N bytes")) // ok: get(at..at+N) yields exactly N
     }
 
     fn u32(&mut self) -> Option<u32> {

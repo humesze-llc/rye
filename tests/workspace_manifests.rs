@@ -10,9 +10,8 @@
 //! rather than rejecting it, and cargo accepts any requirement that admits the
 //! local package. Requiring an exact match against `workspace.package.version`
 //! keeps a version bump from leaving the hand-written requirements pointing at
-//! the previous release: a dep that
-//! declares both path and version resolves through the path locally, so it
-//! never disagrees with itself until publish.
+//! the previous release: a dep that declares both path and version resolves
+//! through the path locally, so it never disagrees with itself until publish.
 
 use std::collections::BTreeSet;
 use std::fs;

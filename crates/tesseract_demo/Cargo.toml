@@ -25,16 +25,16 @@ tracing.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 
-loam-app     = { path = "../loam-app", default-features = false }
-loam-camera  = { path = "../loam-camera" }
-loam-egui    = { path = "../loam-egui" }
-loam-math    = { path = "../loam-math" }
-loam-physics = { path = "../loam-physics" }
-loam-render  = { path = "../loam-render" }
-loam-shape   = { path = "../loam-shape" }
+loam-app     = { path = "../loam-app",     version = "0.1.0", default-features = false }
+loam-camera  = { path = "../loam-camera",  version = "0.1.0" }
+loam-egui    = { path = "../loam-egui",    version = "0.1.0" }
+loam-math    = { path = "../loam-math",    version = "0.1.0" }
+loam-physics = { path = "../loam-physics", version = "0.1.0" }
+loam-render  = { path = "../loam-render",  version = "0.1.0" }
+loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
 # Direct dep for the CountingAllocator wrapper installed as #[global_allocator]
 # below. Pulls in nothing extra beyond what loam-app already does transitively.
-loam-time    = { path = "../loam-time" }
+loam-time    = { path = "../loam-time",    version = "0.1.0" }
 
 [features]
 # Capture feature mirrors polytope_playground: native default-on for frame export,

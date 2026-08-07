@@ -65,19 +65,26 @@ keywords = ["gamedev", "geometry", "non-euclidean", "4d", "wgpu"]
 categories = ["game-engines", "graphics", "mathematics"]
 
 [dependencies]
-loam-math      = { path = "crates/loam-math" }
-loam-scene     = { path = "crates/loam-scene" }
-loam-shape     = { path = "crates/loam-shape" }
-loam-time      = { path = "crates/loam-time" }
-loam-shader    = { path = "crates/loam-shader" }
-loam-render    = { path = "crates/loam-render" }
-loam-asset     = { path = "crates/loam-asset" }
-loam-input     = { path = "crates/loam-input" }
-loam-camera    = { path = "crates/loam-camera" }
-loam-player    = { path = "crates/loam-player" }
-loam-physics   = { path = "crates/loam-physics" }
-loam-app       = { path = "crates/loam-app" }
-loam-text      = { path = "crates/loam-text" }
+loam-math      = { path = "crates/loam-math",    version = "0.1.0" }
+loam-scene     = { path = "crates/loam-scene",   version = "0.1.0" }
+loam-shape     = { path = "crates/loam-shape",   version = "0.1.0" }
+loam-time      = { path = "crates/loam-time",    version = "0.1.0" }
+loam-shader    = { path = "crates/loam-shader",  version = "0.1.0" }
+loam-render    = { path = "crates/loam-render",  version = "0.1.0" }
+loam-asset     = { path = "crates/loam-asset",   version = "0.1.0" }
+loam-input     = { path = "crates/loam-input",   version = "0.1.0" }
+loam-camera    = { path = "crates/loam-camera",  version = "0.1.0" }
+loam-player    = { path = "crates/loam-player",  version = "0.1.0" }
+loam-physics   = { path = "crates/loam-physics", version = "0.1.0" }
+loam-app       = { path = "crates/loam-app",     version = "0.1.0" }
+loam-text      = { path = "crates/loam-text",    version = "0.1.0" }
+
+[dev-dependencies]
+# `tests/workspace_manifests.rs` reads every member manifest to gate
+# publishability; parsing them beats scanning lines that a table-form dep
+# declaration would slip past. `toml_edit` rather than `toml` because the
+# build graph already resolves it, so the gate costs no new crates.
+toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
 
 [features]
 default = []

@@ -11,8 +11,8 @@ keywords = ["wgsl", "shader", "wgpu", "hot-reload", "graphics"]
 categories = ["graphics", "rendering", "game-development"]
 
 [dependencies]
-loam-math  = { path = "../loam-math" }
-loam-asset = { path = "../loam-asset" }
+loam-math  = { path = "../loam-math",  version = "0.1.0" }
+loam-asset = { path = "../loam-asset", version = "0.1.0" }
 
 anyhow.workspace = true
 naga.workspace = true
@@ -23,7 +23,7 @@ wgpu.workspace = true
 [dev-dependencies]
 # Tier 3 depending on tier 2 for tests only: the scene/GPU parity probe needs a
 # real `Scene` emit, and the inverse (wgpu in loam-scene) is the wrong direction.
-loam-scene = { path = "../loam-scene" }
+loam-scene = { path = "../loam-scene", version = "0.1.0" }
 
 bytemuck.workspace = true
 glam.workspace = true

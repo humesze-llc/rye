@@ -24,20 +24,20 @@ wgpu.workspace = true
 winit.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
-loam-math    = { path = "../loam-math" }
-loam-shape   = { path = "../loam-shape" }
+loam-math    = { path = "../loam-math",  version = "0.1.0" }
+loam-shape   = { path = "../loam-shape", version = "0.1.0" }
 # Frame-trace integration: `gpu_timer` callbacks push `gpu-total` sections through
 # `loam_time::frame_trace::record_external` so they appear in `trace summary` next
 # to the CPU sections. Default features pull in the frame-trace cargo feature; on
 # `--no-default-features` builds the calls are no-ops (still compile).
-loam-time    = { path = "../loam-time" }
+loam-time    = { path = "../loam-time",  version = "0.1.0" }
 
 [dev-dependencies]
 naga.workspace = true
-loam-scene = { path = "../loam-scene" }
+loam-scene = { path = "../loam-scene", version = "0.1.0" }
 # Dev-only on purpose: the raymarch nodes take a pre-compiled `ShaderModule`
 # and must keep working with any producer of one. Tests need the real producer
 # to pin the assembly chain feeding them.
-loam-shader = { path = "../loam-shader" }
+loam-shader = { path = "../loam-shader", version = "0.1.0" }
 pollster.workspace = true
 tempfile = "3"

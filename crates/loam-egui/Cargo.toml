@@ -21,9 +21,9 @@ winit.workspace = true
 egui = "0.33"
 egui-wgpu = { version = "0.33", default-features = false, features = ["winit"] }
 
-loam-camera  = { path = "../loam-camera" }
-loam-console = { path = "../loam-console" }
-loam-math    = { path = "../loam-math" }
+loam-camera  = { path = "../loam-camera",  version = "0.1.0" }
+loam-console = { path = "../loam-console", version = "0.1.0" }
+loam-math    = { path = "../loam-math",    version = "0.1.0" }
 
 # `clipboard` pulls in `arboard`, which doesn't build on wasm32 (no native clipboard
 # crate compiles for the browser); the browser exposes its own clipboard API through

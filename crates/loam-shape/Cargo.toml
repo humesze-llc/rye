@@ -11,7 +11,7 @@ keywords = ["geometry", "polytope", "primitives", "sdf", "collision"]
 categories = ["mathematics", "game-development"]
 
 [dependencies]
-loam-math = { path = "../loam-math" }
+loam-math = { path = "../loam-math", version = "0.1.0" }
 glam = { workspace = true }
 serde = { workspace = true }
 

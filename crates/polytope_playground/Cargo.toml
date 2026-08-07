@@ -21,15 +21,15 @@ tracing.workspace = true
 winit.workspace = true
 wgpu.workspace = true
 
-loam-app     = { path = "../loam-app", default-features = false }
-loam-camera  = { path = "../loam-camera" }
-loam-egui    = { path = "../loam-egui" }
-loam-math    = { path = "../loam-math" }
-loam-physics = { path = "../loam-physics" }
-loam-render  = { path = "../loam-render" }
-loam-scene   = { path = "../loam-scene" }
-loam-shape   = { path = "../loam-shape" }
-loam-time    = { path = "../loam-time" }
+loam-app     = { path = "../loam-app",     version = "0.1.0", default-features = false }
+loam-camera  = { path = "../loam-camera",  version = "0.1.0" }
+loam-egui    = { path = "../loam-egui",    version = "0.1.0" }
+loam-math    = { path = "../loam-math",    version = "0.1.0" }
+loam-physics = { path = "../loam-physics", version = "0.1.0" }
+loam-render  = { path = "../loam-render",  version = "0.1.0" }
+loam-scene   = { path = "../loam-scene",   version = "0.1.0" }
+loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
+loam-time    = { path = "../loam-time",    version = "0.1.0" }
 
 [features]
 # Default to capture-on for native dev (matches the previous `cargo run --example`

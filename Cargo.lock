@@ -1335,6 +1335,7 @@ dependencies = [
  "loam-shape",
  "loam-text",
  "loam-time",
+ "toml_edit",
 ]
 
 [[package]]

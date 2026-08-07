@@ -30,6 +30,6 @@ glam.workspace = true
 pollster.workspace = true
 tempfile = "3"
 # The owner-scoping tests need a real `wgpu::Device` to construct a `ShaderDb`,
-# but nothing they assert reaches the GPU; the noop backend supplies one with no
-# adapter, so they run in CI rather than behind `#[ignore]`.
+# but nothing they assert reaches the GPU; the noop backend supplies a Device
+# without a GPU, so they run in CI rather than behind `#[ignore]`.
 wgpu = { workspace = true, features = ["noop"] }

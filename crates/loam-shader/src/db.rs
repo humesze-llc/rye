@@ -1337,7 +1337,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     /// there, which is exactly the layer the owner-scoping tests do not care
     /// about: naga still validates every assembled source inside
     /// [`ShaderDb::compile`], and the entry bookkeeping under test is the db's
-    /// own. Buys these tests a real `ShaderDb` with no adapter, so they run
+    /// own. Buys these tests a real `ShaderDb` with no GPU, so they run
     /// unconditionally instead of behind `#[ignore]`.
     fn noop_device() -> Device {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -1468,6 +1468,36 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             "the edited shader must recompile once, under its own Space, not once per owner",
         );
         assert_eq!(db.generation(in_h3), 1, "no event named H3's shader");
+    }
+
+    /// The shipped pairing: a host applies under [`ShaderDb::ROOT_OWNER`] via
+    /// the `App` default while a sub-scene applies under a minted owner. A
+    /// `new_owner` that handed back the root would put both in one path space,
+    /// which is the collision owner scoping exists to remove, and no assertion
+    /// over minted owners alone would notice.
+    #[test]
+    fn a_minted_owner_shares_no_entry_with_the_root_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.wgsl");
+        std::fs::write(&path, ABI_PROBE).unwrap();
+
+        let mut db = ShaderDb::new(noop_device());
+        let scene = db.new_owner();
+        let in_root = db.load(ShaderDb::ROOT_OWNER, &path, &EuclideanR3).unwrap();
+        let in_scene = db.load(scene, &path, &HyperbolicH3).unwrap();
+        assert_ne!(
+            in_root, in_scene,
+            "a minted owner must not land in the root's path space",
+        );
+
+        touch_with_edit(&path);
+        db.apply_events(ShaderDb::ROOT_OWNER, &modified(&path), &EuclideanR3);
+        assert_eq!(db.generation(in_root), 2);
+        assert_eq!(
+            db.generation(in_scene),
+            1,
+            "the host's apply must not recompile a sub-scene's module against R3",
+        );
     }
 
     /// Hot-reload's text path: read, assemble against a Space prelude, validate via

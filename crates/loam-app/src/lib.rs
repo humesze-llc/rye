@@ -91,7 +91,7 @@ pub use loam_camera::{
 };
 pub use loam_egui::{egui, world_to_screen, BottomOverlay, LinearIndicator};
 pub use loam_input::FrameInput as Input;
-pub use loam_shader::ShaderDb;
+pub use loam_shader::{ShaderDb, ShaderOwner};
 
 // ---------------------------------------------------------------------------
 // App trait
@@ -156,12 +156,13 @@ pub trait App: Sized + 'static {
     ) {
     }
 
-    /// Recompile the shaders `events` touches. The default answers for the whole
-    /// db with one prelude, `Self::Space`; an app hosting several independently
-    /// spaced sub-scenes overrides it so each recompiles against its own metric
-    /// instead of inheriting the host's.
+    /// Recompile the shaders `events` touches. The default covers exactly what
+    /// this app loaded under [`ShaderDb::ROOT_OWNER`], against `Self::Space`. An
+    /// app hosting several independently spaced sub-scenes gives each one a
+    /// [`ShaderDb::new_owner`] and overrides this to fan out one scoped apply
+    /// per sub-scene, so no scene is recompiled against the host's metric.
     fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
-        shader_db.apply_events(events, self.space());
+        shader_db.apply_events(ShaderDb::ROOT_OWNER, events, self.space());
     }
 
     /// Hot-reload notification, after [`App::apply_shader_events`] has run;

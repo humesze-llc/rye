@@ -162,7 +162,12 @@ fn build_geodesic_node(
     scene: &Scene,
 ) -> anyhow::Result<GeodesicRayMarchNode> {
     let mut db = ShaderDb::new(device.clone());
-    let id = db.load_geodesic_scene(shader_path, &scene.to_wgsl(&EuclideanR3), &EuclideanR3)?;
+    let id = db.load_geodesic_scene(
+        ShaderDb::ROOT_OWNER,
+        shader_path,
+        &scene.to_wgsl(&EuclideanR3),
+        &EuclideanR3,
+    )?;
     Ok(GeodesicRayMarchNode::from_module(
         device,
         surface_format,
@@ -179,7 +184,12 @@ fn build_raymarch_node(
     scene: &Scene,
 ) -> anyhow::Result<RayMarchNode> {
     let mut db = ShaderDb::new(device.clone());
-    let id = db.load_with_scene(shader_path, &scene.to_wgsl(&EuclideanR3), &EuclideanR3)?;
+    let id = db.load_with_scene(
+        ShaderDb::ROOT_OWNER,
+        shader_path,
+        &scene.to_wgsl(&EuclideanR3),
+        &EuclideanR3,
+    )?;
     Ok(RayMarchNode::new(device, surface_format, db.module(id), 1))
 }
 

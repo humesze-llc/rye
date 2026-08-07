@@ -11,8 +11,9 @@ use loam_render::device::RenderDevice;
 use std::sync::Mutex;
 
 pub(crate) trait Scene {
-    /// Recompile this scene's shaders against the Space the scene itself owns.
-    /// Scenes with no shaders of their own keep the no-op default.
+    /// Recompile this scene's shaders against the Space the scene itself owns,
+    /// scoped to the [`loam_app::ShaderOwner`] it took at build time. Scenes
+    /// with no shaders of their own keep the no-op default.
     fn apply_shader_events(&mut self, _events: &[AssetEvent], _shader_db: &mut ShaderDb) {}
     /// Contributions to the shared menu bar, rendered after the Demo menu.
     fn menus(&mut self, ui: &mut egui::Ui);
@@ -168,9 +169,9 @@ impl App for ShellApp {
         &EuclideanR3
     }
 
-    /// Fanned out rather than applied once db-wide: one db-wide apply rebuilds
-    /// every module against a single prelude, which would retune a scene in
-    /// another Space to whichever metric the shell happened to name.
+    /// Fanned out because each scene's apply is scoped to its own owner: a
+    /// scene reached here recompiles only the modules it loaded, against the
+    /// Space it holds, never the shell's `EuclideanR3`.
     fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
         for scene in &mut self.scenes {
             scene.apply_shader_events(events, shader_db);
@@ -235,6 +236,7 @@ impl App for ShellApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loam_app::ShaderOwner;
     use loam_math::HyperbolicH3;
 
     /// A scene whose geometry is not the shell's, written to be compiled: no
@@ -242,11 +244,12 @@ mod tests {
     /// against the scene's own Space.
     struct HyperbolicScene {
         space: HyperbolicH3,
+        owner: ShaderOwner,
     }
 
     impl Scene for HyperbolicScene {
         fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
-            shader_db.apply_events(events, &self.space);
+            shader_db.apply_events(self.owner, events, &self.space);
         }
 
         fn menus(&mut self, _ui: &mut egui::Ui) {}
@@ -280,9 +283,10 @@ mod tests {
         const ENTRY: SceneEntry = SceneEntry {
             slug: "hyperbolic",
             label: "Hyperbolic",
-            build: |_| {
+            build: |ctx| {
                 Ok(Box::new(HyperbolicScene {
                     space: HyperbolicH3,
+                    owner: ctx.shader_db.new_owner(),
                 }))
             },
         };

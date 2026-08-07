@@ -151,7 +151,7 @@ pub trait WgslSpace: Space {
 mod tests {
     use super::Space;
     use crate::{
-        BlendedSpace, EuclideanR2, EuclideanR3, EuclideanR4, FlatTorus3, HyperbolicH3,
+        BlendedSpace, EuclideanR2, EuclideanR3, EuclideanR4, FlatTorus3, HyperbolicH3, LensSpace,
         LinearBlendX, SphericalS3, SphericalS3Embedded,
     };
 
@@ -177,5 +177,6 @@ mod tests {
         // lattice-invariant, so it disagrees with the geometry across the
         // gluing. `is_chart_flat` licenses that arithmetic, not flatness.
         assert!(!FlatTorus3::cube(2.0).is_chart_flat());
+        assert!(!LensSpace::new(5, 2).is_chart_flat());
     }
 }

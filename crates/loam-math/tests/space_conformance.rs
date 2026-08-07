@@ -24,11 +24,11 @@
 //! public-contract pin: every fixture is written against the same surface an
 //! out-of-crate implementor has.
 
-use glam::{Quat, Vec2, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use loam_math::{
     Bivector, Bivector2, Bivector4, BlendedSpace, ConformallyFlat, EuclideanR2, EuclideanR3,
-    EuclideanR4, HyperbolicH3, Iso2, Iso3, Iso3H, Iso4, Iso4Flat, IsometryGroup, LinearBlendX,
-    Space, SphericalS3, SphericalS3Embedded,
+    EuclideanR4, HyperbolicH3, Iso2, Iso3, Iso3H, Iso4, Iso4Flat, IsometryGroup, LensSpace,
+    LinearBlendX, Space, SphericalS3, SphericalS3Embedded,
 };
 
 // ---------------------------------------------------------------------------
@@ -1881,6 +1881,172 @@ impl SpaceFixture for BlendedSpaceFixture {
     }
 }
 
+/// The lens space `L(p, q)`, the crate's curved quotient. Extent: lifts within
+/// `0.25·π/p` of `Vec4::X`, the centre of the fundamental domain, with
+/// tangents under `0.4·π/p`. Both bounds are read off
+/// [`LensSpace::injectivity_radius`] rather than written down, so a suite at a
+/// different `(p, q)` re-derives them: past that radius `log` is multivalued
+/// and the round-trip items would be measuring the cut locus.
+///
+/// Every point item here is a statement about orbits, because the harness
+/// compares points with `Space::distance` and this Space's distance is the
+/// quotient's. That is what lets one harness cover a quotient at all: `exp`
+/// returns a canonical lift, an isometry returns whichever lift its matrix
+/// lands on, and neither is a discrepancy in the quotient.
+///
+/// Tolerances are the ambient S³ fixture's, unchanged: the metric primitives
+/// are that impl's, called on a lift the deck minimisation picked.
+struct LensSpaceFixture(LensSpace);
+
+impl LensSpaceFixture {
+    /// A rotation by `xy` in the `z₁ = (x, y)` plane and by `zw` in the
+    /// `z₂ = (z, w)` plane. Commutes with the deck generator, which is one of
+    /// these, so it descends to the quotient for every `(p, q)`.
+    fn plane_rotations(xy: f32, zw: f32) -> Iso4 {
+        let (sin_xy, cos_xy) = xy.sin_cos();
+        let (sin_zw, cos_zw) = zw.sin_cos();
+        Iso4 {
+            matrix: Mat4::from_cols(
+                Vec4::new(cos_xy, sin_xy, 0.0, 0.0),
+                Vec4::new(-sin_xy, cos_xy, 0.0, 0.0),
+                Vec4::new(0.0, 0.0, cos_zw, sin_zw),
+                Vec4::new(0.0, 0.0, -sin_zw, cos_zw),
+            ),
+        }
+    }
+
+    /// Complex conjugation in both planes, `diag(1, -1, 1, -1)`. Determinant
+    /// `+1`, and it sends the deck generator to its inverse, so it normalises
+    /// the deck group and descends to the quotient without commuting with the
+    /// rotations above. It is what makes this fixture's isometries pairwise
+    /// non-commuting at every `(p, q)`; the two-torus alone is abelian.
+    fn conjugation() -> Iso4 {
+        Iso4 {
+            matrix: Mat4::from_cols(
+                Vec4::X,
+                Vec4::new(0.0, -1.0, 0.0, 0.0),
+                Vec4::Z,
+                Vec4::new(0.0, 0.0, 0.0, -1.0),
+            ),
+        }
+    }
+}
+
+impl SpaceFixture for LensSpaceFixture {
+    type Point = Vec4;
+    type Vector = Vec4;
+    type S = LensSpace;
+
+    fn space(&self) -> LensSpace {
+        self.0
+    }
+
+    fn points(&self) -> Vec<Vec4> {
+        let mut rng = Xorshift32::new(0x004C_0F1A);
+        let spread = 0.25 * self.0.injectivity_radius();
+        (0..5)
+            .map(|_| {
+                (Vec4::X
+                    + Vec4::new(
+                        rng.signed_unit(),
+                        rng.signed_unit(),
+                        rng.signed_unit(),
+                        rng.signed_unit(),
+                    ) * spread)
+                    .normalize()
+            })
+            .collect()
+    }
+
+    fn tangents(&self, at: Vec4) -> Vec<Vec4> {
+        let mut rng = Xorshift32::new(0x004C_7A46);
+        let reach = 0.4 * self.0.injectivity_radius();
+        (0..3)
+            .map(|_| {
+                let raw = Vec4::new(
+                    rng.signed_unit(),
+                    rng.signed_unit(),
+                    rng.signed_unit(),
+                    rng.signed_unit(),
+                );
+                // Ambient tangents are perpendicular to their base point by
+                // the cover's contract; a radial part would be projected out
+                // by `exp` and the reverse round trip would be testing the
+                // projection instead of the geodesic.
+                (raw - raw.dot(at) * at) * reach
+            })
+            .collect()
+    }
+
+    fn inner(&self, _at: Vec4, u: Vec4, v: Vec4) -> f32 {
+        u.dot(v)
+    }
+
+    fn combine(&self, u: Vec4, s: f32, v: Vec4, t: f32) -> Vec4 {
+        u * s + v * t
+    }
+
+    fn degenerate_pairs(&self) -> Vec<(Vec4, Vec4)> {
+        let p = self.0.p() as f32;
+        let a = Vec4::new(0.1, -0.2, 0.3, 0.9).normalize();
+        // Half a deck displacement along the z1 plane: equidistant from two
+        // lifts of `Vec4::X`, so it is the cut locus of the quotient rather
+        // than of the cover.
+        let (sin, cos) = (std::f32::consts::PI / p).sin_cos();
+        let cut = Vec4::new(cos, sin, 0.0, 0.0);
+        vec![
+            (a, a),
+            (Vec4::X, -Vec4::X),
+            (Vec4::X, cut),
+            // On the circle z1 = 0, where the wedge argument is undefined and
+            // the whole orbit is equidistant from the domain's centre.
+            (Vec4::X, Vec4::Z),
+        ]
+    }
+
+    fn curvature(&self) -> Option<f32> {
+        Some(1.0)
+    }
+
+    fn tol(&self) -> Tol {
+        Tol {
+            point: 1e-5,
+            vector: 1e-5,
+            scalar: 1e-5,
+            degenerate: 1e-3,
+        }
+    }
+
+    fn point_components(&self, p: Vec4) -> [f32; 4] {
+        p.to_array()
+    }
+
+    fn vector_components(&self, v: Vec4) -> [f32; 4] {
+        v.to_array()
+    }
+}
+
+impl IsometryFixture for LensSpaceFixture {
+    type Iso = Iso4;
+
+    /// Three elements of the deck group's normaliser, pairwise
+    /// non-commuting: a torus element, the conjugation, and their product.
+    /// An `Iso4` outside the normaliser would not descend to the quotient and
+    /// would fail `distance_is_invariant_under_isometry`, which is the item
+    /// that makes this choice a claim rather than a convenience.
+    fn isos(&self) -> Vec<Iso4> {
+        let space = self.space();
+        vec![
+            LensSpaceFixture::plane_rotations(0.4, -0.7),
+            LensSpaceFixture::conjugation(),
+            space.iso_compose(
+                LensSpaceFixture::plane_rotations(-0.3, 0.9),
+                LensSpaceFixture::conjugation(),
+            ),
+        ]
+    }
+}
+
 conformance_suite!(euclidean_r2, EuclideanR2Fixture);
 conformance_suite!(euclidean_r3, EuclideanR3Fixture);
 conformance_suite!(euclidean_r4, EuclideanR4Fixture);
@@ -1888,6 +2054,11 @@ conformance_suite!(hyperbolic_h3, HyperbolicH3Fixture);
 conformance_suite!(spherical_s3, SphericalS3Fixture);
 conformance_suite!(spherical_s3_embedded, SphericalS3EmbeddedFixture);
 conformance_suite!(blended_space, BlendedSpaceFixture);
+// Two orders and two twists: the fixture reads its extent off `p`, so a suite
+// that only ran at one `(p, q)` would not separate a hardcoded lens from a
+// parameterised one.
+conformance_suite!(lens_space_l5_2, LensSpaceFixture(LensSpace::new(5, 2)));
+conformance_suite!(lens_space_rp3, LensSpaceFixture(LensSpace::new(2, 1)));
 
 // `BlendedSpace` is absent by construction: it does not implement
 // `IsometryGroup`, so naming it here would not compile.
@@ -1897,3 +2068,11 @@ isometry_conformance_suite!(euclidean_r4_isometries, EuclideanR4Fixture);
 isometry_conformance_suite!(hyperbolic_h3_isometries, HyperbolicH3Fixture);
 isometry_conformance_suite!(spherical_s3_isometries, SphericalS3Fixture);
 isometry_conformance_suite!(spherical_s3_embedded_isometries, SphericalS3EmbeddedFixture);
+isometry_conformance_suite!(
+    lens_space_l5_2_isometries,
+    LensSpaceFixture(LensSpace::new(5, 2))
+);
+isometry_conformance_suite!(
+    lens_space_rp3_isometries,
+    LensSpaceFixture(LensSpace::new(2, 1))
+);

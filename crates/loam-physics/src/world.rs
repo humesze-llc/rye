@@ -26,6 +26,8 @@
 
 use std::collections::BTreeMap;
 
+use loam_time::StateHash;
+
 use crate::body::{BodyArena, BodyId, RigidBody};
 use crate::collider::Collider;
 use crate::collision::VectorOps;
@@ -700,6 +702,57 @@ impl<S: PhysicsSpace> World<S> {
         pairs.sort_unstable();
     }
 
+    /// Fold the carried contact state into `hash`: each manifold's key, its
+    /// point count, and each point's accumulated normal impulse, in `BTreeMap`
+    /// key order.
+    ///
+    /// Bodies alone are not the state. Warm-start impulses persist across
+    /// steps, so two runs can agree on every body for several steps and still
+    /// have already diverged in the solver's memory; a hash that skips them
+    /// finds that late or not at all.
+    pub fn hash_contacts(&self, hash: &mut StateHash) {
+        for (key, manifold) in &self.manifolds {
+            for id in [key.0, key.1] {
+                hash.write_u32(id.slot());
+                hash.write_u32(id.generation());
+            }
+            hash.write_u32(manifold.points.len() as u32);
+            for point in &manifold.points {
+                hash.write_f32(point.normal_impulse);
+            }
+        }
+    }
+
+    /// One value standing for the whole simulation state: every body in
+    /// ascending [`BodyId`] order, then [`Self::hash_contacts`].
+    ///
+    /// Handle order rather than storage order, because `despawn` compacts the
+    /// arena by swapping the last body into the hole. Two worlds holding the
+    /// same bodies after different spawn histories are the same state and must
+    /// hash alike, or a replay that despawns nothing could never be compared
+    /// against one that does.
+    ///
+    /// `sample_body` supplies the per-space word encoding of a body:
+    /// `S::Point` and `S::AngVel` are opaque here, and giving them a generic
+    /// encoding would mean a new required method on every [`PhysicsSpace`]
+    /// impl. The sampler owes a fixed-width, fixed-order layout, because
+    /// [`StateHash`] carries no framing of its own.
+    pub fn state_hash(&self, sample_body: impl Fn(&RigidBody<S>, &mut Vec<u32>)) -> u64 {
+        let mut order: Vec<BodyId> = (0..self.bodies.len())
+            .map(|dense| self.bodies.id_at(dense))
+            .collect();
+        order.sort_unstable();
+
+        let mut words = Vec::new();
+        for id in order {
+            sample_body(&self.bodies[id], &mut words);
+        }
+        let mut hash = StateHash::new();
+        hash.write_u32s(&words);
+        self.hash_contacts(&mut hash);
+        hash.finish()
+    }
+
     /// The islands of the current manifold set, ascending by island id.
     /// Allocating form, for callers outside the step loop; the step groups its
     /// constraint buffer through the same partition without allocating. Public
@@ -930,8 +983,10 @@ mod tests {
     use super::*;
     use crate::determinism_fixture::{
         assert_scenario_stays_physical, determinism_scenario_run, first_divergent_step, fnv1a64,
-        multi_island_groups, multi_island_scenario_run, multi_island_world, ScenarioRun,
+        multi_island_groups, multi_island_scenario_run, multi_island_world,
+        record_flick_chamber_tape, replay_flick_chamber_tape, sample_body_r3, ScenarioRun,
         GOLDEN_MULTI_ISLAND_HASH, GOLDEN_TRAJECTORY_HASH, MULTI_ISLAND_DT, MULTI_ISLAND_STEPS,
+        REPLAY_SEED, REPLAY_TICKS,
     };
     use crate::euclidean_r3::{
         box_body, halfspace_body_r3, register_default_narrowphase, sphere_body_r3,
@@ -939,6 +994,7 @@ mod tests {
     use crate::field::Gravity;
     use glam::Vec3;
     use loam_math::{Bivector3, EuclideanR3, Space};
+    use loam_time::Tape;
 
     /// Arbitrary but fixed, so a failure is reproducible from its message.
     const PERMUTATION_SEEDS: [u64; 4] = [1, 0x9e37_79b9_7f4a_7c15, 0xdead_beef_cafe_f00d, 424_242];
@@ -1382,6 +1438,149 @@ mod tests {
              {GOLDEN_MULTI_ISLAND_HASH:#018x}; the sanity pin above passed, so \
              this is an intended simulation change and the constant should be \
              re-recorded to {hash:#018x}"
+        );
+    }
+
+    /// The replay contract: a run is reproducible from its recorded input, not
+    /// merely from being re-run. Every fixture below drives a fresh world from
+    /// the tape alone; the recording run's world is dropped before any of them
+    /// starts, so nothing carries over but the bytes.
+    #[test]
+    fn a_recorded_tape_replays_to_the_same_state_hash_determinism() {
+        let tape = record_flick_chamber_tape(REPLAY_SEED);
+        assert_eq!(
+            tape.ticks(),
+            REPLAY_TICKS,
+            "the tape must cover the run it recorded"
+        );
+        assert!(
+            tape.checkpoints().len() > 1,
+            "one checkpoint would let a divergence hide until the last tick"
+        );
+        assert_eq!(
+            1.0 / tape.tick_hz() as f32,
+            MULTI_ISLAND_DT,
+            "the header's tick rate must be the step the scenario actually runs"
+        );
+        assert_eq!(
+            replay_flick_chamber_tape(&tape),
+            tape.checkpoints(),
+            "replay diverged from the recording it was made from"
+        );
+    }
+
+    /// A tape is only worth the name if it survives leaving the process, so the
+    /// replay that matters runs from decoded bytes rather than from the
+    /// in-memory recording.
+    #[test]
+    fn a_tape_replays_the_same_after_a_round_trip_through_its_byte_format_determinism() {
+        let recorded = record_flick_chamber_tape(REPLAY_SEED);
+        let decoded = Tape::decode(&recorded.encode()).expect("own encoding decodes");
+        assert_eq!(decoded, recorded);
+        assert_eq!(replay_flick_chamber_tape(&decoded), decoded.checkpoints());
+    }
+
+    /// Without this the suite could not tell a tape that drives the sim from a
+    /// tape that is decoration: a replay ignoring its input would reproduce the
+    /// recording of a scenario that has no input either.
+    #[test]
+    fn a_flipped_input_word_moves_the_replayed_state_hash_determinism() {
+        let recorded = record_flick_chamber_tape(REPLAY_SEED);
+        let throw = (0..recorded.ticks())
+            .find(|&tick| recorded.input(tick).expect("inside the tape")[0] != u32::MAX)
+            .expect("the scripted stream throws at least once");
+
+        let mut tampered = Tape::new(
+            recorded.tick_hz(),
+            recorded.seed(),
+            recorded.words_per_tick(),
+        );
+        for tick in 0..recorded.ticks() {
+            let mut frame: Vec<u32> = recorded.input(tick).expect("inside the tape").to_vec();
+            if tick == throw {
+                // Low mantissa bit of the impulse's x component: the smallest
+                // edit the format can express.
+                frame[2] ^= 1;
+            }
+            tampered.push_tick(&frame);
+        }
+
+        assert_ne!(
+            replay_flick_chamber_tape(&tampered),
+            recorded.checkpoints(),
+            "one ulp of input made no difference, so the tape is not driving \
+             the simulation"
+        );
+    }
+
+    /// The hash has to name the state, not the storage. `despawn` swaps the
+    /// last body into the hole, so two worlds holding the same bodies after
+    /// different spawn histories differ in dense order and in nothing else.
+    #[test]
+    fn state_hash_is_invariant_under_arena_compaction_determinism() {
+        let radii = [0.3_f32, 0.4, 0.5];
+        let body = |i: usize| {
+            sphere_body_r3(
+                Vec3::new(i as f32, 2.0 * i as f32, 0.0),
+                Vec3::new(0.0, -1.0, 0.5 * i as f32),
+                radii[i],
+                1.0 + i as f32,
+            )
+        };
+
+        let mut direct = World::new(EuclideanR3);
+        for i in 0..3 {
+            direct.push_body(body(i));
+        }
+
+        let mut compacted = World::new(EuclideanR3);
+        compacted.push_body(body(0));
+        let doomed = compacted.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 9.0, 4.0));
+        compacted.push_body(body(1));
+        compacted.push_body(body(2));
+        assert!(compacted.despawn_body(doomed));
+
+        let dense_order = |world: &World<EuclideanR3>| {
+            world
+                .bodies
+                .iter()
+                .map(|body| body.mass.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(
+            dense_order(&direct),
+            dense_order(&compacted),
+            "the two worlds must differ in storage order or the pin is vacuous"
+        );
+        assert_eq!(
+            direct.state_hash(sample_body_r3),
+            compacted.state_hash(sample_body_r3),
+        );
+    }
+
+    /// Warm-start impulses are carried solver state that no body field
+    /// reflects, so a hash over bodies alone would call two different
+    /// simulations equal.
+    #[test]
+    fn state_hash_covers_carried_contact_impulses_determinism() {
+        let mut world = multi_island_world(Schedule::default());
+        for _ in 0..MULTI_ISLAND_STEPS {
+            world.step(MULTI_ISLAND_DT);
+        }
+        let settled = world.state_hash(sample_body_r3);
+
+        let point = world
+            .manifolds
+            .values_mut()
+            .flat_map(|manifold| manifold.points.iter_mut())
+            .next()
+            .expect("the fixture rests in contact");
+        point.normal_impulse = f32::from_bits(point.normal_impulse.to_bits() ^ 1);
+
+        assert_ne!(
+            settled,
+            world.state_hash(sample_body_r3),
+            "one ulp of warm-start impulse left the state hash unmoved"
         );
     }
 

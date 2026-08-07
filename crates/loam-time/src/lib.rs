@@ -10,7 +10,8 @@
 //! tick number, never wall-clock. This crate is the
 //! wall-clock-to-tick-count adapter the local render loop uses. Replays
 //! and rollback netcode drive the sim by tick number directly and never
-//! touch [`FixedTimestep`].
+//! touch [`FixedTimestep`]; [`replay`] is the recorded form of that
+//! tick-indexed input stream.
 //!
 //! ## Typical loop
 //!
@@ -36,5 +37,7 @@
 pub mod alloc;
 mod fixed_timestep;
 pub mod frame_trace;
+pub mod replay;
 
 pub use fixed_timestep::{FixedTimestep, DEFAULT_MAX_CATCH_UP};
+pub use replay::{Checkpoint, StateHash, Tape, TapeError, TAPE_FORMAT_VERSION};

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Loam time primitives: deterministic fixed-timestep accumulator and tick counter."
+description = "Loam time primitives: deterministic fixed-timestep accumulator, tick counter, and replay tape."
 keywords = ["fixed-timestep", "determinism", "timing", "gamedev"]
 categories = ["game-development", "date-and-time"]
 
@@ -30,3 +30,6 @@ web-time = { workspace = true }
 # the feature; the crate itself is tiny so the prebuilt-with-tracing footprint
 # is negligible.
 tracing = { workspace = true }
+# `TapeError` is matched at a real callsite: a loader distinguishes "written by
+# another build, re-record it" from "corrupt" and reports differently.
+thiserror = { workspace = true }

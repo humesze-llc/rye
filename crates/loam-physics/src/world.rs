@@ -253,9 +253,9 @@ struct VisitLog {
 /// const _: () = assert_send_sync::<World<EuclideanR3>>();
 /// ```
 ///
-/// The `compile_fail` block below differs from the passing one only in the
-/// `Rc`, which stands for a field a `World` might grow, so what it pins is the
-/// `Rc` being rejected and not a broken fixture:
+/// The `compile_fail` block below tuples the passing block's fixture with an
+/// `Rc`, standing in for a non-`Send` field a `World` might grow, so the pair
+/// pins the `Rc` being rejected and not a broken fixture:
 ///
 /// ```compile_fail
 /// # use loam_math::EuclideanR3;

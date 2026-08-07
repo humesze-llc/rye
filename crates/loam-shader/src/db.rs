@@ -256,10 +256,10 @@ pub fn validate_wgsl(source: &str) -> std::result::Result<(), WgslValidationErro
 mod tests {
     use super::*;
     use bytemuck::{Pod, Zeroable};
-    use glam::Vec3;
+    use glam::{Vec3, Vec4};
     use loam_math::{
-        BlendedSpace, EuclideanR3, EuclideanR4, HyperbolicH3, LinearBlendX, Space, SphericalS3,
-        WgslSpace,
+        BlendedSpace, ConformallyFlat, EuclideanR3, EuclideanR4, HyperbolicH3, LinearBlendX, Space,
+        SphericalS3, WgslSpace,
     };
 
     const ABI_PROBE: &str = r#"
@@ -643,13 +643,14 @@ fn main() {
     #[repr(C)]
     #[derive(Copy, Clone, Debug, Pod, Zeroable)]
     struct GpuOut {
-        distance: [f32; 4],
+        /// `loam_distance(a, b)`, then `loam_origin_distance` of `a`, of `b`.
+        scalars: [f32; 4],
         exp_point: [f32; 4],
         log_vec: [f32; 4],
         transported: [f32; 4],
     }
 
-    const GPU_PROBE: &str = r#"
+    const PROBE_IO: &str = r#"
 struct Case {
     a: vec4<f32>,
     b: vec4<f32>,
@@ -657,7 +658,7 @@ struct Case {
 };
 
 struct ProbeOut {
-    distance: vec4<f32>,
+    scalars: vec4<f32>,
     exp_point: vec4<f32>,
     log_vec: vec4<f32>,
     transported: vec4<f32>,
@@ -665,7 +666,9 @@ struct ProbeOut {
 
 @group(0) @binding(0) var<storage, read> cases: array<Case>;
 @group(0) @binding(1) var<storage, read_write> out: array<ProbeOut>;
+"#;
 
+    const GPU_PROBE: &str = r#"
 @compute @workgroup_size(1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -673,72 +676,222 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let a = c.a.xyz;
     let b = c.b.xyz;
     let v = c.v.xyz;
-    out[i].distance = vec4<f32>(loam_distance(a, b), 0.0, 0.0, 0.0);
+    out[i].scalars = vec4<f32>(
+        loam_distance(a, b),
+        loam_origin_distance(a),
+        loam_origin_distance(b),
+        0.0);
     out[i].exp_point = vec4<f32>(loam_exp(a, v), 0.0);
     out[i].log_vec = vec4<f32>(loam_log(a, b), 0.0);
     out[i].transported = vec4<f32>(loam_parallel_transport(a, b, v), 0.0);
 }
 "#;
 
-    #[test]
-    #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
-    fn euclidean_space_gpu_probe_matches_cpu() {
-        let space = EuclideanR3;
-        let cases = [
-            gpu_case(
+    // `EuclideanR4` ships the same v0 ABI over `vec4<f32>`, so it needs its own
+    // probe body; the buffer layout is unchanged.
+    const GPU_PROBE_VEC4: &str = r#"
+@compute @workgroup_size(1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let c = cases[i];
+    out[i].scalars = vec4<f32>(
+        loam_distance(c.a, c.b),
+        loam_origin_distance(c.a),
+        loam_origin_distance(c.b),
+        0.0);
+    out[i].exp_point = loam_exp(c.a, c.v);
+    out[i].log_vec = loam_log(c.a, c.b);
+    out[i].transported = loam_parallel_transport(c.a, c.b, c.v);
+}
+"#;
+
+    /// One probe triple, labelled by the corner of the chart's domain it sits
+    /// in so a failure names the regime instead of an array index.
+    struct ParityCase {
+        corner: &'static str,
+        a: Vec3,
+        b: Vec3,
+        v: Vec3,
+    }
+
+    fn corner(corner: &'static str, a: Vec3, b: Vec3, v: Vec3) -> ParityCase {
+        ParityCase { corner, a, b, v }
+    }
+
+    /// Corners for the two flat charts: coincident, separated below one ulp of
+    /// the coordinates, at 1e-4 radius, generic, and widely separated. Nothing
+    /// here is a domain boundary because ℝⁿ has none, so these pin the plumbing
+    /// and the exp/log/transport algebra rather than a conditioning class.
+    ///
+    /// The ℝ⁴ probe reuses these and supplies `w` from [`FLAT_CORNER_W`].
+    fn flat_corners() -> Vec<ParityCase> {
+        vec![
+            corner(
+                "coincident at the origin",
+                Vec3::ZERO,
+                Vec3::ZERO,
+                Vec3::new(0.01, 0.02, -0.03),
+            ),
+            corner(
+                "separation below one coordinate ulp",
+                Vec3::new(1.0, 1.0, 1.0),
+                Vec3::new(1.0 + 1e-8, 1.0, 1.0),
+                Vec3::new(1e-8, 0.0, 0.0),
+            ),
+            corner(
+                "small radius",
+                Vec3::new(1e-4, 0.0, 0.0),
+                Vec3::new(0.0, -1e-4, 0.0),
+                Vec3::new(1e-5, 0.0, 2e-5),
+            ),
+            corner(
+                "generic interior",
                 Vec3::new(0.1, 0.2, 0.3),
                 Vec3::new(0.5, -0.1, 0.0),
                 Vec3::new(0.01, 0.02, -0.03),
             ),
-            gpu_case(
+            corner(
+                "wide separation, tangent past the unit ball",
                 Vec3::new(-2.0, 4.0, 0.5),
                 Vec3::new(1.5, 0.25, -3.0),
-                Vec3::new(0.5, -0.25, 0.125),
+                Vec3::new(30.0, -12.0, 7.0),
             ),
-        ];
-        let out = pollster::block_on(run_gpu_probe(&space, &cases)).expect("GPU probe");
-        assert_probe_matches_cpu(&space, &cases, &out, 1e-5);
+        ]
     }
 
-    #[test]
-    #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
-    fn spherical_space_gpu_probe_matches_cpu() {
-        let space = SphericalS3;
-        // Points must be inside the upper hemisphere: |p|² < 1.
-        let cases = [
-            gpu_case(
+    /// Interior corners of the S³ upper-hemisphere chart: the pole, a radius
+    /// small enough to expose an ill-conditioned origin distance, and the
+    /// near-antipodal pairs whose transport denominator is the smallest the
+    /// chart holds. Outside the chart is [`out_of_domain_corners`].
+    ///
+    /// Radii are literals rather than offsets from the prelude's saturation
+    /// constant: a fixture that reads the constant it probes retunes with it
+    /// and stops failing. `0.9999` is inside today's shell; a retune that moves
+    /// the shell inside it turns this into an out-of-domain fixture, which is
+    /// visible to a reader in a way a derived radius would not be.
+    fn hemisphere_corners() -> Vec<ParityCase> {
+        vec![
+            corner(
+                "at the pole",
+                Vec3::ZERO,
+                Vec3::new(0.2, -0.1, 0.05),
+                Vec3::new(0.01, 0.02, -0.03),
+            ),
+            // Below the radius where `acos(sqrt(1 - r2))` collapses to zero in
+            // f32; the regime the shipped origin distance was wrong in.
+            corner(
+                "small radius",
+                Vec3::new(1e-4, 0.0, 0.0),
+                Vec3::new(0.0, 1e-4, 0.0),
+                Vec3::new(1e-5, -2e-5, 0.0),
+            ),
+            corner(
+                "generic interior",
                 Vec3::new(0.1, 0.2, 0.3),
                 Vec3::new(0.2, -0.1, 0.05),
                 Vec3::new(0.01, 0.02, -0.03),
             ),
-            gpu_case(
-                Vec3::new(-0.3, 0.4, 0.1),
-                Vec3::new(0.2, 0.3, -0.2),
-                Vec3::new(0.02, -0.01, 0.015),
+            // Two points near the equator on opposite sides: arc ≈ π − 0.028,
+            // driving the transport denominator `|qf + qt|²/2 = 2w²` to 4e-4,
+            // the smallest of any corner here. Deliberately short of the
+            // chart's own extreme (π − 0.002, at the saturation shell), so a
+            // retune of that shell cannot turn this into a clamp probe.
+            corner(
+                "near-antipodal across the equator",
+                Vec3::new(0.9999, 0.0, 0.0),
+                Vec3::new(-0.9999, 0.0, 0.0),
+                Vec3::new(0.02, 0.03, -0.01),
             ),
-        ];
-        let out = pollster::block_on(run_gpu_probe(&space, &cases)).expect("GPU probe");
-        assert_probe_matches_cpu(&space, &cases, &out, 2e-4);
+            corner(
+                "near-antipodal, oblique",
+                Vec3::new(0.7, 0.7, 0.1),
+                Vec3::new(-0.7, -0.7, -0.1),
+                Vec3::new(0.05, -0.02, 0.03),
+            ),
+        ]
     }
 
-    #[test]
-    #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
-    fn hyperbolic_space_gpu_probe_matches_cpu() {
-        let space = HyperbolicH3;
-        let cases = [
-            gpu_case(
+    /// Interior corners of the H³ Poincaré-ball chart. Same regimes and the
+    /// same literal-radius discipline as [`hemisphere_corners`]; near-antipodal
+    /// here means opposite sides of the ideal boundary, along a segment whose
+    /// conformal factor runs from 4 at its centre to 1.0e4 at each endpoint.
+    fn ball_corners() -> Vec<ParityCase> {
+        vec![
+            corner(
+                "at the ball centre",
+                Vec3::ZERO,
+                Vec3::new(0.2, -0.1, 0.08),
+                Vec3::new(0.01, 0.02, -0.015),
+            ),
+            corner(
+                "small radius",
+                Vec3::new(1e-4, 0.0, 0.0),
+                Vec3::new(0.0, 1e-4, 0.0),
+                Vec3::new(1e-5, -2e-5, 0.0),
+            ),
+            corner(
+                "generic interior",
                 Vec3::new(0.1, 0.2, 0.05),
                 Vec3::new(0.2, -0.1, 0.08),
                 Vec3::new(0.01, 0.02, -0.015),
             ),
-            gpu_case(
-                Vec3::new(-0.25, 0.1, 0.05),
-                Vec3::new(0.15, 0.2, -0.1),
+            corner(
+                "near-antipodal across the ideal boundary",
+                Vec3::new(0.99, 0.0, 0.0),
+                Vec3::new(-0.99, 0.0, 0.0),
+                Vec3::new(0.02, 0.03, -0.01),
+            ),
+            corner(
+                "both endpoints at r = 0.9999",
+                Vec3::new(0.9999, 0.0, 0.0),
+                Vec3::new(0.0, -0.9999, 0.0),
                 Vec3::new(0.02, -0.015, 0.01),
             ),
+        ]
+    }
+
+    /// Out-of-domain probes for both `|p| < 1` charts: the unit boundary
+    /// itself, one ulp past it, and radii far outside, crossed with directions
+    /// that are axis-aligned, oblique and irrational, and with in-domain,
+    /// on-boundary and far-outside partners.
+    ///
+    /// The radii are literals rather than offsets from either chart's
+    /// saturation constant. Both charts clamp onto a shell a few f32 ulps
+    /// inside `|p| = 1`; a fixture parameterised on that shell would move with
+    /// a retune and stop being out of domain at all.
+    fn out_of_domain_corners() -> Vec<ParityCase> {
+        let directions = [
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::new(0.6, 0.8, 0.0),
+            Vec3::new(0.5773503, 0.5773503, 0.5773503),
+            Vec3::new(0.26726124, -0.5345225, 0.8017837),
+            Vec3::new(-0.35856858, 0.5976143, -0.71713716),
         ];
-        let out = pollster::block_on(run_gpu_probe(&space, &cases)).expect("GPU probe");
-        assert_probe_matches_cpu(&space, &cases, &out, 2e-4);
+        let radii = [1.0_f32, 1.0000001, 1.5, 8.0, 1e4];
+        let partners = [
+            Vec3::new(0.3, 0.1, 0.0),
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(-2.0, 0.5, 0.25),
+        ];
+        let tangents = [
+            Vec3::new(0.01, 0.02, -0.03),
+            Vec3::new(2.0, -1.0, 0.5),
+            Vec3::ZERO,
+        ];
+        let mut cases = Vec::new();
+        for (i, direction) in directions.iter().enumerate() {
+            for (j, radius) in radii.iter().enumerate() {
+                let outside = *direction * *radius;
+                let partner = partners[(i + j) % partners.len()];
+                let tangent = tangents[(i + j) % tangents.len()];
+                cases.push(corner("out of domain, source", outside, partner, tangent));
+                cases.push(corner("out of domain, target", partner, outside, tangent));
+                cases.push(corner("out of domain, both", outside, -outside, tangent));
+            }
+        }
+        cases
     }
 
     fn gpu_case(a: Vec3, b: Vec3, v: Vec3) -> GpuCase {
@@ -753,12 +906,123 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         space: &S,
         cases: &[GpuCase],
     ) -> Result<Vec<GpuOut>, String> {
+        run_probe_body(space, GPU_PROBE, cases).await
+    }
+
+    async fn run_probe_body<S: WgslSpace>(
+        space: &S,
+        body: &str,
+        cases: &[GpuCase],
+    ) -> Result<Vec<GpuOut>, String> {
         run_compute_probe(
-            &assemble_source(&space.wgsl_impl(), GPU_PROBE),
+            &assemble_source(&space.wgsl_impl(), &format!("{PROBE_IO}{body}")),
             "loam-space-gpu-probe",
             cases,
         )
         .await
+    }
+
+    /// Flat chart, so the only gap is f32 rounding order between the two
+    /// compilers.
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
+    fn euclidean_r3_wgsl_matches_the_rust_space_at_the_domain_corners() {
+        assert_prelude_matches_cpu(&EuclideanR3, &flat_corners(), 1e-6);
+    }
+
+    /// The `w` component each [`flat_corners`] entry carries in ℝ⁴, as
+    /// `[a, b, v]` in that fixture's order. Per-corner rather than one constant
+    /// triple because a constant one destroys the two regimes the fixture
+    /// exists for: it separates the coincident pair and swamps the sub-ulp one.
+    /// Away from those two, `a`, `b` and `v` carry distinct nonzero `w`, so a
+    /// dropped or duplicated component still cannot pass.
+    const FLAT_CORNER_W: [[f32; 3]; 5] = [
+        [0.0, 0.0, 0.125],
+        [1.0, 1.0 + 1e-8, 1e-8],
+        [1e-4, -1e-4, 2e-5],
+        [-0.75, 2.5, 0.125],
+        [-6.0, 9.0, 40.0],
+    ];
+
+    /// Same chart in `vec4<f32>`. No render node consumes this prelude yet, so
+    /// this is the only thing standing between it and a silent divergence.
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
+    fn euclidean_r4_wgsl_matches_the_rust_space_at_the_domain_corners() {
+        let space = EuclideanR4;
+        let corners = flat_corners();
+        assert_eq!(corners.len(), FLAT_CORNER_W.len());
+        let cases: Vec<GpuCase> = corners
+            .iter()
+            .zip(FLAT_CORNER_W)
+            .map(|(c, w)| GpuCase {
+                a: c.a.extend(w[0]).to_array(),
+                b: c.b.extend(w[1]).to_array(),
+                v: c.v.extend(w[2]).to_array(),
+            })
+            .collect();
+        let rows = pollster::block_on(run_probe_body(&space, GPU_PROBE_VEC4, &cases))
+            .expect("EuclideanR4 GPU probe");
+        for ((corner, case), row) in corners.iter().zip(&cases).zip(&rows) {
+            let (a, b, v) = (
+                Vec4::from_array(case.a),
+                Vec4::from_array(case.b),
+                Vec4::from_array(case.v),
+            );
+            let at = |what| format!("{} :: {what}", corner.corner);
+            assert_near(&at("distance"), row.scalars[0], space.distance(a, b), 1e-6);
+            assert_near(
+                &at("origin_distance(a)"),
+                row.scalars[1],
+                space.distance(Vec4::ZERO, a),
+                1e-6,
+            );
+            assert_near(
+                &at("origin_distance(b)"),
+                row.scalars[2],
+                space.distance(Vec4::ZERO, b),
+                1e-6,
+            );
+            assert_vec_near(&at("exp"), row.exp_point, space.exp(a, v), 1e-6);
+            assert_vec_near(&at("log"), row.log_vec, space.log(a, b), 1e-6);
+            assert_vec_near(
+                &at("parallel_transport"),
+                row.transported,
+                space.parallel_transport(a, b, v),
+                1e-6,
+            );
+        }
+    }
+
+    /// Tolerance 2e-4 relative: `asin` and the chord half-angle are evaluated
+    /// by two different compilers' intrinsics, and the near-antipodal corner
+    /// divides by the transport denominator `2w²`, which the equator case
+    /// drives to 4e-4.
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
+    fn spherical_s3_wgsl_matches_the_rust_space_at_the_domain_corners() {
+        assert_prelude_matches_cpu(&SphericalS3, &hemisphere_corners(), 2e-4);
+    }
+
+    /// Tolerance 2e-4 relative, for `artanh`'s two-compiler gap; at the
+    /// outermost corner the `2·artanh` origin distance carries a derivative of
+    /// 1e4 in `r`, so the relative form of the bound is doing the work here.
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
+    fn hyperbolic_h3_wgsl_matches_the_rust_space_at_the_domain_corners() {
+        assert_prelude_matches_cpu(&HyperbolicH3, &ball_corners(), 2e-4);
+    }
+
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
+    fn spherical_s3_wgsl_degrades_finitely_outside_the_hemisphere() {
+        assert_prelude_survives_out_of_domain(&SphericalS3, "SphericalS3");
+    }
+
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
+    fn hyperbolic_h3_wgsl_degrades_finitely_outside_the_ball() {
+        assert_prelude_survives_out_of_domain(&HyperbolicH3, "HyperbolicH3");
     }
 
     /// Dispatch one workgroup per element of `inputs` against a two-binding
@@ -917,21 +1181,117 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         Ok(rows)
     }
 
-    fn assert_probe_matches_cpu<S>(space: &S, cases: &[GpuCase], out: &[GpuOut], eps: f32)
+    /// Every entry point of `space`'s prelude against the Rust `Space` it
+    /// mirrors, at each corner of the chart's domain.
+    ///
+    /// `loam_origin_distance` is checked against `distance` from the chart
+    /// origin because that identity is the entire content of the function. Its
+    /// absence from this probe is why S³ shipped an `acos` form that reads zero
+    /// for every radius under 1.73e-4.
+    fn assert_prelude_matches_cpu<S>(space: &S, cases: &[ParityCase], eps: f32)
     where
-        S: Space<Point = Vec3, Vector = Vec3>,
+        S: WgslSpace + Space<Point = Vec3, Vector = Vec3>,
     {
-        assert_eq!(cases.len(), out.len());
-        for (case, row) in cases.iter().zip(out) {
-            let a = Vec3::from_array([case.a[0], case.a[1], case.a[2]]);
-            let b = Vec3::from_array([case.b[0], case.b[1], case.b[2]]);
-            let v = Vec3::from_array([case.v[0], case.v[1], case.v[2]]);
-
-            assert_near(row.distance[0], space.distance(a, b), eps);
-            assert_vec3_near(row.exp_point, space.exp(a, v), eps);
-            assert_vec3_near(row.log_vec, space.log(a, b), eps);
-            assert_vec3_near(row.transported, space.parallel_transport(a, b, v), eps);
+        let gpu: Vec<GpuCase> = cases.iter().map(|c| gpu_case(c.a, c.b, c.v)).collect();
+        let rows = pollster::block_on(run_gpu_probe(space, &gpu)).expect("GPU probe");
+        assert_eq!(cases.len(), rows.len());
+        for (case, row) in cases.iter().zip(&rows) {
+            let (a, b, v) = (case.a, case.b, case.v);
+            let at = |what| format!("{} :: {what}", case.corner);
+            assert_near(&at("distance"), row.scalars[0], space.distance(a, b), eps);
+            assert_near(
+                &at("origin_distance(a)"),
+                row.scalars[1],
+                space.distance(Vec3::ZERO, a),
+                eps,
+            );
+            assert_near(
+                &at("origin_distance(b)"),
+                row.scalars[2],
+                space.distance(Vec3::ZERO, b),
+                eps,
+            );
+            assert_vec_near(&at("exp"), row.exp_point, space.exp(a, v).extend(0.0), eps);
+            assert_vec_near(&at("log"), row.log_vec, space.log(a, b).extend(0.0), eps);
+            assert_vec_near(
+                &at("parallel_transport"),
+                row.transported,
+                space.parallel_transport(a, b, v).extend(0.0),
+                eps,
+            );
         }
+    }
+
+    /// Outside a `|p| < 1` chart neither twin contracts a value, only a
+    /// degraded-but-finite one. Both clamp onto a saturation shell whose
+    /// thickness is a few f32 ulps, and `artanh`, the `1/w` tangent lift and
+    /// the conformal ratio all carry derivatives past 10⁶ with respect to where
+    /// exactly that clamp lands, so two compilers rounding the clamp
+    /// differently disagree by whole percent on the outputs. No parity budget
+    /// separates that from a transcription error, and one written loose enough
+    /// to pass would not fail on one either.
+    ///
+    /// What does survive out there is the contract the chart modules state:
+    /// finite, never NaN, and a returned point still inside the chart. That is
+    /// what a missing clamp, an unfloored divisor or the gyration's
+    /// zero-denominator all break, so it is what this gates on. The divergence
+    /// it declines to gate on is printed instead of inferred.
+    fn assert_prelude_survives_out_of_domain<S>(space: &S, label: &str)
+    where
+        S: WgslSpace + Space<Point = Vec3, Vector = Vec3>,
+    {
+        let cases = out_of_domain_corners();
+        let gpu: Vec<GpuCase> = cases.iter().map(|c| gpu_case(c.a, c.b, c.v)).collect();
+        let rows = pollster::block_on(run_gpu_probe(space, &gpu)).expect("GPU probe");
+        let mut worst = 0.0_f32;
+        let mut worst_at = String::new();
+        for (case, row) in cases.iter().zip(&rows) {
+            let (a, b, v) = (case.a, case.b, case.v);
+            let cpu = [
+                Vec4::new(
+                    space.distance(a, b),
+                    space.distance(Vec3::ZERO, a),
+                    space.distance(Vec3::ZERO, b),
+                    0.0,
+                ),
+                space.exp(a, v).extend(0.0),
+                space.log(a, b).extend(0.0),
+                space.parallel_transport(a, b, v).extend(0.0),
+            ];
+            let gpu = [row.scalars, row.exp_point, row.log_vec, row.transported];
+            let names = ["scalars", "exp", "log", "parallel_transport"];
+            for ((name, cpu), gpu) in names.iter().zip(cpu).zip(gpu) {
+                let where_ = || format!("{label}/{} a={a:?} b={b:?} v={v:?} {name}", case.corner);
+                for (lane, (cpu, gpu)) in cpu.to_array().iter().zip(gpu).enumerate() {
+                    assert!(
+                        gpu.is_finite(),
+                        "{}: GPU lane {lane} is {gpu}, not finite",
+                        where_()
+                    );
+                    assert!(
+                        cpu.is_finite(),
+                        "{}: CPU lane {lane} is {cpu}, not finite",
+                        where_()
+                    );
+                    let divergence = (gpu - cpu).abs() / cpu.abs().max(1.0);
+                    if divergence > worst {
+                        worst = divergence;
+                        worst_at = format!("{} lane {lane}", where_());
+                    }
+                }
+            }
+            // Both charts are the open unit ball and both preludes end
+            // `loam_exp` in their own clamp, so a result outside it is the clamp
+            // failing. Excluded when the tangent is zero: there the tiny-
+            // tangent early-out returns the base point, in domain or not.
+            let exp_gpu = Vec3::new(row.exp_point[0], row.exp_point[1], row.exp_point[2]);
+            assert!(
+                v == Vec3::ZERO || exp_gpu.length_squared() <= 1.0,
+                "{label}/{}: loam_exp({a:?}, {v:?}) returned {exp_gpu:?}, outside the chart",
+                case.corner,
+            );
+        }
+        println!("{label} out-of-domain CPU/GPU divergence: worst {worst} at {worst_at}");
     }
 
     /// CPU/GPU parity for `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>`,
@@ -965,6 +1325,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 Vec3::new(0.7, 0.0, 0.0),
                 Vec3::new(0.71, 0.05, 0.0),
                 Vec3::new(0.02, 0.02, 0.0),
+            ),
+            // Straddles the `|v|² < 1e-14` early-out both sides share; the
+            // RK4 loop and the identity return must agree here.
+            gpu_case(
+                Vec3::new(0.0, 0.05, 0.0),
+                Vec3::new(0.0, 0.05, 0.0),
+                Vec3::new(1e-7, 0.0, 0.0),
+            ),
+            // Outside the H3 unit ball but inside the blended chart: the
+            // field pins alpha to 0 there, so the metric is flat and the
+            // H3 side's saturation shell is never consulted.
+            gpu_case(
+                Vec3::new(-2.0, 0.3, 0.1),
+                Vec3::new(-1.6, 0.3, 0.1),
+                Vec3::new(0.4, 0.05, 0.0),
             ),
         ];
         let out =
@@ -1012,6 +1387,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 Vec3::new(0.72, 0.05, 0.0),
                 Vec3::new(0.02, 0.02, 0.0),
             ),
+            // Straddles the `|p_to - p_from|² < 1e-14` early-out.
+            gpu_case(
+                Vec3::new(0.0, 0.05, 0.0),
+                Vec3::new(1e-7, 0.05, 0.0),
+                Vec3::new(0.05, -0.02, 0.01),
+            ),
+            // Outside the H3 unit ball, inside the blended chart's flat zone.
+            gpu_case(
+                Vec3::new(-2.0, 0.3, 0.1),
+                Vec3::new(-1.6, 0.3, 0.1),
+                Vec3::new(0.4, 0.05, 0.0),
+            ),
         ];
         let out =
             pollster::block_on(run_gpu_probe(&space, &cases)).expect("BlendedSpace GPU probe");
@@ -1027,6 +1414,81 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 diff < 5e-3,
                 "BlendedSpace transport parity failed at a={a:?} b={b:?} v={v:?}: cpu={cpu:?} gpu={gpu:?} diff={diff}",
             );
+        }
+    }
+
+    /// The other half of `BlendedSpace`'s ABI. `loam_log` and `loam_distance`
+    /// are not ports of `Space::log` and `Space::distance`; the prelude
+    /// documents them as the chart-coordinate difference and the midpoint chord
+    /// metric `√f((a+b)/2)·|b − a|`, and the Rust side runs Gauss-Newton
+    /// shooting and a full Riemannian length. Asserting agreement between those
+    /// would be asserting a falsehood, so the reference here is what the
+    /// prelude claims to compute, evaluated through the shipped
+    /// [`ConformallyFlat`] factor rather than a transcription of it. That still
+    /// catches a swapped operand, a dropped `√`, or a midpoint that is not the
+    /// midpoint, which is what the emitted text can plausibly get wrong.
+    ///
+    /// `loam_origin_distance` is `loam_distance` from the chart origin, so the
+    /// same reference covers it and pins that the two stay consistent.
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run manually when changing BlendedSpace WGSL"]
+    fn blended_e3_h3_log_and_distance_match_the_closed_forms_the_prelude_documents() {
+        let space = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.5, 0.5));
+        let corners = [
+            corner(
+                "pure E3 zone",
+                Vec3::new(-1.0, 0.05, 0.0),
+                Vec3::new(-0.8, 0.05, 0.0),
+                Vec3::ZERO,
+            ),
+            corner(
+                "mid-zone, small separation",
+                Vec3::new(0.0, 0.05, 0.0),
+                Vec3::new(1e-4, 0.05, 0.0),
+                Vec3::ZERO,
+            ),
+            corner(
+                "pure H3 zone at r = 0.7",
+                Vec3::new(0.7, 0.0, 0.0),
+                Vec3::new(0.71, 0.05, 0.0),
+                Vec3::ZERO,
+            ),
+            corner(
+                "across the whole transition zone",
+                Vec3::new(-0.6, 0.0, 0.0),
+                Vec3::new(0.7, 0.0, 0.0),
+                Vec3::ZERO,
+            ),
+            corner(
+                "outside the H3 unit ball, in the flat zone",
+                Vec3::new(-2.0, 0.3, 0.1),
+                Vec3::new(-1.6, 0.3, 0.1),
+                Vec3::ZERO,
+            ),
+        ];
+        let gpu: Vec<GpuCase> = corners.iter().map(|c| gpu_case(c.a, c.b, c.v)).collect();
+        let rows = pollster::block_on(run_gpu_probe(&space, &gpu)).expect("BlendedSpace GPU probe");
+
+        let chord = |a: Vec3, b: Vec3| {
+            space.conformal_factor((a + b) * 0.5).max(0.0).sqrt() * (b - a).length()
+        };
+        for (case, row) in corners.iter().zip(&rows) {
+            let (a, b) = (case.a, case.b);
+            let at = |what| format!("{} :: {what}", case.corner);
+            assert_near(&at("distance"), row.scalars[0], chord(a, b), 1e-5);
+            assert_near(
+                &at("origin_distance(a)"),
+                row.scalars[1],
+                chord(Vec3::ZERO, a),
+                1e-5,
+            );
+            assert_near(
+                &at("origin_distance(b)"),
+                row.scalars[2],
+                chord(Vec3::ZERO, b),
+                1e-5,
+            );
+            assert_vec_near(&at("log"), row.log_vec, (b - a).extend(0.0), 1e-6);
         }
     }
 
@@ -1271,16 +1733,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         println!("Scene4 hyperslice parity: worst residual {worst}");
     }
 
-    fn assert_vec3_near(actual: [f32; 4], expected: Vec3, eps: f32) {
-        assert_near(actual[0], expected.x, eps);
-        assert_near(actual[1], expected.y, eps);
-        assert_near(actual[2], expected.z, eps);
+    fn assert_vec_near(what: &str, actual: [f32; 4], expected: Vec4, eps: f32) {
+        for (lane, (actual, expected)) in actual.iter().zip(expected.to_array()).enumerate() {
+            assert_near(&format!("{what}[{lane}]"), *actual, expected, eps);
+        }
     }
 
-    fn assert_near(actual: f32, expected: f32, eps: f32) {
+    /// Absolute floor under the relative budget. Two f32 pipelines that agree
+    /// to their last bits still differ by ~1e-7 on a coordinate of order 1, and
+    /// a lane whose true value is 0 has no relative scale to be held to. One
+    /// order above that single-ulp figure and no higher: the small-radius
+    /// corner works at 1e-4, so a floor of 1e-6 still holds it to 1% and the
+    /// `acos(sqrt(1 − r²))` origin distance, which reads exactly 0 there,
+    /// cannot pass under it.
+    const PARITY_ABSOLUTE_FLOOR: f32 = 1e-6;
+
+    /// Relative, because the curved charts carry conformal factors reaching
+    /// 10⁷ near their boundaries and metric quantities down at 1e-4 near their
+    /// origins; a flat absolute bound would either pass everything at one end
+    /// or fail everything at the other.
+    fn assert_near(what: &str, actual: f32, expected: f32, eps: f32) {
+        let budget = eps * expected.abs() + PARITY_ABSOLUTE_FLOOR;
         assert!(
-            (actual - expected).abs() <= eps,
-            "actual {actual} differs from expected {expected} by more than {eps}",
+            (actual - expected).abs() <= budget,
+            "{what}: GPU {actual} differs from CPU {expected} by more than {budget}",
         );
     }
 

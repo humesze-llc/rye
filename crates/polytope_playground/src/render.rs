@@ -1282,12 +1282,16 @@ fn push_axis_cross(mesh: &mut LineMesh<3>, centre: Vec3, half: f32, color: [f32;
 /// [`loam_physics::World`], not body-local geometry, so none of it goes through
 /// the body-local project-then-translate path the shape passes use: a contact
 /// between two bodies belongs to neither one's frame. R⁴ maps to R³ by dropping
-/// w, which is the honest cross-section layer's projection and agrees with
-/// every other projection on the `w = 0` slice the chamber's bodies live on. A
-/// contact that leaves that slice therefore draws where drop-w puts it rather
-/// than where the active projection put the surfaces, and a normal pointing
-/// along w draws as a zero-length tick, which is itself the readout that the
-/// separating direction left the slice.
+/// w, which is both the honest cross-section layer's own projection and where
+/// every raster path puts a body centre: they project body-LOCAL geometry only,
+/// then translate by [`crate::physics::BodyPose::position_r3`], which truncates
+/// under whatever projection is active. The surfaces are another matter, since
+/// `Stereographic` normalizes onto S³ first and `Schlegel` reads out in a cell
+/// basis; a contact off the `w = 0` slice the chamber's bodies live on
+/// therefore draws where drop-w puts it rather than where the active projection
+/// put the hull around it. A normal pointing along w draws as a zero-length
+/// tick, which is itself the readout that the separating direction left the
+/// slice.
 ///
 /// Free function over [`RowFrame`] so the mapping from solver state to emitted
 /// geometry is pinned without a device; [`Demo::record_physics_overlay`] is the
@@ -1345,9 +1349,10 @@ pub(crate) fn build_physics_overlay_mesh(
                         NORMAL_IMPULSE_COLOR,
                         width,
                     );
-                    // `tangent_dir` is the slide direction and the impulse
-                    // brakes against it, so the bar runs backward along it for
-                    // the same reason.
+                    // `tangent_dir` is B's slide relative to A, so −tangent_dir
+                    // is the direction friction resists it in. That is the
+                    // impulse on B, not on A: the two bars name opposite bodies
+                    // and do not compose into a net impulse on either.
                     push_overlay_segment(
                         mesh,
                         point,
@@ -2396,7 +2401,8 @@ mod tests {
     // Crate-wide, not test-wide: `#[global_allocator]` is a per-binary
     // singleton, so every test in this crate allocates through `Counting` and a
     // second declaration anywhere in it is an E0152 hard error, not a merge
-    // conflict. Only the three alloc pins read the counter.
+    // conflict. Only the `..._reaches_the_allocator_zero_times` pins read the
+    // counter.
     #[global_allocator]
     static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
 
@@ -2604,6 +2610,12 @@ mod tests {
     /// the sweep prunes.
     const FIXTURE_GROUP_GAP: f32 = 20.0;
 
+    /// Sideways speed given to one body of the sliding fixture, in world units
+    /// per second. Fast enough that the Coulomb clamp `|jt| <= mu*jn` binds on
+    /// the first step, so the tangent accumulator is the cap rather than a
+    /// rounding artefact of a nearly-stationary contact.
+    const FIXTURE_SLIDE_SPEED: f32 = 3.0;
+
     /// A world whose contact set is known by construction: `pairs` disjoint
     /// pairs of overlapping spheres, one island each. Positions are written
     /// rather than thrown into place because the property under test is the map
@@ -2719,10 +2731,11 @@ mod tests {
     }
 
     /// The impulse bars carry the accumulated magnitudes, one bar each for
-    /// normal and tangent, drawn against their own direction (the direction the
-    /// impulse pushes A, and the direction friction brakes). A bar whose length
-    /// ignored `impulse_scale`, or read `penetration` instead of the
-    /// accumulator, fails on the doubling.
+    /// normal and tangent, drawn against their own direction. A bar whose
+    /// length ignored `impulse_scale`, or read `penetration` instead of the
+    /// accumulator, fails on the doubling. Head-on, so only the normal bar
+    /// carries a sign here; the tangent bar's is pinned by
+    /// [`a_sliding_pair_draws_its_friction_bar_against_the_slide`].
     #[test]
     fn impulse_bar_length_tracks_the_accumulated_impulse() {
         let physics = contacting_world(1);
@@ -2766,17 +2779,71 @@ mod tests {
         }
 
         // Sign: the normal bar runs against the normal, which is the direction
-        // the accumulated impulse pushes body A.
-        for (manifold, chunk) in world.manifolds.values().zip(mesh.segments.chunks_exact(2)) {
+        // the accumulated impulse pushes body A. Flattened over contact points
+        // rather than manifolds, because a manifold holds up to `MAX_POINTS`
+        // slots and one chunk per manifold would leave every slot but the first
+        // unread.
+        let points = world.manifolds.values().flat_map(|m| m.points.iter());
+        for (cp, chunk) in points.zip(mesh.segments.chunks_exact(2)) {
+            let bar = Vec3::from_array(chunk[0].1) - Vec3::from_array(chunk[0].0);
+            let expected = cp.normal.truncate() * (-cp.normal_impulse * base.impulse_scale);
+            assert!(
+                (bar - expected).length() < TRANSLATE_TOL,
+                "normal-impulse bar drawn as {bar:?}, not {expected:?}"
+            );
+        }
+    }
+
+    /// The friction bar carries the tangent accumulator and runs against the
+    /// slide it brakes. [`impulse_bar_length_tracks_the_accumulated_impulse`]
+    /// is head-on, so every tangent bar there is zero-length and pins neither
+    /// the scale nor the sign: a layer that drew friction along the slide, or
+    /// sized it off the normal accumulator, passes there and fails here.
+    #[test]
+    fn a_sliding_pair_draws_its_friction_bar_against_the_slide() {
+        let mut physics = PlaygroundPhysics::new(2, BODY_SIZE);
+        physics.world.bodies[0].position = Vec4::ZERO;
+        physics.world.bodies[1].position = Vec4::X * (2.0 * BODY_SIZE - FIXTURE_OVERLAP);
+        physics.world.bodies[0].velocity = Vec4::Y * FIXTURE_SLIDE_SPEED;
+        physics.world.step(FIXTURE_DT);
+
+        let overlay = only(|o| o.impulses = true);
+        let mesh = overlay_mesh(&physics, &overlay);
+        let world = &physics.world;
+        let contacts: usize = world.manifolds.values().map(|m| m.points.len()).sum();
+        assert_eq!(mesh.segments.len(), 2 * contacts);
+
+        let mut chunks = mesh.segments.chunks_exact(2);
+        let mut braked = 0;
+        for (&(a, b), manifold) in world.manifolds.iter() {
+            // One step's friction is capped at `mu*jn`, far too little to
+            // reverse the slide, so A still leads B along the axis the bar has
+            // to oppose. Read off the post-step velocities rather than the
+            // stored `tangent_dir`, which is the quantity under test.
+            let lead = (world.bodies[a].velocity - world.bodies[b].velocity).truncate();
             for cp in &manifold.points {
-                let bar = Vec3::from_array(chunk[0].1) - Vec3::from_array(chunk[0].0);
-                let expected = cp.normal.truncate() * (-cp.normal_impulse * base.impulse_scale);
+                let chunk = chunks.next().expect("two bars per contact");
+                let bar = Vec3::from_array(chunk[1].1) - Vec3::from_array(chunk[1].0);
+                let expected = cp.tangent_impulse * overlay.impulse_scale;
                 assert!(
-                    (bar - expected).length() < TRANSLATE_TOL,
-                    "normal-impulse bar drawn as {bar:?}, not {expected:?}"
+                    (bar.length() - expected).abs() < TRANSLATE_TOL,
+                    "friction bar runs {} world units for a {} accumulator",
+                    bar.length(),
+                    cp.tangent_impulse
                 );
+                if cp.tangent_impulse > 0.0 {
+                    braked += 1;
+                    assert!(
+                        bar.dot(lead) > 0.0,
+                        "friction bar {bar:?} runs with the slide {lead:?} it should brake"
+                    );
+                }
             }
         }
+        assert!(
+            braked > 0,
+            "no contact accumulated friction, so the sign pin is vacuous"
+        );
     }
 
     /// The bar length the default scale actually produces, measured rather

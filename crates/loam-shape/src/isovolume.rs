@@ -21,14 +21,16 @@
 //! Piece count is the whole problem. One convex piece per occupied cell is
 //! correct and useless: `res^D` shell cells is thousands of colliders before
 //! the resolution is interesting. The marked set is instead covered by
-//! greedy maximal boxes: seed at the first uncovered cell in row-major order,
-//! grow the box one layer at a time in each of the `2D` axis directions while
-//! the new layer stays inside the marked set, emit it, repeat. Boxes are
-//! allowed to overlap (growth reads occupancy, only seeding reads coverage),
-//! which is what lets a later box swallow a whole interior slab instead of
-//! being fenced in by its predecessors. This is greedy set cover, whose
-//! `O(log n)` approximation ratio (Chvátal, 1979) is the reason the count
-//! lands near the structural minimum rather than near the cell count.
+//! first-fit maximal boxes: seed at the first uncovered cell in row-major
+//! order, grow the box one layer at a time in each of the `2D` axis
+//! directions while the new layer stays inside the marked set, emit it,
+//! repeat. Boxes may overlap (growth reads occupancy, only seeding reads
+//! coverage), which is what lets a later box swallow a whole interior slab
+//! instead of being fenced in by its predecessors. Seeding by scan order
+//! rather than by largest coverage is not the greedy set-cover rule, so
+//! Chvátal's `O(log n)` ratio (1979) does not transfer and no approximation
+//! bound is claimed here; the measured table below is the only evidence for
+//! the piece count.
 //!
 //! Measured on a torus and its 4D analogue (minor radius 0.3, major 1.0) by
 //! `examples/isovolume_piece_budget.rs`, `cover/solid` being the extracted
@@ -44,9 +46,10 @@
 //! | 4D  |         24 |         23 920 |    382 |        2.08 |
 //!
 //! Resolution 32 in 3D and 16 in 4D are the usable settings: roughly a
-//! hundred pieces, three percent of the occupied cells, and a cover under 3x
-//! the solid. The rows above them buy fidelity at three to four times the
-//! piece count, which suits one hero shape rather than a scene of them. Piece
+//! hundred pieces, two to three percent of the occupied cells, and a cover
+//! under 3x the solid. The finer row under each buys fidelity at three to
+//! four times the piece count, which suits one hero shape rather than a
+//! scene of them. Piece
 //! count tracks the cover's shape complexity, not its cell count: refining
 //! the grid 4x in 3D multiplied cells by 64 and pieces by 13.
 //!
@@ -175,8 +178,8 @@ impl<const D: usize> Isovolume<D> {
         self.cell * (D as f32).sqrt()
     }
 
-    /// Exact volume of the union of the pieces: they tile the marked cells,
-    /// so overlaps do not need to be subtracted.
+    /// Exact volume of the union of the pieces: that union is exactly the
+    /// marked cell set, so the overlaps need no inclusion-exclusion.
     pub fn volume(&self) -> f32 {
         self.occupied_cells as f32 * self.cell.powi(D as i32)
     }
@@ -592,9 +595,9 @@ mod tests {
         );
     }
 
-    /// A convex solid collapses to very few pieces, and one cell of the
-    /// covered set is never left to its own piece when a neighbour could
-    /// absorb it: the cover is far smaller than the occupied-cell count.
+    /// A convex solid collapses to a cover far smaller than its occupied-cell
+    /// count, which pins that the decomposition runs at all: the per-cell
+    /// fallback this module exists to avoid misses the bound twentyfold.
     #[test]
     fn piece_count_is_far_below_the_occupied_cell_count() {
         for resolution in [16, 32, 64] {

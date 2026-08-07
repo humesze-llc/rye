@@ -550,7 +550,7 @@ pub(crate) struct PointsStyle {
 ///
 /// Free function over [`RowFrame`] so "the sprites sit on the body physics put
 /// there" is unit-testable without a GPU-backed [`Demo`];
-/// [`Demo::render_points`] is the one production caller.
+/// [`Demo::record_points`] is the one production caller.
 pub(crate) fn build_points_mesh(
     frame: &RowFrame<'_>,
     style: &PointsStyle,
@@ -718,7 +718,7 @@ pub(crate) struct SectionBuffers<'a> {
 ///
 /// Free function over [`RowFrame`] so "the caps are cut from the body physics
 /// put there" is unit-testable without a GPU-backed [`Demo`];
-/// [`Demo::render_section_faces`] is the one production caller.
+/// [`Demo::record_section_faces`] is the one production caller.
 pub(crate) fn build_section_layer_meshes(
     frame: &RowFrame<'_>,
     cross: state::SectionLayer,
@@ -867,7 +867,7 @@ pub(crate) struct WireframeStyle {
 ///
 /// Free function over [`RowFrame`] so "the edges wrap the body physics put
 /// there" is unit-testable without a GPU-backed [`Demo`];
-/// [`Demo::render_wireframe_overlay`] is the one production caller.
+/// [`Demo::record_wireframe_overlay`] is the one production caller.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_wireframe_meshes(
     frame: &RowFrame<'_>,

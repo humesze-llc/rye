@@ -251,7 +251,7 @@ impl Demo {
         // Rasterized cross-section faces: filled cell-caps, face-normal
         // Lambert. ReadWrite depth so caps of the same polychoron occlude each
         // other; the buffer is sized + cleared per-frame in the render path
-        // when surface mode is `Raster` (see `Demo::render_section_faces`).
+        // when surface mode is `Raster` (see `Demo::record_section_faces`).
         let section_faces = TriangleRasterNode::new(
             &ctx.rd.device,
             ctx.rd.target_format(),

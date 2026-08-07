@@ -452,7 +452,7 @@ pub(crate) struct Demo {
     pub(crate) node: Hyperslice4DNode,
     /// Set when the CPU-side hyperslice uniforms stop matching the GPU copy: a
     /// rotor, w-slice, camera, viewport, floor, surface-mode or row edit.
-    /// Cleared by the single flush in [`crate::Demo::render`], so a frame in
+    /// Cleared by the single flush in [`crate::Demo::record`], so a frame in
     /// which nothing moved uploads nothing.
     pub(crate) sdf_upload_pending: bool,
     /// Rotor the body slots were last built from. [`RotationMode::Active`]
@@ -605,8 +605,8 @@ pub(crate) struct Demo {
     /// `polytope_section_perimeter_append` and `polytope_section_faces_append`
     /// so the cap fit runs out of retained buffers instead of allocating per
     /// crossed cell. The two are called from different render passes, which is
-    /// why `Demo::render_section_faces` running before
-    /// `Demo::render_wireframe_overlay` is load-bearing and not incidental:
+    /// why `Demo::record_section_faces` running before
+    /// `Demo::record_wireframe_overlay` is load-bearing and not incidental:
     /// each takes this buffer and restores it before the other runs.
     pub(crate) section_cap_scratch: loam_shape::polytope::SectionScratch,
     /// Combined parent-wireframe edge mesh, reused across frames. Separate from

@@ -25,6 +25,9 @@ use glam::{Vec2, Vec3, Vec4};
 /// A bivector in G(N, 0): an oriented plane of rotation times magnitude;
 /// exponentiates to a rotor.
 pub trait Bivector: Copy + Add<Output = Self> + Mul<f32, Output = Self> {
+    /// Rotor produced by [`Bivector::exp`]. The reciprocal bound pins one
+    /// rotor per dimension, so mixing `Bivector3` with `Rotor4` cannot
+    /// typecheck.
     type Rotor: Rotor<Bivector = Self>;
 
     /// Zero bivector; `zero().exp()` is the identity rotor.
@@ -36,7 +39,12 @@ pub trait Bivector: Copy + Add<Output = Self> + Mul<f32, Output = Self> {
 
 /// A rotor in G(N, 0): an element of Spin(N), unit-norm by construction.
 pub trait Rotor: Copy + Mul<Output = Self> {
+    /// Generator algebra: `log` lands here and `exp` comes back, so the two
+    /// are mutual inverses on the principal branch.
     type Bivector: Bivector<Rotor = Self>;
+
+    /// Vector space the sandwich product acts on, `R^N` for this rotor's `N`.
+    /// [`Rotor::apply`] is closed on it: rotors never change dimension.
     type Vector: Copy;
 
     /// Identity rotor.
@@ -93,11 +101,14 @@ impl Bivector for Bivector2 {
 /// `b = sin(θ/2)`.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Rotor2 {
+    /// Scalar part `cos(θ/2)`; `a² + b² = 1` is the type's invariant.
     pub a: f32,
+    /// `e1∧e2` coefficient `sin(θ/2)`; positive turns `x` toward `y`.
     pub b: f32,
 }
 
 impl Rotor2 {
+    /// Zero-angle rotor; [`Rotor::apply`] leaves every vector fixed.
     pub const IDENTITY: Self = Self { a: 1.0, b: 0.0 };
 }
 
@@ -162,12 +173,15 @@ pub struct Bivector3 {
 }
 
 impl Bivector3 {
+    /// Zero rotation generator; exponentiates to [`Rotor3::IDENTITY`].
     pub const ZERO: Self = Self {
         xy: 0.0,
         yz: 0.0,
         zx: 0.0,
     };
 
+    /// Coefficients in field order. Not normalized: the magnitude is the
+    /// rotation angle, so scaling the input scales the angle.
     pub fn new(xy: f32, yz: f32, zx: f32) -> Self {
         Self { xy, yz, zx }
     }
@@ -238,13 +252,18 @@ impl Bivector for Bivector3 {
 /// (`s² + xy² + yz² + zx² = 1`).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Rotor3 {
+    /// Scalar part `cos(θ/2)`.
     pub s: f32,
+    /// `e1∧e2` coefficient of `sin(θ/2)·B̂`, `B̂` the unit rotation plane.
     pub xy: f32,
+    /// `e2∧e3` coefficient of the same product.
     pub yz: f32,
+    /// `e3∧e1` coefficient of the same product.
     pub zx: f32,
 }
 
 impl Rotor3 {
+    /// Zero-angle rotor; [`Rotor::apply`] leaves every vector fixed.
     pub const IDENTITY: Self = Self {
         s: 1.0,
         xy: 0.0,
@@ -346,15 +365,22 @@ impl Rotor for Rotor3 {
 /// decomposition.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Bivector4 {
+    /// `e1∧e2` coefficient; positive turns `x` toward `y`.
     pub xy: f32,
+    /// `e1∧e3` coefficient; positive turns `x` toward `z`.
     pub xz: f32,
+    /// `e1∧e4` coefficient; positive turns `x` toward `w`.
     pub xw: f32,
+    /// `e2∧e3` coefficient; positive turns `y` toward `z`.
     pub yz: f32,
+    /// `e2∧e4` coefficient; positive turns `y` toward `w`.
     pub yw: f32,
+    /// `e3∧e4` coefficient; positive turns `z` toward `w`.
     pub zw: f32,
 }
 
 impl Bivector4 {
+    /// Zero rotation generator; exponentiates to [`Rotor4::IDENTITY`].
     pub const ZERO: Self = Self {
         xy: 0.0,
         xz: 0.0,
@@ -364,6 +390,8 @@ impl Bivector4 {
         zw: 0.0,
     };
 
+    /// Coefficients in the canonical `i < j` plane order, which is also
+    /// [`Plane4`]'s discriminant order. Not normalized.
     pub fn new(xy: f32, xz: f32, xw: f32, yz: f32, yw: f32, zw: f32) -> Self {
         Self {
             xy,
@@ -394,6 +422,9 @@ impl Bivector4 {
             + self.zw * self.zw
     }
 
+    /// `sqrt(θ₁² + θ₂²)` over the two simple parts. Equal to the rotation
+    /// angle only when the bivector is simple; a double rotation's angles must
+    /// come from the invariant decomposition, not from this.
     pub fn magnitude(self) -> f32 {
         self.magnitude_squared().sqrt()
     }
@@ -493,11 +524,17 @@ impl Bivector4 {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub enum Plane4 {
+    /// `e1∧e2`: turns `x` toward `y`, fixing the `zw` plane pointwise.
     Xy = 0,
+    /// `e1∧e3`: turns `x` toward `z`, fixing the `yw` plane pointwise.
     Xz = 1,
+    /// `e1∧e4`: turns `x` toward `w`, fixing the `yz` plane pointwise.
     Xw = 2,
+    /// `e2∧e3`: turns `y` toward `z`, fixing the `xw` plane pointwise.
     Yz = 3,
+    /// `e2∧e4`: turns `y` toward `w`, fixing the `xz` plane pointwise.
     Yw = 4,
+    /// `e3∧e4`: turns `z` toward `w`, fixing the `xy` plane pointwise.
     Zw = 5,
 }
 
@@ -662,20 +699,33 @@ impl Bivector for Bivector4 {
 
 /// 4D rotor: even-graded element of G(4,0), eight components (scalar, six
 /// bivectors, pseudoscalar). Unit-norm by construction.
+///
+/// The grade-2 block is not `sin(θ/2)·B̂` as in 3D: a general 4D rotation has
+/// two angles and the block mixes both invariant planes. Recover a rotation
+/// with [`Rotor::log`] rather than by reading fields.
 #[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Rotor4 {
+    /// Scalar part `cos(θ₁/2)·cos(θ₂/2)` over the invariant decomposition.
     pub s: f32,
+    /// Grade-2 coefficient on `e1∧e2`.
     pub xy: f32,
+    /// Grade-2 coefficient on `e1∧e3`.
     pub xz: f32,
+    /// Grade-2 coefficient on `e1∧e4`.
     pub xw: f32,
+    /// Grade-2 coefficient on `e2∧e3`.
     pub yz: f32,
+    /// Grade-2 coefficient on `e2∧e4`.
     pub yw: f32,
+    /// Grade-2 coefficient on `e3∧e4`.
     pub zw: f32,
-    /// Pseudoscalar coefficient on `I = e1∧e2∧e3∧e4`.
+    /// Pseudoscalar coefficient on `I = e1∧e2∧e3∧e4`, equal to
+    /// `sin(θ₁/2)·sin(θ₂/2)`; zero for a simple rotation.
     pub xyzw: f32,
 }
 
 impl Rotor4 {
+    /// Zero-angle rotor; [`Rotor::apply`] leaves every vector fixed.
     pub const IDENTITY: Self = Self {
         s: 1.0,
         xy: 0.0,
@@ -1328,6 +1378,31 @@ mod tests {
         assert_vec4_close(r.apply(Vec4::W), -Vec4::Z);
         // Pseudoscalar should be sin(π/4)·sin(π/4) = 0.5.
         assert_close(r.xyzw, 0.5);
+    }
+
+    /// `Rotor4`'s documented reading of its scalar and pseudoscalar slots:
+    /// `s = cos(θ₁/2)·cos(θ₂/2)` and `xyzw = sin(θ₁/2)·sin(θ₂/2)` over the
+    /// invariant decomposition, so `xyzw` is zero exactly on simple
+    /// rotations. Exercises all three non-trivial `exp` branches, since each
+    /// computes the two slots by a different route and only the isoclinic one
+    /// was pinned.
+    #[test]
+    fn rotor4_scalar_and_pseudoscalar_carry_the_two_invariant_half_angles() {
+        // (θ₁, θ₂) picked to land on simple, general compound, and
+        // isoclinic respectively.
+        for (t1, t2) in [(0.7, 0.0), (1.1, 0.4), (0.9, 0.9)] {
+            let r = Bivector4::new(t1, 0.0, 0.0, 0.0, 0.0, t2).exp();
+            assert_close(r.s, (t1 * 0.5).cos() * (t2 * 0.5).cos());
+            assert_close(r.xyzw, (t1 * 0.5).sin() * (t2 * 0.5).sin());
+        }
+        // Simple rotations in a plane other than xy, to catch a slot that is
+        // only accidentally zero because the generator was xy-aligned.
+        for b in [
+            Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.3),
+            Bivector4::new(0.0, 0.6, 0.0, 0.0, 0.0, 0.0),
+        ] {
+            assert_close(b.exp().xyzw, 0.0);
+        }
     }
 
     /// Isoclinic rotation (equal angles in two orthogonal planes) preserves

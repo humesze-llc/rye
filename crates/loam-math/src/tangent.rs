@@ -15,7 +15,11 @@ use crate::space::Space;
 /// different base point along a geodesic, [`Tangent::exp`] to walk along the vector, and
 /// [`Tangent::scale`] to rescale without moving.
 pub struct Tangent<S: Space> {
+    /// Base point, assumed on the manifold. Nothing re-validates it; an
+    /// off-manifold base yields silently wrong results, not an error.
     pub at: S::Point,
+    /// Tangent vector at [`Self::at`]. Reassigning `at` alone does not
+    /// transport it; use [`Tangent::transport_to`].
     pub v: S::Vector,
 }
 
@@ -28,6 +32,8 @@ impl<S: Space> Clone for Tangent<S> {
 impl<S: Space> Copy for Tangent<S> {}
 
 impl<S: Space> Tangent<S> {
+    /// Pairs an existing vector with its base point; `v` is taken as already
+    /// expressed in the tangent space at `at`, not projected into it.
     pub fn new(at: S::Point, v: S::Vector) -> Self {
         Self { at, v }
     }

@@ -13,16 +13,20 @@ use crate::space::{IsometryGroup, Space};
 /// A rigid motion of R²: a rotation followed by a translation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso2 {
+    /// Rotation about the origin, applied first.
     pub rotation: Rotor2,
+    /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec2,
 }
 
 impl Iso2 {
+    /// Fixes every point; the neutral element of `iso_compose`.
     pub const IDENTITY: Self = Self {
         rotation: Rotor2::IDENTITY,
         translation: Vec2::ZERO,
     };
 
+    /// Rotation about the origin, no translation.
     pub fn from_rotation(rotation: Rotor2) -> Self {
         Self {
             rotation,
@@ -30,6 +34,8 @@ impl Iso2 {
         }
     }
 
+    /// Pure translation. [`IsometryGroup::iso_transport`] is the identity for
+    /// these, since translation does not act on tangent vectors in R².
     pub fn from_translation(translation: Vec2) -> Self {
         Self {
             rotation: Rotor2::IDENTITY,

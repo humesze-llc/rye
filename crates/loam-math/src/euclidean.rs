@@ -16,16 +16,21 @@ use crate::space::{IsometryGroup, Space, WgslSpace};
 /// Pure isometry; scale and shear are excluded by construction.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3 {
+    /// Rotation about the origin, applied first. Assumed unit; `iso_apply`
+    /// does not renormalize.
     pub rotation: Quat,
+    /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec3,
 }
 
 impl Iso3 {
+    /// Fixes every point; the neutral element of `iso_compose`.
     pub const IDENTITY: Self = Self {
         rotation: Quat::IDENTITY,
         translation: Vec3::ZERO,
     };
 
+    /// Rotation about the origin, no translation.
     pub fn from_rotation(rotation: Quat) -> Self {
         Self {
             rotation,
@@ -33,6 +38,8 @@ impl Iso3 {
         }
     }
 
+    /// Pure translation. [`IsometryGroup::iso_transport`] is the identity for
+    /// these, since translation does not act on tangent vectors in R³.
     pub fn from_translation(translation: Vec3) -> Self {
         Self {
             rotation: Quat::IDENTITY,

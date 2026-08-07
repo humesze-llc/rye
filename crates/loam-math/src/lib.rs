@@ -24,6 +24,8 @@
 //! horizon; if that becomes a problem we'll add a `Scalar` associated type rather than rewrite
 //! call sites.
 
+#![warn(missing_docs)]
+
 pub mod bivector;
 pub mod blended;
 pub mod euclidean;

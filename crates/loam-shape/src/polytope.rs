@@ -83,14 +83,20 @@ impl Polytope4 {
         }
     }
 
+    /// Forces the topology table if it is not yet built; the count itself is
+    /// not cached separately.
     pub fn vertex_count(self) -> usize {
         self.topology().vertices.len()
     }
 
+    /// Undirected edges, each counted once. Same forcing cost as
+    /// [`Self::vertex_count`].
     pub fn edge_count(self) -> usize {
         self.topology().edges.len()
     }
 
+    /// Bounding 3-cells (the polychoron's facets), not the full face lattice.
+    /// Same forcing cost as [`Self::vertex_count`].
     pub fn cell_count(self) -> usize {
         self.topology().cells.len()
     }

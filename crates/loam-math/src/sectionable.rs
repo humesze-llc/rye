@@ -35,10 +35,13 @@ pub const SLICE_PERTURBATION_EPSILON: f32 = 1e-5;
 /// extend the same `type Hyperplane`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WPlane {
+    /// The w-coordinate the 3-flat sits at. Unconstrained: a slice that
+    /// misses the geometry yields no sections rather than an error.
     pub w_slice: f32,
 }
 
 impl WPlane {
+    /// Usable in `const` context; performs no validation.
     pub const fn new(w_slice: f32) -> Self {
         Self { w_slice }
     }

@@ -23,16 +23,21 @@ use crate::space::{IsometryGroup, Space, WgslSpace};
 /// warrants it; per-call renormalization would regress determinism on the fast path.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso4Flat {
+    /// Rotation about the origin, applied first. Assumed unit-norm;
+    /// composition renormalizes only on drift, never per call.
     pub rotation: Rotor4,
+    /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec4,
 }
 
 impl Iso4Flat {
+    /// Fixes every point; the neutral element of `iso_compose`.
     pub const IDENTITY: Self = Self {
         rotation: Rotor4::IDENTITY,
         translation: Vec4::ZERO,
     };
 
+    /// Rotation about the origin, no translation.
     pub fn from_rotation(rotation: Rotor4) -> Self {
         Self {
             rotation,
@@ -40,6 +45,8 @@ impl Iso4Flat {
         }
     }
 
+    /// Pure translation. [`IsometryGroup::iso_transport`] is the identity for
+    /// these, since translation does not act on tangent vectors in R⁴.
     pub fn from_translation(translation: Vec4) -> Self {
         Self {
             rotation: Rotor4::IDENTITY,

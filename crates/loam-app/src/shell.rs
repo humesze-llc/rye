@@ -34,9 +34,11 @@ use loam_render::device::RenderDevice;
 use crate::args::Args;
 use crate::{egui, App, AssetEvent, FrameCtx, RenderCtx, SetupCtx, ShaderDb};
 
-/// One hostable scene. The method set is [`App`] minus what the shell owns for
-/// every scene: window lifecycle, fixed-step ticks, and the choice of which
-/// scene is active.
+/// One hostable scene. Constructed through [`SceneEntry::build`] rather than
+/// [`App::setup`], and naming no Space; the shell owns the window and which
+/// scene is active. [`App::tick`], [`App::on_event`] and
+/// [`App::on_shader_reload`] reach no scene, because the shell forwards
+/// none of them: a scene that needs one cannot be hosted.
 pub trait Scene {
     /// Recompile this scene's shaders against the Space the scene itself owns,
     /// scoped to the [`ShaderOwner`](crate::ShaderOwner) it took at build time.
@@ -372,8 +374,8 @@ mod tests {
     use std::cell::Cell;
 
     /// A scene whose geometry is not the shell's, written to be compiled: no
-    /// `EuclideanR3` appears anywhere in the impl, and the reload hook recompiles
-    /// against the scene's own Space.
+    /// `EuclideanR3` appears anywhere in the impl, and the reload hook
+    /// recompiles against the scene's own Space.
     struct HyperbolicScene {
         space: HyperbolicH3,
         owner: ShaderOwner,
@@ -422,9 +424,20 @@ mod tests {
                 }))
             },
         };
+        // Index 1, not 0: 0 is also the unknown-slug fallback, so a one-entry
+        // table would answer the same under a `resolve_boot` that never
+        // consults the slug at all.
+        const TABLE: &[SceneEntry] = &[
+            SceneEntry {
+                slug: "euclidean",
+                label: "Euclidean",
+                build: |_| unreachable!("only the hyperbolic entry is resolved"),
+            },
+            ENTRY,
+        ];
         assert_eq!(
-            resolve_boot(&[ENTRY], &Args::from_pairs([("scene", ENTRY.slug)])).0,
-            0
+            resolve_boot(TABLE, &Args::from_pairs([("scene", ENTRY.slug)])).0,
+            1
         );
     }
 

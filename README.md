@@ -55,7 +55,7 @@ Nothing named below has shipped; a line leaves this section when it does. No dat
 
 ## Lineage
 
-Marc ten Bosch's *4D Toys* is the direct conceptual ancestor of the polytope playground: four-dimensional objects as inhabitants of a 4D space whose 3D slices the viewer inspects. Zeno Rogue's *HyperRogue*, CodeParade's HyperEngine/*Hyperbolica*, and Michael Walczyk's `polychora` shaped the non-Euclidean and 4D rendering choices. Textbook citations (Coxeter, Hestenes and Sobczyk, do Carmo, Foley et al., Knuth) live in the rustdocs at each use site.
+Marc ten Bosch's *4D Toys* is the direct conceptual ancestor of the polytope playground: four-dimensional objects as inhabitants of a 4D space whose 3D slices the viewer inspects. Zeno Rogue's *HyperRogue*, CodeParade's HyperEngine/*Hyperbolica*, and Michael Walczyk's `polychora` shaped the non-Euclidean and 4D rendering choices. Textbook citations live in the rustdocs at each use site: Coxeter for the polytope constructions, Hestenes and Sobczyk for the geometric algebra, do Carmo for the Riemannian geometry.
 
 ## Getting involved
 

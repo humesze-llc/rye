@@ -23,8 +23,11 @@ const PADDING_CELLS: usize = 2;
 const DEGENERATE_EDGE_LENGTH2: f32 = 1.0e-24;
 
 /// Signed distances sampled on a uniform grid. Negative inside the glyph.
-/// Coordinates are the caller's world units, in whatever frame the contours
-/// handed to [`DistanceField2D::bake`] were expressed in.
+/// Coordinates are the caller's world units, in whatever frame the glyph
+/// outline was expressed in; [`GlyphSolid::field`] hands out the one baked
+/// from a font, whose frame is the em square scaled to `em_size`.
+///
+/// [`GlyphSolid::field`]: crate::glyph::GlyphSolid::field
 #[derive(Clone, Debug)]
 pub struct DistanceField2D {
     origin: Vec2,

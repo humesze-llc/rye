@@ -975,9 +975,9 @@ impl Hyperslice4DNode {
     /// [`Self::uniforms`] are left untouched.
     ///
     /// One encoder, one render pass, one submit for the whole strip. What makes
-    /// that legal is [`StripCellUniforms`]: every cell gets its own uniform
-    /// image and its own bind group viewing it. Sharing one image cannot work,
-    /// because `Queue::write_buffer` lands ahead of the whole command buffer it
+    /// that legal is that every cell gets its own uniform image and its own
+    /// bind group viewing it. Sharing one image cannot work, because
+    /// `Queue::write_buffer` lands ahead of the whole command buffer it
     /// precedes, so every cell would read the last cell's write.
     pub fn execute_strip(
         &mut self,

@@ -102,8 +102,8 @@ pub trait Space {
 /// two-sided, `iso_apply` preserves [`Space::distance`], and `iso_transport`
 /// is the differential of `iso_apply`, so
 /// `iso_apply(g, exp(p, v)) == exp(iso_apply(g, p), iso_transport(g, p, v))`.
-/// Transitivity is not required here; an impl whose action is transitive says
-/// so in its own docs.
+/// Transitivity is not required here and no impl currently claims it; it
+/// becomes a per-impl rustdoc claim when a consumer reads one.
 pub trait IsometryGroup: Space {
     /// An orientation-preserving isometry of the manifold.
     type Iso: Copy + Send + Sync + 'static;

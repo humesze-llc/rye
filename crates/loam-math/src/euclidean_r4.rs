@@ -19,8 +19,8 @@ use crate::space::{IsometryGroup, Space, WgslSpace};
 /// Rigid motion of R⁴: a rotor-rotation followed by a translation.
 ///
 /// Pure isometry, scale and shear are excluded by construction. The rotor is normalized on
-/// construction from `Space::iso_compose` / `iso_inverse` only when numerical drift warrants
-/// it; per-call renormalization would regress determinism on the fast path.
+/// construction from [`IsometryGroup::iso_compose`] / `iso_inverse` only when numerical drift
+/// warrants it; per-call renormalization would regress determinism on the fast path.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso4Flat {
     pub rotation: Rotor4,

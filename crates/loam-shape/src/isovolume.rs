@@ -49,9 +49,9 @@
 //! hundred pieces, two to three percent of the occupied cells, and a cover
 //! under 3x the solid. The finer row under each buys fidelity at three to
 //! four times the piece count, which suits one hero shape rather than a
-//! scene of them. Piece
-//! count tracks the cover's shape complexity, not its cell count: refining
-//! the grid 4x in 3D multiplied cells by 64 and pieces by 13.
+//! scene of them. Piece count tracks the cover's shape complexity, not its
+//! cell count: refining the grid 4x in 3D multiplied cells by 64 and pieces
+//! by 13.
 //!
 //! Everything is a fixed-order scan over `f32` with no hashing, so a given
 //! field and grid always produce the same boxes in the same order.

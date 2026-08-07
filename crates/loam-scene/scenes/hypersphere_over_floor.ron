@@ -1,0 +1,13 @@
+// A loam_scene::Scene4: the 4D SDF tree, read by `Scene4::load`.
+(
+    root: Union(
+        Leaf(HyperSphere4D(
+            center: (0.0, 0.2, 0.0, 0.0),
+            radius: 0.45,
+        )),
+        Leaf(HalfSpace4D(
+            normal: (0.0, 1.0, 0.0, 0.0),
+            offset: -0.5,
+        )),
+    ),
+)

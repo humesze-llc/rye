@@ -143,16 +143,6 @@ impl Scene {
     pub fn eval<S: Space<Point = Vec3, Vector = Vec3>>(&self, space: &S, p: Vec3) -> f32 {
         eval_node(&self.root, space, p)
     }
-
-    /// Deserialize a Scene from a RON string.
-    pub fn from_ron(src: &str) -> Result<Self, ron::error::SpannedError> {
-        ron::from_str(src)
-    }
-
-    /// Serialize this Scene to a RON string.
-    pub fn to_ron(&self) -> Result<String, ron::Error> {
-        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
-    }
 }
 
 // ---- Recursive emitter ------------------------------------------------------
@@ -310,7 +300,7 @@ mod tests {
         let scene =
             Scene::new(SceneNode::sphere(Vec3::ZERO, 0.3).union(SceneNode::plane(Vec3::Y, -0.4)));
         let ron_str = scene.to_ron().expect("serialize");
-        let recovered: Scene = Scene::from_ron(&ron_str).expect("deserialize");
+        let recovered = Scene::from_ron("<round trip>", &ron_str).expect("deserialize");
         assert_eq!(scene.to_wgsl(&EuclideanR3), recovered.to_wgsl(&EuclideanR3),);
     }
 }

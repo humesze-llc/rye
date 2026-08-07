@@ -1483,6 +1483,7 @@ dependencies = [
  "naga",
  "ron",
  "serde",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

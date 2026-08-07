@@ -167,14 +167,6 @@ impl Scene4 {
     pub fn eval(&self, p3: Vec3, w_slice: f32, halfspace_gate: bool) -> f32 {
         self.eval_at(p3, w_slice, halfspace_gate).0
     }
-
-    pub fn from_ron(src: &str) -> Result<Self, ron::error::SpannedError> {
-        ron::from_str(src)
-    }
-
-    pub fn to_ron(&self) -> Result<String, ron::Error> {
-        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
-    }
 }
 
 // Kind of the primitive a `Scene4` hit belongs to, as returned by
@@ -473,7 +465,7 @@ mod tests {
             SceneNode4::hypersphere(Vec4::ZERO, 0.3).union(SceneNode4::halfspace(Vec4::Y, -0.4)),
         );
         let ron_str = scene.to_ron().expect("serialize");
-        let recovered: Scene4 = Scene4::from_ron(&ron_str).expect("deserialize");
+        let recovered = Scene4::from_ron("<round trip>", &ron_str).expect("deserialize");
         assert_eq!(scene.to_wgsl_4d(), recovered.to_wgsl_4d());
     }
 

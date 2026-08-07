@@ -143,7 +143,8 @@ impl Demo {
                 self.record_points(rd, encoder, view);
             }
             // Physics readout on top of everything, and only when a layer is
-            // on: one boolean OR is the whole cost of a hidden overlay.
+            // on: one branch over four flags is the whole cost of a hidden
+            // overlay.
             if self.physics_overlay.any_layer() {
                 let _scope = loam_time::frame_trace::scope("pp-physics-overlay");
                 self.record_physics_overlay(rd, encoder, view);
@@ -1179,9 +1180,12 @@ pub(crate) struct PhysicsOverlay {
 }
 
 /// Bar length per unit impulse. A head-on flick at
-/// [`crate::physics::MAX_THROW_SPEED`] against an equal mass transfers about
-/// eight units of impulse into one contact, which this puts at roughly half a
-/// body radius.
+/// [`crate::physics::MAX_THROW_SPEED`] against an equal mass peaks at about
+/// 5.2 units of accumulated impulse in one contact, which this puts at rather
+/// more than a third of a body radius. Measured, not derived: the solver is
+/// not elastic, so the peak is well under the 8.1 of momentum the throw
+/// carries in. `a_full_speed_flick_draws_its_bar_at_a_third_of_a_body_radius`
+/// holds this sentence to the code.
 const DEFAULT_IMPULSE_SCALE: f32 = 0.05;
 
 /// Contact-marker arm half-length, as a fraction of the body radius. Small
@@ -1396,7 +1400,7 @@ pub(crate) fn build_physics_overlay_mesh(
 mod tests {
     use super::*;
     use crate::catalog::ShapeEntry;
-    use crate::physics::PlaygroundPhysics;
+    use crate::physics::{PlaygroundPhysics, MAX_THROW_SPEED};
     use crate::state::{body_position, RowFrame, SectionLayer};
     use loam_math::{EuclideanR4, Plane4, Projection};
     use loam_physics::polytope::Polytope4;
@@ -1562,6 +1566,10 @@ mod tests {
     /// associate. Four orders of magnitude below the throw's own displacement,
     /// so a pass that lost the throw cannot pass this.
     const TRANSLATE_TOL: f32 = 1e-5;
+
+    /// Enough fixed steps for a full-speed throw to cross one slot gap and for
+    /// the solver to work the contact to its accumulated peak.
+    const STEPS_TO_CROSS_THE_GAP: usize = 120;
 
     /// Two worlds whose bodies must render identically up to ONE R³
     /// translation: `thrown` carries both a live centre and a live orientation,
@@ -2704,7 +2712,7 @@ mod tests {
                 );
                 assert!(
                     drawn.dot(separation) > 0.0,
-                    "normal points body B toward A; the layer would misreport a flipped normal"
+                    "normal runs from A toward B; the layer would misreport a flipped normal"
                 );
             }
         }
@@ -2769,6 +2777,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The bar length the default scale actually produces, measured rather
+    /// than asserted at the constant. The peak lands well below the throw's
+    /// own momentum because the solver is not elastic: an equal-mass head-on
+    /// pair separates at a fraction of the closing speed, so most of the
+    /// momentum stays with the thrower. Pinning it here is what keeps the
+    /// prose at [`DEFAULT_IMPULSE_SCALE`] from drifting back into quoting
+    /// [`crate::physics::MAX_THROW_SPEED`], whose 8.1 is a speed and not an
+    /// impulse.
+    #[test]
+    fn a_full_speed_flick_draws_its_bar_at_a_third_of_a_body_radius() {
+        let mut physics = PlaygroundPhysics::new(2, BODY_SIZE);
+        let from = Vec4::from_array(body_position(0, 2));
+        let to = Vec4::from_array(body_position(1, 2));
+        physics.throw(0, (to - from).normalize() * MAX_THROW_SPEED);
+
+        let mut peak = 0.0f32;
+        for _ in 0..STEPS_TO_CROSS_THE_GAP {
+            physics.step(1);
+            for manifold in physics.world.manifolds.values() {
+                for cp in &manifold.points {
+                    peak = peak.max(cp.normal_impulse);
+                }
+            }
+        }
+
+        assert!(
+            (4.5..5.5).contains(&peak),
+            "peak normal impulse {peak}: the prose at DEFAULT_IMPULSE_SCALE is now stale, so recompute the bar length before touching this bound"
+        );
+        let bar = peak * DEFAULT_IMPULSE_SCALE;
+        assert!(
+            (0.30..0.42).contains(&(bar / BODY_SIZE)),
+            "bar runs {bar} world units, {} of a body radius",
+            bar / BODY_SIZE
+        );
     }
 
     /// Every body of one island is marked in one colour, and two islands never
@@ -2892,7 +2937,7 @@ mod tests {
         );
     }
 
-    /// A hidden overlay costs one boolean OR: the builder returns before it
+    /// A hidden overlay costs one branch: the builder returns before it
     /// reads a manifold, and the frame's mesh buffer keeps its capacity. Pinned
     /// against a world that DOES have contacts, so the zero is the early return
     /// and not an empty world.

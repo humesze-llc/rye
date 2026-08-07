@@ -1465,6 +1465,7 @@ dependencies = [
  "loam-shape",
  "loam-time",
  "naga",
+ "png 0.17.16",
  "pollster",
  "tempfile",
  "tracing",

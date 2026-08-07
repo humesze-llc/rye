@@ -151,8 +151,8 @@ pub trait WgslSpace: Space {
 mod tests {
     use super::Space;
     use crate::{
-        BlendedSpace, EuclideanR2, EuclideanR3, EuclideanR4, HyperbolicH3, LinearBlendX,
-        SphericalS3, SphericalS3Embedded,
+        BlendedSpace, EuclideanR2, EuclideanR3, EuclideanR4, FlatTorus3, HyperbolicH3,
+        LinearBlendX, SphericalS3, SphericalS3Embedded,
     };
 
     /// `is_chart_flat` reports the geometry, and the default `false` is a trap
@@ -173,5 +173,9 @@ mod tests {
             !BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-1.0, 1.0))
                 .is_chart_flat()
         );
+        // Zero curvature but a periodic chart: chart-coord arithmetic is not
+        // lattice-invariant, so it disagrees with the geometry across the
+        // gluing. `is_chart_flat` licenses that arithmetic, not flatness.
+        assert!(!FlatTorus3::cube(2.0).is_chart_flat());
     }
 }

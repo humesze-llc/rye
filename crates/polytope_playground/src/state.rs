@@ -562,6 +562,18 @@ pub(crate) struct Demo {
     pub(crate) points_size_px: f32,
     /// Scratch buffer reused across frames + bodies inside `render_points`.
     pub(crate) points_mesh_scratch: loam_shape::PointMesh<3>,
+    /// Which solver quantities the physics debug overlay draws. Every layer is
+    /// off by default; the `physics` command flips them. See
+    /// [`crate::render::PhysicsOverlay`].
+    pub(crate) physics_overlay: crate::render::PhysicsOverlay,
+    /// Line rasterizer for the physics readout. Its own node rather than a
+    /// second upload of [`Self::parent_wireframe`]: a frame's queue writes all
+    /// land before its single command buffer, so two uploads of one node would
+    /// feed both passes the second mesh.
+    pub(crate) physics_overlay_node: loam_render::LineRasterNode,
+    /// Combined physics-overlay mesh, reused across frames on the same terms as
+    /// the wireframe scratch. Never filled while every layer is off.
+    pub(crate) physics_overlay_mesh_scratch: loam_shape::LineMesh<3>,
     /// Shared depth attachment for the Shapes-view rasterizer chain, sized to the
     /// swapchain via [`loam_render::DepthBuffer::ensure`]. Ensured and cleared in
     /// [`crate::Demo::ensure_and_clear_shared_depth`] on the frames something

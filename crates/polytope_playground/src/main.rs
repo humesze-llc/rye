@@ -248,6 +248,16 @@ impl Demo {
             ctx.rd.sample_count(),
         );
 
+        // Physics readout (contacts, normals, impulses, islands). No depth
+        // attachment for the same reason the points node has none: a solver
+        // readout occluded by the body it describes reports nothing.
+        let physics_overlay_node = LineRasterNode::new(
+            &ctx.rd.device,
+            ctx.rd.target_format(),
+            DepthMode::Off,
+            ctx.rd.sample_count(),
+        );
+
         // Rasterized cross-section faces: filled cell-caps, face-normal
         // Lambert. ReadWrite depth so caps of the same polychoron occlude each
         // other; the buffer is sized + cleared per-frame in the render path
@@ -335,6 +345,9 @@ impl Demo {
             points_show_cell_centers: true,
             points_size_px: 4.0,
             points_mesh_scratch: loam_shape::PointMesh::<3>::default(),
+            physics_overlay: render::PhysicsOverlay::default(),
+            physics_overlay_node,
+            physics_overlay_mesh_scratch: LineMesh::<3>::default(),
             section_faces_depth: None,
             section_world_vertices_scratch: Vec::new(),
             section_faces_mesh_scratch: loam_shape::TriangleMesh::<3>::default(),

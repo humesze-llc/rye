@@ -7,10 +7,10 @@
 //!
 //! The checks are stricter than cargo's rule in two places, both deliberate.
 //! Cargo strips a version-less dev-dependency from the published manifest
-//! rather than rejecting it, and cargo accepts any requirement that admits
-//! the local package. Requiring an exact match against
-//! `workspace.package.version` is what keeps a version bump from leaving the
-//! hand-written requirements pointing at the previous release: a dep that
+//! rather than rejecting it, and cargo accepts any requirement that admits the
+//! local package. Requiring an exact match against `workspace.package.version`
+//! keeps a version bump from leaving the hand-written requirements pointing at
+//! the previous release: a dep that
 //! declares both path and version resolves through the path locally, so it
 //! never disagrees with itself until publish.
 
@@ -65,11 +65,10 @@ fn member_package_names() -> BTreeSet<String> {
         .collect()
 }
 
-/// Every dependency declared anywhere in `manifest`, as
-/// (table label, dep name, spec). The three dependency kinds appear at the
-/// top level, again under each `[target.'cfg(..)']` block, and once more as
-/// `[workspace.dependencies]`; missing any of those would leave a place a
-/// path-only dep could hide.
+/// Every dependency declared anywhere in `manifest`, as (table label, dep name, spec).
+/// The three dependency kinds appear at the top level, again under each
+/// `[target.'cfg(..)']` block, and once more as `[workspace.dependencies]`;
+/// missing any of those would leave a place a path-only dep could hide.
 fn dependencies(manifest: &DocumentMut) -> Vec<(String, String, &Item)> {
     const KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
 

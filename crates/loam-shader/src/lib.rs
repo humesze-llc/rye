@@ -15,7 +15,7 @@
 
 mod db;
 
-pub use db::{validate_wgsl, ShaderDb, ShaderId, WgslValidationError};
+pub use db::{validate_wgsl, ShaderDb, ShaderId, ShaderOwner, WgslValidationError};
 
 /// Geodesic ray march kernel: `loam_safe_normalize`, `loam_march_geodesic`,
 /// `loam_estimate_normal`. Assembled between the scene SDF and user shading

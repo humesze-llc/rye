@@ -21,6 +21,13 @@ pub enum WgslValidationError {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ShaderId(u32);
 
+/// Identifies who loaded a shader. The Space prelude is a property of the
+/// loader, not of the file, so hot-reload is scoped by owner: recompiling
+/// another owner's module against this one's Space would silently retune its
+/// metric.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ShaderOwner(u32);
+
 struct Entry {
     path: PathBuf,
     module: ShaderModule,
@@ -38,11 +45,19 @@ struct Entry {
 pub struct ShaderDb {
     device: Device,
     entries: HashMap<ShaderId, Entry>,
-    path_index: HashMap<PathBuf, ShaderId>,
+    /// Path index per owner rather than one shared map: two owners loading the
+    /// same file need two entries, since a module carries exactly one prelude.
+    path_index: HashMap<ShaderOwner, HashMap<PathBuf, ShaderId>>,
     next_id: u32,
+    next_owner: u32,
 }
 
 impl ShaderDb {
+    /// The owner every db starts with, for a host that loads all its shaders
+    /// against one Space. Sub-scenes with Spaces of their own take an owner
+    /// from [`ShaderDb::new_owner`] instead.
+    pub const ROOT_OWNER: ShaderOwner = ShaderOwner(0);
+
     /// Construct. `device` is cloned on recompile (wgpu's Device is refcounted).
     pub fn new(device: Device) -> Self {
         Self {
@@ -50,25 +65,41 @@ impl ShaderDb {
             entries: HashMap::new(),
             path_index: HashMap::new(),
             next_id: 0,
+            next_owner: Self::ROOT_OWNER.0 + 1,
         }
     }
 
+    /// Mint an owner distinct from [`ShaderDb::ROOT_OWNER`] and from every other
+    /// owner this db has issued.
+    pub fn new_owner(&mut self) -> ShaderOwner {
+        let owner = ShaderOwner(self.next_owner);
+        self.next_owner += 1;
+        owner
+    }
+
     /// Load a shader from disk, prepending the Space's WGSL prelude. The returned
-    /// [`ShaderId`] is stable across reloads; loading the same path twice yields
-    /// the same ID and a fresh compilation.
-    pub fn load<S: WgslSpace>(&mut self, path: impl AsRef<Path>, space: &S) -> Result<ShaderId> {
-        self.load_inner(path, None, space)
+    /// [`ShaderId`] is stable across reloads; the same `owner` loading the same
+    /// path again yields the same ID and a fresh compilation, while a different
+    /// owner loading it gets its own ID and its own prelude.
+    pub fn load<S: WgslSpace>(
+        &mut self,
+        owner: ShaderOwner,
+        path: impl AsRef<Path>,
+        space: &S,
+    ) -> Result<ShaderId> {
+        self.load_inner(owner, path, None, space)
     }
 
     /// Load a shader plus a scene module; the scene source is stored and reused on
     /// reloads of the shader file.
     pub fn load_with_scene<S: WgslSpace>(
         &mut self,
+        owner: ShaderOwner,
         path: impl AsRef<Path>,
         scene_source: &str,
         space: &S,
     ) -> Result<ShaderId> {
-        self.load_inner(path, Some(scene_source), space)
+        self.load_inner(owner, path, Some(scene_source), space)
     }
 
     /// Load a shader for geodesic ray marching: assembles Space prelude + scene
@@ -77,6 +108,7 @@ impl ShaderDb {
     /// shading. The scene + kernel is stored and reused on reloads.
     pub fn load_geodesic_scene<S: WgslSpace>(
         &mut self,
+        owner: ShaderOwner,
         path: impl AsRef<Path>,
         scene_source: &str,
         space: &S,
@@ -85,11 +117,12 @@ impl ShaderDb {
             "{scene_source}// ---- loam geodesic march kernel ----\n{}",
             crate::GEODESIC_MARCH_KERNEL
         );
-        self.load_inner(path, Some(&scene_with_kernel), space)
+        self.load_inner(owner, path, Some(&scene_with_kernel), space)
     }
 
     fn load_inner<S: WgslSpace>(
         &mut self,
+        owner: ShaderOwner,
         path: impl AsRef<Path>,
         scene_source: Option<&str>,
         space: &S,
@@ -104,7 +137,7 @@ impl ShaderDb {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
 
-        if let Some(&id) = self.path_index.get(&path) {
+        if let Some(id) = self.lookup(owner, &path) {
             let entry = self.entries.get_mut(&id).expect("path_index out of sync");
             entry.module = module;
             entry.scene_source = scene_source.map(str::to_owned);
@@ -114,19 +147,26 @@ impl ShaderDb {
         } else {
             let id = ShaderId(self.next_id);
             self.next_id += 1;
+            self.path_index
+                .entry(owner)
+                .or_default()
+                .insert(path.clone(), id);
             self.entries.insert(
                 id,
                 Entry {
-                    path: path.clone(),
+                    path,
                     module,
                     scene_source: scene_source.map(str::to_owned),
                     generation: 1,
                     label,
                 },
             );
-            self.path_index.insert(path, id);
             Ok(id)
         }
+    }
+
+    fn lookup(&self, owner: ShaderOwner, path: &Path) -> Option<ShaderId> {
+        self.path_index.get(&owner)?.get(path).copied()
     }
 
     /// Borrow the current compiled module for `id`.
@@ -144,16 +184,23 @@ impl ShaderDb {
         self.entries.get(&id).map(|e| e.generation).unwrap_or(0)
     }
 
-    /// Apply filesystem events, recompiling affected shaders. Compile errors are
-    /// logged but keep the last good module; rendering continues until fixed.
-    pub fn apply_events<S: WgslSpace>(&mut self, events: &[AssetEvent], space: &S) {
+    /// Apply filesystem events to the shaders `owner` loaded, recompiling them
+    /// against `owner`'s `space`. Entries under any other owner are untouched,
+    /// including entries for the same path. Compile errors are logged but keep
+    /// the last good module; rendering continues until fixed.
+    pub fn apply_events<S: WgslSpace>(
+        &mut self,
+        owner: ShaderOwner,
+        events: &[AssetEvent],
+        space: &S,
+    ) {
         for event in events {
             let canonical = match canonicalize(&event.path) {
                 Ok(p) => p,
                 // Removed files can't be canonicalized; look up by raw path.
                 Err(_) => event.path.clone(),
             };
-            let Some(&id) = self.path_index.get(&canonical) else {
+            let Some(id) = self.lookup(owner, &canonical) else {
                 continue;
             };
             match event.kind {
@@ -1757,6 +1804,194 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert!(
             (actual - expected).abs() <= budget,
             "{what}: GPU {actual} differs from CPU {expected} by more than {budget}",
+        );
+    }
+
+    // ---- Owner scoping ----------------------------------------------------
+
+    /// A `Device` from wgpu's noop backend. `create_shader_module` is a stub
+    /// there, which is exactly the layer the owner-scoping tests do not care
+    /// about: naga still validates every assembled source inside
+    /// [`ShaderDb::compile`], and the entry bookkeeping under test is the db's
+    /// own. Buys these tests a real `ShaderDb` with no GPU, so they run
+    /// unconditionally instead of behind `#[ignore]`.
+    fn noop_device() -> Device {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::NOOP,
+            backend_options: wgpu::BackendOptions {
+                noop: wgpu::NoopBackendOptions { enable: true },
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .expect("noop backend always yields an adapter");
+        let (device, _queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("loam-shader-owner-scope-tests"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+                trace: wgpu::Trace::Off,
+                experimental_features: Default::default(),
+            }))
+            .expect("noop adapter always yields a device");
+        device
+    }
+
+    fn modified(path: &Path) -> Vec<AssetEvent> {
+        vec![AssetEvent {
+            path: path.to_path_buf(),
+            kind: AssetEventKind::Modified,
+        }]
+    }
+
+    /// Rewrite `path` with source that still validates but differs byte-wise,
+    /// so a recompile is observable as a generation bump rather than a no-op.
+    fn touch_with_edit(path: &Path) {
+        let previous = std::fs::read_to_string(path).unwrap();
+        let edited = previous.replace("vec3<f32>(0.1, 0.2, 0.3)", "vec3<f32>(0.15, 0.25, 0.35)");
+        assert_ne!(previous, edited, "the edit must actually change the file");
+        std::fs::write(path, edited).unwrap();
+    }
+
+    /// The prelude is a property of the loader, not of the file: two owners
+    /// naming the same shader path in different Spaces must get two entries,
+    /// because one module cannot carry both preludes. A path-keyed db hands
+    /// back one shared ID and recompiles it out from under the first owner.
+    #[test]
+    fn two_owners_of_one_path_get_independent_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.wgsl");
+        std::fs::write(&path, ABI_PROBE).unwrap();
+
+        let mut db = ShaderDb::new(noop_device());
+        let spherical = db.new_owner();
+        let hyperbolic = db.new_owner();
+        let in_s3 = db.load(spherical, &path, &SphericalS3).unwrap();
+        let in_h3 = db.load(hyperbolic, &path, &HyperbolicH3).unwrap();
+
+        assert_ne!(
+            in_s3, in_h3,
+            "one path loaded by two owners must not collapse to one module",
+        );
+        assert_eq!(db.generation(in_s3), 1, "loading H3's copy recompiled S3's");
+        assert_eq!(db.generation(in_h3), 1);
+    }
+
+    /// The property the shell's fan-out rests on: one owner's apply reloads
+    /// that owner's entry for the edited path and leaves every other owner's
+    /// entry, for the same path, at the generation it had.
+    #[test]
+    fn an_apply_bumps_only_the_generation_of_its_own_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.wgsl");
+        std::fs::write(&path, ABI_PROBE).unwrap();
+
+        let mut db = ShaderDb::new(noop_device());
+        let spherical = db.new_owner();
+        let hyperbolic = db.new_owner();
+        let in_s3 = db.load(spherical, &path, &SphericalS3).unwrap();
+        let in_h3 = db.load(hyperbolic, &path, &HyperbolicH3).unwrap();
+
+        touch_with_edit(&path);
+        let events = modified(&path);
+
+        db.apply_events(spherical, &events, &SphericalS3);
+        assert_eq!(db.generation(in_s3), 2, "S3's owner asked for this reload");
+        assert_eq!(
+            db.generation(in_h3),
+            1,
+            "H3's module must be untouched by an apply scoped to S3's owner",
+        );
+
+        db.apply_events(hyperbolic, &events, &HyperbolicH3);
+        assert_eq!(
+            db.generation(in_s3),
+            2,
+            "H3's owner must not recompile S3's module against H3",
+        );
+        assert_eq!(db.generation(in_h3), 2);
+    }
+
+    /// A host fans the same event slice at every owner it holds. Each shader
+    /// must therefore be recompiled exactly once, by the owner that loaded it:
+    /// a db-wide apply would rebuild the edited module once per owner, leaving
+    /// it compiled against whichever Space fanned out last.
+    #[test]
+    fn a_fan_out_recompiles_each_edited_shader_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let s3_path = dir.path().join("spherical.wgsl");
+        let h3_path = dir.path().join("hyperbolic.wgsl");
+        std::fs::write(&s3_path, ABI_PROBE).unwrap();
+        std::fs::write(&h3_path, ABI_PROBE).unwrap();
+
+        let mut db = ShaderDb::new(noop_device());
+        let spherical = db.new_owner();
+        let hyperbolic = db.new_owner();
+        let in_s3 = db.load(spherical, &s3_path, &SphericalS3).unwrap();
+        let in_h3 = db.load(hyperbolic, &h3_path, &HyperbolicH3).unwrap();
+
+        touch_with_edit(&s3_path);
+        let events = modified(&s3_path);
+        db.apply_events(spherical, &events, &SphericalS3);
+        db.apply_events(hyperbolic, &events, &HyperbolicH3);
+
+        assert_eq!(
+            db.generation(in_s3),
+            2,
+            "the edited shader must recompile once, under its own Space, not once per owner",
+        );
+        assert_eq!(db.generation(in_h3), 1, "no event named H3's shader");
+    }
+
+    /// [`ShaderDb::load`]'s stability contract, now conditional on the owner:
+    /// one owner naming one path twice must land on its existing entry and
+    /// recompile it. Minting a second ID instead would strand the first behind
+    /// whatever pipeline already holds it, unreachable by any later apply.
+    #[test]
+    fn a_second_load_by_the_same_owner_keeps_the_id_and_recompiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.wgsl");
+        std::fs::write(&path, ABI_PROBE).unwrap();
+
+        let mut db = ShaderDb::new(noop_device());
+        let scene = db.new_owner();
+        let first = db.load(scene, &path, &SphericalS3).unwrap();
+        let second = db.load(scene, &path, &SphericalS3).unwrap();
+
+        assert_eq!(first, second, "one owner's path must map to one entry");
+        assert_eq!(db.generation(first), 2, "the second load must recompile");
+    }
+
+    /// The shipped pairing: a host applies under [`ShaderDb::ROOT_OWNER`] via
+    /// the `App` default while a sub-scene applies under a minted owner. A
+    /// `new_owner` that handed back the root would put both in one path space,
+    /// which is the collision owner scoping exists to remove, and no assertion
+    /// over minted owners alone would notice.
+    #[test]
+    fn a_minted_owner_shares_no_entry_with_the_root_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.wgsl");
+        std::fs::write(&path, ABI_PROBE).unwrap();
+
+        let mut db = ShaderDb::new(noop_device());
+        let scene = db.new_owner();
+        let in_root = db.load(ShaderDb::ROOT_OWNER, &path, &EuclideanR3).unwrap();
+        let in_scene = db.load(scene, &path, &HyperbolicH3).unwrap();
+        assert_ne!(
+            in_root, in_scene,
+            "a minted owner must not land in the root's path space",
+        );
+
+        touch_with_edit(&path);
+        db.apply_events(ShaderDb::ROOT_OWNER, &modified(&path), &EuclideanR3);
+        assert_eq!(db.generation(in_root), 2);
+        assert_eq!(
+            db.generation(in_scene),
+            1,
+            "the host's apply must not recompile a sub-scene's module against R3",
         );
     }
 

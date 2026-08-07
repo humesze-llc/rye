@@ -30,7 +30,7 @@
 //!         A::ui(&egui::Context, &mut FrameCtx)
 //!         A::on_event(...) for each WindowEvent
 //!         poll AssetWatcher -> if events:
-//!             shader_db.apply_events(events, app.space())
+//!             A::apply_shader_events(events, &mut ShaderDb)
 //!             A::on_shader_reload(&mut SetupCtx)
 //!         maybe update title (rate-limited to ~1 Hz)
 //!         RenderDevice::begin_frame
@@ -82,15 +82,16 @@ use loam_egui::UiIntegration;
 use loam_input::{FrameInput, InputState};
 use loam_math::WgslSpace;
 use loam_render::device::RenderDevice;
-use loam_shader::ShaderDb;
 use loam_time::FixedTimestep;
 
 // Convenience re-exports so apps depend on `loam-app` alone for common types.
+pub use loam_asset::AssetEvent;
 pub use loam_camera::{
     Camera, CameraController, CameraView, FirstPersonController, OrbitController,
 };
 pub use loam_egui::{egui, world_to_screen, BottomOverlay, LinearIndicator};
 pub use loam_input::FrameInput as Input;
+pub use loam_shader::{ShaderDb, ShaderOwner};
 
 // ---------------------------------------------------------------------------
 // App trait
@@ -99,9 +100,10 @@ pub use loam_input::FrameInput as Input;
 /// The framework calls back into your App through this trait. All methods except
 /// [`App::setup`], [`App::space`], and [`App::render`] have default impls.
 pub trait App: Sized + 'static {
-    /// Shader-prelude geometry. `ShaderDb::apply_events` runs against this instance
-    /// on hot-reload, so `loam_distance` / `loam_log` / `loam_exp` in WGSL evaluate
-    /// under this metric. Geometry-agnostic apps use `EuclideanR3`.
+    /// Shader-prelude geometry. The default [`App::apply_shader_events`] runs
+    /// hot-reload against this instance, so `loam_distance` / `loam_log` /
+    /// `loam_exp` in WGSL evaluate under this metric. Geometry-agnostic apps use
+    /// `EuclideanR3`.
     ///
     /// This is not a commitment about the camera, player, or scene; those are
     /// user-owned and may use a different Space or none. Hazard: writing
@@ -117,7 +119,8 @@ pub trait App: Sized + 'static {
     /// `Self::Space` and any cameras) in the returned `Self`.
     fn setup(ctx: &mut SetupCtx<'_>) -> anyhow::Result<Self>;
 
-    /// Borrow the user-owned `Self::Space` for `ShaderDb::apply_events`.
+    /// Borrow the user-owned `Self::Space` for the default
+    /// [`App::apply_shader_events`].
     fn space(&self) -> &Self::Space;
 
     /// Per-tick simulation step at the fixed-timestep rate: usually 0 or 1 per
@@ -153,8 +156,17 @@ pub trait App: Sized + 'static {
     ) {
     }
 
-    /// Hot-reload notification: events were applied to `ShaderDb` against
-    /// `self.space()`; rebuild any consumer pipelines that may be stale.
+    /// Recompile the shaders `events` touches. The default covers exactly what
+    /// this app loaded under [`ShaderDb::ROOT_OWNER`], against `Self::Space`. An
+    /// app hosting several independently spaced sub-scenes gives each one a
+    /// [`ShaderDb::new_owner`] and overrides this to fan out one scoped apply
+    /// per sub-scene, so no scene is recompiled against the host's metric.
+    fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
+        shader_db.apply_events(ShaderDb::ROOT_OWNER, events, self.space());
+    }
+
+    /// Hot-reload notification, after [`App::apply_shader_events`] has run;
+    /// rebuild any consumer pipelines that may be stale.
     fn on_shader_reload(&mut self, _ctx: &mut SetupCtx<'_>) {}
 
     /// Legacy render path. Implement either this or `App::record`; the runner
@@ -1380,7 +1392,7 @@ impl<A: App> Runner<A> {
                 if let (Some(app), Some(shader_db), Some(rd)) =
                     (self.app.as_mut(), self.shader_db.as_mut(), self.rd.as_ref())
                 {
-                    shader_db.apply_events(&reload_events, app.space());
+                    app.apply_shader_events(&reload_events, shader_db);
                     let mut ctx = SetupCtx {
                         rd,
                         shader_db,

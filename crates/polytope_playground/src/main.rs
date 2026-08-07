@@ -49,7 +49,8 @@ use loam_app::{
     args::Args,
     egui,
     freecam::{CursorMode, Freecam},
-    Camera, CameraController, FrameCtx, OrbitController, RunConfig, SetupCtx,
+    AssetEvent, Camera, CameraController, FrameCtx, OrbitController, RunConfig, SetupCtx, ShaderDb,
+    ShaderOwner,
 };
 use loam_egui::{Console, ConsoleUi};
 use loam_math::WPlane;
@@ -832,6 +833,9 @@ impl Demo {
 
 pub(crate) struct RotateScene {
     demo: Demo,
+    /// Scopes hot-reload to this scene's own modules, so a sibling scene in
+    /// another Space is never recompiled against `Demo`'s.
+    shader_owner: ShaderOwner,
     console: Console<Demo>,
     /// Last frame's `egui::Context::wants_keyboard_input()`. Key events
     /// arrive before `ui`, so this one-frame-stale value gates demo hotkeys
@@ -895,6 +899,7 @@ impl RotateScene {
     pub(crate) fn new(ctx: &mut SetupCtx<'_>) -> Result<Self> {
         Ok(Self {
             demo: Demo::new(ctx)?,
+            shader_owner: ctx.shader_db.new_owner(),
             console: Self::build_console(),
             last_egui_keyboard: false,
         })
@@ -902,8 +907,8 @@ impl RotateScene {
 }
 
 impl shell::Scene for RotateScene {
-    fn space(&self) -> &EuclideanR3 {
-        self.demo.space()
+    fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
+        shader_db.apply_events(self.shader_owner, events, self.demo.space());
     }
 
     fn menus(&mut self, ui: &mut egui::Ui) {

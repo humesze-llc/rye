@@ -46,7 +46,7 @@ pub use euclidean::{EuclideanR3, Iso3};
 pub use euclidean_r2::{EuclideanR2, Iso2};
 pub use euclidean_r4::{EuclideanR4, Iso4Flat};
 pub use hyperbolic::{HyperbolicH3, Iso3H};
-pub use quotient::{FlatTorus3, QuotientSpace};
+pub use quotient::{FlatTorus3, LensSpace, QuotientSpace};
 pub use rasterizable::{Projection, RasterizableSpace, STEREOGRAPHIC_POLE_EPSILON};
 pub use sectionable::{
     SectionableSpace, WPlane, EDGE_PARALLEL_EPSILON, SLICE_PERTURBATION_EPSILON,

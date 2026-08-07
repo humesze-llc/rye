@@ -11,8 +11,8 @@ keywords = ["sdf", "scene", "wgsl", "raymarching", "gamedev"]
 categories = ["graphics", "rendering", "game-development"]
 
 [dependencies]
-loam-math  = { path = "../loam-math" }
-loam-shape = { path = "../loam-shape" }
+loam-math  = { path = "../loam-math",  version = "0.1.0" }
+loam-shape = { path = "../loam-shape", version = "0.1.0" }
 glam.workspace = true
 serde.workspace = true
 ron.workspace = true

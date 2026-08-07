@@ -40,14 +40,14 @@ gif = { version = "0.13", optional = true }
 color_quant = { version = "1.1", optional = true }
 png = { version = "0.17", optional = true }
 
-loam-asset  = { path = "../loam-asset" }
-loam-camera = { path = "../loam-camera" }
-loam-input  = { path = "../loam-input" }
-loam-math   = { path = "../loam-math" }
-loam-render = { path = "../loam-render" }
-loam-shader = { path = "../loam-shader" }
-loam-time   = { path = "../loam-time" }
-loam-egui   = { path = "../loam-egui" }
+loam-asset  = { path = "../loam-asset",  version = "0.1.0" }
+loam-camera = { path = "../loam-camera", version = "0.1.0" }
+loam-input  = { path = "../loam-input",  version = "0.1.0" }
+loam-math   = { path = "../loam-math",   version = "0.1.0" }
+loam-render = { path = "../loam-render", version = "0.1.0" }
+loam-shader = { path = "../loam-shader", version = "0.1.0" }
+loam-time   = { path = "../loam-time",   version = "0.1.0" }
+loam-egui   = { path = "../loam-egui",   version = "0.1.0" }
 
 # Direct dep so the worker-mode `WorkerUi` (N5 Phase B4) can use
 # `egui_wgpu::Renderer` without going through loam-egui's `UiIntegration`

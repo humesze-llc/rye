@@ -13,8 +13,8 @@ categories = ["game-development", "simulation"]
 [dependencies]
 glam.workspace = true
 tracing.workspace = true
-loam-math  = { path = "../loam-math" }
-loam-shape = { path = "../loam-shape" }
+loam-math  = { path = "../loam-math",  version = "0.1.0" }
+loam-shape = { path = "../loam-shape", version = "0.1.0" }
 
 [[bench]]
 name = "broadphase"

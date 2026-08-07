@@ -929,9 +929,9 @@ mod tests {
 
     use super::*;
     use crate::determinism_fixture::{
-        determinism_scenario_run, first_divergent_step, fnv1a64, multi_island_groups,
-        multi_island_scenario_run, multi_island_world, ScenarioRun, GOLDEN_MULTI_ISLAND_HASH,
-        GOLDEN_TRAJECTORY_HASH, MULTI_ISLAND_DT, MULTI_ISLAND_STEPS,
+        assert_scenario_stays_physical, determinism_scenario_run, first_divergent_step, fnv1a64,
+        multi_island_groups, multi_island_scenario_run, multi_island_world, ScenarioRun,
+        GOLDEN_MULTI_ISLAND_HASH, GOLDEN_TRAJECTORY_HASH, MULTI_ISLAND_DT, MULTI_ISLAND_STEPS,
     };
     use crate::euclidean_r3::{
         box_body, halfspace_body_r3, register_default_narrowphase, sphere_body_r3,
@@ -1038,10 +1038,17 @@ mod tests {
     /// establishes it reaches contacts and that the hash observes them.
     fn assert_phase_order_does_not_reach_the_state_hash(phase: SchedulePhase) {
         let canonical = run_with(OrderPolicy::Canonical);
+        // An intended simulation change breaks this link too, so this site
+        // owes the same triage as the re-record test rather than reporting a
+        // schedule failure for something the schedule did not do.
+        assert_scenario_stays_physical(&canonical);
+        let canonical_hash = fnv1a64(&canonical.trajectory);
         assert_eq!(
-            fnv1a64(&canonical.trajectory),
-            GOLDEN_TRAJECTORY_HASH,
-            "canonical run no longer matches the committed golden hash"
+            canonical_hash, GOLDEN_TRAJECTORY_HASH,
+            "canonical run hashed {canonical_hash:#018x} against the committed \
+             {GOLDEN_TRAJECTORY_HASH:#018x}; the sanity pin above passed, so \
+             this is an intended simulation change and GOLDEN_TRAJECTORY_HASH \
+             should be re-recorded to {canonical_hash:#018x}"
         );
 
         for order in order_variants(phase) {
@@ -1362,15 +1369,29 @@ mod tests {
 
     /// The multi-island fixture's behaviour pin, on the same terms as the R4
     /// golden: deterministic-but-changed integration, solve, or contact
-    /// constants move it.
+    /// constants move it. The sanity pin runs first for the same reason it
+    /// does there.
     #[test]
     fn multi_island_scenario_matches_golden_determinism_hash() {
-        let hash = fnv1a64(&multi_island_scenario_run(Schedule::default()).trajectory);
+        let run = multi_island_scenario_run(Schedule::default());
+        assert_scenario_stays_physical(&run);
+        let hash = fnv1a64(&run.trajectory);
         assert_eq!(
             hash, GOLDEN_MULTI_ISLAND_HASH,
             "multi-island trajectory hashed {hash:#018x} against the committed \
-             {GOLDEN_MULTI_ISLAND_HASH:#018x}"
+             {GOLDEN_MULTI_ISLAND_HASH:#018x}; the sanity pin above passed, so \
+             this is an intended simulation change and the constant should be \
+             re-recorded to {hash:#018x}"
         );
+    }
+
+    /// The stack rests rather than sinking or pumping, whatever the solver's
+    /// constants are tuned to. Named separately from the hash so one
+    /// `cargo test` run reports both verdicts: sanity plus hash means a
+    /// regression, hash alone means an intended change.
+    #[test]
+    fn multi_island_scenario_stays_above_the_floor_and_never_gains_energy_determinism() {
+        assert_scenario_stays_physical(&multi_island_scenario_run(Schedule::default()));
     }
 
     /// The fixture earns its name only if the contact graph really splits into

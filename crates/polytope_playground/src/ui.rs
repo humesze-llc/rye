@@ -8,7 +8,7 @@
 //! and the formula popup live in their own modules; this file owns the
 //! chrome that wraps them.
 
-use loam_app::egui;
+use loam_app::{egui, FrameCtx};
 use loam_egui::{
     media::{chevron_button, play_pause_button, rate_toggle, refresh_button},
     slider_with_edit,
@@ -434,6 +434,13 @@ impl Demo {
                 ui.add_space(8.0);
 
                 ui.heading("Mouse");
+                ui.label(
+                    "• Press on a shape and drag: aim a throw. The line \
+                         shows the direction and the percentage shows how \
+                         hard; release to flick it. The chamber is zero-g, so \
+                         a thrown shape carries on until it hits a neighbour \
+                         and coasts to a stop.",
+                );
                 ui.label("• Drag in the viewport: orbit camera.");
                 ui.label(
                     "• Right-click on any value label (w, t, plane angle, \
@@ -445,6 +452,67 @@ impl Demo {
                 );
             });
         });
+    }
+
+    /// Aim indicator for a flick in progress: a leader from the picked body to
+    /// the cursor, and the percentage of the speed ceiling the drag has wound
+    /// up. The only reading a user gets of the drag-to-impulse mapping before
+    /// committing to it, so the number is the mapping's own `charge`, not a
+    /// second estimate of it.
+    ///
+    /// Painted on the background layer so the controls overlay stays on top,
+    /// and skipped entirely when the body is off-screen.
+    pub(crate) fn render_throw_aim(&self, ctx: &egui::Context, frame: &FrameCtx<'_>) {
+        let Some(drag) = self.throw_drag else {
+            return;
+        };
+        let slots = self.render_row().len();
+        if drag.slot >= slots {
+            return;
+        }
+        let ppp = ctx.pixels_per_point();
+        let cfg = &frame.rd.surface_bundle.config;
+        let viewport = (
+            (cfg.width as f32 / ppp).round() as u32,
+            (cfg.height as f32 / ppp).round() as u32,
+        );
+        let world = self
+            .physics
+            .pose(drag.slot, slots, Rotor4::IDENTITY)
+            .position_r3();
+        let Some(anchor) = loam_egui::world_to_screen(
+            world,
+            &self.camera.view(),
+            60.0_f32.to_radians(),
+            viewport,
+            0.1,
+            100.0,
+        ) else {
+            return;
+        };
+
+        let charge = drag.charge();
+        // Cool at a nudge, hot at the ceiling.
+        let color = egui::Color32::from_rgb(
+            (90.0 + 165.0 * charge) as u8,
+            (210.0 - 100.0 * charge) as u8,
+            (170.0 - 130.0 * charge) as u8,
+        );
+        let stroke = egui::Stroke::new(2.0, color);
+        let tip = egui::pos2(drag.cursor_px.x / ppp, drag.cursor_px.y / ppp);
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::new("polytope-playground-throw-aim"),
+        ));
+        painter.circle_stroke(anchor, 10.0, stroke);
+        painter.line_segment([anchor, tip], stroke);
+        painter.text(
+            tip + egui::vec2(12.0, -18.0),
+            egui::Align2::LEFT_TOP,
+            format!("{:.0}% throw", charge * 100.0),
+            egui::FontId::monospace(12.0),
+            color,
+        );
     }
 
     /// Unified controls overlay. `egui::Window` with `pivot(CENTER_BOTTOM)` so it

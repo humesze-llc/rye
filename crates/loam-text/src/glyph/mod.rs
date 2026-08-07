@@ -122,6 +122,7 @@ impl GlyphParams {
             ("em_size", self.em_size),
             ("depth", self.depth),
             ("slab", self.slab.1 - self.slab.0),
+            ("flatten_tolerance_em", self.flatten_tolerance_em),
         ] {
             if value <= 0.0 || value.is_nan() {
                 return Err(GlyphError::NonPositive { field, value });
@@ -276,6 +277,31 @@ mod tests {
         );
 
         assert!(GlyphParams::default().validate().is_ok());
+    }
+
+    /// A flatten tolerance that is not positive fails loudly. Left unchecked
+    /// it reaches `outline::subdivisions`, whose guard against a division by
+    /// zero returns a single subdivision, silently replacing every Bezier in
+    /// the word with its chord instead of erroring as this module promises.
+    #[test]
+    fn nonpositive_or_nan_flatten_tolerance_is_rejected() {
+        for value in [0.0, -0.002, f32::NAN] {
+            let params = GlyphParams {
+                flatten_tolerance_em: value,
+                ..GlyphParams::default()
+            };
+            let error = params.validate().unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    GlyphError::NonPositive {
+                        field: "flatten_tolerance_em",
+                        ..
+                    }
+                ),
+                "tolerance {value} gave {error}"
+            );
+        }
     }
 
     /// Non-ASCII coverage the font lacks is an error, not a dropped letter.

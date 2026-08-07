@@ -85,6 +85,16 @@ impl DistanceField2D {
     /// smooth and grows to roughly half a cell at reflex features, so the
     /// result is an approximation of the exact contour distance, adequate for
     /// sphere tracing but not for exact containment tests.
+    ///
+    /// The exact contour distance is 1-Lipschitz in L2; this interpolant is
+    /// not. Adjacent samples differ by at most one cell, so each partial
+    /// derivative of the bilinear form is bounded by 1 and
+    /// `|sample(a) - sample(b)| <= |a - b|` holds in the L1 norm, hence only
+    /// `sqrt(2) |a - b|` in L2. The L2 constant is attained: at a cell corner
+    /// on the medial axis the three near corners carry the same distance and
+    /// the fourth is one cell nearer the wall, which drives the interpolant's
+    /// gradient to `(1, 1)`. A sphere tracer stepping by this value must scale
+    /// steps by `1 / sqrt(2)`, or step per axis, to avoid tunnelling.
     pub fn sample(&self, p: Vec2) -> f32 {
         let grid = (p - self.origin) / self.cell;
         let clamped = grid.clamp(
@@ -99,9 +109,12 @@ impl DistanceField2D {
         }
         // Outside the padded grid two lower bounds hold: every contour lies
         // strictly inside the grid, so the true distance is at least the
-        // distance back to the grid; and the field is 1-Lipschitz, so it is at
-        // least the clamped value less that same offset. Take the larger, so a
-        // sphere tracer under-steps rather than tunnelling.
+        // distance back to the grid; and the exact contour distance is
+        // 1-Lipschitz, so it is at least the clamped value less that same
+        // offset. Take the larger, so a sphere tracer under-steps rather than
+        // tunnelling. Decaying at one per unit rather than the sqrt(2) the
+        // interior interpolation can reach keeps the extrapolation inside the
+        // per-axis bound this function's doc states.
         overshoot.max(inside_grid - overshoot)
     }
 
@@ -287,27 +300,89 @@ mod tests {
         }
     }
 
-    /// Sampling is 1-Lipschitz, including across the grid boundary where the
-    /// clamped extrapolation takes over. A field that is not 1-Lipschitz makes
-    /// sphere tracing overshoot.
+    /// Rounding headroom for a Lipschitz comparison: the probe separations are
+    /// ~1e-3 and the sampled values ~1e-1, so cancellation in the difference
+    /// costs a few times f32 epsilon of the larger operand.
+    const LIPSCHITZ_SLACK: f32 = 1.0e-6;
+
+    /// Sampling is 1-Lipschitz per axis, so `|d(a) - d(b)|` is bounded by
+    /// `|a - b|` in L1 and by `sqrt(2)|a - b|` in L2, across the interior and
+    /// across the grid boundary where the clamped extrapolation takes over.
+    /// Every probe pair here is separated by a fraction of a cell: a sweep
+    /// whose spacing exceeds the cell never lands two probes in one bilinear
+    /// patch and so never sees the interpolant's worst slope.
     #[test]
-    fn sampling_is_one_lipschitz_including_off_grid() {
+    fn sampling_is_one_lipschitz_per_axis_including_off_grid() {
         let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
         let field = DistanceField2D::bake(&square, 2.0 / 24.0).expect("bake");
-        // Fixed lattice of probes; no RNG, so the assertion is reproducible.
-        let probes: Vec<Vec2> = (-12..=12)
-            .flat_map(|i| (-12..=12).map(move |j| Vec2::new(i as f32 * 0.31, j as f32 * 0.29)))
-            .collect();
-        for a in &probes {
-            for b in &probes {
-                let delta = (field.sample(*a) - field.sample(*b)).abs();
+        let cell = field.cell_size();
+
+        // Fixed lattice, no RNG, so the assertion is reproducible. The pitches
+        // are incommensurate with the cell so probes land at many sub-cell
+        // phases, and the span reaches past the padded grid (half-extent
+        // 7/6) into the clamped extrapolation.
+        let bases = (-40..=40)
+            .flat_map(|i| (-40..=40).map(move |j| Vec2::new(i as f32 * 0.0371, j as f32 * 0.0397)));
+        let mut steps = Vec::new();
+        for fraction in [1.0 / 64.0, 1.0 / 7.0, 1.0 / 2.3] {
+            for k in 0..8 {
+                let angle = k as f32 * std::f32::consts::FRAC_PI_4;
+                steps.push(Vec2::new(angle.cos(), angle.sin()) * (cell * fraction));
+            }
+        }
+
+        for a in bases {
+            for step in &steps {
+                let b = a + *step;
+                let delta = (field.sample(a) - field.sample(b)).abs();
+                let l1 = step.x.abs() + step.y.abs();
                 assert!(
-                    delta <= a.distance(*b) + 1e-4,
-                    "|d({a}) - d({b})| = {delta} exceeds |a - b| = {}",
-                    a.distance(*b)
+                    delta <= l1 + LIPSCHITZ_SLACK,
+                    "|d({a}) - d({b})| = {delta} exceeds |dx| + |dy| = {l1}"
+                );
+                let l2 = std::f32::consts::SQRT_2 * step.length();
+                assert!(
+                    delta <= l2 + LIPSCHITZ_SLACK,
+                    "|d({a}) - d({b})| = {delta} exceeds sqrt(2)|a - b| = {l2}"
                 );
             }
         }
+    }
+
+    /// The L2 constant is sqrt(2) and not 1, and the gap is structural. Grid
+    /// samples with equal indices lie on `x = y`, which for this square is the
+    /// medial axis, so the cell between two of them has three corners at the
+    /// same distance and a fourth one cell nearer the wall. Along that cell's
+    /// diagonal the bilinear form is `d00 - cell * tx * ty`, whose gradient
+    /// runs to `(1, 1)` at the far corner. Restoring the 1-Lipschitz claim
+    /// therefore requires making `sample` conservative first, not just editing
+    /// the bound back.
+    #[test]
+    fn bilinear_sampling_exceeds_one_lipschitz_on_the_medial_axis() {
+        let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
+        let field = DistanceField2D::bake(&square, 2.0 / 24.0).expect("bake");
+        let (near, far) = (field.corner(4, 4), field.corner(5, 5));
+        assert!(
+            near.x == near.y && far.x == far.y,
+            "cell is off the diagonal"
+        );
+        // The two off-diagonal corners are each an equal-distance point of the
+        // same pair of walls, so they agree with `near` to within a rounding
+        // of the projection that computes them.
+        assert!((field.at(5, 4) - field.at(4, 4)).abs() <= f32::EPSILON);
+        assert!((field.at(4, 5) - field.at(4, 4)).abs() <= f32::EPSILON);
+        assert!(field.at(5, 5) < field.at(4, 4), "far corner is not deeper");
+
+        // One sixty-fourth of the way back from the far corner, where the
+        // closed form predicts a ratio of `(2 - 1/64) / sqrt(2) = 1.403`.
+        let inner = far - (far - near) / 64.0;
+        let delta = (field.sample(far) - field.sample(inner)).abs();
+        let ratio = delta / far.distance(inner);
+        assert!(ratio > 1.35, "diagonal L2 ratio {ratio} is below 1.35");
+        assert!(
+            ratio <= std::f32::consts::SQRT_2,
+            "diagonal L2 ratio {ratio} exceeds sqrt(2)"
+        );
     }
 
     /// Off-grid sampling never over-reports the distance, which is the

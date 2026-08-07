@@ -16,7 +16,7 @@ What works today:
 
 - **4D rigid-body physics.** First-party geometric algebra (`Bivector4`/`Rotor4` with invariant-decomposition exponential), GJK and EPA lifted to R⁴ (EPA validated against analytical penetration depths), persistent contact manifolds, a warm-started projected Gauss-Seidel solver.
 - **Exact polychoral cross-sections.** All six regular convex 4-polytopes with exact topology at unit circumradius; sections are computed as geometry, not mesh approximations, alongside raymarched-SDF and wireframe render modes.
-- **Geometry as a type parameter.** The same scene renders in Euclidean, hyperbolic, and spherical 3-space through one `Space` trait, and both render paths (SDF raymarch, rasterizer) run on the same implementations.
+- **Geometry as a type parameter.** Seven `Space` implementations behind one trait: Euclidean 2/3/4-space, hyperbolic H³, spherical S³ in two charts, and a variable-curvature blend. A cross-implementation conformance suite pins the shared contract (metric identities, transport, isometry group laws) and CPU/GPU parity tests pin each WGSL prelude against its Rust twin. The shipped demos currently run the Euclidean spaces; the curved-space paths are exercised by those tests, not yet by a runnable demo.
 - **Determinism.** Simulation is bit-reproducible: same binary, same inputs, same bits. Pinned by tests that run in CI.
 
 ## Run it

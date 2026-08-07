@@ -1,8 +1,8 @@
 # Architecture
 
-How the crates fit together and which decisions ripple. For one-line per-crate
-roles see the Workspace table in the [README](../README.md); this document is the
-dependency structure and the trait boundaries behind it.
+How the crates fit together and which decisions ripple: the dependency
+structure and the trait boundaries behind it. Per-crate roles live in each
+crate's rustdoc.
 
 ## Dependency tiers
 
@@ -10,12 +10,12 @@ The workspace is a DAG, layered so the stable surfaces never depend on the
 volatile ones. Each crate depends only on tiers below it.
 
 ```
-tier 0  loam-math   loam-input   loam-time   loam-text   loam-asset      (no loam deps)
-tier 1  loam-shape    loam-camera    loam-player    loam-shader
-tier 2  loam-shape ── loam-scene    loam-physics    loam-egui
-tier 3  loam-render
+tier 0  loam-math  loam-input  loam-time  loam-text  loam-asset  loam-console   (no loam deps)
+tier 1  loam-shape  loam-camera  loam-player
+tier 2  loam-scene  loam-physics  loam-egui
+tier 3  loam-shader  loam-render
 tier 4  loam-app
-tier 5  polytope_playground   tesseract_demo                        (demos, not API)
+tier 5  polytope_playground  tesseract_demo                          (demos, not API)
 ```
 
 - `loam-math` is the root: the `Space` trait, metrics, the bivector/rotor
@@ -43,7 +43,9 @@ downstream is an opt-in capability trait, not a hard-coded geometry case:
 
 - `WgslSpace`: emit the WGSL prelude to raymarch this space on the GPU.
 - `RasterizableSpace`: project and tessellate edges/sections for the rasterizer.
-- `SectionableSpace`: cross-section algorithm support.
+- `SectionableSpace`: cross-section algorithm support. Defined, currently
+  without an implementor; the exact polytope sections the playground renders go
+  through `loam-shape`'s section code instead.
 - `PhysicsSpace`: rigid-body simulation in this space.
 
 A new geometry is wired through the engine by implementing the capabilities it

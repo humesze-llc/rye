@@ -21,11 +21,10 @@
 //! - **No behavior, but interfaces are OK.** This crate defines the [`Shape`] data and the
 //!   [`Visualizable`] trait *interface*. Trait definitions count as data-shape interfaces, not
 //!   behavior; they add zero dependencies on application-level code. Role impls live in the role
-//!   crates (`loam-scene` for `Primitive` (SDF) and [`Visualizable`] on [`Shape`];
-//!   `loam-physics` for `Collider`); [`Visualizable`] on [`polytope::Polytope4`] is the
-//!   exception, kept here because it reads only the topology this crate owns and so lets the
-//!   renderer draw a polychoron without depending on the simulation layer. The dep graph stays
-//!   a tree.
+//!   crates (`loam-scene` for `Primitive` (SDF); `loam-physics` for `Collider`).
+//!   [`Visualizable`] follows the data instead of the role, so [`polytope::Polytope4`]'s impl
+//!   sits in this crate: it reads only the topology this crate owns, which lets the renderer
+//!   draw a polychoron without depending on the simulation layer. The dep graph stays a tree.
 
 pub mod isovolume;
 pub mod polytope;

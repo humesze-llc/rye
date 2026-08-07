@@ -1195,9 +1195,17 @@ mod tests {
         }
     }
 
-    /// `expected` is `canonical` reversed exactly when `order` names `owner`,
-    /// so one helper carries both halves of the contract: the named phase's
+    /// `expected` is `canonical` put through the policy itself, which extends
+    /// the pin to a seeded permutation without a second copy of `shuffle`
+    /// here; `apply` is a no-op for a policy naming another phase, so one
+    /// helper still carries both halves of the contract: the named phase's
     /// buffer moves, and no other phase's buffer does.
+    ///
+    /// Delegating is not circular.
+    /// [`order_policy_permutes_reproducibly_and_never_to_identity_determinism`]
+    /// pins `apply` independently against the identity, against losing or
+    /// duplicating a unit, and against touching an unnamed phase; what is
+    /// under test here is whether the phase's buffer received it at all.
     fn assert_buffer_matches_policy<T>(
         order: OrderPolicy,
         owner: SchedulePhase,
@@ -1207,8 +1215,20 @@ mod tests {
         T: Clone + PartialEq + std::fmt::Debug,
     {
         let mut expected = canonical.to_vec();
-        if matches!(order, OrderPolicy::Reversed { phase } if phase == owner) {
-            expected.reverse();
+        order.apply(owner, &mut expected);
+        // A permutation that lands back on the identity would make the
+        // comparison below pass whether or not the policy reached the phase.
+        // Reversal cannot do that on two or more units; a seeded shuffle can.
+        if matches!(
+            order,
+            OrderPolicy::Reversed { phase } | OrderPolicy::Permuted { phase, .. } if phase == owner
+        ) {
+            assert_ne!(
+                expected.as_slice(),
+                canonical,
+                "{order:?} is the identity on this {owner:?} buffer, so the \
+                 comparison below would hold with the phase never reordered"
+            );
         }
         assert_eq!(
             buffer,
@@ -1218,21 +1238,18 @@ mod tests {
         );
     }
 
-    /// The invariance axes above compare a canonical run against a canonical
-    /// run whenever a policy fails to reach the buffer its phase executes, so
-    /// on their own they cannot tell "this order does not matter" apart from
-    /// "this order was never applied". This pins the seam directly: after a
-    /// step, each phase's retained buffer is reversed exactly when the policy
-    /// names that phase, and identical to its canonical fill otherwise.
+    /// The order axes the two buffer-seam pins below sweep: reversal on every
+    /// phase, plus Constraint's seeded permutations.
     ///
-    /// `Reversed` rather than a seeded permutation because its expected buffer
-    /// is computable here without re-implementing `shuffle`.
-    #[test]
-    fn schedule_reordering_reaches_its_named_phase_buffer_determinism() {
-        let dt = 1.0 / 240.0;
-        let settle_steps = 200;
-
-        for order in [
+    /// Reversal is one fixed involution, and a loop head that rebuilt its list
+    /// by walking the source container backwards would satisfy it. A seeded
+    /// permutation has no such structure for a rebuild to reproduce by
+    /// accident. Constraint carries the permutations because its three loops
+    /// are the ones whose visit order reaches the converged answer: PGS is
+    /// Gauss-Seidel, so a rebuilt key list there restores `BTreeMap` order and
+    /// changes the result.
+    fn buffer_seam_orders() -> Vec<OrderPolicy> {
+        let mut orders = vec![
             OrderPolicy::Canonical,
             OrderPolicy::Reversed {
                 phase: SchedulePhase::Body,
@@ -1240,10 +1257,24 @@ mod tests {
             OrderPolicy::Reversed {
                 phase: SchedulePhase::BroadphasePair,
             },
-            OrderPolicy::Reversed {
-                phase: SchedulePhase::Constraint,
-            },
-        ] {
+        ];
+        orders.extend(order_variants(SchedulePhase::Constraint));
+        orders
+    }
+
+    /// The invariance axes above compare a canonical run against a canonical
+    /// run whenever a policy fails to reach the buffer its phase executes, so
+    /// on their own they cannot tell "this order does not matter" apart from
+    /// "this order was never applied". This pins the seam directly: after a
+    /// step, each phase's retained buffer carries the policy exactly when the
+    /// policy names that phase, and is identical to its canonical fill
+    /// otherwise.
+    #[test]
+    fn schedule_reordering_reaches_its_named_phase_buffer_determinism() {
+        let dt = 1.0 / 240.0;
+        let settle_steps = 200;
+
+        for order in buffer_seam_orders() {
             let mut world = settled_sphere_stack(dt, 0);
             world.schedule = Schedule { threads: 1, order };
             for _ in 0..settle_steps {
@@ -1253,13 +1284,15 @@ mod tests {
             let canonical_bodies: Vec<usize> = (0..world.bodies.len()).collect();
             let canonical_pairs = world.broadphase();
             let canonical_constraints: Vec<PairKey> = world.manifolds.keys().copied().collect();
-            // A buffer of fewer than two units reverses to itself, which would
-            // satisfy every assertion below without the seam existing.
+            // A buffer of fewer than two units is fixed by every policy, which
+            // would satisfy the assertions below without the seam existing.
+            // Above two, only a permutation can still land on the identity, and
+            // `assert_buffer_matches_policy` catches that case per buffer.
             assert!(
                 canonical_bodies.len() >= 2
                     && canonical_pairs.len() >= 2
                     && canonical_constraints.len() >= 2,
-                "{order:?} left a buffer too short for a reversal to be visible: \
+                "{order:?} left a buffer too short for a reorder to be visible: \
                  {} bodies, {} pairs, {} constraints",
                 canonical_bodies.len(),
                 canonical_pairs.len(),
@@ -1296,32 +1329,15 @@ mod tests {
     /// loop's own control variable, so the visit order is observed from inside
     /// the loop and cannot agree with the buffer by construction.
     ///
-    /// `Reversed` for the same reason as that pin: the expected order is
-    /// computable here without re-implementing `shuffle`.
-    ///
-    /// The Constraint consumers are where the hole actually costs something:
-    /// PGS is Gauss-Seidel, so a rebuilt key list there silently restores
-    /// `BTreeMap` order and changes the converged answer. `solve` is checked on
-    /// every sweep, not the first or the last, because a head that reads the
-    /// ordered buffer once and rebuilds on later passes is exactly the
-    /// half-broken case a sampled sweep would clear.
+    /// `solve` is checked on every sweep, not the first or the last, because a
+    /// head that reads the ordered buffer once and rebuilds on later passes is
+    /// exactly the half-broken case a sampled sweep would clear.
     #[test]
     fn phase_loops_visit_the_buffer_the_schedule_ordered_determinism() {
         let dt = 1.0 / 240.0;
         let settle_steps = 200;
 
-        for order in [
-            OrderPolicy::Canonical,
-            OrderPolicy::Reversed {
-                phase: SchedulePhase::Body,
-            },
-            OrderPolicy::Reversed {
-                phase: SchedulePhase::BroadphasePair,
-            },
-            OrderPolicy::Reversed {
-                phase: SchedulePhase::Constraint,
-            },
-        ] {
+        for order in buffer_seam_orders() {
             let mut world = settled_sphere_stack(dt, 0);
             world.schedule = Schedule { threads: 1, order };
             for _ in 0..settle_steps {
@@ -1335,7 +1351,7 @@ mod tests {
                 canonical_bodies.len() >= 2
                     && canonical_pairs.len() >= 2
                     && canonical_constraints.len() >= 2,
-                "{order:?} left a buffer too short for a reversal to be visible: \
+                "{order:?} left a buffer too short for a reorder to be visible: \
                  {} bodies, {} pairs, {} constraints",
                 canonical_bodies.len(),
                 canonical_pairs.len(),

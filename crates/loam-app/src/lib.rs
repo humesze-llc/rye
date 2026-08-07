@@ -63,6 +63,7 @@ pub mod frame_pacing;
 pub mod freecam;
 pub mod keymap;
 pub mod log;
+pub mod shell;
 pub mod trace;
 pub mod version;
 pub mod vsync;

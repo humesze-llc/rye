@@ -549,7 +549,8 @@ pub trait BlendingField: Copy + Send + Sync + 'static {
 /// exactly to g_A / g_B outside the zone with no curvature kick.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct LinearBlendX {
-    /// Lower zone edge; `weight` is exactly 0 at and below it.
+    /// Lower zone edge; on a positive-width zone `weight` is exactly 0 at and
+    /// below it. The degenerate zone below inverts that at `start` itself.
     pub start: f32,
     /// Upper zone edge; `weight` is exactly 1 at and above it. When
     /// `end <= start` the field degenerates to a step at `start` with a zero

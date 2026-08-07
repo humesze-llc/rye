@@ -1833,6 +1833,16 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         data
     }
 
+    fn strip_probe_module(device: &Device) -> ShaderModule {
+        let polytope = super::super::polytope_data::polytope_extended_sdfs_wgsl();
+        device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("hyperslice4d strip probe"),
+            source: ShaderSource::Wgsl(
+                format!("{HYPERSLICE_KERNEL_WGSL}\n{polytope}\n{EMPTY_SCENE_STUB}").into(),
+            ),
+        })
+    }
+
     /// The filmstrip renders one hypersphere at three `w` slices. Slicing the
     /// unit 4-ball at `w` leaves a 2-sphere of radius `sqrt(1 - w²)`, so the
     /// body's pixel footprint has to shrink strictly from cell to cell. If any
@@ -1846,13 +1856,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         const SIZE: [u32; 2] = [192, 64];
         let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
 
-        let polytope = super::super::polytope_data::polytope_extended_sdfs_wgsl();
-        let module = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("hyperslice4d strip probe"),
-            source: ShaderSource::Wgsl(
-                format!("{HYPERSLICE_KERNEL_WGSL}\n{polytope}\n{EMPTY_SCENE_STUB}").into(),
-            ),
-        });
+        let module = strip_probe_module(&device);
         let target = device.create_texture(&TextureDescriptor {
             label: Some("hyperslice4d strip probe target"),
             size: Extent3d {
@@ -1902,6 +1906,60 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             footprints[0] > footprints[1] && footprints[1] > footprints[2],
             "footprints should shrink with |w|; equal cells mean one uniform image \
              fed every cell: {footprints:?}"
+        );
+    }
+
+    /// The strip writes only its own per-cell images, never the node's
+    /// single-slice state. Callers track that state's dirtiness themselves
+    /// (`set_if_changed` against [`Hyperslice4DNode::uniforms_mut`]), so a
+    /// strip that mutated it would leave the mirror agreeing with a GPU buffer
+    /// it no longer matches, and the next single-slice frame would render
+    /// stale.
+    ///
+    /// Ignored by default because it needs an adapter; the `gpu_probe` suffix
+    /// is what CI's software-adapter job selects on.
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn execute_strip_leaves_the_single_slice_uniform_state_untouched_gpu_probe() {
+        const SIZE: [u32; 2] = [192, 64];
+        let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
+        let module = strip_probe_module(&device);
+        let target = device.create_texture(&TextureDescriptor {
+            label: Some("hyperslice4d strip probe target"),
+            size: Extent3d {
+                width: SIZE[0],
+                height: SIZE[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&TextureViewDescriptor::default());
+
+        let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module, 1);
+        node.uniforms_mut().w_slice = -0.25;
+        node.uniforms_mut().resolution = [640.0, 480.0];
+        let before = *node.uniforms();
+
+        node.execute_strip(&device, &queue, &view, &strip_probe_cells())
+            .expect("filmstrip should render");
+
+        let after = node.uniforms();
+        assert!(
+            bytemuck::bytes_of(after) == bytemuck::bytes_of(&before),
+            "the strip must not leave a cell's slice, viewport or body in the \
+             node's single-slice uniforms: w_slice was {} now {}, resolution \
+             was {:?} now {:?}, body_count was {} now {}",
+            before.w_slice,
+            after.w_slice,
+            before.resolution,
+            after.resolution,
+            before.body_count,
+            after.body_count,
         );
     }
 }

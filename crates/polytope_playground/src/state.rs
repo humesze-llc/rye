@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use glam::{Vec3, Vec4};
 use loam_app::{freecam::Freecam, Camera, OrbitController};
 use loam_math::{Bivector, Bivector4, EuclideanR3, Plane4, Projection, Rotor, Rotor4};
-use loam_physics::polytope::Polytope4;
 use loam_render::raymarch::{BodyUniform, Hyperslice4DNode};
+use loam_shape::polytope::Polytope4;
 
 use crate::catalog::ShapeEntry;
 use crate::consts::{BASE_ROTATION_RATE, BODY_SIZE, BODY_X_SPACING, BODY_Y, T_SLIDER_INITIAL};
@@ -104,7 +104,7 @@ pub(crate) fn set_if_changed<T: PartialEq>(slot: &mut T, value: T) -> bool {
 /// nearest-active toggle modulates alpha on top.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) enum WireframeColorMode {
-    /// Per-vertex RGB from [`loam_physics::polytope::vertex_color_by_position`];
+    /// Per-vertex RGB from [`loam_shape::polytope::vertex_color_by_position`];
     /// each edge is a gradient between its endpoint hues (same scheme as
     /// `Polytope4::lines_colored_by_position`).
     #[default]
@@ -1046,8 +1046,8 @@ mod tests {
     use crate::physics::{composed_rotor, PlaygroundPhysics};
     use glam::Vec4;
     use loam_math::{Bivector, EuclideanR4, Plane4, Projection, Rotor, Rotor4};
-    use loam_physics::polytope::Polytope4;
     use loam_render::raymarch::{BodyUniform, RaymarchShape};
+    use loam_shape::polytope::Polytope4;
     use std::collections::HashSet;
 
     fn entry(shape: RaymarchShape) -> ShapeEntry {

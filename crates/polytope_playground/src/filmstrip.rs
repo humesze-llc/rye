@@ -4,8 +4,8 @@
 //! per-cell controls and the axis-label overlay.
 
 use loam_app::egui;
-use loam_physics::polytope::Polytope4;
 use loam_render::raymarch::RaymarchShape;
+use loam_shape::polytope::Polytope4;
 
 use crate::catalog::render_shape_catalog_menu;
 use crate::consts::BODY_SIZE;

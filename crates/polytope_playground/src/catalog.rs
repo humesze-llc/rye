@@ -6,8 +6,8 @@
 use anyhow::{anyhow, Result};
 use loam_app::args::Args;
 use loam_app::egui;
-use loam_physics::polytope::Polytope4;
 use loam_render::raymarch::RaymarchShape;
+use loam_shape::polytope::Polytope4;
 
 /// One polytope's metadata. `body_color` drives `BodyUniform.color`
 /// on the GPU, not the (uniformly grey) card color. `long_name` uses

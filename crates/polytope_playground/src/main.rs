@@ -55,16 +55,16 @@ use loam_app::{
 use loam_egui::{Console, ConsoleUi};
 use loam_math::WPlane;
 use loam_math::{Bivector, EuclideanR3, Rotor, Rotor4};
-use loam_physics::polytope::{
-    polytope_section_faces_append, polytope_section_perimeter_append, vertex_color_by_position,
-    SectionScratch,
-};
 use loam_render::{
     device::RenderDevice,
     raymarch::{
         polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
     },
     DepthBuffer, DepthMode, LineRasterNode, PointRasterNode, TriangleRasterNode, Viewport,
+};
+use loam_shape::polytope::{
+    polytope_section_faces_append, polytope_section_perimeter_append, vertex_color_by_position,
+    SectionScratch,
 };
 
 /// Depth-attachment format for the rasterized section-faces pass. 32-bit
@@ -101,7 +101,7 @@ use consts::{
     BODY_SIZE, BODY_Y, HYPERSLICE_MIN_THICKNESS, T_SCRUB_RATE, T_SLIDER_INITIAL, W_SCRUB_RATE,
 };
 #[cfg(test)]
-use loam_physics::polytope::Polytope4;
+use loam_shape::polytope::Polytope4;
 use physics::PlaygroundPhysics;
 use state::{
     set_if_changed, CameraMode, Demo, RotationMode, RowFrame, SurfaceMode, ViewMode,

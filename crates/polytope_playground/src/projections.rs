@@ -1,7 +1,7 @@
 //! Wireframe projection modes: the `WireframeProjection` enum, Schlegel diagram
 //! parameter resolution, per-mode edge-blend selection, and mode annotations.
 
-use loam_physics::polytope::Polytope4;
+use loam_shape::polytope::Polytope4;
 
 /// How the parent wireframe's 4D vertex positions project to R³. Independent of
 /// the cross-section's projection (always drop-w).

@@ -2730,7 +2730,6 @@ dependencies = [
  "loam-camera",
  "loam-egui",
  "loam-math",
- "loam-physics",
  "loam-render",
  "loam-shape",
  "loam-time",

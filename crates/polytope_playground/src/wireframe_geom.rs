@@ -2,7 +2,7 @@
 //! chord and great-circle-arc edge building, and per-cell w-slice helpers.
 
 use glam::{Vec3, Vec4};
-use loam_physics::polytope::Polytope4;
+use loam_shape::polytope::Polytope4;
 use loam_shape::LineMesh;
 
 use crate::consts::{HYPERSLICE_MIN_THICKNESS, SPACE_TESSELLATION_SAMPLES};

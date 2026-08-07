@@ -35,7 +35,6 @@ mod determinism_fixture;
 pub mod euclidean_r2;
 pub mod euclidean_r3;
 pub mod euclidean_r4;
-pub use loam_shape::polytope;
 
 pub use body::{BodyArena, BodyId, RigidBody};
 pub use collider::{Collider, ColliderKind};

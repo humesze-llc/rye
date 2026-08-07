@@ -20,9 +20,9 @@ static GLOBAL: loam_time::alloc::CountingAllocator<std::alloc::System> =
     loam_time::alloc::CountingAllocator::new(std::alloc::System);
 use loam_egui::{Console, ConsoleUi};
 use loam_math::{Bivector, Bivector4, EuclideanR3, Rotor4};
-use loam_physics::polytope::Polytope4;
 use loam_render::device::RenderDevice;
 use loam_render::{DepthMode, LineRasterStaticR4Node, Viewport};
+use loam_shape::polytope::Polytope4;
 use loam_shape::LineMesh;
 use winit::window::WindowAttributes;
 

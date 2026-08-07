@@ -3,8 +3,8 @@
 //! gate.
 
 use loam_math::Projection;
-use loam_physics::polytope::Polytope4;
 use loam_render::raymarch::RaymarchShape;
+use loam_shape::polytope::Polytope4;
 
 use crate::catalog::ShapeEntry;
 

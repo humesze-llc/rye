@@ -601,7 +601,7 @@ pub(crate) struct PointsStyle {
 pub(crate) fn build_points_mesh(
     frame: &RowFrame<'_>,
     style: &PointsStyle,
-    centers_cache: &mut std::collections::HashMap<loam_physics::polytope::Polytope4, Vec<Vec4>>,
+    centers_cache: &mut std::collections::HashMap<loam_shape::polytope::Polytope4, Vec<Vec4>>,
     local_vertices: &mut Vec<Vec4>,
     center_locals: &mut Vec<Vec4>,
     cell_strengths: &mut Vec<f32>,
@@ -905,7 +905,7 @@ pub(crate) struct WireframeStyle {
 
 /// Build the cross-section perimeter mesh and the parent-wireframe edge mesh
 /// over the row, in world R³. Non-polychoral shapes are skipped (no
-/// [`loam_physics::polytope::Polytope4`] mapping).
+/// [`loam_shape::polytope::Polytope4`] mapping).
 ///
 /// Both meshes and every scratch buffer are the caller's, cleared on entry and
 /// refilled. Under Stereographic the parent mesh reaches ~92k segments for a
@@ -921,7 +921,7 @@ pub(crate) fn build_wireframe_meshes(
     style: &WireframeStyle,
     cross: state::SectionLayer,
     cap: state::SectionLayer,
-    palette_cache: &mut std::collections::HashMap<loam_physics::polytope::Polytope4, Vec<[f32; 4]>>,
+    palette_cache: &mut std::collections::HashMap<loam_shape::polytope::Polytope4, Vec<[f32; 4]>>,
     slerp_scratch: &mut Vec<Vec4>,
     local_vertices: &mut Vec<Vec4>,
     cell_strengths: &mut Vec<f32>,
@@ -1410,8 +1410,8 @@ mod tests {
     use crate::physics::{PlaygroundPhysics, MAX_THROW_SPEED};
     use crate::state::{body_position, RowFrame, SectionLayer};
     use loam_math::{EuclideanR4, Plane4, Projection};
-    use loam_physics::polytope::Polytope4;
     use loam_render::raymarch::RaymarchShape;
+    use loam_shape::polytope::Polytope4;
 
     /// The shared depth attachment is ensured and cleared on exactly the frames
     /// a pass reads it. Skipping a frame that reads it leaves the previous

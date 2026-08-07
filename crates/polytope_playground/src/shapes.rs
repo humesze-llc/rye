@@ -12,8 +12,8 @@ use loam_egui::{
     },
     media::add_button,
 };
-use loam_physics::polytope::Polytope4;
 use loam_render::raymarch::RaymarchShape;
+use loam_shape::polytope::Polytope4;
 
 use crate::catalog::{render_shape_catalog_menu, ShapeEntry};
 use crate::consts::{CARD_ITEM_SPACING_X, CONTROL_H, CONTROL_W, MAX_ROW_LEN, SHAPE_CARD_WIDTH};

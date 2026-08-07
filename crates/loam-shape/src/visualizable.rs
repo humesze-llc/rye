@@ -2,7 +2,8 @@
 //!
 //! The rasterization-role counterpart to `Primitive` (SDF) in `loam-scene` and
 //! `Collider` (physics) in `loam-physics`. Impls live downstream (`loam-scene` for
-//! [`crate::Shape`], `loam-physics` for `Polytope4`).
+//! [`crate::Shape`]), except [`crate::polytope::Polytope4`], whose impl stays here
+//! with the topology it reads.
 //!
 //! The trait + mesh types live here despite `loam-shape`'s data-only charter: a
 //! trait *definition* is a data-shape interface, not behavior, and the mesh types
@@ -42,8 +43,9 @@ pub enum NotVisualizable {
 /// flavors: [`to_lines`](Self::to_lines) (wireframe edges),
 /// [`to_triangles`](Self::to_triangles) (filled surfaces; often
 /// [`NotVisualizable::Unbounded`] for smooth shapes), and
-/// [`to_points`](Self::to_points) (vertex markers). Impls live in the role crates
-/// that own the data (`loam-scene`, `loam-physics`).
+/// [`to_points`](Self::to_points) (vertex markers). Impls live in the crates that
+/// own the data (`loam-scene`, `loam-text`, and this crate for
+/// [`crate::polytope::Polytope4`]).
 pub trait Visualizable<const N: usize> {
     /// Emit the shape as line segments in RN.
     fn to_lines(&self) -> Result<LineMesh<N>, NotVisualizable>;

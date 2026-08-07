@@ -16,7 +16,9 @@
 //!
 //! ## Controls
 //!
-//! - **Mouse left-drag**: orbit camera.
+//! - **Mouse left-drag from a shape**: aim and release to throw it into the
+//!   zero-g chamber; the drag's direction and length set the throw.
+//! - **Mouse left-drag elsewhere**: orbit camera.
 //! - **Up / Down arrows**: scrub `w`-slice (0.5 u/s).
 //! - **Space / T**: toggle 4D rotation (freezes in place; no snap-back).
 //! - **1..6**: toggle plane `1=xy, 2=xz, 3=xw, 4=yz, 5=yw, 6=zw`. `3+4`
@@ -249,7 +251,7 @@ impl Demo {
         // Rasterized cross-section faces: filled cell-caps, face-normal
         // Lambert. ReadWrite depth so caps of the same polychoron occlude each
         // other; the buffer is sized + cleared per-frame in the render path
-        // when surface mode is `Raster` (see `Demo::render_section_faces`).
+        // when surface mode is `Raster` (see `Demo::record_section_faces`).
         let section_faces = TriangleRasterNode::new(
             &ctx.rd.device,
             ctx.rd.target_format(),
@@ -293,6 +295,8 @@ impl Demo {
         Ok(Self {
             space: EuclideanR3,
             physics,
+            throw_drag: None,
+            left_was_down: false,
             camera,
             orbit,
             freecam,
@@ -401,6 +405,19 @@ impl Demo {
 
     pub(crate) fn update(&mut self, ctx: &mut FrameCtx<'_>) {
         let dt_secs = ctx.n_ticks as f32 / 60.0;
+        let viewport = {
+            let cfg = &ctx.rd.surface_bundle.config;
+            (cfg.width, cfg.height)
+        };
+
+        // The picking ray is the only consumer of `camera.aspect`; the
+        // renderer takes the resolution straight from the surface config.
+        // Refreshed here rather than at every resize site because this is the
+        // one place that reads it.
+        self.camera.aspect = viewport.0 as f32 / viewport.1.max(1) as f32;
+        // Before the physics step, so the frame a flick is released on also
+        // integrates it and `body_upload_needed` sees a moving world.
+        let aiming = self.update_throw(self.throw_enabled(ctx.ui_has_focus), &ctx.input, viewport);
 
         // Slice scrub (w axis). Clamp to the surface-scaled range so the
         // keyboard scrub matches the slider bounds after `surface scale`.
@@ -482,8 +499,14 @@ impl Demo {
         if !ctx.ui_has_focus {
             match self.camera_mode {
                 CameraMode::Orbit => {
+                    // A flick owns the left button for the whole drag, so the
+                    // orbit must not read it as a look-around. Masking the
+                    // button rather than skipping `advance` keeps scroll-zoom
+                    // and the frame rebuild live while aiming.
+                    let mut input = ctx.input;
+                    input.left_mouse_down &= !aiming;
                     self.orbit
-                        .advance(ctx.input, &mut self.camera, &EuclideanR3, dt_secs);
+                        .advance(input, &mut self.camera, &EuclideanR3, dt_secs);
                 }
                 CameraMode::FreeRoam => {
                     // Handles look + WASD + cursor-grab gating internally;
@@ -593,6 +616,10 @@ impl Demo {
         if self.view_mode == ViewMode::Filmstrip {
             self.render_filmstrip_cell_labels(ctx);
         }
+
+        // Under the controls overlay, so a flick aimed across the panel does
+        // not paint over it.
+        self.render_throw_aim(ctx, frame);
 
         // Bottom controls overlay. Toggle via `View > Rotation controls` / `H`.
         if self.show_controls {
@@ -898,8 +925,8 @@ impl shell::Scene for RotateScene {
         }
     }
 
-    fn render(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
-        self.demo.render(rd, view)
+    fn record(&mut self, ctx: &mut loam_app::RenderCtx<'_>) -> Result<()> {
+        self.demo.record(ctx.rd, ctx.encoder, ctx.view)
     }
 
     fn title(&self, fps: f32) -> std::borrow::Cow<'static, str> {

@@ -28,7 +28,7 @@
 //!   for alpha-blended overlays that should be occluded by scene geometry in front of
 //!   them without burying subsequent draws behind them.
 //!
-//! When depth is active (`ReadWrite` or `ReadOnly`), [`LineRasterNode::execute`] requires
+//! When depth is active (`ReadWrite` or `ReadOnly`), [`LineRasterNode::record`] requires
 //! the matching depth attachment.
 //!
 //! The caller owns the depth texture lifecycle: examples create a swapchain-sized depth
@@ -51,15 +51,13 @@ use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState,
     Buffer, BufferBindingType, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
-    CommandEncoderDescriptor, CompareFunction, DepthStencilState, Device, FragmentState, LoadOp,
-    MultisampleState, Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology,
-    Queue, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
+    CompareFunction, DepthStencilState, Device, FragmentState, LoadOp, MultisampleState,
+    Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
+    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
     RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
     StencilState, StoreOp, TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat,
     VertexState, VertexStepMode,
 };
-
-use crate::device::RenderDevice;
 
 /// WGSL source for the line rasterizer pipeline. Embedded as `&'static str` so the build is
 /// self-contained (no asset loading at startup). Naga-validated as part of the unit tests.
@@ -108,7 +106,7 @@ struct LineInstance {
 
 /// Antialiased line-list rasterizer. Construct once per `RenderDevice`; reuse across frames.
 ///
-/// Upload mesh data via [`Self::upload`]; draw onto a color attachment via [`Self::execute`].
+/// Upload mesh data via [`Self::upload`]; draw onto a color attachment via [`Self::record`].
 /// The pipeline owns its own vertex / index / instance / uniform buffers; the caller doesn't
 /// manage GPU resources directly.
 pub struct LineRasterNode {
@@ -124,12 +122,12 @@ pub struct LineRasterNode {
     /// Per-instance buffer (one [`LineInstance`] per segment). Grows on demand; re-uploaded via
     /// [`Self::upload`].
     instance_buf: Buffer,
-    /// Number of segments currently uploaded. `0` means [`Self::execute`] is a no-op.
+    /// Number of segments currently uploaded. `0` means [`Self::record`] is a no-op.
     instance_count: u32,
     /// Allocated capacity of `instance_buf` in instances. The buffer is re-created if a future
     /// upload exceeds this.
     instance_capacity: u32,
-    /// `true` if the pipeline was created with a depth attachment; [`Self::execute`] then
+    /// `true` if the pipeline was created with a depth attachment; [`Self::record`] then
     /// requires the matching depth view. Tracks the depth-or-not API contract so callers
     /// don't silently get mismatched render passes.
     has_depth: bool,
@@ -335,7 +333,7 @@ impl LineRasterNode {
         }
     }
 
-    /// Update the camera uniform. Call once per frame before [`Self::execute`].
+    /// Update the camera uniform. Call once per frame before [`Self::record`].
     pub fn set_camera(&self, queue: &Queue, view_projection: Mat4, viewport_size: Vec2) {
         let uniforms = LineRasterUniforms {
             view_projection: view_projection.to_cols_array_2d(),
@@ -396,9 +394,8 @@ impl LineRasterNode {
 
     /// Record a render pass that draws the uploaded line mesh into `view`, using the
     /// caller-supplied `encoder`. **Does NOT call `encoder.finish()` or
-    /// `queue.submit`**; those are the caller's responsibility, typically the
-    /// runner batching multiple passes into one submit per frame (the
-    /// `App::record` path).
+    /// `queue.submit`**; those are the caller's responsibility: the runner owns
+    /// one encoder per frame and submits it once (the `App::record` path).
     ///
     /// `LoadOp::Load` preserves the existing color attachment contents; the
     /// rasterizer composes with whatever ran before it.
@@ -464,26 +461,6 @@ impl LineRasterNode {
         rp.set_vertex_buffer(1, self.instance_buf.slice(..));
         rp.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
         rp.draw_indexed(0..6, 0, 0..self.instance_count);
-    }
-
-    /// Legacy wrapper: builds its own encoder + submits. Kept for backwards
-    /// compatibility with demos still on the multi-submit `App::render` path.
-    /// New code should prefer `Self::record` called from inside
-    /// `App::record`, which lets the runner share one
-    /// encoder across the whole frame.
-    pub fn execute(
-        &self,
-        rd: &RenderDevice,
-        view: &wgpu::TextureView,
-        depth_view: Option<&wgpu::TextureView>,
-        viewport: Option<&crate::Viewport>,
-    ) -> anyhow::Result<()> {
-        let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("line_raster encoder"),
-        });
-        self.record(&mut encoder, view, depth_view, viewport);
-        rd.queue.submit(Some(encoder.finish()));
-        Ok(())
     }
 }
 

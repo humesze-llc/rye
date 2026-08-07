@@ -210,7 +210,7 @@ pub(crate) fn synced_schlegel_projection(
 /// Stereographic (a conformal-map edge is a circular arc, not a chord), flat R4
 /// chords (`blend == 0`) otherwise. Derived from the projection, not a separate
 /// control, so it can never disagree with the map. Read per frame by the
-/// wireframe builder (`Demo::render_wireframe_overlay`).
+/// wireframe builder (`Demo::record_wireframe_overlay`).
 pub(crate) fn default_edge_blend(projection: WireframeProjection) -> f32 {
     match projection {
         WireframeProjection::Stereographic => 1.0,

@@ -25,10 +25,12 @@
 //!   [`Shape`]; `loam-physics` for `Collider` and [`Visualizable`] on `Polytope4`). The dep
 //!   graph stays a tree.
 
+pub mod isovolume;
 pub mod polytope;
 pub mod polytope_geom;
 pub mod visualizable;
 
+pub use isovolume::Isovolume;
 pub use visualizable::{LineMesh, NotVisualizable, PointMesh, TriangleMesh, Visualizable};
 
 use glam::{Vec2, Vec3, Vec4};

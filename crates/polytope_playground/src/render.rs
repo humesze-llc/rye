@@ -90,11 +90,13 @@ impl Demo {
                     grid_cells.push((cell_vp, cell_w_slice, body));
                 }
             }
-            // The one path that still submits per pass: each cell rewrites the
-            // node's uniform buffer, which a single encoder cannot interleave
-            // (see `Hyperslice4DNode::execute_strip`). Its submits land before
-            // the runner's, so the strip still composites under the UI.
-            let result = self.node.execute_strip(rd, view, &grid_cells);
+            // The one path that still submits mid-frame: `execute_strip` owns
+            // its encoder and submit rather than recording into this one. That
+            // submit lands before the runner's, so the strip still composites
+            // under the UI.
+            let result = self
+                .node
+                .execute_strip(&rd.device, &rd.queue, view, &grid_cells);
             // Restore the full row for any non-strip consumer.
             self.rebuild_bodies();
             result

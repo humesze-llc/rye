@@ -19,7 +19,7 @@
 //! via [`Hyperslice4DNode::set_bodies`]. The kernel composes the static-scene
 //! SDF and the dynamic-body SDF via `min`.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use loam_math::Rotor4;
 use wgpu::*;
@@ -717,6 +717,79 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
+const HYPERSLICE_UNIFORMS_SIZE: u64 = std::mem::size_of::<Hyperslice4DUniforms>() as u64;
+
+/// Distance between adjacent filmstrip cells' uniform images. A bind group may
+/// only view a uniform buffer at a multiple of the adapter's
+/// `min_uniform_buffer_offset_alignment` (256 on most desktop backends, 32 at
+/// the spec floor), so the stride rounds the uniform size up to it.
+fn strip_cell_stride(min_uniform_buffer_offset_alignment: u64) -> u64 {
+    HYPERSLICE_UNIFORMS_SIZE.div_ceil(min_uniform_buffer_offset_alignment)
+        * min_uniform_buffer_offset_alignment
+}
+
+/// The uniform image filmstrip cell `i` reads: the node's current state with
+/// that cell's slice, viewport, and single body substituted.
+fn strip_cell_uniforms(
+    base: &Hyperslice4DUniforms,
+    viewport: crate::Viewport,
+    w_slice: f32,
+    body: &BodyUniform,
+) -> Hyperslice4DUniforms {
+    let mut cell = *base;
+    // Per-cell body lets the w/t grid vary the rotor along the t axis.
+    cell.bodies[0] = *body;
+    cell.body_count = 1.0;
+    cell.w_slice = w_slice;
+    cell.resolution = viewport.resolution_f32();
+    cell.viewport_origin = [viewport.x as f32, viewport.y as f32];
+    cell
+}
+
+/// One uniform image per filmstrip cell, packed into a single buffer at
+/// [`strip_cell_stride`], with one bind group per image. Grown to fit and
+/// retained across frames; a shrinking strip reuses the head of the buffer.
+struct StripCellUniforms {
+    buffer: Buffer,
+    /// `bind_groups[i]` views `buffer` at `i * stride`, which is what keeps
+    /// cell `i`'s draw reading cell `i`'s image.
+    bind_groups: Vec<BindGroup>,
+    stride: u64,
+}
+
+impl StripCellUniforms {
+    fn new(device: &Device, layout: &BindGroupLayout, cell_count: usize) -> Self {
+        let stride = strip_cell_stride(device.limits().min_uniform_buffer_offset_alignment as u64);
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("hyperslice4d strip cell uniforms"),
+            size: stride * cell_count as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_groups = (0..cell_count)
+            .map(|i| {
+                device.create_bind_group(&BindGroupDescriptor {
+                    label: Some("hyperslice4d strip cell bg"),
+                    layout,
+                    entries: &[BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::Buffer(BufferBinding {
+                            buffer: &buffer,
+                            offset: i as u64 * stride,
+                            size: BufferSize::new(HYPERSLICE_UNIFORMS_SIZE),
+                        }),
+                    }],
+                })
+            })
+            .collect();
+        Self {
+            buffer,
+            bind_groups,
+            stride,
+        }
+    }
+}
+
 /// Render node that ray-marches the 3D cross-section of a 4D scene at `u.w_slice`. Pairs with
 /// `loam_scene::Scene4`.
 pub struct Hyperslice4DNode {
@@ -724,7 +797,11 @@ pub struct Hyperslice4DNode {
     uniforms: Hyperslice4DUniforms,
     uniform_buf: Buffer,
     bind_group: BindGroup,
+    bind_group_layout: BindGroupLayout,
     clear_color: Color,
+    /// Allocated on the first [`Self::execute_strip`] call; the single-slice
+    /// path never touches it.
+    strip_cells: Option<StripCellUniforms>,
 }
 
 impl Hyperslice4DNode {
@@ -810,7 +887,9 @@ impl Hyperslice4DNode {
             uniforms: Hyperslice4DUniforms::default(),
             uniform_buf,
             bind_group,
+            bind_group_layout: bgl,
             clear_color: Color::BLACK,
+            strip_cells: None,
         }
     }
 
@@ -892,64 +971,98 @@ impl Hyperslice4DNode {
 
     /// Render N independent slices into one texture, each cell at a different
     /// `w_slice`: a filmstrip of the 4D shape across `w` without scrubbing.
+    /// Zero-size cells are skipped; the node's own uniform buffer and
+    /// [`Self::uniforms`] are left untouched.
     ///
-    /// Each cell is its own pass with `LoadOp::Load` (the first clears). The
-    /// uniform buffer is rewritten per cell, so `self.uniforms()` holds the last
-    /// cell's state afterward. Zero-size cells are skipped.
-    ///
-    /// One encoder + submit per cell, the one pass in the frame that keeps them:
-    /// `Queue::write_buffer` lands before the whole command buffer it precedes,
-    /// so N cells recorded into one encoder would all read the last cell's
-    /// uniforms. Batching needs per-cell bind groups or a dynamic-offset UBO,
-    /// which the single-slice path (the common one) does not want.
+    /// One encoder, one render pass, one submit for the whole strip. What makes
+    /// that legal is [`StripCellUniforms`]: every cell gets its own uniform
+    /// image and its own bind group viewing it. Sharing one image cannot work,
+    /// because `Queue::write_buffer` lands ahead of the whole command buffer it
+    /// precedes, so every cell would read the last cell's write.
     pub fn execute_strip(
         &mut self,
-        rd: &RenderDevice,
+        device: &Device,
+        queue: &Queue,
         view: &wgpu::TextureView,
         cells: &[(crate::Viewport, f32, BodyUniform)],
     ) -> Result<()> {
-        for (cell_idx, (viewport, w_slice, body)) in cells.iter().enumerate() {
-            if viewport.width == 0 || viewport.height == 0 {
-                continue;
-            }
-            // Per-cell body lets the w/t grid vary the rotor along the t axis.
-            self.set_bodies(&[*body]);
-            self.uniforms_mut().w_slice = *w_slice;
-            self.uniforms_mut().resolution = viewport.resolution_f32();
-            self.uniforms_mut().viewport_origin = [viewport.x as f32, viewport.y as f32];
-            self.flush_uniforms(&rd.queue);
-
-            let load = if cell_idx == 0 {
-                LoadOp::Clear(self.clear_color)
-            } else {
-                LoadOp::Load
-            };
-            let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
-                label: Some("hyperslice4d strip cell encoder"),
-            });
-            {
-                let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
-                    label: Some("hyperslice4d strip cell pass"),
-                    color_attachments: &[Some(RenderPassColorAttachment {
-                        view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: Operations {
-                            load,
-                            store: StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                viewport.apply(&mut rp);
-                rp.set_pipeline(&self.pipeline);
-                rp.set_bind_group(0, &self.bind_group, &[]);
-                rp.draw(0..3, 0..1);
-            }
-            rd.queue.submit(Some(encoder.finish()));
+        let drawn = cells
+            .iter()
+            .filter(|(viewport, _, _)| viewport.width != 0 && viewport.height != 0)
+            .count();
+        if drawn == 0 {
+            return Ok(());
         }
+        if self
+            .strip_cells
+            .as_ref()
+            .is_none_or(|strip| strip.bind_groups.len() < drawn)
+        {
+            self.strip_cells = Some(StripCellUniforms::new(
+                device,
+                &self.bind_group_layout,
+                drawn,
+            ));
+        }
+        let strip = self
+            .strip_cells
+            .as_ref()
+            .expect("strip cells allocated above");
+
+        {
+            // One staging map for the whole strip: `write_buffer` per cell
+            // would put every cell's image through its own belt allocation and
+            // its own copy command.
+            let upload_size =
+                BufferSize::new(drawn as u64 * strip.stride).expect("at least one cell");
+            let mut staging = queue
+                .write_buffer_with(&strip.buffer, 0, upload_size)
+                .context("mapping the filmstrip's per-cell uniform staging buffer")?;
+            let mut slot = 0usize;
+            for (viewport, w_slice, body) in cells {
+                if viewport.width == 0 || viewport.height == 0 {
+                    continue;
+                }
+                let cell = strip_cell_uniforms(&self.uniforms, *viewport, *w_slice, body);
+                let start = slot * strip.stride as usize;
+                staging[start..start + HYPERSLICE_UNIFORMS_SIZE as usize]
+                    .copy_from_slice(bytemuck::bytes_of(&cell));
+                slot += 1;
+            }
+        }
+
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("hyperslice4d strip encoder"),
+        });
+        {
+            let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("hyperslice4d strip pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(self.clear_color),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rp.set_pipeline(&self.pipeline);
+            let mut slot = 0usize;
+            for (viewport, _, _) in cells {
+                if viewport.width == 0 || viewport.height == 0 {
+                    continue;
+                }
+                viewport.apply(&mut rp);
+                rp.set_bind_group(0, &strip.bind_groups[slot], &[]);
+                rp.draw(0..3, 0..1);
+                slot += 1;
+            }
+        }
+        queue.submit(Some(encoder.finish()));
         Ok(())
     }
 }
@@ -1547,5 +1660,306 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         let rd = Vec3::new(0.0, 1.0, 0.0);
         let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0));
         assert!(hit.is_none(), "ray into sky should miss the scene");
+    }
+
+    // ---- Filmstrip batching ----
+
+    fn strip_probe_cells() -> Vec<(crate::Viewport, f32, BodyUniform)> {
+        crate::Viewport::full([192, 64])
+            .split_horizontal(3)
+            .into_iter()
+            .zip([0.0_f32, 0.6, 0.9])
+            .map(|(viewport, w_slice)| {
+                (
+                    viewport,
+                    w_slice,
+                    BodyUniform::sphere([0.0; 4], 1.0, [1.0, 0.0, 0.0]),
+                )
+            })
+            .collect()
+    }
+
+    /// Every cell's uniform image carries that cell's own slice, viewport and
+    /// body. This is the property a single shared uniform image cannot hold:
+    /// there the last cell's write would be what all of them read.
+    #[test]
+    fn each_strip_cell_image_carries_its_own_slice() {
+        let base = Hyperslice4DUniforms::default();
+        let cells = strip_probe_cells();
+        let images: Vec<_> = cells
+            .iter()
+            .map(|(viewport, w_slice, body)| strip_cell_uniforms(&base, *viewport, *w_slice, body))
+            .collect();
+
+        for (image, (viewport, w_slice, body)) in images.iter().zip(&cells) {
+            assert_eq!(image.w_slice, *w_slice);
+            assert_eq!(image.resolution, viewport.resolution_f32());
+            assert_eq!(
+                image.viewport_origin,
+                [viewport.x as f32, viewport.y as f32]
+            );
+            assert_eq!(image.body_count, 1.0);
+            assert_eq!(
+                bytemuck::bytes_of(&image.bodies[0]),
+                bytemuck::bytes_of(body)
+            );
+        }
+        let last = images.last().expect("three cells");
+        for image in &images[..images.len() - 1] {
+            assert_ne!(
+                image.w_slice, last.w_slice,
+                "a cell holding the last cell's slice is the batching bug"
+            );
+        }
+    }
+
+    /// Cell `i`'s bind group views the buffer at `i * stride`, so the stride
+    /// has to be a legal uniform bind-group offset on every adapter and still
+    /// cover a whole uniform image.
+    #[test]
+    fn strip_cell_stride_is_offset_legal_and_covers_one_image() {
+        // The alignments a WebGPU adapter may report: 32 is the spec floor,
+        // 256 the common desktop value.
+        for alignment in [32_u64, 64, 128, 256] {
+            let stride = strip_cell_stride(alignment);
+            assert_eq!(stride % alignment, 0, "stride must be an aligned offset");
+            assert!(
+                stride >= HYPERSLICE_UNIFORMS_SIZE,
+                "stride {stride} would overlap the next cell's image",
+            );
+            assert!(
+                stride - HYPERSLICE_UNIFORMS_SIZE < alignment,
+                "stride {stride} wastes a whole alignment unit",
+            );
+        }
+    }
+
+    /// Static scene contributing nothing, so the filmstrip probe below sees
+    /// only the dynamic body. A static surface would be `w`-independent and
+    /// would dilute the per-cell difference the probe measures.
+    const EMPTY_SCENE_STUB: &str = r#"
+const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;
+const LOAM_PRIM_HALFSPACE4D: u32 = 1u;
+const LOAM_PRIM_OTHER: u32 = 255u;
+struct LoamSceneHit { dist: f32, kind: u32 }
+fn loam_scene_at(p: vec3<f32>) -> LoamSceneHit {
+    return LoamSceneHit(1.0e9, LOAM_PRIM_OTHER);
+}
+fn loam_scene_sdf(p: vec3<f32>) -> f32 {
+    return loam_scene_at(p).dist;
+}
+fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
+    return 1.0e9;
+}
+"#;
+
+    async fn request_device() -> Result<(Device, Queue), String> {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|e| format!("request_adapter failed: {e}"))?;
+        adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("hyperslice4d-strip"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+                trace: wgpu::Trace::Off,
+                experimental_features: Default::default(),
+            })
+            .await
+            .map_err(|e| format!("request_device failed: {e}"))
+    }
+
+    /// Read `texture` back as tightly-packed RGBA8 rows.
+    fn read_back_rgba(
+        device: &Device,
+        queue: &Queue,
+        texture: &Texture,
+        size: [u32; 2],
+    ) -> Vec<u8> {
+        let bytes_per_row = size[0] * 4;
+        assert_eq!(
+            bytes_per_row % COPY_BYTES_PER_ROW_ALIGNMENT,
+            0,
+            "probe width chosen so no row padding is needed"
+        );
+        let readback = device.create_buffer(&BufferDescriptor {
+            label: Some("hyperslice4d strip readback"),
+            size: (bytes_per_row * size[1]) as u64,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("hyperslice4d strip readback encoder"),
+        });
+        encoder.copy_texture_to_buffer(
+            TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: None,
+                },
+            },
+            Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
+        let slice = readback.slice(..);
+        slice.map_async(MapMode::Read, |_| {});
+        device
+            .poll(PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("readback poll");
+        let data = slice.get_mapped_range().to_vec();
+        readback.unmap();
+        data
+    }
+
+    fn strip_probe_module(device: &Device) -> ShaderModule {
+        let polytope = super::super::polytope_data::polytope_extended_sdfs_wgsl();
+        device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("hyperslice4d strip probe"),
+            source: ShaderSource::Wgsl(
+                format!("{HYPERSLICE_KERNEL_WGSL}\n{polytope}\n{EMPTY_SCENE_STUB}").into(),
+            ),
+        })
+    }
+
+    /// The filmstrip renders one hypersphere at three `w` slices. Slicing the
+    /// unit 4-ball at `w` leaves a 2-sphere of radius `sqrt(1 - w²)`, so the
+    /// body's pixel footprint has to shrink strictly from cell to cell. If any
+    /// cell sampled another cell's uniforms, two footprints would match.
+    ///
+    /// Ignored by default because it needs an adapter; the `gpu_probe` suffix
+    /// is what CI's software-adapter job selects on.
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn each_strip_cell_renders_its_own_w_slice_gpu_probe() {
+        const SIZE: [u32; 2] = [192, 64];
+        let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
+
+        let module = strip_probe_module(&device);
+        let target = device.create_texture(&TextureDescriptor {
+            label: Some("hyperslice4d strip probe target"),
+            size: Extent3d {
+                width: SIZE[0],
+                height: SIZE[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&TextureViewDescriptor::default());
+
+        let cells = strip_probe_cells();
+        let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module, 1);
+        node.execute_strip(&device, &queue, &view, &cells)
+            .expect("filmstrip should render");
+
+        // The body is pure red and the sky gradient is blue-dominant, so
+        // `r > b` separates body pixels from background without depending on
+        // the shading constants.
+        let pixels = read_back_rgba(&device, &queue, &target, SIZE);
+        let footprints: Vec<usize> = cells
+            .iter()
+            .map(|(viewport, _, _)| {
+                let mut covered = 0;
+                for y in viewport.y..viewport.y + viewport.height {
+                    for x in viewport.x..viewport.x + viewport.width {
+                        let px = ((y * SIZE[0] + x) * 4) as usize;
+                        if pixels[px] > pixels[px + 2] {
+                            covered += 1;
+                        }
+                    }
+                }
+                covered
+            })
+            .collect();
+
+        assert!(
+            footprints[2] > 0,
+            "the w = 0.9 slice should still show a body: {footprints:?}"
+        );
+        assert!(
+            footprints[0] > footprints[1] && footprints[1] > footprints[2],
+            "footprints should shrink with |w|; equal cells mean one uniform image \
+             fed every cell: {footprints:?}"
+        );
+    }
+
+    /// The strip writes only its own per-cell images, never the node's
+    /// single-slice state. Callers track that state's dirtiness themselves
+    /// (`set_if_changed` against [`Hyperslice4DNode::uniforms_mut`]), so a
+    /// strip that mutated it would leave the mirror agreeing with a GPU buffer
+    /// it no longer matches, and the next single-slice frame would render
+    /// stale.
+    ///
+    /// Ignored by default because it needs an adapter; the `gpu_probe` suffix
+    /// is what CI's software-adapter job selects on.
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn execute_strip_leaves_the_single_slice_uniform_state_untouched_gpu_probe() {
+        const SIZE: [u32; 2] = [192, 64];
+        let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
+        let module = strip_probe_module(&device);
+        let target = device.create_texture(&TextureDescriptor {
+            label: Some("hyperslice4d strip probe target"),
+            size: Extent3d {
+                width: SIZE[0],
+                height: SIZE[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&TextureViewDescriptor::default());
+
+        let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module, 1);
+        node.uniforms_mut().w_slice = -0.25;
+        node.uniforms_mut().resolution = [640.0, 480.0];
+        let before = *node.uniforms();
+
+        node.execute_strip(&device, &queue, &view, &strip_probe_cells())
+            .expect("filmstrip should render");
+
+        let after = node.uniforms();
+        assert!(
+            bytemuck::bytes_of(after) == bytemuck::bytes_of(&before),
+            "the strip must not leave a cell's slice, viewport or body in the \
+             node's single-slice uniforms: w_slice was {} now {}, resolution \
+             was {:?} now {:?}, body_count was {} now {}",
+            before.w_slice,
+            after.w_slice,
+            before.resolution,
+            after.resolution,
+            before.body_count,
+            after.body_count,
+        );
     }
 }

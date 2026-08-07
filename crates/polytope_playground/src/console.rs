@@ -8,7 +8,7 @@ impl RotateScene {
         let mut c = Console::<Demo>::new();
         // Shell-provided scene switcher. The only in-app switcher under
         // `--embed=1` / `?embed=1`, where the menu bar is hidden.
-        shell::register_scene_command(&mut c);
+        loam_app::shell::register_command::<Demo, shell::Playground>(&mut c);
         c.register(loam_egui::cmd(
             "reset",
             "full reset (R)",

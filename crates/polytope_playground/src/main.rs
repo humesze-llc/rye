@@ -906,7 +906,7 @@ impl RotateScene {
     }
 }
 
-impl shell::Scene for RotateScene {
+impl loam_app::shell::Scene for RotateScene {
     fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
         shader_db.apply_events(self.shader_owner, events, self.demo.space());
     }
@@ -955,7 +955,7 @@ impl shell::Scene for RotateScene {
 fn main() -> Result<()> {
     // `loam_app::run` handles native + wasm dispatch off the page's `data-mode`
     // and WasmConfig IDs; the demo's `index.html` matches the default layout.
-    loam_app::run::<shell::ShellApp>(RunConfig {
+    loam_app::run::<loam_app::shell::SceneShell<shell::Playground>>(RunConfig {
         window: WindowAttributes::default()
             .with_title("polytope playground")
             .with_visible(false),

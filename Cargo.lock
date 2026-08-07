@@ -1439,6 +1439,7 @@ dependencies = [
  "glam",
  "loam-math",
  "loam-shape",
+ "loam-time",
  "tracing",
 ]
 
@@ -1530,6 +1531,7 @@ dependencies = [
 name = "loam-time"
 version = "0.1.0"
 dependencies = [
+ "thiserror 1.0.69",
  "tracing",
  "web-time",
 ]

@@ -1,15 +1,20 @@
-//! The determinism scenarios, one hash mixer, and one committed golden
-//! constant per scenario, shared by every determinism gate in the crate.
-//! Callers drive [`World::step`] through this module rather than
-//! re-implementing the phase loop, so a schedule variant is always compared
-//! against the simulation the golden hash pins.
+//! The determinism scenarios and one committed golden constant per scenario,
+//! shared by every determinism gate in the crate. Callers drive
+//! [`World::step`] through this module rather than re-implementing the phase
+//! loop, so a schedule variant is always compared against the simulation the
+//! golden hash pins.
+//!
+//! The replay fixture below is the same idea run against a recorded input
+//! stream: it drives the scenario from a [`Tape`] instead of from silence, so
+//! the pin covers the inputs as well as the integrator.
 
 use std::ops::Range;
 
 use glam::{Vec3, Vec4};
 use loam_math::{EuclideanR3, EuclideanR4};
+use loam_time::{Checkpoint, StateHash, Tape};
 
-use crate::body::RigidBody;
+use crate::body::{BodyId, RigidBody};
 use crate::collision::VectorOps;
 use crate::euclidean_r3::{
     halfspace_body_r3, register_default_narrowphase as register_narrowphase_r3, sphere_body_r3,
@@ -21,27 +26,10 @@ use crate::field::Gravity;
 use crate::integrator::PhysicsSpace;
 use crate::world::{Schedule, World};
 
-/// FNV-1a 64-bit (Fowler/Noll/Vo 1991; reference offset basis and prime,
-/// <http://www.isthe.com/chongo/tech/comp/fnv/>). `std`'s `DefaultHasher` is
-/// documented as unstable across releases, so a hash committed as a constant
-/// needs its own mixer.
-const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-fn fnv1a64_update(mut hash: u64, words: &[u32]) -> u64 {
-    for word in words {
-        // Fixed little-endian byte order so the hash does not depend on host
-        // endianness.
-        for byte in word.to_le_bytes() {
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-    }
-    hash
-}
-
 pub fn fnv1a64(words: &[u32]) -> u64 {
-    fnv1a64_update(FNV_OFFSET_BASIS, words)
+    let mut hash = StateHash::new();
+    hash.write_u32s(words);
+    hash.finish()
 }
 
 /// FNV-1a of [`ScenarioRun::trajectory`] under the default schedule, recorded
@@ -215,8 +203,7 @@ where
     let mut peak_energy_step = 0;
     let mut lowest_height = f32::INFINITY;
     let mut lowest_height_step = 0;
-    let mut hash = FNV_OFFSET_BASIS;
-    let mut contact_words = Vec::new();
+    let mut hash = StateHash::new();
     for step in 0..steps {
         world.step(dt);
         let step_start = trajectory.len();
@@ -240,24 +227,12 @@ where
             }
         }
 
-        // Sampled in `BTreeMap` key order under every schedule, so a moved
-        // hash means the simulation diverged and never that the instrument
-        // read the same state in a different order.
-        contact_words.clear();
-        for (key, manifold) in &world.manifolds {
-            // Slot only: no fixture despawns, so the generation is a constant
-            // zero and would add a word without adding a distinction.
-            contact_words.push(key.0.slot());
-            contact_words.push(key.1.slot());
-            contact_words.push(manifold.points.len() as u32);
-            for cp in &manifold.points {
-                contact_words.push(cp.normal_impulse.to_bits());
-            }
-        }
-
-        hash = fnv1a64_update(hash, &trajectory[step_start..]);
-        hash = fnv1a64_update(hash, &contact_words);
-        step_hashes.push(hash);
+        hash.write_u32s(&trajectory[step_start..]);
+        // `BTreeMap` key order under every schedule, so a moved hash means the
+        // simulation diverged and never that the instrument read the same
+        // state in a different order.
+        world.hash_contacts(&mut hash);
+        step_hashes.push(hash.finish());
     }
     ScenarioRun {
         trajectory,
@@ -300,7 +275,7 @@ fn sample_body_r4(body: &RigidBody<EuclideanR4>, words: &mut Vec<u32>) {
     ]);
 }
 
-fn sample_body_r3(body: &RigidBody<EuclideanR3>, words: &mut Vec<u32>) {
+pub fn sample_body_r3(body: &RigidBody<EuclideanR3>, words: &mut Vec<u32>) {
     let p = body.position;
     let v = body.velocity;
     let w = body.angular_velocity;
@@ -446,6 +421,156 @@ pub fn multi_island_scenario_run(schedule: Schedule) -> ScenarioRun {
 /// assertion prints. If it failed, the scenario stopped being physical and no
 /// re-recorded hash is correct.
 pub const GOLDEN_MULTI_ISLAND_HASH: u64 = 0x56fd_21a0_2e4f_76e2;
+
+// ---------------------------------------------------------------------------
+// Replay fixture: the multi-island world driven from a recorded input tape.
+// ---------------------------------------------------------------------------
+
+/// Words per recorded tick: the target handle as `(slot, generation)`, then the
+/// impulse. A handle rather than a storage position, because `despawn` compacts
+/// the arena and a tape outlives the run that wrote it.
+const THROW_WORDS: u32 = 5;
+/// `slot` value meaning the tick carried no throw. A tape must have one frame
+/// per tick for its inputs to be addressable by tick, and a quiet tick still
+/// has to say so.
+const NO_THROW: u32 = u32::MAX;
+/// Ticks between throws, so a throw lands on a solver already carrying
+/// warm-start impulses rather than on a world still in free fall.
+const THROW_PERIOD: u64 = 20;
+/// Impulse magnitude bound, kg·m/s. The fixture's spheres are unit mass with
+/// radius [`ISLAND_RADIUS`], so this is at most 2 m/s, or 1/30 m of travel per
+/// step: a fifteenth of a radius, well inside the tunnelling bound the
+/// `thin_wall_holds_only_below_a_recorded_per_step_displacement_r3` fixture
+/// records.
+const THROW_IMPULSE: f32 = 2.0;
+pub const REPLAY_TICKS: u64 = 180;
+/// Arbitrary but fixed, so a replay failure is reproducible from its message.
+pub const REPLAY_SEED: u64 = 0x5eed_f11c_c0de_0001;
+/// Checkpoint stride. Every tick would make the tape a trajectory dump; only
+/// the last would let a divergence hide until the end.
+const CHECKPOINT_PERIOD: u64 = 30;
+/// Tick rate written into the tape header: the reciprocal of
+/// [`MULTI_ISLAND_DT`], the step the flick chamber runs at.
+const REPLAY_TICK_HZ: u32 = 60;
+
+/// xorshift64* (Vigna 2016, *An experimental exploration of Marsaglia's
+/// xorshift generators, scrambled*, §4). The input stream has to come from
+/// somewhere reproducible; the tape header's seed is that somewhere.
+fn xorshift64star(state: &mut u64) -> u64 {
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+    state.wrapping_mul(0x2545_f491_4f6c_dd1d)
+}
+
+/// Draw in `[-1, 1)`. The top 24 bits convert to `f32` exactly and the scale is
+/// a power of two, so the draw is the same value on any host that rounds
+/// IEEE-754.
+fn signed_unit(draw: u64) -> f32 {
+    ((draw >> 40) as u32) as f32 * (1.0 / 8_388_608.0) - 1.0
+}
+
+/// The scripted throws for one seed: an impulse at a pseudo-random dynamic body
+/// every [`THROW_PERIOD`] ticks, silence between.
+fn generate_throws(
+    seed: u64,
+    ticks: u64,
+    dynamic_slots: Range<u32>,
+) -> Vec<[u32; THROW_WORDS as usize]> {
+    // xorshift64* is a fixed point at zero, so a zero seed would emit one
+    // constant forever.
+    let mut state = seed | 1;
+    (0..ticks)
+        .map(|tick| {
+            if !tick.is_multiple_of(THROW_PERIOD) {
+                return [NO_THROW, 0, 0, 0, 0];
+            }
+            let span = u64::from(dynamic_slots.end - dynamic_slots.start);
+            let slot = dynamic_slots.start + (xorshift64star(&mut state) % span) as u32;
+            let mut component =
+                || (signed_unit(xorshift64star(&mut state)) * THROW_IMPULSE).to_bits();
+            [slot, 0, component(), component(), component()]
+        })
+        .collect()
+}
+
+fn apply_throw(world: &mut World<EuclideanR3>, frame: [u32; THROW_WORDS as usize]) {
+    let [slot, generation, x, y, z] = frame;
+    if slot == NO_THROW {
+        return;
+    }
+    // A stale handle is a throw at a body that is gone, which is a legal thing
+    // for a shared tape to contain and not an error.
+    if let Some(body) = world.bodies.get_mut(BodyId::forge(slot, generation)) {
+        body.apply_impulse(Vec3::new(
+            f32::from_bits(x),
+            f32::from_bits(y),
+            f32::from_bits(z),
+        ));
+    }
+}
+
+/// Drive the multi-island world for `ticks`, applying each tick's input before
+/// stepping, and sample [`World::state_hash`] every [`CHECKPOINT_PERIOD`]
+/// ticks.
+///
+/// Recording and replaying differ only in the `input` they pass, so a replay
+/// cannot drift into a second implementation of the scenario it is supposed to
+/// reproduce.
+fn drive_flick_chamber(
+    ticks: u64,
+    input: impl Fn(u64) -> [u32; THROW_WORDS as usize],
+) -> Vec<Checkpoint> {
+    let mut world = multi_island_world(Schedule::default());
+    let mut checkpoints = Vec::new();
+    for tick in 0..ticks {
+        apply_throw(&mut world, input(tick));
+        world.step(MULTI_ISLAND_DT);
+        if (tick + 1).is_multiple_of(CHECKPOINT_PERIOD) {
+            checkpoints.push(Checkpoint {
+                tick,
+                state_hash: world.state_hash(sample_body_r3),
+            });
+        }
+    }
+    checkpoints
+}
+
+/// Record a run of the flick chamber: the scripted input stream for `seed`,
+/// plus the state hashes that run passed through.
+pub fn record_flick_chamber_tape(seed: u64) -> Tape {
+    // Slot 0 is the static floor, which absorbs no impulse; throwing at it
+    // would silently turn a throw into a quiet tick.
+    let dynamic_slots = 1..1 + ISLAND_SIZES.iter().sum::<usize>() as u32;
+    let frames = generate_throws(seed, REPLAY_TICKS, dynamic_slots);
+
+    let mut tape = Tape::new(REPLAY_TICK_HZ, seed, THROW_WORDS);
+    for frame in &frames {
+        tape.push_tick(frame);
+    }
+    for checkpoint in drive_flick_chamber(REPLAY_TICKS, |tick| frames[tick as usize]) {
+        tape.checkpoint(checkpoint.tick, checkpoint.state_hash);
+    }
+    tape
+}
+
+/// Replay `tape` from its recorded input alone and return the state hashes the
+/// replay observed, for comparison against [`Tape::checkpoints`].
+///
+/// Panics if the tape's frame width is not [`THROW_WORDS`]: a tape recorded
+/// against another input layout is a tape this scenario cannot drive, and
+/// reading it anyway would compare hashes of two different runs.
+pub fn replay_flick_chamber_tape(tape: &Tape) -> Vec<Checkpoint> {
+    assert_eq!(
+        tape.words_per_tick(),
+        THROW_WORDS,
+        "tape frame width is not the flick chamber's: {tape}",
+    );
+    drive_flick_chamber(tape.ticks(), |tick| {
+        let frame = tape.input(tick).expect("tick is inside the tape");
+        <[u32; THROW_WORDS as usize]>::try_from(frame).expect("frame width checked above")
+    })
+}
 
 /// Both fixtures pass [`assert_scenario_stays_physical`], so nothing else in
 /// the suite would notice an assertion that had stopped discriminating. These

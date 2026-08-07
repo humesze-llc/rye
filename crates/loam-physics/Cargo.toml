@@ -15,6 +15,10 @@ glam.workspace = true
 tracing.workspace = true
 loam-math  = { path = "../loam-math",  version = "0.1.0" }
 loam-shape = { path = "../loam-shape", version = "0.1.0" }
+# `StateHash` and `Tape`. A recorder and a verifier have to share one mixer and
+# one tape format, and neither of those belongs to physics. `frame-trace` is off
+# because nothing here instruments frames.
+loam-time  = { path = "../loam-time",  version = "0.1.0", default-features = false }
 
 [[bench]]
 name = "broadphase"

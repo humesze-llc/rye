@@ -251,12 +251,16 @@ impl Tape {
                 found: bytes.len(),
             })?;
 
-        // Widened before multiplying: a hostile or corrupt header can name a
-        // payload larger than `usize`, and the overflow would wrap into a
-        // plausible length.
-        let expected = HEADER_LEN as u64
-            + u64::from(words_per_tick) * ticks * 4
-            + u64::from(checkpoint_count) * CHECKPOINT_LEN as u64;
+        // Saturating, not merely widened: `ticks` is 64 bits itself, so a
+        // corrupt header overflows the byte count at any width, and the
+        // overflow panics in a debug build and wraps into a plausible length
+        // in a release one. Saturation cannot equal a real `bytes.len()`.
+        let input_bytes = u64::from(words_per_tick)
+            .saturating_mul(ticks)
+            .saturating_mul(4);
+        let expected = (HEADER_LEN as u64)
+            .saturating_add(input_bytes)
+            .saturating_add(u64::from(checkpoint_count) * CHECKPOINT_LEN as u64);
         if expected != bytes.len() as u64 {
             return Err(TapeError::LengthMismatch {
                 expected,
@@ -264,7 +268,7 @@ impl Tape {
             });
         }
 
-        let word_count = (u64::from(words_per_tick) * ticks) as usize;
+        let word_count = (input_bytes / 4) as usize;
         let mut inputs = Vec::with_capacity(word_count);
         for _ in 0..word_count {
             inputs.push(reader.u32().expect("length checked above"));
@@ -511,9 +515,23 @@ mod tests {
     #[test]
     fn a_header_claiming_more_payload_than_memory_is_rejected_without_wrapping() {
         let mut bytes = recorded().encode();
-        // words_per_tick = u32::MAX with 8 ticks overflows a 64-bit byte count
-        // only after the widening, and wraps a 32-bit one before it.
+        // words_per_tick = u32::MAX over 8 ticks fits a 64-bit byte count and
+        // wraps a 32-bit one, so this is what the widening buys.
         bytes[24..28].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(
+            Tape::decode(&bytes),
+            Err(TapeError::LengthMismatch { .. }),
+        ));
+    }
+
+    /// The tick count is itself 64 bits, so widening the word width is not
+    /// enough: the product overflows the widened arithmetic too, and an
+    /// overflow here is a panic in a debug build and a plausible length in a
+    /// release one.
+    #[test]
+    fn a_header_declaring_more_ticks_than_a_byte_count_can_express_is_rejected() {
+        let mut bytes = recorded().encode();
+        bytes[28..36].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(matches!(
             Tape::decode(&bytes),
             Err(TapeError::LengthMismatch { .. }),

@@ -437,9 +437,9 @@ const NO_THROW: u32 = u32::MAX;
 /// Ticks between throws, so a throw lands on a solver already carrying
 /// warm-start impulses rather than on a world still in free fall.
 const THROW_PERIOD: u64 = 20;
-/// Impulse magnitude bound, kg·m/s. The fixture's spheres are unit mass with
-/// radius [`ISLAND_RADIUS`], so this is at most 2 m/s, or 1/30 m of travel per
-/// step: a fifteenth of a radius, well inside the tunnelling bound the
+/// Per-component impulse bound, kg·m/s. The fixture's spheres are unit mass,
+/// so one throw adds under `sqrt(3)·THROW_IMPULSE` m/s of speed, i.e. under
+/// 0.058 m of travel per step, against the 0.150 m per-step bound the
 /// `thin_wall_holds_only_below_a_recorded_per_step_displacement_r3` fixture
 /// records.
 const THROW_IMPULSE: f32 = 2.0;

@@ -24,7 +24,7 @@
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use anyhow::{anyhow, Result};
 use loam_egui::{cmd, Console};
@@ -93,7 +93,10 @@ static SWITCHER: Mutex<Switcher> = Mutex::new(Switcher {
 });
 
 fn with_switcher<R>(f: impl FnOnce(&mut Switcher) -> R) -> R {
-    f(&mut SWITCHER.lock().expect("scene switcher poisoned"))
+    // Recover from poisoning rather than propagate it: the switcher holds an
+    // index and a pending slug, neither of which a panicking thread can leave
+    // torn, so the worst a poisoned lock costs is one stale scene request.
+    f(&mut SWITCHER.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
 /// Registry index for `slug`, or `None` when no scene claims it.
@@ -216,7 +219,7 @@ impl<R: SceneRegistry> SceneShell<R> {
     fn active_scene(&mut self) -> &mut dyn Scene {
         self.scenes[self.active]
             .as_deref_mut()
-            .expect(ACTIVE_IS_BUILT)
+            .expect(ACTIVE_IS_BUILT) // ok: activate builds before it sets active
     }
 
     /// Rebuild a `SetupCtx` around the frame's `RenderDevice` and the retained
@@ -361,7 +364,7 @@ impl<R: SceneRegistry> App for SceneShell<R> {
     fn title(&self, fps: f32) -> Cow<'static, str> {
         self.scenes[self.active]
             .as_deref()
-            .expect(ACTIVE_IS_BUILT)
+            .expect(ACTIVE_IS_BUILT) // ok: activate builds before it sets active
             .title(fps)
     }
 }

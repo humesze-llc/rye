@@ -14,8 +14,8 @@
 //! draw over a floor, submit-and-wait bracketed, median of nine interleaved
 //! batches of forty. `noise_us` is the same comparison run against a second
 //! module built from the SHIPPED kernel, which is the floor any claimed saving
-//! has to clear. Body w extent is 0.7, so the last two rows of each block are
-//! the slices no body reaches.
+//! has to clear. Every body's bounding-4-ball w extent is 0.7, so the last two
+//! rows of each block are the slices the slab test fires on.
 //!
 //! ```text
 //! bodies      w  stock_us  culled_us  delta_us  noise_us
@@ -33,45 +33,72 @@
 //!      8    1.2     894.4      651.7     242.7       1.3
 //! ```
 //!
-//! The saving is real and large, and it is entirely confined to slices where
-//! no body has a cross-section: frames that draw nothing but floor and sky.
-//! At every slice that cuts a body the cull is a net LOSS of 2% to 7%, an
-//! order of magnitude outside the noise floor and growing with the row: that
-//! is the `select` + `abs` + compare it adds per body per march step, paid on
-//! every step and never firing. So the optimization taxes the state the user
-//! looks at to speed up the state they scrub THROUGH.
+//! The saving is real and large, and it is entirely confined to slices the
+//! slab test fires on. At every slice still inside the bounding 4-balls the
+//! cull is a net LOSS of 2% to 7%, an order of magnitude outside the noise
+//! floor and growing with the row: that is the `select` + `abs` + compare it
+//! adds per body per march step, paid on every step and never firing. So the
+//! optimization taxes the state the user looks at to speed up the state they
+//! scrub THROUGH.
 //!
-//! The table is one process run. A second run put every one of the eight
-//! in-slice cells negative again, over -10 to -75 us, and the out-of-slice
+//! The table is one process run. Two further runs put every one of the eight
+//! in-slice cells negative again, over -10 to -98 us, and the out-of-slice
 //! saving at 104 to 308 us, so the sign of the trade is not a sampling
 //! accident in either direction.
 //!
 //! Against that it also costs bit-exactness: at `w = 0.75` and `w = 1.2` the
-//! culled image differs from the shipped one in a few dozen bytes of a 3.7 MB
+//! culled image differs from the shipped one in 35 to 95 bytes of a 3.7 MB
 //! frame, where the longer step lands the floor hit on the other side of
-//! `hit_eps`. Neither image is wrong, but the difference is not nothing. And
-//! the shipped `body_polytope_sdf_4d` already carries a 4D bounding-ball
-//! early-out that skips the rotor inverse and the per-shape evaluation for
-//! exactly these samples, so what the cull removes is the loop iteration and
-//! not the expensive part of it.
+//! `hit_eps`. Neither image is wrong, but the difference is not nothing.
 //!
-//! Read across the 8-body block, `w = 0.68` (bodies visible) and `w = 0.75`
-//! (none visible) cost the shipped kernel the same 92% of a millisecond. The
-//! per-step cost is the loop, not the shapes, and the only thing that removes
-//! a loop is a shorter trip count. Both ways to get one are worse than this
-//! candidate: compacting live bodies per fragment needs a 32-slot index array
-//! in registers, and compacting them CPU-side before upload renumbers the
-//! slots that `hit_idx` indexes for colour. Neither is bit-exact either, for
-//! the same argmin reason.
+//! Which slices the slab test spares is not the same question as which slices
+//! draw something, and the gap between them decides how much of the table is
+//! load-bearing. The predicate can only use the bounding-4-ball radius, 0.7
+//! for every body here, but the shapes reach nowhere near it along w:
+//! `tesseract_sdf_local` is a box at +/-0.5 unit-circumradius, so +/-0.35
+//! scaled; `cell24_sdf_local` is capped by its tesseract term at +/-1/sqrt(2),
+//! so +/-0.495; only `pentatope_sdf_local`, apex at w = 1 and opposite cell at
+//! w = -0.25, spans [-0.175, 0.7]. The identity probe prints the occupancy it
+//! measures, bytes differing from the body-free `w = 1.2` frame out of
+//! 3,686,400:
 //!
-//! Verdict: not taken. It is negative where it matters, and the pass it would
-//! speed up is not on the frame's critical path anyway. The probes stay so the
+//! ```text
+//! bodies       0.0      0.25       0.5      0.68      0.75       1.2
+//!      3     70090     55861      1118        76        63         0
+//!      8    190880    146260      2191       127       104         0
+//! ```
+//!
+//! The `1.2` column is the reference against itself, and `0.75` is two blank
+//! frames differing only in where the marcher converged, which fixes the
+//! jitter floor at 63 and 104 bytes. Only `w = 0.0` and `w = 0.25` put a body
+//! on screen at any size; by `w = 0.5` the row is down to a pair of pentatope
+//! slivers and by `w = 0.68` it is under that jitter floor, indistinguishable
+//! from empty. The verdict rests on the first two rows of each block, which is
+//! where the loss is largest anyway; the rest price loop overhead on a blank
+//! frame. In particular the 8-body `w = 0.68` and `w = 0.75` cells costing
+//! the shipped kernel the same 92% of a millisecond compares two blank frames
+//! and says nothing about shapes versus loop.
+//!
+//! What the out-of-slice column does show is that the win is not a skipped
+//! loop increment: 267 us of 912 is 29%, and past the slab the `continue`
+//! also skips `body_polytope_sdf_4d` entirely, bounding-ball test and rotor
+//! inverse and per-shape branch. The alternatives that shorten the trip count
+//! instead are worse than this candidate: compacting live bodies per fragment
+//! needs a 32-slot index array in registers, and compacting them CPU-side
+//! before upload renumbers the slots `HitInfo.body_idx` carries into shading.
+//! Neither is bit-exact either, for the same argmin reason.
+//!
+//! Verdict: not taken. It is negative where it matters, and the frames it
+//! speeds up are the blank ones nobody waits on. The probes stay so the
 //! trade can be re-priced: if the row cap rises well past eight, or the
 //! marcher loses the bounding-ball early-out, the 8-body block is where it
 //! would turn.
 //!
-//! Both probes need an adapter and carry the `gpu_probe` suffix CI's
-//! software-adapter job selects on. Run with
+//! Both probes need an adapter. Only the identity one carries the `gpu_probe`
+//! suffix CI's software-adapter job selects on: it is 38 draws, while the cost
+//! probe is 14400 and would put roughly ten seconds of discrete-GPU fragment
+//! work through lavapipe. The cost probe takes the `_perf` suffix `ci.yml`
+//! already excludes for `orbit_advance_perf`. Run both with
 //! `cargo test --release -p loam-render --test hyperslice_wslice_cull --
 //! --include-ignored --nocapture --test-threads=1`.
 
@@ -102,18 +129,25 @@ const BODY_Y: f32 = 0.9;
 /// grows with it.
 const PROBE_BODY_COUNTS: [usize; 2] = [3, 8];
 
-/// Slices that cut a body, so the cull provably cannot fire and the images
-/// must match bit for bit.
-const SLICES_THROUGH_BODIES: [f32; 4] = [0.0, 0.25, 0.5, 0.68];
+/// Slices inside every body's bounding 4-ball, so the slab test provably
+/// cannot fire and the images must match bit for bit. Not the same set as the
+/// slices that draw a cross-section, which stops at 0.35 for the tesseract and
+/// 0.495 for the 24-cell; the probe prints the occupancy it actually gets.
+const SLICES_INSIDE_BOUNDING_BALLS: [f32; 4] = [0.0, 0.25, 0.5, 0.68];
 
-/// Slices past every body's w extent, where the cull fires on all of them and
-/// bit-exactness is exactly what is at stake.
-const SLICES_PAST_BODIES: [f32; 2] = [0.75, 1.2];
+/// Slices past every body's bounding 4-ball, where the cull fires on all of
+/// them and bit-exactness is exactly what is at stake.
+const SLICES_PAST_BOUNDING_BALLS: [f32; 2] = [0.75, 1.2];
+
+/// A slice no body's bounding ball reaches, so its frame is floor and sky and
+/// serves as the occupancy reference. Reusing the largest probe slice keeps
+/// the reference inside the set the cost probe already prices.
+const EMPTY_REFERENCE_SLICE: f32 = 1.2;
 
 fn probe_slices() -> Vec<f32> {
-    SLICES_THROUGH_BODIES
+    SLICES_INSIDE_BOUNDING_BALLS
         .into_iter()
-        .chain(SLICES_PAST_BODIES)
+        .chain(SLICES_PAST_BOUNDING_BALLS)
         .collect()
 }
 
@@ -357,13 +391,18 @@ async fn request_device() -> Result<(Device, Queue), String> {
 ///    the ray can hit, or a shader compiler that reordered the minimum chain
 ///    around the added branch. Under a bit-exactness bar both disqualify the
 ///    cull, which is why this is an assertion and not a report.
-/// 3. Past every body's w extent the images diverge, which is what disqualifies
+/// 3. Past every bounding ball the images diverge, which is what disqualifies
 ///    the cull under a bit-exactness bar. Reported, not asserted: the
-///    divergence is a few dozen bytes of a 3.7 MB frame and whether a given
+///    divergence is tens of bytes of a 3.7 MB frame and whether a given
 ///    driver lands on the same side of `hit_eps` is not this crate's contract.
+///
+/// The same loop prints each slice's occupancy against a body-free reference
+/// frame, because "the cull loses where the user is looking" is only a claim
+/// about the cells that draw a body, and the bounding ball the predicate uses
+/// is much wider in w than any of these shapes.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn the_w_slab_cull_holds_byte_identity_only_where_the_slice_cuts_a_body_gpu_probe() {
+fn the_w_slab_cull_is_bit_exact_inside_every_bounding_ball_gpu_probe() {
     let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
     let target = probe_target(&device);
     let view = target.create_view(&TextureViewDescriptor::default());
@@ -376,6 +415,9 @@ fn the_w_slab_cull_holds_byte_identity_only_where_the_slice_cuts_a_body_gpu_prob
         let mut stock = probe_node(&device, &stock_module, body_count);
         let mut control = probe_node(&device, &control_module, body_count);
         let mut culled = probe_node(&device, &culled_module, body_count);
+
+        render_slice(&device, &queue, &mut stock, &view, EMPTY_REFERENCE_SLICE);
+        let empty_pixels = read_back_rgba(&device, &queue, &target);
 
         for w_slice in probe_slices() {
             render_slice(&device, &queue, &mut stock, &view, w_slice);
@@ -394,22 +436,28 @@ fn the_w_slab_cull_holds_byte_identity_only_where_the_slice_cuts_a_body_gpu_prob
                 differing_bytes(&stock_pixels, &control_pixels),
             );
 
+            println!(
+                "bodies {body_count}  w {w_slice:>5}  occupancy {:>7} bytes vs \
+                 the empty frame",
+                differing_bytes(&empty_pixels, &stock_pixels),
+            );
+
             let differing = differing_bytes(&stock_pixels, &culled_pixels);
-            if SLICES_THROUGH_BODIES.contains(&w_slice) {
+            if SLICES_INSIDE_BOUNDING_BALLS.contains(&w_slice) {
                 assert_eq!(
                     fnv1a64(&stock_pixels),
                     fnv1a64(&culled_pixels),
                     "the w-slab cull moved the image at {body_count} bodies, \
                      w = {w_slice} ({differing} bytes differ), where every body's \
-                     w extent {BODY_SIZE} still covers the slice and the slab \
-                     test cannot fire: either the predicate now culls a body the \
-                     ray can hit, or the compiler reordered the minimum chain \
-                     around the added branch",
+                     bounding-ball w extent {BODY_SIZE} still covers the slice \
+                     and the slab test cannot fire: either the predicate now \
+                     culls a body the ray can hit, or the compiler reordered the \
+                     minimum chain around the added branch",
                 );
             } else {
                 println!(
-                    "bodies {body_count}  w {w_slice:>5}  past every w extent: \
-                     {differing} bytes differ"
+                    "bodies {body_count}  w {w_slice:>5}  past every bounding \
+                     ball: {differing} bytes differ"
                 );
             }
         }
@@ -420,9 +468,14 @@ fn the_w_slab_cull_holds_byte_identity_only_where_the_slice_cuts_a_body_gpu_prob
 /// full-frame draw, against a same-kernel control that gives the noise floor.
 /// Prints rather than asserts: the numbers are hardware- and driver-specific,
 /// and the decision they feed is a judgement, recorded in the module docs.
+///
+/// Not a CI gate, and deliberately not `gpu_probe`-suffixed: the run is 14400
+/// full-frame marches, about ten seconds of discrete-GPU fragment work, which
+/// on the software adapter CI's `gpu_probe` job uses would dominate the job.
+/// `orbit_advance_perf` is excluded from that selector for the same reason.
 #[test]
-#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn the_w_slab_cull_frame_cost_gpu_probe() {
+#[ignore = "perf probe; needs an adapter, run with --include-ignored"]
+fn the_w_slab_cull_frame_cost_perf() {
     /// Draws per timed batch, enough that the submit-and-wait floor is a small
     /// share of the total at this resolution.
     const REPS: u32 = 40;

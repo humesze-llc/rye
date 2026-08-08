@@ -702,6 +702,10 @@ pub(crate) struct Demo {
     /// `View > Rotation controls` or `H` for an unobstructed scene.
     pub(crate) show_controls: bool,
 
+    /// Whether the `loam-text` state readout is drawn (off by default). Toggle
+    /// via the `hud` console command; drawn by `crate::hud::TextHud`.
+    pub(crate) show_text_hud: bool,
+
     /// Top-level visualisation mode. See [`ViewMode`].
     pub(crate) view_mode: ViewMode,
     /// Filmstrip-axis toggles; at least one MUST be active when `view_mode ==

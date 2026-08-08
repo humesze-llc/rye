@@ -6,6 +6,11 @@
 //! desc), `trace last` (most recent frame breakdown), `trace clear`,
 //! `trace cap <N>` (rolling-window size).
 //!
+//! The summary carries a synthetic `unscoped` row: `frame` minus the sections
+//! the frame loop opens inside it ([`crate::FRAME_LOOP_SECTIONS`]). Without it
+//! a reader has to sum the table by hand to notice that the named sections
+//! cover only a fraction of the frame.
+//!
 //! ```ignore
 //! loam_app::trace::register_command(&mut c);
 //! ```
@@ -28,9 +33,61 @@ fn fmt_dur(d: std::time::Duration) -> String {
     }
 }
 
+/// Time inside one frame's `frame` scope that no frame-loop section covers.
+/// `None` when the frame carries no `frame` section, which is any frame
+/// recorded outside a frame loop.
+///
+/// Saturating: parent and children are sampled from independent `Instant`
+/// reads, so a child sum a few nanoseconds over the parent is a measurement
+/// artifact, not a reason to panic on `Duration` underflow.
+fn unscoped(frame: &frame_trace::FrameTrace) -> Option<Duration> {
+    let mut total = None;
+    let mut covered = Duration::ZERO;
+    for section in &frame.sections {
+        if section.name == "frame" {
+            total = Some(section.elapsed);
+        } else if crate::FRAME_LOOP_SECTIONS.contains(&section.name) {
+            covered += section.elapsed;
+        }
+    }
+    total.map(|t| t.saturating_sub(covered))
+}
+
+/// [`unscoped`] aggregated over the rolling window, shaped as a table row.
+/// Nearest-rank percentiles, matching [`frame_trace::aggregate`].
+fn unscoped_stats() -> Option<frame_trace::SectionStats> {
+    let mut samples: Vec<Duration> =
+        frame_trace::with_history(|history| history.iter().filter_map(unscoped).collect());
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort();
+    let n = samples.len();
+    let pick = |q: f32| samples[((n as f32 * q) as usize).min(n - 1)];
+    Some(frame_trace::SectionStats {
+        name: "unscoped",
+        samples: n,
+        mean: samples.iter().sum::<Duration>() / n as u32,
+        p50: pick(0.50),
+        p95: pick(0.95),
+        p99: pick(0.99),
+        max: samples[n - 1],
+    })
+}
+
+/// Recorded sections plus the synthetic `unscoped` row, p95 descending.
+fn summary_rows() -> Vec<frame_trace::SectionStats> {
+    let mut stats = frame_trace::aggregate();
+    if let Some(residual) = unscoped_stats() {
+        stats.push(residual);
+        stats.sort_by_key(|s| std::cmp::Reverse(s.p95));
+    }
+    stats
+}
+
 /// Print the rolling-window aggregate: one row per section, p95 descending.
 fn print_summary(out: &mut loam_egui::ConsoleWriter) {
-    let stats = frame_trace::aggregate();
+    let stats = summary_rows();
     if stats.is_empty() {
         out.line("trace: no frames in window (collect runs once the demo is rendering)");
         return;
@@ -96,7 +153,7 @@ fn print_last(out: &mut loam_egui::ConsoleWriter) {
 /// reaches the browser DevTools console (selectable/copyable), which the
 /// pixel-rendered in-canvas console is not.
 fn format_summary() -> String {
-    let stats = frame_trace::aggregate();
+    let stats = summary_rows();
     if stats.is_empty() {
         return "trace: no frames in window\n".to_string();
     }
@@ -661,6 +718,88 @@ mod tests {
         let t = truncate(long, 18);
         assert_eq!(t.len(), 18);
         assert!(t.ends_with('~'), "truncate should mark with `~`");
+    }
+
+    fn frame_of(sections: &[(&'static str, u64)]) -> frame_trace::FrameTrace {
+        frame_trace::FrameTrace {
+            sections: sections
+                .iter()
+                .map(|(name, us)| frame_trace::Section {
+                    name,
+                    elapsed: Duration::from_micros(*us),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unscoped_is_the_frame_minus_its_frame_loop_sections() {
+        let frame = frame_of(&[("frame", 4000), ("app-record", 130), ("present", 40)]);
+        assert_eq!(unscoped(&frame), Some(Duration::from_micros(3830)));
+    }
+
+    #[test]
+    fn unscoped_ignores_sections_nested_inside_frame_loop_sections() {
+        // `pp-sdf` is opened by the demo inside `app-record`; subtracting it
+        // as well would understate the remainder by the nested time.
+        let flat = frame_of(&[("frame", 4000), ("app-record", 130)]);
+        let nested = frame_of(&[("frame", 4000), ("app-record", 130), ("pp-sdf", 94)]);
+        assert_eq!(unscoped(&nested), unscoped(&flat));
+    }
+
+    #[test]
+    fn unscoped_ignores_the_sections_that_do_not_nest_in_the_frame() {
+        // `between-frames` and `idle` bracket the frame and `gpu-total` is
+        // device time; subtracting any of them drives the remainder to zero
+        // and hides the very gap the row exists to show.
+        let frame = frame_of(&[
+            ("frame", 4000),
+            ("app-record", 130),
+            ("between-frames", 4130),
+            ("idle", 110),
+            ("gpu-total", 800),
+        ]);
+        assert_eq!(unscoped(&frame), Some(Duration::from_micros(3870)));
+    }
+
+    #[test]
+    fn unscoped_is_absent_for_a_frame_without_a_frame_section() {
+        let frame = frame_of(&[("app-record", 130), ("present", 40)]);
+        assert_eq!(unscoped(&frame), None);
+    }
+
+    #[test]
+    fn unscoped_saturates_at_zero_when_the_children_overrun_the_parent() {
+        let frame = frame_of(&[("frame", 100), ("app-record", 130)]);
+        assert_eq!(unscoped(&frame), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn surface_acquire_leaves_the_unscoped_remainder() {
+        // The diagnosis this row supports depends on the acquire block being
+        // attributable by name: once scoped, its time must move out of the
+        // remainder rather than staying pooled there.
+        let frame = frame_of(&[("frame", 4000), ("surface-acquire", 3400)]);
+        assert_eq!(unscoped(&frame), Some(Duration::from_micros(600)));
+    }
+
+    #[test]
+    fn unscoped_row_reports_frame_time_that_no_section_claims() {
+        // Thread-local tracer and one test per thread, so this history holds
+        // only the frame recorded here.
+        {
+            let _frame = frame_trace::scope("frame");
+            std::thread::sleep(Duration::from_millis(4));
+        }
+        frame_trace::end_frame();
+        let row = unscoped_stats().expect("one recorded frame yields the row");
+        assert_eq!(row.samples, 1);
+        assert!(
+            row.max >= Duration::from_millis(4),
+            "a frame whose work is entirely unscoped must report as unscoped, got {:?}",
+            row.max,
+        );
     }
 
     #[test]

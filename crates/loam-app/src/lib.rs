@@ -1188,6 +1188,27 @@ impl<A: App> ApplicationHandler for Runner<A> {
     }
 }
 
+/// Section names the frame loops open directly inside their `frame` scope.
+/// [`crate::trace`] subtracts these from `frame` to report the remainder as
+/// `unscoped`; a scope added to a frame loop and not to this list lands there
+/// instead of under its own name.
+///
+/// Only direct children belong here. Sections a demo opens nest inside
+/// `app-record` or `app-ui`, so subtracting this list cannot double-count.
+/// `between-frames` and `idle` bracket the frame rather than nesting in it,
+/// and `gpu-total` is device time recorded out of band.
+pub(crate) const FRAME_LOOP_SECTIONS: &[&str] = &[
+    "sim-ticks",
+    "app-update",
+    "app-ui",
+    "hot-reload",
+    "surface-acquire",
+    "app-record",
+    "ui-paint",
+    "composite",
+    "present",
+];
+
 impl<A: App> Runner<A> {
     fn redraw(&mut self, elwt: &ActiveEventLoop, win: &Arc<Window>) {
         if self.minimized {
@@ -1480,7 +1501,16 @@ impl<A: App> Runner<A> {
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
         let do_capture = self.capture.should_capture(capture_now);
 
-        let begin_result = rd.begin_frame();
+        // Scoped because this is where a vsync-locked frame spends most of
+        // its wall time and an unscoped block here is indistinguishable from
+        // engine work in the trace table. Under `PresentMode::Fifo` the
+        // presentation engine holds the acquire until a swapchain image frees
+        // at the next flip, so the backpressure lands here, not in `present`,
+        // which only queues the flip and returns.
+        let begin_result = {
+            let _scope = loam_time::frame_trace::scope("surface-acquire");
+            rd.begin_frame()
+        };
         if begin_result.is_ok() {
             self.surface_error_streak = 0;
             self.last_surface_error_log = None;

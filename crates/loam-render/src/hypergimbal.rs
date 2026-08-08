@@ -255,7 +255,7 @@ impl Hypergimbal {
 }
 
 /// One plane's handle: the stereographic image of its great circle, plus the
-/// two parameters of the `χ ↔ θ` map derived in the module docs.
+/// two parameters of the ring-angle-to-arc-angle map derived in the module docs.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Ring {
     /// Rotation plane this ring drives.
@@ -269,7 +269,7 @@ pub struct Ring {
     /// Circle radius in world units.
     pub radius: f32,
     /// `ρ`: length of the pole's projection onto this rotation plane, the
-    /// eccentricity of the `χ ↔ θ` map.
+    /// eccentricity of the ring-angle-to-arc-angle map.
     pub pole_overlap: f32,
     /// `φ`: great-circle parameter of the ring's `χ = 0` point.
     pub phase: f32,
@@ -488,7 +488,7 @@ mod tests {
         }
     }
 
-    /// The `χ ↔ θ` map: reading the ring angle of a projected point and
+    /// The ring-angle-to-arc-angle map: reading the ring angle of a projected point and
     /// running it back through `arc_angle` returns the great-circle
     /// parameter the point came from. This is the drag-to-angle map's core,
     /// pinned against the projection itself rather than against a second

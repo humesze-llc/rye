@@ -3,9 +3,9 @@
 //! `loam-shape` stores every 4-polytope at unit circumradius, so its vertices
 //! are already points of S³ and nothing needs mapping onto the sphere. This
 //! scene poses them through [`SphericalS3Embedded`]'s own isometry group,
-//! draws each edge as the great-circle arc that Space's
-//! `tessellate_segment` produces, and views the result through the
-//! stereographic chart. The rotate scene reaches this same seam
+//! draws each edge as the great-circle arc that Space's `tessellate_segment`
+//! produces, and views the result through the stereographic chart. The rotate
+//! scene reaches this same seam
 //! ([`push_blended_edge`]) with `blend = 0` in its flat projections, where the
 //! arc collapses to the `EuclideanR4` chord; the `Great-circle arcs` toggle is
 //! that switch, so the two geometries differ by which Space impl answers, not
@@ -283,7 +283,7 @@ fn polytope_label(p: Polytope4) -> &'static str {
     SHAPE_CATALOG
         .iter()
         .find(|entry| entry.shape.polytope4() == Some(p))
-        .expect("the catalog carries every convex regular polychoron")
+        .expect("the catalog carries every convex regular polychoron") // ok: pinned above
         .label
 }
 

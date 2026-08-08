@@ -944,8 +944,16 @@ fn split_two_mut<T>(slice: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
 }
 
 /// One PGS iteration over a contact: normal then tangent (friction) solve, both
-/// with accumulated-impulse clamping (`jn ≥ 0`, `|jt| ≤ μ·jn`) so repeated
-/// passes converge to the fixed `velocity_bias` target.
+/// accumulated and incrementally clamped so repeated passes converge to the
+/// fixed `velocity_bias` target.
+///
+/// `jn ≥ 0` holds on exit unconditionally; Coulomb's `jt ≤ μ·jn` does not. The
+/// tangent solve returns before its clamp when the relative tangential velocity
+/// underflows or the tangent effective mass is degenerate, leaving `jt` at the
+/// value an earlier iteration accumulated while the normal solve above may have
+/// shrunk `jn` beneath it. A later iteration that does slide pulls `jt` back to
+/// `μ·jn`, but only in the accumulator: a reduction is not applied as an
+/// impulse.
 fn solve_normal_then_tangent<S>(
     space: &S,
     a: &mut RigidBody<S>,
@@ -1705,152 +1713,6 @@ mod tests {
     const SPHERE_RADIUS: f32 = 0.5;
     const GRAVITY_Y: f32 = -9.8;
 
-    /// Translational plus rotational kinetic energy. Inertia is the scalar
-    /// isotropic moment `EuclideanR3` uses, so the rotational term is
-    /// `½·I·|ω|²`.
-    fn kinetic_energy(body: &RigidBody<EuclideanR3>) -> f32 {
-        let omega = body.angular_velocity.magnitude();
-        0.5 * body.mass * body.velocity.length_squared() + 0.5 * body.inertia * omega * omega
-    }
-
-    /// A perfectly elastic (`e = 1`) impact must return exactly the incoming
-    /// kinetic energy: no loss, and no gain from the Baumgarte term riding
-    /// along in `velocity_bias`.
-    ///
-    /// `dt` is chosen so one step of approach buries less than
-    /// [`PENETRATION_SLOP`]; the positional bias is then identically zero and
-    /// the rebound is pure restitution. A coarser step would legitimately add
-    /// energy, which is why this contract is stated per-impact rather than as a
-    /// global energy budget.
-    #[test]
-    fn perfectly_elastic_rebound_conserves_kinetic_energy() {
-        let mut world = World::new(EuclideanR3);
-        register_default_narrowphase(&mut world.narrowphase);
-
-        let approach = 2.0;
-        let dt = 1.0 / 1000.0;
-        assert!(
-            approach > RESTITUTION_THRESHOLD,
-            "below the threshold restitution is deliberately suppressed",
-        );
-        assert!(
-            approach * dt < PENETRATION_SLOP,
-            "a deeper first-frame burial admits a Baumgarte contribution",
-        );
-
-        // Start clear of the floor so the impact is produced by the sim rather
-        // than by an initial condition already inside the plane.
-        let start_gap = 0.01;
-        let sphere = world.push_body(sphere_body_r3(
-            Vec3::new(0.0, SPHERE_RADIUS + start_gap, 0.0),
-            Vec3::new(0.0, -approach, 0.0),
-            SPHERE_RADIUS,
-            1.0,
-        ));
-        let floor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0));
-        world.bodies[sphere].restitution = 1.0;
-        world.bodies[floor].restitution = 1.0;
-
-        let energy_before = kinetic_energy(&world.bodies[sphere]);
-        // Long enough to close `start_gap`, bounce, and separate again.
-        let steps = (4.0 * start_gap / (approach * dt)).ceil() as usize;
-        for _ in 0..steps {
-            world.step(dt);
-        }
-
-        let body = &world.bodies[sphere];
-        assert!(
-            body.velocity.y > 0.0,
-            "sphere did not rebound: v_y = {}",
-            body.velocity.y
-        );
-        // The contact lies on the line through the centre of mass, so friction
-        // and torque have no lever arm and every joule stays translational.
-        assert!(
-            body.angular_velocity.magnitude() < 1e-6,
-            "central impact spun the sphere: |ω| = {}",
-            body.angular_velocity.magnitude()
-        );
-
-        let energy_after = kinetic_energy(body);
-        let ratio = energy_after / energy_before;
-        assert!(
-            ratio <= 1.0 + 1e-4,
-            "e = 1 impact added energy: {energy_before} -> {energy_after}"
-        );
-        assert!(
-            ratio >= 1.0 - 1e-4,
-            "e = 1 impact lost energy: {energy_before} -> {energy_after}"
-        );
-    }
-
-    /// Coulomb's cone, `|jt| ≤ μ·jn`, must hold at every contact on every step,
-    /// and must actually bind at least once: a solver that never applied
-    /// friction would satisfy the inequality vacuously.
-    #[test]
-    fn tangent_impulse_stays_inside_the_coulomb_cone() {
-        let mut world = World::new(EuclideanR3);
-        register_default_narrowphase(&mut world.narrowphase);
-        world.push_field(Box::new(Gravity::new(Vec3::new(0.0, GRAVITY_Y, 0.0))));
-
-        let slide_speed = 5.0;
-        let sphere = world.push_body(sphere_body_r3(
-            Vec3::new(0.0, SPHERE_RADIUS, 0.0),
-            Vec3::new(slide_speed, 0.0, 0.0),
-            SPHERE_RADIUS,
-            1.0,
-        ));
-        let floor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0));
-        world.bodies[sphere].restitution = 0.0;
-        world.bodies[floor].restitution = 0.0;
-
-        let dt = 1.0 / 240.0;
-        let mut cone_ever_binds = false;
-        for _ in 0..240 {
-            world.step(dt);
-            for manifold in world.manifolds.values() {
-                for cp in &manifold.points {
-                    let cap = cp.normal_impulse * FRICTION_COEFF;
-                    // The clamp is applied against the normal impulse of the
-                    // same iteration, so the bound holds on the state the step
-                    // leaves behind, not merely in expectation. The 1e-6 slack
-                    // covers f32 accumulation across `pgs_iters` passes; the
-                    // impulses here are of order 1e-2, so it cannot hide a
-                    // widened cone.
-                    assert!(
-                        cp.tangent_impulse <= cap + 1e-6,
-                        "friction escaped the cone: jt = {}, μ·jn = {cap}",
-                        cp.tangent_impulse
-                    );
-                    assert!(
-                        cp.tangent_impulse >= 0.0,
-                        "tangent accumulator went negative: {}",
-                        cp.tangent_impulse
-                    );
-                    if cap > 1e-6 && cp.tangent_impulse >= cap - 1e-6 {
-                        cone_ever_binds = true;
-                    }
-                }
-            }
-        }
-
-        assert!(
-            cone_ever_binds,
-            "friction never saturated, so the clamp was never exercised"
-        );
-        let body = &world.bodies[sphere];
-        assert!(
-            body.velocity.x < slide_speed,
-            "friction did not brake the slide: v_x = {}",
-            body.velocity.x
-        );
-        assert!(
-            body.angular_velocity.magnitude() > 1e-3,
-            "friction applied no torque: |ω| = {}",
-            body.angular_velocity.magnitude()
-        );
-    }
-
     /// Three spheres resting on the floor, run long enough that the manifolds
     /// carry converged accumulated impulses.
     fn settled_sphere_stack(dt: f32, settle_steps: usize) -> World<EuclideanR3> {
@@ -1875,6 +1737,513 @@ mod tests {
             world.step(dt);
         }
         world
+    }
+
+    /// The three impulse-solver contracts, each stated over every Euclidean
+    /// space the engine solves in.
+    ///
+    /// `EuclideanR2` and `EuclideanR4` carry their own `velocity_at_point`,
+    /// `effective_mass_inv`, and `apply_contact_impulse`, so a contract
+    /// measured against R³ constrains neither of them. R⁴ is also the space a
+    /// per-island parallel solve is aimed at, and the claim such a solve has to
+    /// make is that it reaches the same fixed point in a different order: an
+    /// unpinned fixed point makes that claim unfalsifiable.
+    ///
+    /// The three fixtures are the same experiment in each space, differing
+    /// only where the space forces it: R² has no half-space collider, so its
+    /// floor is a polygon and its contacts run through the sphere-polygon
+    /// narrowphase instead of a closed-form plane test.
+    mod solver_contracts {
+        use glam::{Vec2, Vec4};
+        use loam_math::{Bivector2, Bivector4, EuclideanR2, EuclideanR4};
+
+        use super::*;
+        use crate::euclidean_r2::{sphere_body, static_wall};
+        use crate::euclidean_r4::{halfspace4_body_r4, sphere_body_r4};
+
+        /// The two things the fixtures need and `PhysicsSpace` does not offer:
+        /// a norm on `AngVel`, and an `Inertia` concrete enough to put in an
+        /// energy sum. Both stay local to the tests. No shipped caller wants
+        /// the norm, and `Inertia` is opaque on the engine trait on purpose,
+        /// because a 4D anisotropic body would make it a 6×6 bivector map.
+        trait SolverSpace: PhysicsSpace<Inertia = f32> {
+            fn angular_speed(omega: Self::AngVel) -> f32;
+        }
+
+        impl SolverSpace for EuclideanR2 {
+            fn angular_speed(omega: Bivector2) -> f32 {
+                omega.0.abs()
+            }
+        }
+
+        impl SolverSpace for EuclideanR3 {
+            fn angular_speed(omega: Bivector3) -> f32 {
+                omega.magnitude()
+            }
+        }
+
+        impl SolverSpace for EuclideanR4 {
+            fn angular_speed(omega: Bivector4) -> f32 {
+                omega.magnitude()
+            }
+        }
+
+        /// Translational plus rotational kinetic energy. All three spaces use a
+        /// scalar isotropic moment, so the rotational term is `½·I·|ω|²`.
+        fn kinetic_energy<S: SolverSpace>(body: &RigidBody<S>) -> f32
+        where
+            S::Vector: VectorOps,
+        {
+            let omega = S::angular_speed(body.angular_velocity);
+            0.5 * body.mass * VectorOps::length_squared(body.velocity)
+                + 0.5 * body.inertia * omega * omega
+        }
+
+        /// R² half-extents for the floor the other two spaces get from a
+        /// half-space. Wide enough that a body sliding for the length of a
+        /// fixture stays over the top face, and deep enough that a body resting
+        /// on that face is never nearer the bottom one.
+        const FLOOR_HALF: Vec2 = Vec2::new(50.0, 1.0);
+
+        fn floor_r2() -> RigidBody<EuclideanR2> {
+            static_wall(Vec2::new(0.0, -FLOOR_HALF.y), FLOOR_HALF)
+        }
+
+        // ---- Contract 1: restitution ----
+
+        const REBOUND_APPROACH: f32 = 2.0;
+        /// One step of approach must bury less than [`PENETRATION_SLOP`] so the
+        /// positional bias is identically zero and the rebound is pure
+        /// restitution. A coarser step would legitimately add energy, which is
+        /// why this contract is stated per impact rather than as a global
+        /// energy budget.
+        const REBOUND_DT: f32 = 1.0 / 1000.0;
+        /// Start clear of the floor so the impact is produced by the sim rather
+        /// than by an initial condition already inside the plane.
+        const REBOUND_GAP: f32 = 0.01;
+
+        // The two premises the fixture rests on, checked where they are chosen
+        // rather than inside the assertion body: retuning either constant past
+        // a solver threshold has to fail loudly, not turn the contract into a
+        // measurement of the Baumgarte term.
+        const _: () = assert!(
+            REBOUND_APPROACH > RESTITUTION_THRESHOLD,
+            "below the threshold restitution is deliberately suppressed",
+        );
+        const _: () = assert!(
+            REBOUND_APPROACH * REBOUND_DT < PENETRATION_SLOP,
+            "a deeper first-frame burial admits a Baumgarte contribution",
+        );
+
+        /// A perfectly elastic (`e = 1`) impact must return exactly the
+        /// incoming kinetic energy: no loss, and no gain from the Baumgarte
+        /// term riding along in `velocity_bias`.
+        fn assert_elastic_rebound_conserves_kinetic_energy<S>(
+            mut world: World<S>,
+            faller: BodyId,
+            up: S::Vector,
+        ) where
+            S: SolverSpace,
+            S::Vector: VectorOps,
+            S::Point: Copy + std::ops::Sub<Output = S::Vector>,
+        {
+            let energy_before = kinetic_energy(&world.bodies[faller]);
+            // Long enough to close `REBOUND_GAP`, bounce, and separate again.
+            let steps = (4.0 * REBOUND_GAP / (REBOUND_APPROACH * REBOUND_DT)).ceil() as usize;
+            for _ in 0..steps {
+                world.step(REBOUND_DT);
+            }
+
+            let body = &world.bodies[faller];
+            let rebound = VectorOps::dot(body.velocity, up);
+            assert!(rebound > 0.0, "body did not rebound: v·up = {rebound}");
+            // The contact lies on the line through the centre of mass, so
+            // friction and torque have no lever arm and every joule stays
+            // translational.
+            let spin = S::angular_speed(body.angular_velocity);
+            assert!(spin < 1e-6, "central impact spun the body: |ω| = {spin}");
+
+            let energy_after = kinetic_energy(body);
+            let ratio = energy_after / energy_before;
+            assert!(
+                ratio <= 1.0 + 1e-4,
+                "e = 1 impact added energy: {energy_before} -> {energy_after}"
+            );
+            assert!(
+                ratio >= 1.0 - 1e-4,
+                "e = 1 impact lost energy: {energy_before} -> {energy_after}"
+            );
+        }
+
+        #[test]
+        fn perfectly_elastic_rebound_conserves_kinetic_energy_r2() {
+            let mut world = World::new(EuclideanR2);
+            crate::euclidean_r2::register_default_narrowphase(&mut world.narrowphase);
+            let disk = world.push_body(sphere_body(
+                Vec2::new(0.0, SPHERE_RADIUS + REBOUND_GAP),
+                Vec2::new(0.0, -REBOUND_APPROACH),
+                SPHERE_RADIUS,
+                1.0,
+            ));
+            let floor = world.push_body(floor_r2());
+            world.bodies[disk].restitution = 1.0;
+            world.bodies[floor].restitution = 1.0;
+
+            assert_elastic_rebound_conserves_kinetic_energy(world, disk, Vec2::Y);
+        }
+
+        #[test]
+        fn perfectly_elastic_rebound_conserves_kinetic_energy_r3() {
+            let mut world = World::new(EuclideanR3);
+            register_default_narrowphase(&mut world.narrowphase);
+            let sphere = world.push_body(sphere_body_r3(
+                Vec3::new(0.0, SPHERE_RADIUS + REBOUND_GAP, 0.0),
+                Vec3::new(0.0, -REBOUND_APPROACH, 0.0),
+                SPHERE_RADIUS,
+                1.0,
+            ));
+            let floor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0));
+            world.bodies[sphere].restitution = 1.0;
+            world.bodies[floor].restitution = 1.0;
+
+            assert_elastic_rebound_conserves_kinetic_energy(world, sphere, Vec3::Y);
+        }
+
+        #[test]
+        fn perfectly_elastic_rebound_conserves_kinetic_energy_r4() {
+            let mut world = World::new(EuclideanR4);
+            crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);
+            let sphere = world.push_body(sphere_body_r4(
+                Vec4::new(0.0, SPHERE_RADIUS + REBOUND_GAP, 0.0, 0.0),
+                Vec4::new(0.0, -REBOUND_APPROACH, 0.0, 0.0),
+                SPHERE_RADIUS,
+                1.0,
+            ));
+            let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+            world.bodies[sphere].restitution = 1.0;
+            world.bodies[floor].restitution = 1.0;
+
+            assert_elastic_rebound_conserves_kinetic_energy(world, sphere, Vec4::Y);
+        }
+
+        // ---- Contract 2: the Coulomb cone ----
+
+        const SLIDE_SPEED: f32 = 5.0;
+        const SLIDE_DT: f32 = 1.0 / 240.0;
+        const SLIDE_STEPS: usize = 240;
+
+        /// Coulomb's cone, `jt ≤ μ·jn`, must hold at every contact on every
+        /// step, and must actually bind at least once: a solver that never
+        /// applied friction would satisfy the inequality vacuously.
+        ///
+        /// The bound is on the state each step leaves behind rather than merely
+        /// in expectation only because every contact in these fixtures slides
+        /// on every iteration and so reaches the tangent clamp.
+        /// [`solve_normal_then_tangent`] promises no more than that: an
+        /// iteration whose tangent branch returns early exits outside the cone.
+        fn assert_tangent_impulse_stays_inside_the_coulomb_cone<S>(
+            mut world: World<S>,
+            slider: BodyId,
+            slide: S::Vector,
+            up: S::Vector,
+        ) where
+            S: PhysicsSpace,
+            S::Vector: VectorOps,
+            S::Point: Copy + std::ops::Sub<Output = S::Vector>,
+        {
+            let mut cone_ever_binds = false;
+            for _ in 0..SLIDE_STEPS {
+                world.step(SLIDE_DT);
+                for manifold in world.manifolds.values() {
+                    for cp in &manifold.points {
+                        let cap = cp.normal_impulse * FRICTION_COEFF;
+                        // The 1e-6 slack covers f32 accumulation across
+                        // `pgs_iters` passes; the impulses here are of order
+                        // 1e-2, so it cannot hide a widened cone.
+                        assert!(
+                            cp.tangent_impulse <= cap + 1e-6,
+                            "friction escaped the cone: jt = {}, μ·jn = {cap}",
+                            cp.tangent_impulse
+                        );
+                        assert!(
+                            cp.tangent_impulse >= 0.0,
+                            "tangent accumulator went negative: {}",
+                            cp.tangent_impulse
+                        );
+                        if cap > 1e-6 && cp.tangent_impulse >= cap - 1e-6 {
+                            cone_ever_binds = true;
+                        }
+                    }
+                }
+            }
+
+            assert!(
+                cone_ever_binds,
+                "friction never saturated, so the clamp was never exercised"
+            );
+            let body = &world.bodies[slider];
+            let along = VectorOps::dot(body.velocity, slide);
+            assert!(
+                along < SLIDE_SPEED,
+                "friction did not brake the slide: v·slide = {along}"
+            );
+
+            // Sense, not magnitude: `|ω| > 0` is satisfied by a torque of
+            // either sign, so it cannot tell contact friction from its
+            // negation. Friction acting below the centre of mass has to spin
+            // the body toward rolling, which is the angular term carrying the
+            // contact point backwards along the slide relative to the centre.
+            let contact = world.space.exp(body.position, up * -SPHERE_RADIUS);
+            let angular_at_contact = world.space.velocity_at_point(body, contact) - body.velocity;
+            let backspin = VectorOps::dot(angular_at_contact, slide);
+            assert!(
+                backspin < -1e-3,
+                "friction spun the body away from rolling: contact-point \
+                 angular velocity along the slide is {backspin}"
+            );
+        }
+
+        #[test]
+        fn tangent_impulse_stays_inside_the_coulomb_cone_r2() {
+            let mut world = World::new(EuclideanR2);
+            crate::euclidean_r2::register_default_narrowphase(&mut world.narrowphase);
+            world.push_field(Box::new(Gravity::new(Vec2::new(0.0, GRAVITY_Y))));
+            let disk = world.push_body(sphere_body(
+                Vec2::new(0.0, SPHERE_RADIUS),
+                Vec2::new(SLIDE_SPEED, 0.0),
+                SPHERE_RADIUS,
+                1.0,
+            ));
+            let floor = world.push_body(floor_r2());
+            world.bodies[disk].restitution = 0.0;
+            world.bodies[floor].restitution = 0.0;
+
+            assert_tangent_impulse_stays_inside_the_coulomb_cone(world, disk, Vec2::X, Vec2::Y);
+        }
+
+        #[test]
+        fn tangent_impulse_stays_inside_the_coulomb_cone_r3() {
+            let mut world = World::new(EuclideanR3);
+            register_default_narrowphase(&mut world.narrowphase);
+            world.push_field(Box::new(Gravity::new(Vec3::new(0.0, GRAVITY_Y, 0.0))));
+            let sphere = world.push_body(sphere_body_r3(
+                Vec3::new(0.0, SPHERE_RADIUS, 0.0),
+                Vec3::new(SLIDE_SPEED, 0.0, 0.0),
+                SPHERE_RADIUS,
+                1.0,
+            ));
+            let floor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0));
+            world.bodies[sphere].restitution = 0.0;
+            world.bodies[floor].restitution = 0.0;
+
+            assert_tangent_impulse_stays_inside_the_coulomb_cone(world, sphere, Vec3::X, Vec3::Y);
+        }
+
+        #[test]
+        fn tangent_impulse_stays_inside_the_coulomb_cone_r4() {
+            let mut world = World::new(EuclideanR4);
+            crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);
+            world.push_field(Box::new(Gravity::new(Vec4::new(0.0, GRAVITY_Y, 0.0, 0.0))));
+            let sphere = world.push_body(sphere_body_r4(
+                Vec4::new(0.0, SPHERE_RADIUS, 0.0, 0.0),
+                Vec4::new(SLIDE_SPEED, 0.0, 0.0, 0.0),
+                SPHERE_RADIUS,
+                1.0,
+            ));
+            let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+            world.bodies[sphere].restitution = 0.0;
+            world.bodies[floor].restitution = 0.0;
+
+            assert_tangent_impulse_stays_inside_the_coulomb_cone(world, sphere, Vec4::X, Vec4::Y);
+        }
+
+        // ---- Contract 3: warm-start convergence ----
+
+        const STACK_DT: f32 = 1.0 / 240.0;
+        const STACK_SETTLE_STEPS: usize = 400;
+        const STACK_LEVELS: usize = 3;
+
+        /// Discard the cached normal impulses so the next step solves from
+        /// zero.
+        fn clear_warm_start<S: PhysicsSpace>(world: &mut World<S>) {
+            for manifold in world.manifolds.values_mut() {
+                for cp in &mut manifold.points {
+                    cp.normal_impulse = 0.0;
+                }
+            }
+        }
+
+        fn velocities<S: PhysicsSpace>(world: &World<S>) -> Vec<S::Vector>
+        where
+            S::Vector: VectorOps,
+        {
+            world.bodies.iter().map(|b| b.velocity).collect()
+        }
+
+        /// Accumulated normal impulses in `BTreeMap` then slot order, which is
+        /// the same order in two worlds built and settled by the same code
+        /// path.
+        fn normal_impulses<S: PhysicsSpace>(world: &World<S>) -> Vec<f32> {
+            world
+                .manifolds
+                .values()
+                .flat_map(|m| m.points.iter().map(|cp| cp.normal_impulse))
+                .collect()
+        }
+
+        fn max_velocity_gap<V: VectorOps>(a: &[V], b: &[V]) -> f32 {
+            assert_eq!(a.len(), b.len(), "body layouts diverged");
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| VectorOps::length(*x - *y))
+                .fold(0.0_f32, f32::max)
+        }
+
+        fn max_scalar_gap(a: &[f32], b: &[f32]) -> f32 {
+            assert_eq!(a.len(), b.len(), "manifold layouts diverged");
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f32, f32::max)
+        }
+
+        /// Warm-starting is an initial guess, not a different constraint
+        /// problem: re-applying the cached impulses must leave the
+        /// default-iteration solve at the same fixed point a cold solve reaches
+        /// with iterations to spare. If it did not, parallelizing the solver
+        /// would be chasing a moving target.
+        ///
+        /// The second assert pins the reason warm-starting exists: at equal
+        /// iteration count it must be strictly closer to the converged answer
+        /// than a cold start is.
+        fn assert_warm_started_step_matches_cold_started_converged_step<S>(
+            fixture: impl Fn() -> World<S>,
+        ) where
+            S: PhysicsSpace,
+            S::Vector: VectorOps,
+            S::Point: Copy + std::ops::Sub<Output = S::Vector>,
+        {
+            let mut warm = fixture();
+            let mut cold_converged = fixture();
+            let mut cold_default = fixture();
+
+            assert!(
+                warm.manifolds
+                    .values()
+                    .flat_map(|m| &m.points)
+                    .any(|cp| cp.normal_impulse > 0.0),
+                "fixture carries no warm-start payload"
+            );
+
+            clear_warm_start(&mut cold_converged);
+            clear_warm_start(&mut cold_default);
+            // The reference solution, not another partial solve: raising this
+            // to 4000 moves neither assert below.
+            cold_converged.pgs_iters = 400;
+
+            warm.step(STACK_DT);
+            cold_converged.step(STACK_DT);
+            cold_default.step(STACK_DT);
+
+            let converged = velocities(&cold_converged);
+            let warm_gap = max_velocity_gap(&velocities(&warm), &converged);
+            let cold_gap = max_velocity_gap(&velocities(&cold_default), &converged);
+
+            // Tolerance is on the velocity a single 1/240 s step imparts;
+            // gravity alone contributes 0.04 m/s per step, so 1e-5 is a tight
+            // fraction of the quantity under test and three orders below the
+            // cold-start residual it is distinguishing itself from.
+            assert!(
+                warm_gap < 1e-5,
+                "warm-started step diverged from the converged solve by {warm_gap} m/s"
+            );
+            assert!(
+                warm_gap < cold_gap,
+                "warm start bought no convergence: warm {warm_gap} vs cold {cold_gap}"
+            );
+
+            // Velocities can land on target while the accumulator that produced
+            // them is wrong, because the solve corrects whatever the warm start
+            // applied. Pinning the accumulator too is what makes the carried
+            // state safe to reuse next step, which is the property a per-island
+            // parallel solve has to preserve.
+            let impulse_gap =
+                max_scalar_gap(&normal_impulses(&warm), &normal_impulses(&cold_converged));
+            let reference = normal_impulses(&cold_converged)
+                .into_iter()
+                .fold(0.0_f32, f32::max);
+            assert!(
+                impulse_gap < 1e-3 * reference,
+                "warm-started accumulator diverged by {impulse_gap} against a peak impulse of {reference}"
+            );
+        }
+
+        /// Three disks resting on the floor, run long enough that the manifolds
+        /// carry converged accumulated impulses.
+        fn settled_disk_stack_r2() -> World<EuclideanR2> {
+            let mut world = World::new(EuclideanR2);
+            crate::euclidean_r2::register_default_narrowphase(&mut world.narrowphase);
+            world.push_field(Box::new(Gravity::new(Vec2::new(0.0, GRAVITY_Y))));
+
+            for level in 0..STACK_LEVELS {
+                let y = SPHERE_RADIUS + level as f32 * 2.0 * SPHERE_RADIUS;
+                let id = world.push_body(sphere_body(
+                    Vec2::new(0.0, y),
+                    Vec2::ZERO,
+                    SPHERE_RADIUS,
+                    1.0,
+                ));
+                world.bodies[id].restitution = 0.0;
+            }
+            let floor = world.push_body(floor_r2());
+            world.bodies[floor].restitution = 0.0;
+
+            for _ in 0..STACK_SETTLE_STEPS {
+                world.step(STACK_DT);
+            }
+            world
+        }
+
+        fn settled_sphere_stack_r4() -> World<EuclideanR4> {
+            let mut world = World::new(EuclideanR4);
+            crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);
+            world.push_field(Box::new(Gravity::new(Vec4::new(0.0, GRAVITY_Y, 0.0, 0.0))));
+
+            for level in 0..STACK_LEVELS {
+                let y = SPHERE_RADIUS + level as f32 * 2.0 * SPHERE_RADIUS;
+                let id = world.push_body(sphere_body_r4(
+                    Vec4::new(0.0, y, 0.0, 0.0),
+                    Vec4::ZERO,
+                    SPHERE_RADIUS,
+                    1.0,
+                ));
+                world.bodies[id].restitution = 0.0;
+            }
+            let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+            world.bodies[floor].restitution = 0.0;
+
+            for _ in 0..STACK_SETTLE_STEPS {
+                world.step(STACK_DT);
+            }
+            world
+        }
+
+        #[test]
+        fn warm_started_step_matches_cold_started_converged_step_r2() {
+            assert_warm_started_step_matches_cold_started_converged_step(settled_disk_stack_r2);
+        }
+
+        #[test]
+        fn warm_started_step_matches_cold_started_converged_step_r3() {
+            assert_warm_started_step_matches_cold_started_converged_step(|| {
+                settled_sphere_stack(STACK_DT, STACK_SETTLE_STEPS)
+            });
+        }
+
+        #[test]
+        fn warm_started_step_matches_cold_started_converged_step_r4() {
+            assert_warm_started_step_matches_cold_started_converged_step(settled_sphere_stack_r4);
+        }
     }
 
     /// Sphere centres on the x axis, several diameters apart, so no two
@@ -3262,115 +3631,6 @@ mod tests {
             }
         }
         pairs.sort_unstable();
-    }
-
-    /// Discard the cached normal impulses so the next step solves from zero.
-    fn clear_warm_start(world: &mut World<EuclideanR3>) {
-        for manifold in world.manifolds.values_mut() {
-            for cp in &mut manifold.points {
-                cp.normal_impulse = 0.0;
-            }
-        }
-    }
-
-    fn stack_velocities(world: &World<EuclideanR3>) -> Vec<Vec3> {
-        world.bodies.iter().map(|b| b.velocity).collect()
-    }
-
-    /// Accumulated normal impulses in `BTreeMap` then slot order, which is the
-    /// same order in two worlds built and settled by the same code path.
-    fn stack_normal_impulses(world: &World<EuclideanR3>) -> Vec<f32> {
-        world
-            .manifolds
-            .values()
-            .flat_map(|m| m.points.iter().map(|cp| cp.normal_impulse))
-            .collect()
-    }
-
-    fn max_component_gap(a: &[Vec3], b: &[Vec3]) -> f32 {
-        a.iter()
-            .zip(b)
-            .map(|(x, y)| (*x - *y).abs().max_element())
-            .fold(0.0_f32, f32::max)
-    }
-
-    fn max_scalar_gap(a: &[f32], b: &[f32]) -> f32 {
-        assert_eq!(a.len(), b.len(), "manifold layouts diverged");
-        a.iter()
-            .zip(b)
-            .map(|(x, y)| (x - y).abs())
-            .fold(0.0_f32, f32::max)
-    }
-
-    /// Warm-starting is an initial guess, not a different constraint problem:
-    /// re-applying the cached impulses must leave the default-iteration solve
-    /// at the same fixed point a cold solve reaches with iterations to spare.
-    /// If it did not, parallelizing the solver would be chasing a moving
-    /// target.
-    ///
-    /// The second assert pins the reason warm-starting exists: at equal
-    /// iteration count it must be strictly closer to the converged answer than
-    /// a cold start is.
-    #[test]
-    fn warm_started_step_matches_cold_started_converged_step() {
-        let dt = 1.0 / 240.0;
-        let settle_steps = 400;
-
-        let mut warm = settled_sphere_stack(dt, settle_steps);
-        let mut cold_converged = settled_sphere_stack(dt, settle_steps);
-        let mut cold_default = settled_sphere_stack(dt, settle_steps);
-
-        assert!(
-            warm.manifolds
-                .values()
-                .flat_map(|m| &m.points)
-                .any(|cp| cp.normal_impulse > 0.0),
-            "fixture carries no warm-start payload"
-        );
-
-        clear_warm_start(&mut cold_converged);
-        clear_warm_start(&mut cold_default);
-        // The reference solution, not another partial solve: raising this to
-        // 4000 moves neither assert below.
-        cold_converged.pgs_iters = 400;
-
-        warm.step(dt);
-        cold_converged.step(dt);
-        cold_default.step(dt);
-
-        let converged = stack_velocities(&cold_converged);
-        let warm_gap = max_component_gap(&stack_velocities(&warm), &converged);
-        let cold_gap = max_component_gap(&stack_velocities(&cold_default), &converged);
-
-        // Tolerance is on the velocity a single 1/240 s step imparts; gravity
-        // alone contributes 0.04 m/s per step, so 1e-5 is a tight fraction of
-        // the quantity under test and three orders below the cold-start
-        // residual it is distinguishing itself from.
-        assert!(
-            warm_gap < 1e-5,
-            "warm-started step diverged from the converged solve by {warm_gap} m/s"
-        );
-        assert!(
-            warm_gap < cold_gap,
-            "warm start bought no convergence: warm {warm_gap} vs cold {cold_gap}"
-        );
-
-        // Velocities can land on target while the accumulator that produced
-        // them is wrong, because the solve corrects whatever the warm start
-        // applied. Pinning the accumulator too is what makes the carried state
-        // safe to reuse next step, which is the property a per-island parallel
-        // solve has to preserve.
-        let impulse_gap = max_scalar_gap(
-            &stack_normal_impulses(&warm),
-            &stack_normal_impulses(&cold_converged),
-        );
-        let reference = stack_normal_impulses(&cold_converged)
-            .into_iter()
-            .fold(0.0_f32, f32::max);
-        assert!(
-            impulse_gap < 1e-3 * reference,
-            "warm-started accumulator diverged by {impulse_gap} against a peak impulse of {reference}"
-        );
     }
 
     /// Fast-body tunneling: what per-step displacement the step can still

@@ -61,7 +61,8 @@ pub struct ContactPoint<S: PhysicsSpace> {
     /// would then be inconsistent with the new direction.
     pub tangent_dir: S::Vector,
     /// Tangent impulse accumulated within the current step, signed along `tangent_dir`. Reset
-    /// to 0 each step; PGS clamps to `|jt| ≤ μ·jn`.
+    /// to 0 each step; PGS clamps to `|jt| ≤ μ·jn` on the iterations that reach the clamp, which
+    /// is not all of them (see [`crate::world`]'s `solve_normal_then_tangent`).
     pub tangent_impulse: f32,
     /// Snapshot of the velocity bias for this contact, taken before the warm-start. Combines
     /// restitution (`−e · v_n_pre` for approaching contacts) and Baumgarte positional correction

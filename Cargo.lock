@@ -2192,6 +2192,7 @@ name = "polytope_playground"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "epaint_default_fonts",
  "glam",
  "loam-app",
  "loam-camera",
@@ -2201,6 +2202,7 @@ dependencies = [
  "loam-render",
  "loam-scene",
  "loam-shape",
+ "loam-text",
  "loam-time",
  "tracing",
  "wgpu",

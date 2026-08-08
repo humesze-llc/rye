@@ -29,7 +29,13 @@ loam-physics = { path = "../loam-physics", version = "0.1.0" }
 loam-render  = { path = "../loam-render",  version = "0.1.0" }
 loam-scene   = { path = "../loam-scene",   version = "0.1.0" }
 loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
+loam-text    = { path = "../loam-text",    version = "0.1.0" }
 loam-time    = { path = "../loam-time",    version = "0.1.0" }
+
+# Raw TTF bytes for the loam-text HUD atlas. Pure asset crate (no egui code),
+# already in the tree under egui's `default_fonts`, so this adds a dependency
+# edge rather than a committed font.
+epaint_default_fonts = "0.33"
 
 [features]
 # Default to capture-on for native dev (matches the previous `cargo run --example`

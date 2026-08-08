@@ -22,6 +22,17 @@ use crate::state::{
     WireframeProjection,
 };
 
+/// Margin between the controls overlay and the viewport edges.
+const OVERLAY_PAD: f32 = 16.0;
+
+/// Boot seat for the controls overlay. The window's pivot is `CENTER_BOTTOM`,
+/// so this is the bottom edge of its frame, not the top: everything the overlay
+/// occupies lies above it.
+pub(crate) fn overlay_seat(ctx: &egui::Context) -> egui::Pos2 {
+    let screen = ctx.content_rect();
+    egui::pos2(screen.center().x, screen.bottom() - OVERLAY_PAD)
+}
+
 /// Render one [`SectionLayer`]'s controls: a perimeter-outline checkbox and a
 /// fill-alpha slider whose `0` end is the off state. The perimeter draws only in
 /// the wireframe overlay (the fill draws in Raster regardless), so its tooltip
@@ -532,12 +543,11 @@ impl Demo {
     /// anchors at the bottom edge and grows upward. Always draggable.
     pub(crate) fn render_overlay(&mut self, ctx: &egui::Context) {
         let screen = ctx.content_rect();
-        let pad = 16.0;
         // Cap to roughly the 800x600 layout; full-screen widths stretched the
         // slider strip unusably wide. Falls back to the window width if narrower.
         const OVERLAY_MAX_WIDTH: f32 = 768.0;
         const OVERLAY_MIN_WIDTH: f32 = 280.0;
-        let natural_w = screen.width() - 2.0 * pad;
+        let natural_w = screen.width() - 2.0 * OVERLAY_PAD;
         let area_w = natural_w.clamp(OVERLAY_MIN_WIDTH, OVERLAY_MAX_WIDTH);
 
         let visuals = &ctx.style().visuals;
@@ -547,7 +557,7 @@ impl Demo {
             .corner_radius(visuals.window_corner_radius)
             .inner_margin(10.0);
 
-        let default_bottom_centre = egui::pos2(screen.center().x, screen.bottom() - pad);
+        let default_bottom_centre = overlay_seat(ctx);
 
         // Snapshot the Single-view subject: it IS the rendered row in Single mode,
         // so a picker change needs the same rebuild + Schlegel re-resolve a row

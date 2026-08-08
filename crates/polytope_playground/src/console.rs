@@ -47,6 +47,18 @@ impl RotateScene {
             },
         ));
         c.register(loam_egui::cmd(
+            "hud",
+            "toggle the top-left loam-text state readout (w, t, rate, planes)",
+            |_args, demo: &mut Demo, out| {
+                demo.show_text_hud = !demo.show_text_hud;
+                out.line(format!(
+                    "hud: {}",
+                    if demo.show_text_hud { "on" } else { "off" }
+                ));
+                Ok(())
+            },
+        ));
+        c.register(loam_egui::cmd(
             "controls",
             "toggle the bottom controls overlay (H)",
             |_args, demo: &mut Demo, _out| {

@@ -83,6 +83,7 @@ mod composer;
 mod console;
 mod consts;
 mod filmstrip;
+mod hud;
 mod hypergimbal;
 mod physics;
 mod projections;
@@ -407,6 +408,7 @@ impl Demo {
             },
             show_formula: false,
             show_controls: true,
+            show_text_hud: false,
             view_mode: ViewMode::Shapes,
             strip_w: true,
             strip_t: false,
@@ -863,6 +865,10 @@ pub(crate) struct RotateScene {
     /// arrive before `ui`, so this one-frame-stale value gates demo hotkeys
     /// (Space / R / arrows): when egui holds keyboard focus they must not fire.
     last_egui_keyboard: bool,
+    text_hud: hud::TextHud,
+    /// Readout placement, taken from egui's chrome-free rect in `ui` and
+    /// consumed by `record` later in the same frame.
+    hud_seat: hud::HudSeat,
 }
 
 /// Lower bound on a visible section-layer fill alpha; below this the cap reads
@@ -924,6 +930,8 @@ impl RotateScene {
             shader_owner: ctx.shader_db.new_owner(),
             console: Self::build_console(),
             last_egui_keyboard: false,
+            text_hud: hud::TextHud::new(ctx.rd)?,
+            hud_seat: hud::HudSeat::default(),
         })
     }
 }
@@ -942,6 +950,9 @@ impl loam_app::shell::Scene for RotateScene {
     }
 
     fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
+        // Read before this scene's own windows go up: the shell's menu bar is
+        // the only panel, so this is the free region the readout seats in.
+        self.hud_seat = hud::hud_seat(ctx.available_rect(), ctx.pixels_per_point());
         self.demo.ui(ctx, frame);
         // Pump pending tracing events into the scrollback before rendering it,
         // so mirrored log lines show this frame.
@@ -966,7 +977,9 @@ impl loam_app::shell::Scene for RotateScene {
     }
 
     fn record(&mut self, ctx: &mut loam_app::RenderCtx<'_>) -> Result<()> {
-        self.demo.record(ctx.rd, ctx.encoder, ctx.view)
+        self.demo.record(ctx.rd, ctx.encoder, ctx.view)?;
+        self.text_hud.record(ctx, &self.demo, self.hud_seat);
+        Ok(())
     }
 
     fn title(&self, fps: f32) -> std::borrow::Cow<'static, str> {

@@ -35,16 +35,18 @@
 //!
 //! The saving is real and large, and it is entirely confined to slices the
 //! slab test fires on. At every slice still inside the bounding 4-balls the
-//! cull is a net LOSS of 2% to 7%, an order of magnitude outside the noise
-//! floor and growing with the row: that is the `select` + `abs` + compare it
-//! adds per body per march step, paid on every step and never firing. So the
-//! optimization taxes the state the user looks at to speed up the state they
-//! scrub THROUGH.
+//! cull is a net LOSS of 2% to 7%, growing with the row: that is the
+//! `select` plus `abs` plus compare it adds per body per march step, paid on
+//! every step and never firing. So the optimization taxes the state the user
+//! looks at to speed up the state they scrub THROUGH.
 //!
-//! The table is one process run. Two further runs put every one of the eight
-//! in-slice cells negative again, over -10 to -98 us, and the out-of-slice
-//! saving at 104 to 308 us, so the sign of the trade is not a sampling
-//! accident in either direction.
+//! The table is one process run, and the evidence for the sign is repetition
+//! rather than any single cell's margin. Across four runs all thirty-two
+//! in-slice cells came out negative, -9.8 to -97.6 us, and every out-of-slice
+//! cell positive, +98 to +349 us. Individual cells are not reliably clear of
+//! `noise_us`, which ranged 0.4 to 62.6 us and on one run exceeded the 3-body
+//! `w = 0` delta outright; the 8-body block is where the loss is legible cell
+//! by cell.
 //!
 //! Against that it also costs bit-exactness: at `w = 0.75` and `w = 1.2` the
 //! culled image differs from the shipped one in 35 to 95 bytes of a 3.7 MB

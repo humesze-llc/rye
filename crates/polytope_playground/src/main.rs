@@ -16,6 +16,7 @@
 //!
 //! ## Controls
 //!
+//! - **Mouse left-drag on a hypergimbal ring**: rotate in that ring's plane.
 //! - **Mouse left-drag from a shape**: aim and release to throw it into the
 //!   zero-g chamber; the drag's direction and length set the throw.
 //! - **Mouse left-drag elsewhere**: orbit camera.
@@ -82,6 +83,7 @@ mod composer;
 mod console;
 mod consts;
 mod filmstrip;
+mod hypergimbal;
 mod physics;
 mod projections;
 mod render;
@@ -238,6 +240,16 @@ impl Demo {
             ctx.rd.sample_count(),
         );
 
+        // Hypergimbal rings: no depth attachment, so the manipulator draws
+        // over whatever it is manipulating. A handle the subject can hide is
+        // a handle the user cannot grab.
+        let gimbal_node = LineRasterNode::new(
+            &ctx.rd.device,
+            ctx.rd.target_format(),
+            DepthMode::Off,
+            ctx.rd.sample_count(),
+        );
+
         // Point-disc rasterizer for the optional vertex + cell-center sprite
         // overlay. No depth attachment: these are always-visible debug
         // markers. A ReadOnly test hid a vertex behind its own cap, since
@@ -308,6 +320,8 @@ impl Demo {
             physics,
             throw_drag: None,
             left_was_down: false,
+            gimbal: hypergimbal::GimbalUi::default(),
+            gimbal_node,
             camera,
             orbit,
             freecam,
@@ -429,9 +443,15 @@ impl Demo {
         // Refreshed here rather than at every resize site because this is the
         // one place that reads it.
         self.camera.aspect = viewport.0 as f32 / viewport.1.max(1) as f32;
+        // The gimbal gets the left button first: its rings sit in front of
+        // the shapes, so a press that lands on one is a rotation gesture, not
+        // a throw. It also reads `left_was_down` before `update_throw`
+        // refreshes it, which is why it runs ahead of that call.
+        let pointer_free = self.throw_enabled(ctx.ui_has_focus);
+        let gimbaling = self.update_gimbal(pointer_free, &ctx.input, viewport);
         // Before the physics step, so the frame a flick is released on also
         // integrates it and `body_upload_needed` sees a moving world.
-        let aiming = self.update_throw(self.throw_enabled(ctx.ui_has_focus), &ctx.input, viewport);
+        let aiming = self.update_throw(pointer_free && !gimbaling, &ctx.input, viewport);
 
         // Slice scrub (w axis). Clamp to the surface-scaled range so the
         // keyboard scrub matches the slider bounds after `surface scale`.
@@ -513,12 +533,13 @@ impl Demo {
         if !ctx.ui_has_focus {
             match self.camera_mode {
                 CameraMode::Orbit => {
-                    // A flick owns the left button for the whole drag, so the
-                    // orbit must not read it as a look-around. Masking the
-                    // button rather than skipping `advance` keeps scroll-zoom
-                    // and the frame rebuild live while aiming.
+                    // A flick or a held gimbal ring owns the left button for
+                    // the whole drag, so the orbit must not read it as a
+                    // look-around. Masking the button rather than skipping
+                    // `advance` keeps scroll-zoom and the frame rebuild live
+                    // while aiming.
                     let mut input = ctx.input;
-                    input.left_mouse_down &= !aiming;
+                    input.left_mouse_down &= !(aiming || gimbaling);
                     self.orbit
                         .advance(input, &mut self.camera, &EuclideanR3, dt_secs);
                 }

@@ -6,6 +6,8 @@
 //!   [`wgpu::TextureView`].
 //! - [`lattice`]: pixel-space layout primitive ([`Viewport`]) for restricting a render
 //!   node to a sub-region of the framebuffer (e.g. carving out an egui side-panel area).
+//! - [`hypergimbal`]: the six SO(4) rotation planes as grabbable rings, from the
+//!   stereographic 16-cell projection; ring geometry, picking, and the drag-to-rotor map.
 //! - [`raymarch`]: ready-made fullscreen-triangle ray-march nodes (Euclidean, geodesic,
 //!   hyperslice 4D); the engine's main render path until rasterised geometry shows up.
 //!
@@ -17,6 +19,7 @@ pub mod depth;
 pub mod device;
 pub mod gpu_timer;
 pub mod graph;
+pub mod hypergimbal;
 pub mod lattice;
 pub mod line_raster;
 pub mod line_raster_static_r4;

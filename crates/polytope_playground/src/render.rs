@@ -151,6 +151,12 @@ impl Demo {
                 let _scope = loam_time::frame_trace::scope("pp-physics-overlay");
                 self.record_physics_overlay(rd, encoder, view);
             }
+            // Manipulator after everything else: the rings have to stay
+            // grabbable whatever ends up in front of them.
+            {
+                let _scope = loam_time::frame_trace::scope("pp-gimbal");
+                self.record_gimbal(rd, encoder, view);
+            }
             Ok(())
         }
     }

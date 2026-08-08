@@ -442,6 +442,12 @@ pub(crate) struct Demo {
     /// Last frame's left-button state, so the flick can act on the press and
     /// release EDGES; `FrameInput` reports the level.
     pub(crate) left_was_down: bool,
+    /// Hypergimbal overlay state: visibility, hover, and the held ring. Ring
+    /// geometry is constant, so nothing about the widget's shape lives here.
+    pub(crate) gimbal: crate::hypergimbal::GimbalUi,
+    /// Depth-free line pass for the hypergimbal rings, drawn last so the
+    /// manipulator is never hidden by the geometry it manipulates.
+    pub(crate) gimbal_node: loam_render::LineRasterNode,
     pub(crate) camera: Camera<EuclideanR3>,
     pub(crate) orbit: OrbitController<EuclideanR3>,
     /// Freecam preset (mouse-look + WASD + cursor grab); drives the camera in
@@ -1026,6 +1032,7 @@ impl Demo {
         // Drop an aim in progress: its slot names a body the respawn below
         // despawns, and releasing over the fresh row would throw a stranger.
         self.throw_drag = None;
+        self.gimbal.drag = None;
         let slots = self.render_row().len();
         self.physics.respawn(slots, self.effective_body_size());
         self.write_all(Rotor4::IDENTITY);

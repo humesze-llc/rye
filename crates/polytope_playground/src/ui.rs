@@ -142,6 +142,12 @@ impl Demo {
             // Sticky toggles: clicking a checkbox does not close the
             // dropdown, so several flags can be flipped without reopening.
             ui.checkbox(&mut self.show_controls, "Rotation controls (H)");
+            ui.checkbox(&mut self.gimbal.enabled, "Hypergimbal rings")
+                .on_hover_text(
+                    "Six interlocked rings, one per rotation plane, from the \
+                     stereographic projection of the 16-cell. Drag a ring to \
+                     rotate in its plane.",
+                );
             ui.checkbox(&mut self.show_formula, "Formula popup");
             ui.checkbox(&mut self.example_callout.open, "Example callout");
             // Per-projection mode-annotation callouts are unwired (no
@@ -440,6 +446,13 @@ impl Demo {
                          hard; release to flick it. The chamber is zero-g, so \
                          a thrown shape carries on until it hits a neighbour \
                          and coasts to a stop.",
+                );
+                ui.label(
+                    "• Drag a hypergimbal ring: rotate in that ring's plane. \
+                         The six rings are the six rotation planes, drawn as \
+                         the stereographic projection of a 16-cell; the ring \
+                         under the cursor lights up. Toggle them off under \
+                         View.",
                 );
                 ui.label("• Drag in the viewport: orbit camera.");
                 ui.label(

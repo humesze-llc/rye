@@ -783,7 +783,14 @@ where
             self.app.ui(&egui_ctx, &mut fctx);
         }
 
-        let (frame, swap_view) = self.rd.begin_frame().context("RenderDevice::begin_frame")?;
+        // Scoped for the same reason as the windowed runner: browser surfaces
+        // advertise only `Fifo`, so the compositor's backpressure arrives here
+        // and would otherwise sit in the frame's unattributed remainder.
+        let (frame, swap_view) = {
+            let _scope = loam_time::frame_trace::scope("surface-acquire");
+            self.rd.begin_frame()
+        }
+        .context("RenderDevice::begin_frame")?;
         let render_view = self
             .rd
             .msaa_view()

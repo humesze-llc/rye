@@ -4,8 +4,10 @@
 //! ## Why this matters for fps
 //!
 //! The [`fps`] command alone cannot exceed the display refresh rate when the
-//! surface uses `PresentMode::Fifo` (the default), because `present` blocks at
-//! vsync. `vsync off` swaps the surface to `Mailbox` (or `Immediate` as
+//! surface uses `PresentMode::Fifo` (the default), because the presentation
+//! engine paces the loop at vsync. The block lands on the swapchain acquire in
+//! `RenderDevice::begin_frame`, not on `present`, which only queues the flip.
+//! `vsync off` swaps the surface to `Mailbox` (or `Immediate` as
 //! fallback) so the cap can drive cadence above the display rate; useful for
 //! benchmarking, perf profiling, or chasing input latency.
 //!

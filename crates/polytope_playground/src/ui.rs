@@ -160,11 +160,14 @@ impl Demo {
             // Sticky toggles: clicking a checkbox does not close the
             // dropdown, so several flags can be flipped without reopening.
             ui.checkbox(&mut self.show_controls, "Rotation controls (H)");
-            ui.checkbox(&mut self.gimbal.enabled, "Hypergimbal rings")
+            ui.checkbox(&mut self.gimbal.enabled, "Transform handles")
                 .on_hover_text(
                     "Six interlocked rings, one per rotation plane, from the \
-                     stereographic projection of the 16-cell. Drag a ring to \
-                     rotate in its plane.",
+                     stereographic projection of the 16-cell, plus four \
+                     arrows, one per translation axis. Drag a ring to rotate \
+                     in its plane; drag an arrowhead to slide along its axis. \
+                     The violet arrow is w: it moves the body off the 3D \
+                     slice, so the shape changes rather than travels.",
                 );
             ui.checkbox(&mut self.show_formula, "Formula popup");
             ui.checkbox(&mut self.example_callout.open, "Example callout");
@@ -479,7 +482,17 @@ impl Demo {
                          that ring's plane. The six rings stand on that body \
                          and are the six rotation planes, drawn as the \
                          stereographic projection of a 16-cell; the ring under \
-                         the cursor lights up. Toggle them off under View.",
+                         the cursor lights up. Rings sharing a hue are a \
+                         plane and its orthogonal complement, so xy and zw \
+                         face each other. Toggle them off under View.",
+                );
+                ui.label(
+                    "• Drag an arrowhead: slide the selected body along that \
+                         axis. Red, green and blue are x, y and z. Violet is \
+                         w, the axis with no direction on screen: it points \
+                         away from all three, and dragging it moves the body \
+                         off the 3D slice, so what changes is the shape of \
+                         the cross-section, not where the body sits.",
                 );
                 ui.label("• Drag in the viewport: orbit camera.");
                 ui.label(

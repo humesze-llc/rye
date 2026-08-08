@@ -170,9 +170,27 @@ pub fn current_state() -> CursorState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, PoisonError};
+
+    /// The request/take pairs below drive process-global atomics, and cargo
+    /// runs tests in one binary on parallel threads, so without this every
+    /// test in this module races every other for the same pending slot. It
+    /// went unnoticed because the window is a few instructions wide: the
+    /// suite only failed under a full-workspace run, and passed on every
+    /// re-run of the crate alone. Recover from poisoning rather than
+    /// propagate it, so one failing test reports its own assertion instead
+    /// of poisoning its four siblings into a confusing cascade.
+    static CURSOR_GLOBALS: Mutex<()> = Mutex::new(());
+
+    fn serialized() -> std::sync::MutexGuard<'static, ()> {
+        CURSOR_GLOBALS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
 
     #[test]
     fn round_trip_grab_mode() {
+        let _guard = serialized();
         let _ = take_pending();
         request_grab_mode(GrabMode::Locked);
         let (grab, _) = take_pending();
@@ -186,6 +204,7 @@ mod tests {
 
     #[test]
     fn round_trip_visibility() {
+        let _guard = serialized();
         let _ = take_pending();
         request_cursor_visible(false);
         let (_, vis) = take_pending();
@@ -197,6 +216,7 @@ mod tests {
 
     #[test]
     fn convenience_pairs_set_both() {
+        let _guard = serialized();
         let _ = take_pending();
         request_grab();
         let (g, v) = take_pending();
@@ -211,6 +231,7 @@ mod tests {
 
     #[test]
     fn current_state_reads_applied_value() {
+        let _guard = serialized();
         mark_applied(GrabMode::Confined, false);
         let s = current_state();
         assert_eq!(s.grab, GrabMode::Confined);
@@ -223,6 +244,7 @@ mod tests {
     // so the runner doesn't re-warp every frame.
     #[test]
     fn warp_to_center_is_one_shot() {
+        let _guard = serialized();
         let _ = take_pending_warp_center();
 
         assert!(!take_pending_warp_center());

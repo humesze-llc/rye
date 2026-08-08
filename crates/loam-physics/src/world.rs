@@ -1936,11 +1936,14 @@ mod tests {
         /// step, and must actually bind at least once: a solver that never
         /// applied friction would satisfy the inequality vacuously.
         ///
-        /// The bound is on the state each step leaves behind rather than merely
-        /// in expectation only because every contact in these fixtures slides
-        /// on every iteration and so reaches the tangent clamp.
-        /// [`solve_normal_then_tangent`] promises no more than that: an
-        /// iteration whose tangent branch returns early exits outside the cone.
+        /// Holding at the step boundary is a property of these fixtures, not
+        /// a solver guarantee. [`solve_normal_then_tangent`] leaves `jt`
+        /// outside the cone when its tangent branch returns early on an
+        /// iteration whose `jt` an earlier iteration accumulated and whose
+        /// `jn` the normal solve then shrank beneath it. These fixtures do
+        /// reach that early return with `jt` nonzero, but never with `jn`
+        /// reduced that far, so the state each step leaves behind stays
+        /// inside the cone.
         fn assert_tangent_impulse_stays_inside_the_coulomb_cone<S>(
             mut world: World<S>,
             slider: BodyId,

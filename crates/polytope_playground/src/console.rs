@@ -849,6 +849,31 @@ mod tests {
     use super::*;
     use loam_app::shell::SceneRegistry;
 
+    /// A `--script` run is unattended by design, so a line naming a command
+    /// this build no longer registers would fail into the scrollback where
+    /// nobody is looking and the run would still exit clean. Pin the shipped
+    /// example against the live registry.
+    #[test]
+    fn the_shipped_script_parses_and_every_line_names_a_registered_command() {
+        let script =
+            loam_app::script::Script::parse(include_str!("../console-scripts/impulse-bars.script"))
+                .expect("the shipped script parses");
+        assert!(!script.steps().is_empty(), "the example schedules nothing");
+        let console = RotateScene::build_console();
+        for step in script.steps() {
+            let name = step
+                .command
+                .split_whitespace()
+                .next()
+                .expect("parse rejects an empty command");
+            assert!(
+                console.has_command(name),
+                "`{name}` is not registered (line: `{}`)",
+                step.command
+            );
+        }
+    }
+
     /// Under `--embed=1` the menu bar is hidden, so the console is the only
     /// way to reach another scene: losing this registration strands an embed
     /// on its boot scene.

@@ -63,6 +63,7 @@ pub mod frame_pacing;
 pub mod freecam;
 pub mod keymap;
 pub mod log;
+pub mod script;
 pub mod shell;
 pub mod trace;
 pub mod version;
@@ -1198,6 +1199,13 @@ pub(crate) const FRAME_LOOP_SECTIONS: &[&str] = &[
 impl<A: App> Runner<A> {
     fn redraw(&mut self, elwt: &ActiveEventLoop, win: &Arc<Window>) {
         if self.minimized {
+            return;
+        }
+        // A `--script` run holds no `ActiveEventLoop`, so it publishes
+        // completion here instead. Read before the frame's work so the last
+        // scripted frame is the last one presented.
+        if script::exit_requested() {
+            elwt.exit();
             return;
         }
         // Pending vsync transitions from the `vsync` console command. Applied

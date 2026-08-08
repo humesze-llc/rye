@@ -43,6 +43,9 @@
 //! - `embed=1`: hide the shell menu bar for page embeds (any value but `0`
 //!   and `false` enables it). The `scene` command is then the only in-app
 //!   switcher.
+//! - `script=path` (native): run a file of `<frame> <console command>` lines
+//!   against the rotate scene's console and exit when it ends. See
+//!   [`loam_app::script`] and `console-scripts/impulse-bars.script`.
 
 use anyhow::{anyhow, Result};
 use glam::{Mat4, Vec2, Vec3, Vec4};
@@ -50,6 +53,7 @@ use loam_app::{
     args::Args,
     egui,
     freecam::{CursorMode, Freecam},
+    script::{Script, ScriptDriver, ScriptStatus},
     AssetEvent, Camera, CameraController, FrameCtx, OrbitController, RunConfig, SetupCtx, ShaderDb,
     ShaderOwner,
 };
@@ -867,6 +871,10 @@ pub(crate) struct RotateScene {
     /// Readout placement, taken from egui's chrome-free rect in `ui` and
     /// consumed by `record` later in the same frame.
     hud_seat: hud::HudSeat,
+    /// `--script=<path>` playhead, dropped once it has asked the runner to
+    /// exit. It drives this scene's console only: switching scenes mid-script
+    /// drops the driver with the scene, and the run then never ends itself.
+    script: Option<ScriptDriver>,
 }
 
 /// Lower bound on a visible section-layer fill alpha; below this the cap reads
@@ -930,7 +938,25 @@ impl RotateScene {
             last_egui_keyboard: false,
             text_hud: hud::TextHud::new(ctx.rd)?,
             hud_seat: hud::HudSeat::default(),
+            script: load_script(&Args::current())?,
         })
+    }
+}
+
+/// Build the `--script=<path>` playhead, or `None` when the flag is absent.
+/// A bad path or a malformed file fails setup rather than booting a scene the
+/// caller did not ask for.
+fn load_script(args: &Args) -> Result<Option<ScriptDriver>> {
+    if args.has_bare_flag("script") {
+        return Err(anyhow!(
+            "--script needs its path attached: --script=path/to/file.script"
+        ));
+    }
+    match args.get("script") {
+        Some(path) => Ok(Some(ScriptDriver::new(Script::load(
+            std::path::Path::new(path),
+        )?))),
+        None => Ok(None),
     }
 }
 
@@ -944,6 +970,14 @@ impl loam_app::shell::Scene for RotateScene {
     }
 
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
+        // Ahead of the demo's own update so a scripted command lands in the
+        // same frame's simulation and UI as the frame index it names.
+        if let Some(driver) = self.script.as_mut() {
+            if driver.advance(&mut self.console, &mut self.demo) == ScriptStatus::Finished {
+                self.script = None;
+                loam_app::script::request_exit();
+            }
+        }
         self.demo.update(ctx);
     }
 
@@ -1355,6 +1389,37 @@ mod section_command_tests {
         );
         // Bare query reports without mutating.
         assert_eq!(run(0.7, &[]), (0.7, true), "bare query leaves the field");
+    }
+}
+
+#[cfg(test)]
+mod script_arg_tests {
+    use super::*;
+
+    /// No `script=` key means no driver: the flag has to stay opt-in or every
+    /// ordinary run would exit on its own.
+    #[test]
+    fn no_script_argument_leaves_the_scene_undriven() {
+        assert!(load_script(&Args::default()).unwrap().is_none());
+    }
+
+    /// `--script path` (the space form the shell makes natural) drops the path
+    /// as a positional, so without this diagnosis the run would boot the
+    /// default scene and look like the script did nothing.
+    #[test]
+    fn the_space_separated_form_is_diagnosed_rather_than_ignored() {
+        let args = Args::from_argv(["--script", "console-scripts/impulse-bars.script"]);
+        let err = load_script(&args).expect_err("a bare --script is not a silent default");
+        assert!(format!("{err:#}").contains("--script="), "{err:#}");
+    }
+
+    /// A path that does not resolve fails setup instead of booting a scene the
+    /// caller did not ask for.
+    #[test]
+    fn an_unreadable_script_path_fails_setup() {
+        let args = Args::from_pairs([("script", "no-such-directory-for-a-script/x.script")]);
+        let err = load_script(&args).expect_err("missing file");
+        assert!(format!("{err:#}").contains("x.script"), "{err:#}");
     }
 }
 

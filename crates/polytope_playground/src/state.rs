@@ -777,7 +777,7 @@ impl Demo {
 
     /// Per-animation-second angular velocity (`rate_scale`-independent). Active
     /// mode sums the toggled basis bivectors; Composer delegates to the seq walker.
-    /// Active composes its rotor as a *product* ([`Self::active_rotor`]), so this
+    /// Active composes its rotor as a *product* ([`compose_active_rotor`]), so this
     /// bivector is exact only for a single active plane (BCH-trivial); Composer's
     /// sum semantics make its omega exact.
     pub(crate) fn omega_animation(&self) -> Bivector4 {

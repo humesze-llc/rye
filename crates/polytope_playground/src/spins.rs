@@ -2,8 +2,8 @@
 //! rendered row slot, held apart from that body's physics orientation and
 //! composed with it at [`crate::physics::composed_rotor`].
 //!
-//! One store per rendered row, indexed by the slot index
-//! [`crate::physics::PlaygroundPhysics`] uses and synced to the row's length
+//! One store per rendered row, indexed by the slot index that
+//! [`crate::physics::PlaygroundPhysics`] uses, synced to the row's length
 //! at the same choke point ([`crate::state::Demo::rebuild_bodies`]). Every
 //! rotation control writes exactly one slot, [`SlotSpins::selected`], which a
 //! press on a body picks; the animation path advances all of them, each from

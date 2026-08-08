@@ -175,7 +175,7 @@ fn wolfe_sdf_function(
         r#"
 fn {fn_name}(p: vec4<f32>) -> f32 {{
     let inradius = CELL_INRADIUS_UNIT;
-    // Phase 1: max plane distance + initial active plane.
+    // First pass: the farthest face plane, and which one it is.
     var max_d: f32 = -1.0e9;
     var max_i: u32 = 0u;
     for (var i: u32 = 0u; i < {face_count}u; i = i + 1u) {{

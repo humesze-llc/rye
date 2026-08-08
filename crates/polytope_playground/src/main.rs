@@ -85,6 +85,7 @@ mod filmstrip;
 mod physics;
 mod projections;
 mod render;
+mod s3;
 mod sections;
 mod shapes;
 mod shell;

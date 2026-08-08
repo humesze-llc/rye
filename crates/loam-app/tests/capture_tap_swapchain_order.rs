@@ -33,6 +33,11 @@ const SCENE_FORMAT: TextureFormat = TextureFormat::Bgra8UnormSrgb;
 /// linear segment.
 const SCENE_LINEAR: [f64; 3] = [0.25, 0.5, 0.75];
 
+/// Stand-in for what the UI pass leaves in the scene target after the pre-egui
+/// tap has already composited. Shares no channel value with `SCENE_LINEAR`, so
+/// a composite that republished stale bits fails on every channel.
+const SCENE_LINEAR_AFTER_UI: [f64; 3] = [0.9, 0.1, 0.4];
+
 /// Swapchain contents before any of the frame's passes touch it, in the
 /// attachment's BGRA byte order. Opaque magenta: nothing the scene colour
 /// could be confused with.
@@ -58,12 +63,12 @@ fn encoded_byte(linear: f64) -> u8 {
     (linear_to_srgb(linear) * 255.0).round() as u8
 }
 
-/// `SCENE_LINEAR` after encoding, in the attachments' BGRA byte order.
-fn expected_bgra() -> [u8; 4] {
+/// A linear triple after encoding, in the attachments' BGRA byte order.
+fn expected_bgra(linear: [f64; 3]) -> [u8; 4] {
     [
-        encoded_byte(SCENE_LINEAR[2]),
-        encoded_byte(SCENE_LINEAR[1]),
-        encoded_byte(SCENE_LINEAR[0]),
+        encoded_byte(linear[2]),
+        encoded_byte(linear[1]),
+        encoded_byte(linear[0]),
         255,
     ]
 }
@@ -125,19 +130,23 @@ impl Probe {
         self.queue.submit(Some(encoder.finish()));
     }
 
+    fn fill_scene(&self, linear: [f64; 3]) {
+        self.fill(
+            &self.scene_view,
+            Color {
+                r: linear[0],
+                g: linear[1],
+                b: linear[2],
+                a: 1.0,
+            },
+        );
+    }
+
     /// The state both attachments are in once the scene pass has run and
     /// before anything writes the swapchain.
     fn record_scene(&self) {
         self.fill(&self.swap_view, unwritten_color());
-        self.fill(
-            &self.scene_view,
-            Color {
-                r: SCENE_LINEAR[0],
-                g: SCENE_LINEAR[1],
-                b: SCENE_LINEAR[2],
-                a: 1.0,
-            },
-        );
+        self.fill_scene(SCENE_LINEAR);
     }
 
     fn run_composite(&self) {
@@ -288,7 +297,7 @@ fn swapchain_holds_no_scene_pixels_until_the_composite_runs_gpu_probe() {
     let after = read_back(&probe, &probe.swap);
     assert_every_texel(
         &after,
-        expected_bgra(),
+        expected_bgra(SCENE_LINEAR),
         TOLERANCE,
         "swapchain after the composite",
     );
@@ -306,7 +315,7 @@ fn composite_leaves_the_swapchain_holding_srgb_encoded_channels_gpu_probe() {
     probe.record_scene();
     probe.run_composite();
 
-    let expected = expected_bgra();
+    let expected = expected_bgra(SCENE_LINEAR);
     assert_eq!(
         expected,
         [225, 188, 137, 255],
@@ -339,4 +348,27 @@ fn a_repeated_composite_leaves_the_swapchain_unchanged_gpu_probe() {
     probe.run_composite();
     let twice = read_back(&probe, &probe.swap);
     assert_eq!(once, twice, "a second composite changed the swapchain");
+}
+
+/// The runner's pre-egui tap composites, then lets the UI pass keep painting
+/// into the scene target, then composites again for presentation. The presented
+/// bits must be the post-UI scene, so the second composite has to resample
+/// rather than leave the first one's output standing. Without this the
+/// diagnostic tap would freeze the presented frame at its pre-UI state.
+#[test]
+#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+fn the_composite_after_a_diagnostic_one_republishes_the_post_ui_scene_gpu_probe() {
+    let probe = Probe::new();
+    probe.record_scene();
+    probe.run_composite();
+
+    probe.fill_scene(SCENE_LINEAR_AFTER_UI);
+    probe.run_composite();
+
+    assert_every_texel(
+        &read_back(&probe, &probe.swap),
+        expected_bgra(SCENE_LINEAR_AFTER_UI),
+        TOLERANCE,
+        "swapchain after the presenting composite",
+    );
 }

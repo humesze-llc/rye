@@ -1487,10 +1487,10 @@ impl<A: App> Runner<A> {
         //     on this path, so nothing resolves.
         //
         // Capture taps read the swapchain texture, which on the composite path
-        // holds nothing until `composite_to_swap` runs. Each tap therefore
-        // orders a composite ahead of its readback, so both stages read the
-        // gamma-encoded bits the presentation engine will get rather than an
-        // untouched surface.
+        // carries none of the frame until `composite_to_swap` runs. Each tap
+        // therefore orders a composite ahead of its readback, so it gets
+        // gamma-encoded pixels of the stage it names rather than an untouched
+        // surface.
         //   - `pre`-egui:  after App::record, before ui.paint. MSAA must be off (the
         //     multisampled attachment isn't directly copyable). The pre tap reads
         //     just the 3D pass output.

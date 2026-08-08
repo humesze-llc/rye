@@ -25,6 +25,28 @@ impl RotateScene {
                 Ok(())
             },
         ));
+        // Scripted counterpart to clicking a body: the same selection the
+        // press ray sets, without a hand on the mouse, so a rotation a bug
+        // report or a capture describes can be reproduced exactly.
+        c.register(loam_egui::cmd(
+            "select",
+            "aim the rotation controls at one body: `select <slot>` (a click on the body does the same)",
+            |args, demo: &mut Demo, out| {
+                let [slot] = args else {
+                    anyhow::bail!("usage: select <slot>");
+                };
+                let slot: usize = slot
+                    .parse()
+                    .map_err(|e| anyhow!("invalid slot `{slot}`: {e}"))?;
+                let slots = demo.render_row().len();
+                if slot >= slots {
+                    anyhow::bail!("slot {slot} is outside the rendered row of {slots}");
+                }
+                demo.spins.select_picked(Some(slot));
+                out.line(format!("select: slot {slot} of {slots}"));
+                Ok(())
+            },
+        ));
         // Scripted flick. Takes the drag in pixels rather than an impulse so
         // there is exactly one drag-to-impulse mapping in the demo, and so a
         // capture or a bug report can name the same gesture the mouse makes.

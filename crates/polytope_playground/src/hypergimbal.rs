@@ -14,17 +14,13 @@ use loam_render::device::RenderDevice;
 use loam_render::hypergimbal::{Hypergimbal, Ring, RingStyle};
 use loam_shape::LineMesh;
 
-use crate::consts::{BASE_ROTATION_RATE, BODY_Y};
-use crate::physics::ndc_from_pixels;
+use crate::consts::BASE_ROTATION_RATE;
+use crate::physics::{ndc_from_pixels, PlaygroundPhysics};
 use crate::state::{Demo, RotationMode, ViewMode};
-
-/// Widget centre: the row's midpoint at body height, so the rings frame the
-/// shapes rather than sitting off to one side.
-const CENTER: Vec3 = Vec3::new(0.0, BODY_Y, 0.0);
 
 /// Rings reach `(1 + √2)·scale` from the centre, so this puts the outer edge
 /// at 1.33 world units: just under twice `BODY_SIZE`, enough to enclose the
-/// leading shape without reaching its neighbour's column.
+/// shape it stands on without reaching its neighbour's column.
 const SCALE: f32 = 0.55;
 
 /// Grab radius in world units, about seven pixels at the startup framing
@@ -35,13 +31,21 @@ const PICK_TOLERANCE: f32 = 0.09;
 /// Colour for the ring under the cursor, or held.
 const HIGHLIGHT: [f32; 4] = [1.0, 0.94, 0.55, 1.0];
 
-/// Widget placement. Constant: the rings are the ambient rotation planes, so
-/// nothing about them tracks the subject's pose.
-pub(crate) fn widget() -> Hypergimbal {
+/// Widget placement. The rings are the ambient rotation planes, so their
+/// shape never tracks the subject's orientation; only where they stand does.
+pub(crate) fn widget(center: Vec3) -> Hypergimbal {
     Hypergimbal {
-        center: CENTER,
+        center,
         scale: SCALE,
     }
+}
+
+/// Where the rings stand: the live centre of the slot the controls are aimed
+/// at. A widget parked at the row's midpoint while it turns one body claims to
+/// turn the row, and there is nothing else on screen saying which body a drag
+/// will reach.
+pub(crate) fn gimbal_center(physics: &PlaygroundPhysics, slot: usize, slots: usize) -> Vec3 {
+    physics.pose(slot, slots, Rotor4::IDENTITY).position_r3()
 }
 
 /// A held ring, anchored at the press edge so the whole drag is measured
@@ -105,6 +109,15 @@ impl Demo {
         self.gimbal.enabled && self.view_mode != ViewMode::Filmstrip
     }
 
+    /// This frame's widget, standing on the selected body.
+    fn gimbal_widget(&self) -> Hypergimbal {
+        widget(gimbal_center(
+            &self.physics,
+            self.selected_slot(),
+            self.render_row().len(),
+        ))
+    }
+
     /// Update the hypergimbal against this frame's input. Returns `true`
     /// while a ring is held, which is what keeps the flick gesture and the
     /// orbit off the left button for the rest of the drag.
@@ -122,7 +135,7 @@ impl Demo {
             self.gimbal.hover = None;
             return false;
         }
-        let gimbal = widget();
+        let gimbal = self.gimbal_widget();
         let down = input.buttons.left.down;
         let pressed = down && !self.left_was_down;
 
@@ -137,7 +150,7 @@ impl Demo {
                     ring,
                     grab: hit,
                     base_displayed: self.active_displayed_angle(ring.plane as usize),
-                    base_rotor: self.rot_state,
+                    base_rotor: self.selected_rotor(),
                 })
             });
         }
@@ -165,32 +178,37 @@ impl Demo {
         true
     }
 
+    /// Turn a held ring into an edit of the SELECTED slot: the widget stands
+    /// on that body, so a drag can only reach the one under the rings.
     fn apply_gimbal_drag(&mut self, drag: &GimbalDrag, cursor: Vec3) {
         match self.rotation_mode {
             RotationMode::Active => {
                 let plane_idx = drag.ring.plane as usize;
-                let spin = if self.active[plane_idx] {
+                let spin = if self.spins.selected_spin().active[plane_idx] {
                     self.rot_time * BASE_ROTATION_RATE
                 } else {
                     0.0
                 };
-                self.base_angles[plane_idx] = dragged_base_angle(drag, cursor, spin);
-                self.rot_state = self.active_rotor();
+                self.spins.selected_spin_mut().base_angles[plane_idx] =
+                    dragged_base_angle(drag, cursor, spin);
+                self.apply_selected_active_edit();
             }
             RotationMode::Composer => {
-                self.rot_state =
+                self.spins.selected_spin_mut().rotor =
                     (drag.ring.drag_rotor(drag.grab, cursor) * drag.base_rotor).normalize();
+                self.rebuild_bodies();
             }
         }
-        self.write_all(self.rot_state);
     }
 
     /// Draw the six rings. Last pass of the frame and depth-free: a
     /// manipulator the scene can hide is a manipulator that cannot be
     /// grabbed.
     ///
-    /// The rings are fixed in world space, so the mesh is rebuilt only when
-    /// the highlight moves, not per frame.
+    /// The mesh is built about the ORIGIN and carried to the selected body by
+    /// a translation folded into the view-projection, so following a body that
+    /// moves every frame costs a matrix multiply rather than a mesh rebuild
+    /// and upload. Only the highlight can dirty the geometry.
     pub(crate) fn record_gimbal(
         &mut self,
         rd: &RenderDevice,
@@ -210,7 +228,7 @@ impl Demo {
             mesh.segments.clear();
             mesh.colors.clear();
             mesh.widths.clear();
-            widget().append_line_mesh(&style, mesh);
+            widget(Vec3::ZERO).append_line_mesh(&style, mesh);
             self.gimbal.built_highlight = highlight;
             self.gimbal_node.upload::<EuclideanR3, 3>(
                 &rd.device,
@@ -224,8 +242,10 @@ impl Demo {
         let cfg = &rd.surface_bundle.config;
         let view_dir = self.camera.view();
         let aspect = cfg.width as f32 / cfg.height as f32;
+        let center = gimbal_center(&self.physics, self.selected_slot(), self.render_row().len());
         let view_proj = Mat4::perspective_rh(60.0_f32.to_radians(), aspect, 0.1, 100.0)
-            * Mat4::look_to_rh(view_dir.position, view_dir.forward, view_dir.up);
+            * Mat4::look_to_rh(view_dir.position, view_dir.forward, view_dir.up)
+            * Mat4::from_translation(center);
         self.gimbal_node.set_camera(
             &rd.queue,
             view_proj,
@@ -238,11 +258,32 @@ impl Demo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consts::BODY_SIZE;
     use loam_app::{Camera, CameraController};
     use loam_camera::OrbitController;
     use loam_math::{Bivector, Plane4, Rotor};
 
     const VIEWPORT: (u32, u32) = (1280, 720);
+
+    /// Widest row the runtime "Add" button reaches, so the placement pins
+    /// cover the furthest a selection can push the widget from the origin.
+    const WIDEST_ROW: usize = crate::consts::MAX_ROW_LEN;
+
+    /// The one placement a single-body row can produce, and the centre the
+    /// ring-geometry pins use when the claim is about the rings rather than
+    /// where they stand. Taken from the layout rather than restated, so it
+    /// cannot drift from [`gimbal_center`].
+    fn row_center() -> Vec3 {
+        gimbal_center(&PlaygroundPhysics::new(1, BODY_SIZE), 0, 1)
+    }
+
+    /// Every centre a selection can put the widget on in a row of `slots`.
+    fn selectable_centers(slots: usize) -> Vec<Vec3> {
+        let physics = PlaygroundPhysics::new(slots, BODY_SIZE);
+        (0..slots)
+            .map(|slot| gimbal_center(&physics, slot, slots))
+            .collect()
+    }
 
     /// Point at great-circle parameter `θ` on the plane's coordinate circle,
     /// matching `loam_render::hypergimbal`'s `p(θ) = a cos θ + b sin θ`.
@@ -298,7 +339,7 @@ mod tests {
     fn the_pixel_to_ray_seam_round_trips_a_world_point() {
         let camera = startup_camera();
         for plane in Plane4::ALL {
-            let ring = widget().ring(plane);
+            let ring = widget(row_center()).ring(plane);
             for step in 0..8 {
                 let world = ring.point(step as f32 / 8.0 * std::f32::consts::TAU);
                 let pixels = pixels_of(&camera, world).expect("ring is in front of the eye");
@@ -310,26 +351,73 @@ mod tests {
         }
     }
 
-    /// The widget is on screen at the startup framing. This is as close as a
-    /// headless test gets to the visual claim: every ring point is in front
-    /// of the eye and inside the NDC square, so nothing is clipped away and
-    /// no ring is behind the camera.
+    /// The widget is on screen at the startup framing WHEREVER the selection
+    /// puts it, out to the widest row. This is as close as a headless test
+    /// gets to the visual claim: every ring point is in front of the eye and
+    /// inside the NDC square, so nothing is clipped away and no ring is
+    /// behind the camera.
     #[test]
-    fn every_ring_is_inside_the_startup_view() {
+    fn every_ring_is_inside_the_startup_view_at_every_selectable_slot() {
         let camera = startup_camera();
-        for plane in Plane4::ALL {
-            let ring = widget().ring(plane);
-            for step in 0..64 {
-                let world = ring.point(step as f32 / 64.0 * std::f32::consts::TAU);
-                let pixels =
-                    pixels_of(&camera, world).unwrap_or_else(|| panic!("{plane:?} behind the eye"));
-                assert!(
-                    (0.0..=VIEWPORT.0 as f32).contains(&pixels.x)
-                        && (0.0..=VIEWPORT.1 as f32).contains(&pixels.y),
-                    "{plane:?} leaves the viewport at {pixels:?}"
-                );
+        for slots in 1..=WIDEST_ROW {
+            for (slot, center) in selectable_centers(slots).into_iter().enumerate() {
+                for plane in Plane4::ALL {
+                    let ring = widget(center).ring(plane);
+                    for step in 0..64 {
+                        let world = ring.point(step as f32 / 64.0 * std::f32::consts::TAU);
+                        let pixels = pixels_of(&camera, world)
+                            .unwrap_or_else(|| panic!("{plane:?} behind the eye"));
+                        assert!(
+                            (0.0..=VIEWPORT.0 as f32).contains(&pixels.x)
+                                && (0.0..=VIEWPORT.1 as f32).contains(&pixels.y),
+                            "{plane:?} on slot {slot} of {slots} leaves the viewport at {pixels:?}"
+                        );
+                    }
+                }
             }
         }
+    }
+
+    /// The rings stand on the body the controls are aimed at: selecting the
+    /// next slot moves the widget by exactly the layout spacing, and nothing
+    /// else about the widget changes. A widget parked at the row's midpoint
+    /// (which is what it was before the row carried per-slot rotations) never
+    /// moves here.
+    #[test]
+    fn the_widget_stands_on_the_selected_body() {
+        for slots in 2..=WIDEST_ROW {
+            let centers = selectable_centers(slots);
+            for slot in 1..slots {
+                let step = centers[slot] - centers[slot - 1];
+                assert!(
+                    (step - Vec3::X * crate::consts::BODY_X_SPACING).length() < 1e-6,
+                    "slot {slot} of {slots} sits {step} from its neighbour"
+                );
+            }
+            // Centred on the row, so the ends are mirror images.
+            assert!((centers[0].x + centers[slots - 1].x).abs() < 1e-6);
+        }
+    }
+
+    /// A body a flick threw carries the rings with it, so the manipulator
+    /// cannot be left behind on the layout position its subject vacated.
+    #[test]
+    fn the_widget_follows_a_thrown_subject() {
+        let slots = 3;
+        let mut physics = PlaygroundPhysics::new(slots, BODY_SIZE);
+        let parked = gimbal_center(&physics, 1, slots);
+        physics.throw(1, glam::Vec4::new(0.0, 0.6, 0.0, 0.0));
+        physics.step(30);
+        let moved = gimbal_center(&physics, 1, slots);
+        assert!(
+            (moved - parked).length() > 0.05,
+            "the rings stayed at {parked} while their subject moved to {moved}"
+        );
+        assert_eq!(
+            gimbal_center(&physics, 0, slots),
+            selectable_centers(slots)[0],
+            "an untouched slot's rings moved"
+        );
     }
 
     /// End to end through the pixel seam: a press aimed at a point on ring
@@ -339,7 +427,7 @@ mod tests {
     #[test]
     fn a_drag_along_a_ring_asks_its_own_plane_for_the_arc_it_swept() {
         let camera = startup_camera();
-        let gimbal = widget();
+        let gimbal = widget(row_center());
         let delta = 0.55_f32;
         for plane in Plane4::ALL {
             // Rings cross on screen, so press where this one is the
@@ -394,7 +482,7 @@ mod tests {
     #[test]
     fn every_plane_is_grabbable_at_the_startup_framing() {
         let camera = startup_camera();
-        let gimbal = widget();
+        let gimbal = widget(row_center());
         const SAMPLES: usize = 48;
         for plane in Plane4::ALL {
             let own = (0..SAMPLES)
@@ -421,7 +509,7 @@ mod tests {
     /// all, so holding the button still cannot drift the subject.
     #[test]
     fn holding_a_ring_still_asks_for_no_rotation() {
-        let gimbal = widget();
+        let gimbal = widget(row_center());
         for plane in Plane4::ALL {
             let ring = gimbal.ring(plane);
             let grab = ring.point(1.3);

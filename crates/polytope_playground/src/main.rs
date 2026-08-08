@@ -92,6 +92,7 @@ mod s3;
 mod sections;
 mod shapes;
 mod shell;
+mod spins;
 mod state;
 mod ui;
 mod wireframe_geom;
@@ -199,7 +200,8 @@ impl Demo {
         // `BodyUniform::default()` (kind = Invalid) so the kernel skips them
         // and the rasterizer draws them instead.
         let surface_mode = SurfaceMode::default();
-        let physics = PlaygroundPhysics::new(row.len(), BODY_SIZE);
+        let row_len = row.len();
+        let physics = PlaygroundPhysics::new(row_len, BODY_SIZE);
         let bodies: Vec<BodyUniform> = row
             .iter()
             .enumerate()
@@ -331,7 +333,7 @@ impl Demo {
             // The `set_bodies` above only touched the CPU-side struct, so the
             // first frame owes the buffer an upload.
             sdf_upload_pending: true,
-            uploaded_rotor: Rotor4::IDENTITY,
+            uploaded_rotors: Vec::new(),
             section_edges,
             parent_wireframe,
             wireframe_enabled: false,
@@ -384,11 +386,7 @@ impl Demo {
             slider_left_held: false,
             slider_right_held: false,
             rotate: false,
-            rot_state: Rotor4::IDENTITY,
-            // xw spin on by default (active[2]): the most characteristic 4D
-            // rotation, so "Spin" shows motion before any checkbox is toggled.
-            active: [false, false, true, false, false, false],
-            base_angles: [0.0; 6],
+            spins: spins::SlotSpins::new(row_len),
             rate_scale: 1.0,
             rot_time: 0.0,
             t_slider_max: T_SLIDER_INITIAL,
@@ -459,8 +457,8 @@ impl Demo {
             self.w_slice = (self.w_slice + dir * W_SCRUB_RATE * dt_secs).clamp(-w_range, w_range);
         }
 
-        // Time scrub (t axis). Mirrors the t-slider drag: rebuild `rot_state`
-        // from the new `rot_time` via `rotor_at_time`, floored at zero.
+        // Time scrub (t axis). Mirrors the t-slider drag: rebuild the row's
+        // rotors from the new `rot_time`, floored at zero.
         let t_dir = (self.slider_right_held as i32 - self.slider_left_held as i32) as f32;
         if t_dir != 0.0 {
             self.rot_time = (self.rot_time + t_dir * T_SCRUB_RATE * dt_secs).max(0.0);
@@ -473,13 +471,13 @@ impl Demo {
                     self.rot_time = T_SLIDER_CAP;
                 }
             }
-            self.rot_state = self.rotor_at_time(self.rot_time);
+            self.recompose_spins_at(self.rot_time);
         }
 
-        // 4D rotation animation. All bodies share one rotor so their slice
-        // signatures are directly comparable. `rot_state` is the spin
-        // baseline; manual-rotation sliders ride on top as a transient offset
-        // composed at write_all time, leaving the spin undisturbed.
+        // 4D rotation animation. Every slot advances on the same clock but
+        // from its OWN baselines and plane mask, so a row whose slots were
+        // never edited stays slice-comparable and one the user aimed at
+        // diverges. See [`Demo::recompose_spins_at`].
         if self.rotate {
             let dt_animation = dt_secs * self.rate_scale;
             self.rot_time += dt_animation;
@@ -494,11 +492,12 @@ impl Demo {
                 }
             }
         }
-        // Recompose `rot_state` each frame: Active rebuilds from `rot_time`,
-        // Composer integrates the omega-bivector into `rot_state` directly.
+        // Recompose the row's rotors each frame: Active rebuilds every slot
+        // from `rot_time`, Composer integrates the omega-bivector into the
+        // selected slot's rotor directly.
         match self.rotation_mode {
             RotationMode::Active => {
-                self.rot_state = self.active_rotor();
+                self.spins.recompose_active(self.rot_time);
             }
             RotationMode::Composer => {
                 if self.rotate {
@@ -506,20 +505,21 @@ impl Demo {
                     let omega = self.omega_animation() * dt_animation;
                     if omega.magnitude_squared() > 0.0 {
                         let delta = omega.exp();
-                        self.rot_state = (delta * self.rot_state).normalize();
+                        let spin = self.spins.selected_spin_mut();
+                        spin.rotor = (delta * spin.rotor).normalize();
                     }
                 }
             }
         }
         // Rigid bodies advance on the tick count, not on `dt_secs`, so a
-        // trajectory is frame-rate independent. `write_all` then reconciles
-        // the world with the rendered row and uploads the resulting poses,
-        // but only on a frame that moved something: see
+        // trajectory is frame-rate independent. `rebuild_bodies` then
+        // reconciles the world with the rendered row and uploads the resulting
+        // poses, but only on a frame that moved something: see
         // [`state::body_upload_needed`] for why the motion test is read first.
         let bodies_moving = !self.physics.at_rest();
         self.physics.step(ctx.n_ticks);
-        if state::body_upload_needed(self.rot_state, self.uploaded_rotor, bodies_moving) {
-            self.write_all(self.rot_state);
+        if state::body_upload_needed(&self.spins, &self.uploaded_rotors, bodies_moving) {
+            self.rebuild_bodies();
         }
 
         // Gate the orbit on `!ui_has_focus` so dragging the egui slider
@@ -609,11 +609,13 @@ impl Demo {
         if self.show_formula {
             let formula = self.formula_string();
             let name = if self.rotation_mode == RotationMode::Active {
-                combo_name(&self.active)
+                combo_name(&self.spins.selected_spin().active)
             } else {
                 None
             };
-            let bivec = self.rot_state.log();
+            // The popup reads the subject the controls are aimed at; a row-wide
+            // rotor no longer exists to read.
+            let bivec = self.selected_rotor().log();
             let default_pos = formula_popup_seat(ctx);
             let popup_frame = egui::Frame::popup(&ctx.style()).inner_margin(8.0);
             // Cap width so a long formula doesn't expand the popup off-screen;
@@ -805,8 +807,8 @@ impl Demo {
             KeyCode::KeyR if pressed => self.reset(),
             KeyCode::KeyH if pressed => self.show_controls = !self.show_controls,
             KeyCode::KeyT if pressed => {
-                // Pause / resume only; rot_state is untouched so orientation
-                // holds across the pause.
+                // Pause / resume only; no rotor is touched so every slot's
+                // orientation holds across the pause.
                 self.rotate = !self.rotate;
             }
             // Space also toggles rotation, but not in freecam where it is the
@@ -822,14 +824,15 @@ impl Demo {
             {
                 self.freecam.on_alt(pressed);
             }
-            // Plane toggles; the sum-of-bivectors composition is commutative,
-            // so only the active set matters, not toggle order.
-            KeyCode::Digit1 | KeyCode::Numpad1 if pressed => self.active[0] = !self.active[0],
-            KeyCode::Digit2 | KeyCode::Numpad2 if pressed => self.active[1] = !self.active[1],
-            KeyCode::Digit3 | KeyCode::Numpad3 if pressed => self.active[2] = !self.active[2],
-            KeyCode::Digit4 | KeyCode::Numpad4 if pressed => self.active[3] = !self.active[3],
-            KeyCode::Digit5 | KeyCode::Numpad5 if pressed => self.active[4] = !self.active[4],
-            KeyCode::Digit6 | KeyCode::Numpad6 if pressed => self.active[5] = !self.active[5],
+            // Plane toggles for the SELECTED slot; the sum-of-bivectors
+            // composition is commutative, so only the active set matters, not
+            // toggle order.
+            KeyCode::Digit1 | KeyCode::Numpad1 if pressed => self.toggle_selected_plane(0),
+            KeyCode::Digit2 | KeyCode::Numpad2 if pressed => self.toggle_selected_plane(1),
+            KeyCode::Digit3 | KeyCode::Numpad3 if pressed => self.toggle_selected_plane(2),
+            KeyCode::Digit4 | KeyCode::Numpad4 if pressed => self.toggle_selected_plane(3),
+            KeyCode::Digit5 | KeyCode::Numpad5 if pressed => self.toggle_selected_plane(4),
+            KeyCode::Digit6 | KeyCode::Numpad6 if pressed => self.toggle_selected_plane(5),
             _ => {}
         }
     }

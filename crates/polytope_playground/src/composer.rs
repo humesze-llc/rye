@@ -4,8 +4,13 @@
 //! expression (`90° (xy + zw)`) or appending basis-plane chips into a
 //! draft. Terms render as draggable cards that reorder via DnD, with
 //! cross-term plane migration via plane pills. The scrub slider
-//! projects `log(rot_state)` onto the seq's net bivector direction so
-//! scrubbing preserves any perpendicular rotation already applied.
+//! projects `log(R)` of the SELECTED slot's rotor onto the seq's net
+//! bivector direction so scrubbing preserves any perpendicular rotation
+//! already applied.
+//!
+//! There is one authored seq and it drives one body: the selected slot.
+//! Handing the same integrated delta to every slot would be the row-wide
+//! spin per-slot rotation exists to remove.
 
 use loam_app::egui;
 use loam_egui::{
@@ -199,7 +204,7 @@ impl Demo {
     }
 
     /// Slide-to-rotate slider along the seq's net bivector direction.
-    /// Slider value is the projection of `log(rot_state)` onto unit
+    /// Slider value is the projection of the selected slot's `log(R)` onto unit
     /// `D = compose_omega()/|compose_omega()|`, in degrees; the
     /// perpendicular component is preserved on drag so other rotations
     /// stay put. Hidden when the seq's net bivector is zero.
@@ -210,7 +215,7 @@ impl Demo {
             return;
         }
         let unit = omega * (1.0 / mag_sq.sqrt());
-        let bivec = self.rot_state.log();
+        let bivec = self.selected_rotor().log();
         let proj_rad = bivec.dot(unit);
         let mut proj_deg = proj_rad.to_degrees();
 
@@ -239,8 +244,8 @@ impl Demo {
                 let new_proj = proj_deg.to_radians();
                 let old_proj = bivec.dot(unit);
                 let new_b = bivec + unit * (new_proj - old_proj);
-                self.rot_state = new_b.exp();
-                self.write_all(self.rot_state);
+                self.spins.selected_spin_mut().rotor = new_b.exp();
+                self.rebuild_bodies();
             }
         });
     }

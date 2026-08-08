@@ -62,8 +62,9 @@ pub(crate) enum WireframeProjection {
 ///
 /// Stored in CANONICAL coords: `Demo::resolved_wireframe_projection` scales
 /// the offsets by `Demo::effective_body_size` and rotates the normal/basis by
-/// `rot_state` each frame. Canonical caching stays valid across `surface scale`
-/// and keeps the chosen cell the outer boundary as the polytope spins.
+/// the subject slot's own rotor each frame. Canonical caching stays valid across
+/// `surface scale` and keeps the chosen cell the outer boundary as that body
+/// spins.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SchlegelParams {
     /// Polytope resolved against; the cache is invalid if it changes.
@@ -359,7 +360,8 @@ impl WireframeProjection {
     ///   the live `Demo::stereographic_pole` per frame).
     ///
     /// `Schlegel` returns `Identity` as a SAFE FALLBACK only: the real projection
-    /// needs the cached [`SchlegelParams`] plus the live `rot_state`, built by
+    /// needs the cached [`SchlegelParams`] plus the subject slot's live rotor,
+    /// built by
     /// `Demo::resolved_wireframe_projection` (the four render sites call it).
     pub(crate) fn to_projection(self) -> loam_math::Projection<4> {
         match self {

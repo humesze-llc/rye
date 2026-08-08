@@ -4,8 +4,8 @@
 //! here, so they cannot disagree about where a body is.
 //!
 //! Filmstrip is outside the seam: its cells are a w/t sweep of a single
-//! subject drawn at a fixed centre from the UI spin rotor alone, with no body
-//! behind them.
+//! subject drawn at a fixed centre from the selected slot's UI rotation alone
+//! (see [`crate::spins`]), with no body behind them.
 //!
 //! The chamber is zero-g and empty of static geometry: no [`ForceField`] is
 //! registered, so a body only moves once a flick throws it (see
@@ -126,8 +126,8 @@ fn ray_sphere_distance(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
     Some(near.max(0.0))
 }
 
-/// Rendered orientation for a body: the UI spin applied first, then the
-/// body's physics orientation. [`Rotor4`] multiplies left-first
+/// Rendered orientation for a body: that slot's UI rotation applied first,
+/// then the body's physics orientation. [`Rotor4`] multiplies left-first
 /// (`apply(a * b, v) == apply(b, apply(a, v))`), so the world-frame physics
 /// rotor is the right factor.
 ///
@@ -394,18 +394,28 @@ impl Demo {
         if pressed {
             // A press whose anchor is unknown (the cursor position was
             // invalidated before it arrived) has nothing to aim from.
-            self.throw_drag = input.buttons.left.press_pos.and_then(|press_px| {
+            let press = input.buttons.left.press_pos.map(|press_px| {
                 let ray = self
                     .camera
                     .ray_from_ndc(ndc_from_pixels(press_px, viewport));
                 let slots = self.render_row().len();
-                self.physics
-                    .pick(&ray, slots, self.effective_body_size())
-                    .map(|slot| ThrowDrag {
-                        slot,
-                        press_px,
-                        cursor_px: press_px,
-                    })
+                (
+                    press_px,
+                    self.physics.pick(&ray, slots, self.effective_body_size()),
+                )
+            });
+            // Selecting and aiming are one gesture: the press that picks a
+            // body to flick is also the press that points the rotation
+            // controls and the hypergimbal at it, so there is no second
+            // click and no mode to be in. A press that entered no body
+            // leaves the selection alone.
+            self.spins.select_picked(press.and_then(|(_, slot)| slot));
+            self.throw_drag = press.and_then(|(press_px, slot)| {
+                slot.map(|slot| ThrowDrag {
+                    slot,
+                    press_px,
+                    cursor_px: press_px,
+                })
             });
         } else if let (Some(drag), Some(cursor_px)) = (self.throw_drag.as_mut(), input.cursor_pos) {
             drag.cursor_px = cursor_px;

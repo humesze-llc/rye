@@ -136,9 +136,16 @@ impl Demo {
     /// wired.
     pub(crate) fn menu_contents(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Edit", |ui| {
-            if ui.button("Reset orientation").clicked() {
-                self.rot_state = Rotor4::IDENTITY;
-                self.write_all(self.rot_state);
+            if ui
+                .button("Reset orientation")
+                .on_hover_text("Return every body in the row to its unrotated pose")
+                .clicked()
+            {
+                // Clears the per-plane baselines too, not just the rotors:
+                // Active recomposes from the baselines on the next frame, so a
+                // reset that cleared only the rotors is undone before it draws.
+                self.spins.clear_orientation();
+                self.rebuild_bodies();
                 ui.close_kind(egui::UiKind::Menu);
             }
             if ui
@@ -429,6 +436,14 @@ impl Demo {
                          exp(scalar · planes) terms via chips or the typed \
                          formula bar.",
                 );
+                ui.label(
+                    "Every body in the row carries its OWN rotation. The \
+                         controls, the rings and the 1..6 keys write the \
+                         selected body; click a body to select it, and the \
+                         rings move to whichever one that is. Bodies you never \
+                         select keep spinning on the shared clock in their own \
+                         planes, so a row can hold several rotations at once.",
+                );
                 ui.add_space(8.0);
 
                 ui.heading("Views");
@@ -444,7 +459,7 @@ impl Demo {
                 ui.heading("Keyboard");
                 ui.label("• Space / T: toggle continuous spin.");
                 ui.label("• Up / Down arrows: scrub w with the keyboard.");
-                ui.label("• 1..6: toggle a plane in the Active set.");
+                ui.label("• 1..6: toggle a plane in the selected body's Active set.");
                 ui.label("• H: expand / collapse the controls panel.");
                 ui.label("• R: full reset.");
                 ui.label("• Esc: exit.");
@@ -452,18 +467,19 @@ impl Demo {
 
                 ui.heading("Mouse");
                 ui.label(
-                    "• Press on a shape and drag: aim a throw. The line \
-                         shows the direction and the percentage shows how \
-                         hard; release to flick it. The chamber is zero-g, so \
-                         a thrown shape carries on until it hits a neighbour \
-                         and coasts to a stop.",
+                    "• Press on a shape: it becomes the selected body, the \
+                         one every rotation control writes. Drag from there to \
+                         aim a throw; the line shows the direction and the \
+                         percentage shows how hard; release to flick it. The \
+                         chamber is zero-g, so a thrown shape carries on until \
+                         it hits a neighbour and coasts to a stop.",
                 );
                 ui.label(
-                    "• Drag a hypergimbal ring: rotate in that ring's plane. \
-                         The six rings are the six rotation planes, drawn as \
-                         the stereographic projection of a 16-cell; the ring \
-                         under the cursor lights up. Toggle them off under \
-                         View.",
+                    "• Drag a hypergimbal ring: rotate the selected body in \
+                         that ring's plane. The six rings stand on that body \
+                         and are the six rotation planes, drawn as the \
+                         stereographic projection of a 16-cell; the ring under \
+                         the cursor lights up. Toggle them off under View.",
                 );
                 ui.label("• Drag in the viewport: orbit camera.");
                 ui.label(
@@ -668,10 +684,11 @@ impl Demo {
             t_dragged = interaction.dragged;
         });
         if t_dragged {
-            // `rotor_at_time` dispatches Active vs Composer, so scrubbing
-            // reproduces what the spin would have integrated to at this `rot_time`.
-            self.rot_state = self.rotor_at_time(self.rot_time);
-            self.write_all(self.rot_state);
+            // `recompose_spins_at` dispatches Active vs Composer, so scrubbing
+            // reproduces what the spin would have integrated to at this
+            // `rot_time` for every slot it drives.
+            self.recompose_spins_at(self.rot_time);
+            self.rebuild_bodies();
         }
     }
 

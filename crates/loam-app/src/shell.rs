@@ -222,18 +222,19 @@ impl<R: SceneRegistry> SceneShell<R> {
             .expect(ACTIVE_IS_BUILT) // ok: activate builds before it sets active
     }
 
-    /// Rebuild a `SetupCtx` around the frame's `RenderDevice` and the retained
-    /// db. `watcher` is `None`: the runner owns it and only lends it for the
-    /// duration of `setup`, so a scene built later cannot register new watch
-    /// paths. Reload events still reach it through `apply_shader_events`.
-    fn switch_to(&mut self, next: usize, rd: &RenderDevice, time: f32) {
+    /// Drain a queued switch against a `SetupCtx` rebuilt around the frame's
+    /// `RenderDevice` and the retained db. `watcher` is `None`: the runner owns
+    /// it and only lends it for the duration of `setup`, so a scene built later
+    /// cannot register new watch paths. Reload events still reach it through
+    /// `apply_shader_events`.
+    fn apply_pending_switch(&mut self, rd: &RenderDevice, time: f32) {
         let Self {
             scenes,
             shader_db,
             active,
             ..
         } = self;
-        *active = activate(scenes, *active, next, R::SCENES[next].slug, || {
+        *active = drain_pending(scenes, *active, R::SCENES, |next| {
             let mut setup = SetupCtx {
                 rd,
                 shader_db,
@@ -243,6 +244,28 @@ impl<R: SceneRegistry> SceneShell<R> {
             (R::SCENES[next].build)(&mut setup)
         });
     }
+}
+
+/// Take whatever the menu bar or the `scene` command queued, activate it, and
+/// republish the index that ended up active. The republish is not bookkeeping:
+/// bare `scene` reads it to mark an entry, so without it the console would keep
+/// marking the boot scene, and a failed build would advertise a scene the shell
+/// is not rendering. Returns the new active index.
+///
+/// Split from [`SceneShell::apply_pending_switch`] so the switch is exercisable
+/// without a `RenderDevice`; the caller supplies the builder.
+fn drain_pending(
+    slots: &mut SceneSlots,
+    active: usize,
+    scenes: &[SceneEntry],
+    build: impl FnOnce(usize) -> Result<Box<dyn Scene>>,
+) -> usize {
+    let Some(next) = with_switcher(|s| s.pending.take()) else {
+        return active;
+    };
+    let now = activate(slots, active, next, scenes[next].slug, || build(next));
+    with_switcher(|s| s.active = now);
+    now
 }
 
 /// (boot scene index, embed). Unknown slugs fall back to scene 0. Takes the
@@ -340,12 +363,8 @@ impl<R: SceneRegistry> App for SceneShell<R> {
         self.perf.show(ctx);
         // Drained after the scene's `ui` returns: the `scene` command runs
         // inside it, holding the borrow a switch would invalidate. Menu-bar
-        // clicks queue through the same slot, so both paths land here and the
-        // republish carries the outcome back to the console.
-        if let Some(next) = with_switcher(|s| s.pending.take()) {
-            self.switch_to(next, frame.rd, frame.time);
-            with_switcher(|s| s.active = self.active);
-        }
+        // clicks queue through the same slot, so both paths land here.
+        self.apply_pending_switch(frame.rd, frame.time);
     }
 
     fn on_key(
@@ -375,6 +394,7 @@ mod tests {
     use crate::ShaderOwner;
     use loam_math::HyperbolicH3;
     use std::cell::Cell;
+    use std::rc::Rc;
 
     /// A scene whose geometry is not the shell's, written to be compiled: no
     /// `EuclideanR3` appears anywhere in the impl, and the reload hook
@@ -382,6 +402,11 @@ mod tests {
     struct HyperbolicScene {
         space: HyperbolicH3,
         owner: ShaderOwner,
+        /// Per-instance state the test can write from outside and read back
+        /// through `title`, which is the only `Scene` method reachable without
+        /// a frame. A cached activation must return the object that holds this
+        /// cell, not a fresh one that merely answers the same way.
+        state: Rc<Cell<u32>>,
     }
 
     impl Scene for HyperbolicScene {
@@ -406,7 +431,7 @@ mod tests {
         }
 
         fn title(&self, _fps: f32) -> Cow<'static, str> {
-            "hyperbolic".into()
+            format!("hyperbolic {}", self.state.get()).into()
         }
     }
 
@@ -424,6 +449,7 @@ mod tests {
                 Ok(Box::new(HyperbolicScene {
                     space: HyperbolicH3,
                     owner: ctx.shader_db.new_owner(),
+                    state: Rc::default(),
                 }))
             },
         };
@@ -509,10 +535,33 @@ mod tests {
     /// GPU-free stand-in for a built scene; the lazy table's contract is about
     /// when a builder runs, not what it returns.
     fn stub_scene() -> Box<dyn Scene> {
+        stateful_stub_scene(Rc::default())
+    }
+
+    /// A stub whose state the caller keeps a handle to.
+    fn stateful_stub_scene(state: Rc<Cell<u32>>) -> Box<dyn Scene> {
         Box::new(HyperbolicScene {
             space: HyperbolicH3,
             owner: ShaderDb::ROOT_OWNER,
+            state,
         })
+    }
+
+    /// `SWITCHER` is process-global and cargo runs tests on parallel threads,
+    /// so a test that queues through it has to own it outright.
+    static SWITCHER_TESTS: Mutex<()> = Mutex::new(());
+
+    /// Run `f` with the switcher held and reset, so no test inherits the index
+    /// another one published.
+    fn with_exclusive_switcher<T>(f: impl FnOnce() -> T) -> T {
+        let _held = SWITCHER_TESTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        with_switcher(|s| {
+            s.active = 0;
+            s.pending = None;
+        });
+        f()
     }
 
     /// Startup fills exactly one slot. Building the registry eagerly is what
@@ -570,10 +619,139 @@ mod tests {
     /// queueing a switch the shell would index with.
     #[test]
     fn scene_request_queues_known_slugs_and_rejects_unknown() {
-        assert!(request_scene(REGISTRY, "nope").is_err());
-        assert!(with_switcher(|s| s.pending).is_none());
-        assert!(request_scene(REGISTRY, REGISTRY[1].slug).is_ok());
-        assert_eq!(with_switcher(|s| s.pending.take()), Some(1));
+        with_exclusive_switcher(|| {
+            assert!(request_scene(REGISTRY, "nope").is_err());
+            assert!(with_switcher(|s| s.pending).is_none());
+            assert!(request_scene(REGISTRY, REGISTRY[1].slug).is_ok());
+            assert_eq!(with_switcher(|s| s.pending.take()), Some(1));
+        });
+    }
+
+    /// The slug bare `scene` marks with `*`, which is the console's own view of
+    /// which scene the shell is rendering.
+    fn marked_slug(console: &mut Console<()>) -> String {
+        console.clear_history();
+        console.execute("scene", &mut ());
+        console
+            .history()
+            .iter()
+            .find_map(|line| line.text.strip_prefix("* "))
+            .and_then(|marked| marked.split(' ').next())
+            .expect("bare `scene` marks exactly one entry")
+            .to_string()
+    }
+
+    /// The whole switching path, driven the way a user drives it: `scene
+    /// <slug>` through the registered command, the shell's drain, and bare
+    /// `scene` reading back what became active. Pins the round trip in both
+    /// directions, so a drain that only ever moved forward, or one that
+    /// activated without republishing, fails here. The return leg costs no
+    /// build: the boot scene is already in its slot.
+    #[test]
+    fn the_scene_command_switches_to_a_second_scene_and_back() {
+        with_exclusive_switcher(|| {
+            let mut slots =
+                build_boot_only(REGISTRY.len(), 0, || Ok(stub_scene())).expect("boot build");
+            let mut console = Console::<()>::new();
+            register_command::<(), Fixture>(&mut console);
+            let builds = Cell::new(0);
+            let mut active = 0;
+            let drain = |slots: &mut SceneSlots, active: usize| {
+                drain_pending(slots, active, REGISTRY, |_| {
+                    builds.set(builds.get() + 1);
+                    Ok(stub_scene())
+                })
+            };
+
+            console.execute("scene second", &mut ());
+            active = drain(&mut slots, active);
+            assert_eq!(active, 1, "the queued switch must become active");
+            assert_eq!(marked_slug(&mut console), "second");
+            assert_eq!(builds.get(), 1);
+
+            console.execute("scene first", &mut ());
+            active = drain(&mut slots, active);
+            assert_eq!(active, 0, "switching back must return to the boot scene");
+            assert_eq!(marked_slug(&mut console), "first");
+            assert_eq!(builds.get(), 1, "the boot scene is already built");
+        });
+    }
+
+    /// A slug nothing claims must leave the shell where it was: the command
+    /// reports the error and queues nothing, so the next drain is a no-op.
+    #[test]
+    fn an_unknown_slug_leaves_the_active_scene_alone() {
+        with_exclusive_switcher(|| {
+            let mut slots =
+                build_boot_only(REGISTRY.len(), 0, || Ok(stub_scene())).expect("boot build");
+            let mut console = Console::<()>::new();
+            register_command::<(), Fixture>(&mut console);
+
+            console.execute("scene nope", &mut ());
+            let active = drain_pending(&mut slots, 0, REGISTRY, |_| {
+                unreachable!("an unknown slug must not reach a builder")
+            });
+            assert_eq!(active, 0);
+            assert_eq!(marked_slug(&mut console), "first");
+        });
+    }
+
+    /// Second visit to a scene serves the object built on the first: the
+    /// builder runs once per entry, and the state written while a scene was
+    /// active is still there after a round trip through another scene. A drain
+    /// that rebuilt on every switch would silently reset every demo.
+    #[test]
+    fn a_revisited_scene_is_the_cached_instance_with_its_state_intact() {
+        with_exclusive_switcher(|| {
+            let mut slots =
+                build_boot_only(REGISTRY.len(), 0, || Ok(stub_scene())).expect("boot build");
+            let builds = Cell::new(0);
+            let second_state: Rc<Cell<u32>> = Rc::default();
+            let mut active = 0;
+            let drain = |slots: &mut SceneSlots, active: usize| {
+                drain_pending(slots, active, REGISTRY, |_| {
+                    builds.set(builds.get() + 1);
+                    Ok(stateful_stub_scene(Rc::clone(&second_state)))
+                })
+            };
+
+            with_switcher(|s| s.pending = Some(1));
+            active = drain(&mut slots, active);
+            assert_eq!(builds.get(), 1, "first activation builds");
+            second_state.set(7);
+
+            with_switcher(|s| s.pending = Some(0));
+            active = drain(&mut slots, active);
+            assert_eq!(active, 0);
+
+            with_switcher(|s| s.pending = Some(1));
+            active = drain(&mut slots, active);
+            assert_eq!(active, 1);
+            assert_eq!(builds.get(), 1, "the second visit must hit the cache");
+            assert_eq!(
+                slots[1].as_deref().expect("built").title(0.0),
+                "hyperbolic 7",
+                "the cached instance kept the state written while it was active"
+            );
+        });
+    }
+
+    /// A build that fails mid-switch must leave both the shell and the console
+    /// on the scene that is actually rendering; publishing the requested index
+    /// would have bare `scene` mark an entry no slot holds.
+    #[test]
+    fn a_failed_switch_publishes_the_scene_still_rendering() {
+        with_exclusive_switcher(|| {
+            let mut slots =
+                build_boot_only(REGISTRY.len(), 0, || Ok(stub_scene())).expect("boot build");
+            let mut console = Console::<()>::new();
+            register_command::<(), Fixture>(&mut console);
+
+            console.execute("scene third", &mut ());
+            let active = drain_pending(&mut slots, 0, REGISTRY, |_| Err(anyhow!("no device")));
+            assert_eq!(active, 0);
+            assert_eq!(marked_slug(&mut console), "first");
+        });
     }
 
     /// The command is keyed to the registry type, not to a scene's state, so a

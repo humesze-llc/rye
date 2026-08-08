@@ -14,11 +14,11 @@
 ## Run it
 
 ```
-cargo run --release -p polytope_playground               # native
-cd crates/polytope_playground && trunk serve --release   # browser (local)
+cargo run --release -p polytope_playground                     # native
+trunk serve --release crates/polytope_playground/index.html    # browser (local)
 ```
 
-The Polytope Playground is the flagship demo and the first thing to look at. Rust 1.95, pinned in `rust-toolchain.toml`; the browser build needs [trunk](https://trunkrs.dev/). Controls live in the on-screen panels; backtick opens the debug console (`trace summary` prints per-section frame timings).
+The Polytope Playground is the flagship demo and the first thing to look at. Rust 1.95, pinned in `rust-toolchain.toml`; the browser build needs [trunk](https://trunkrs.dev/), run from the repo root because Trunk reads `Trunk.toml` from the working directory. Controls live in the on-screen panels; backtick opens the debug console (`trace summary` prints per-section frame timings).
 
 Runs natively on Vulkan and in the browser on WebGPU. CI exercises Vulkan through lavapipe and builds the wasm32 target. No other wgpu backend has been run here.
 

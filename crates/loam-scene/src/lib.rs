@@ -7,6 +7,10 @@
 //! [`combinator`] provides Space-agnostic combinators (union, intersection,
 //! smooth-min) over the scalar distances returned by primitive SDFs.
 //!
+//! A scene is data as well as code: [`load`] deserializes [`Scene`] and
+//! [`Scene4`] from RON files, checking what the emit contract below asserts on
+//! so file input fails as an error rather than in the emitter.
+//!
 //! Emit contract, shared by the 3D and 4D paths: every baked constant goes
 //! through `literal::wgsl_f32`, which is shortest-round-trip and always
 //! carries a decimal point or an exponent. Parsing the emitted literal recovers
@@ -25,11 +29,13 @@
 
 pub mod combinator;
 mod literal;
+pub mod load;
 pub mod primitive;
 pub mod primitive4;
 pub mod scene;
 pub mod scene4;
 
+pub use load::SceneLoadError;
 pub use loam_shape::Shape;
 pub use primitive::Primitive;
 pub use primitive4::Primitive4;

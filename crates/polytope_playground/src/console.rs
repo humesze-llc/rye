@@ -847,6 +847,7 @@ impl RotateScene {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loam_app::shell::SceneRegistry;
 
     /// Under `--embed=1` the menu bar is hidden, so the console is the only
     /// way to reach another scene: losing this registration strands an embed
@@ -854,5 +855,66 @@ mod tests {
     #[test]
     fn console_exposes_the_scene_switcher() {
         assert!(RotateScene::build_console().has_command("scene"));
+    }
+
+    /// Tab on the switcher's first argument has to spell the slugs, because
+    /// nothing else in the app does: a user who never read the crate docs
+    /// learns the registry from the completion cycle. Registering the command
+    /// against a stale slug list would leave `has_command` above green.
+    #[test]
+    fn scene_completion_cycles_every_registered_slug() {
+        let mut console = RotateScene::build_console();
+        *console.input_mut() = "scene ".to_string();
+        let mut completed: Vec<String> = Vec::new();
+        for _ in shell::Playground::SCENES {
+            console.tab_complete();
+            completed.push(
+                console
+                    .input()
+                    .strip_prefix("scene ")
+                    .expect("completion fills the switcher's first argument")
+                    .to_string(),
+            );
+        }
+        completed.sort();
+        let mut slugs: Vec<String> = shell::Playground::SCENES
+            .iter()
+            .map(|entry| entry.slug.to_string())
+            .collect();
+        slugs.sort();
+        assert_eq!(completed, slugs);
+    }
+
+    /// `help` is where a user goes first, so the switcher has to be in that
+    /// listing with a description, and `help scene` has to carry the boot
+    /// params on to the reader who wants a URL. Driven on the `Console<()>`
+    /// the S3 scene builds, since executing anything on the rotate scene's
+    /// `Console<Demo>` needs a GPU-backed `Demo`; both consoles take the
+    /// command from the same registration.
+    #[test]
+    fn the_help_listing_describes_the_scene_switcher() {
+        let mut console = Console::<()>::new();
+        loam_app::shell::register_command::<(), shell::Playground>(&mut console);
+        console.execute("help", &mut ());
+        let listed = console
+            .history()
+            .iter()
+            .find_map(|line| line.text.trim_start().strip_prefix("scene "))
+            .expect("`help` lists the scene command")
+            .trim()
+            .to_string();
+        assert!(!listed.is_empty(), "the listing carries no description");
+
+        console.clear_history();
+        console.execute("help scene", &mut ());
+        let long = console
+            .history()
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for param in ["--scene=", "?scene=", "--embed=1"] {
+            assert!(long.contains(param), "`help scene` omits {param}");
+        }
     }
 }

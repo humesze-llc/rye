@@ -8,6 +8,7 @@
 //! and the formula popup live in their own modules; this file owns the
 //! chrome that wraps them.
 
+use loam_app::shell::SceneRegistry;
 use loam_app::{egui, FrameCtx};
 use loam_egui::{
     media::{chevron_button, play_pause_button, rate_toggle, refresh_button},
@@ -24,6 +25,17 @@ use crate::state::{
 
 /// Margin between the controls overlay and the viewport edges.
 const OVERLAY_PAD: f32 = 16.0;
+
+/// Scene roster for the About panel, read off the registry the `scene` command
+/// and `--scene=` / `?scene=` resolve against, so a scene added to the table
+/// cannot ship without an in-app mention.
+fn scene_roster() -> String {
+    crate::shell::Playground::SCENES
+        .iter()
+        .map(|entry| format!("{} ({})", entry.slug, entry.label))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// Boot seat for the controls overlay. The window's pivot is `CENTER_BOTTOM`,
 /// so this is the bottom edge of its frame, not the top: everything the overlay
@@ -503,6 +515,22 @@ impl Demo {
                     "• Drag the controls panel by its frame to move it; \
                          drag the formula popup the same way.",
                 );
+                ui.add_space(8.0);
+
+                ui.heading("Scenes and the console");
+                ui.label(
+                    "Backtick opens the console. `help` lists every command, \
+                         `help <name>` describes one, and Tab completes command \
+                         names and their arguments.",
+                );
+                ui.label(format!(
+                    "Scenes: {}. `scene` lists them and marks the active one; \
+                     `scene <slug>` switches. The same slugs boot one directly: \
+                     `--scene=<slug>` natively, `?scene=<slug>` in the browser. \
+                     `--embed=1` / `?embed=1` hides the menu bar, which leaves \
+                     the console as the only switcher.",
+                    scene_roster()
+                ));
             });
         });
     }
@@ -772,5 +800,32 @@ impl Demo {
                 }
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod about_panel_tests {
+    use super::*;
+
+    /// The About panel is the app's only pointer at the console, and under
+    /// `--embed=1` the console is the only switcher, so a scene missing from
+    /// the roster is a scene an embed cannot reach. Reading the registry is
+    /// what keeps that true: a hand-written list would satisfy the slug half
+    /// of this today and drift on the next entry.
+    #[test]
+    fn the_about_roster_names_every_registered_scene() {
+        let roster = scene_roster();
+        for entry in crate::shell::Playground::SCENES {
+            assert!(
+                roster.contains(entry.slug),
+                "roster '{roster}' omits slug '{}'",
+                entry.slug
+            );
+            assert!(
+                roster.contains(entry.label),
+                "roster '{roster}' omits label '{}'",
+                entry.label
+            );
+        }
     }
 }

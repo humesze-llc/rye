@@ -272,9 +272,11 @@ pub struct TickCtx {
 /// `view` is the runner's scene-pass color target for the platform (MSAA
 /// attachment, offscreen scene texture on the composite path, or the swapchain
 /// view). Pipelines built with [`RenderDevice::target_format`] +
-/// [`RenderDevice::sample_count`] match it. The UI pass overlays the same
-/// attachment afterwards: through a non-sRGB view of it on the
-/// direct-to-swapchain paths, through this very view on the composite path.
+/// [`RenderDevice::sample_count`] match it. The UI pass paints afterwards and
+/// is single-sampled either way: into a non-sRGB view of the swapchain on the
+/// direct-to-swapchain paths, which under MSAA is the scene resolve's
+/// destination rather than this attachment, and into this very view on the
+/// composite path.
 pub struct RenderCtx<'a> {
     pub rd: &'a RenderDevice,
     pub view: &'a wgpu::TextureView,
@@ -361,9 +363,10 @@ pub struct RunConfig {
     /// `OutOfMemory`, which exits immediately. Reset to zero on any successful
     /// `begin_frame`. `0` disables the budget.
     pub surface_error_budget: u32,
-    /// MSAA sample count requested for the scene + UI render target. `1` disables
-    /// MSAA. `4` is the conventional default (good quality / cost tradeoff, supported
-    /// on every consumer GPU). Higher counts (8, 16) cost more and yield diminishing
+    /// MSAA sample count requested for the scene render target; the UI pass is
+    /// single-sampled whatever this says. `1` disables MSAA. `4` is the
+    /// conventional default (good quality / cost tradeoff, supported on every
+    /// consumer GPU). Higher counts (8, 16) cost more and yield diminishing
     /// returns on edge antialiasing. The runtime negotiates with the adapter; if the
     /// requested count isn't supported on the chosen surface format, [`RenderDevice`]
     /// falls back to the highest supported lower count and logs a warning.

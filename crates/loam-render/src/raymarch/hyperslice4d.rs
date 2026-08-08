@@ -669,10 +669,26 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     let max_t = min(60.0, scene_max_t + 1.0);
     var hit = false;
     var hit_idx: u32 = MAX_BODIES + 1u;
-    // Sphere-trace step: `max(d * 0.85, min_step)` with min_step <
-    // hit_eps. The 0.85 under-step factor handles SDFs that are
-    // Lipschitz-1 but not tight (polytope SDFs underestimate near
-    // corners). 384 iters covers tangent-grazing convergence.
+    // Sphere-trace step: the whole reported distance, floored at
+    // min_step < hit_eps so a march grazing a surface still advances.
+    //
+    // A full step is the largest step sphere tracing can prove safe,
+    // and everything this kernel composes earns it. Each body-local SDF
+    // above is 1-Lipschitz and vanishes on its own surface S, so for
+    // any b in S, d(p) = d(p) - d(b) <= |p - b|, hence d(p) <=
+    // dist(p, S): a lower bound, which cannot tunnel. Looseness (the
+    // pentatope, 16-cell and 24-cell return a max-over-face-planes
+    // distance, tight only in the face-Voronoi regions) costs
+    // iterations, never safety, so it earns no under-step. The
+    // bounding-sphere fast path and the extended-polytope Wolfe
+    // fast path are lower bounds by their own arguments rather than by
+    // continuity; both are safe, neither is 1-Lipschitz across its
+    // switch. `min` and `max` preserve a lower bound, so the union over
+    // bodies and Scene4's CSG tree inherit it, on the one precondition
+    // Scene4 does not enforce: a HalfSpace4D leaf's normal must be
+    // unit, or its SDF scales by |n| and overshoots.
+    //
+    // 384 iters covers tangent-grazing convergence.
     let hit_eps = 0.001;
     let min_step = 0.0001;
     for (var i: i32 = 0; i < 384; i = i + 1) {
@@ -683,7 +699,7 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
             hit_idx = h.body_idx;
             break;
         }
-        t = t + max(h.dist * 0.85, min_step);
+        t = t + max(h.dist, min_step);
         if (t > max_t) { break; }
     }
 
@@ -1278,7 +1294,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     // WGSL function. The parity tests assert the geometry (vertices, inradius,
     // sign), so a silent divergence from the WGSL fails.
 
-    use glam::Vec4;
+    use glam::{Vec2, Vec4};
 
     fn pentatope_sdf_local_cpu(p: Vec4) -> f32 {
         // t = sqrt(5)/4. WGSL stores the truncation 0.55901699437; the CPU side
@@ -1319,6 +1335,161 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         let tess = q.x.max(q.y).max(q.z).max(q.w) - inv_sqrt2;
         let cross = (q.x + q.y + q.z + q.w - sqrt2) * 0.5;
         tess.max(cross)
+    }
+
+    fn sphere3_sdf_local_cpu(p: Vec4) -> f32 {
+        p.length() - 1.0
+    }
+
+    fn duocylinder_sdf_local_cpu(p: Vec4) -> f32 {
+        // WGSL ships the 8-digit truncation 0.7071068; the tolerances below
+        // absorb the delta, as they do for the 24-cell mirror.
+        let r = std::f32::consts::FRAC_1_SQRT_2;
+        let dxy = Vec2::new(p.x, p.y).length() - r;
+        let dzw = Vec2::new(p.z, p.w).length() - r;
+        let outside = Vec2::new(dxy.max(0.0), dzw.max(0.0)).length();
+        outside + dxy.max(dzw).min(0.0)
+    }
+
+    fn clifford_torus_sdf_local_cpu(p: Vec4) -> f32 {
+        let q1 = Vec2::new(p.x, p.y).length() - 0.5;
+        let q2 = Vec2::new(p.z, p.w).length() - 0.5;
+        Vec2::new(q1, q2).length() - 0.2
+    }
+
+    fn spherinder_sdf_local_cpu(p: Vec4) -> f32 {
+        let r = std::f32::consts::FRAC_1_SQRT_2;
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let dxyz = Vec3::new(p.x, p.y, p.z).length() - r;
+        let dw = p.w.abs() - h;
+        let outside = Vec2::new(dxyz.max(0.0), dw.max(0.0)).length();
+        outside + dxyz.max(dw).min(0.0)
+    }
+
+    /// A kernel body SDF in its own body-local frame at unit circumradius.
+    type LocalSdf = fn(Vec4) -> f32;
+
+    /// Every hand-written body SDF in the kernel, paired with its name. The
+    /// 120-cell and 600-cell are absent on purpose: their SDFs are emitted by
+    /// `polytope_data`, are piecewise across a fast-path boundary, and carry
+    /// their own certification test there.
+    fn kernel_body_sdfs() -> [(&'static str, LocalSdf); 8] {
+        [
+            ("pentatope", pentatope_sdf_local_cpu),
+            ("tesseract", tesseract_sdf_local_cpu),
+            ("16-cell", cell16_sdf_local_cpu),
+            ("24-cell", cell24_sdf_local_cpu),
+            ("3-sphere", sphere3_sdf_local_cpu),
+            ("duocylinder", duocylinder_sdf_local_cpu),
+            ("clifford-torus", clifford_torus_sdf_local_cpu),
+            ("spherinder", spherinder_sdf_local_cpu),
+        ]
+    }
+
+    /// Deterministic unit-interval-ish sampler: the LCG multiplier and increment
+    /// are Knuth's MMIX constants. Seeded so the sweeps below are reproducible.
+    fn lcg_signed_unit(state: &mut u64) -> f32 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 33) as f32) / ((1u64 << 31) as f32) - 1.0
+    }
+
+    fn lcg_vec4(state: &mut u64, scale: f32) -> Vec4 {
+        Vec4::new(
+            lcg_signed_unit(state),
+            lcg_signed_unit(state),
+            lcg_signed_unit(state),
+            lcg_signed_unit(state),
+        ) * scale
+    }
+
+    /// The per-shape march step scale is `1 / L` with `L` the SDF's Lipschitz
+    /// constant, and this pins `L = 1` for every hand-written shape, which is
+    /// what licenses the kernel's full step.
+    ///
+    /// Why `L <= 1` is the whole safety argument: each of these vanishes on its
+    /// own surface, so `d(p) = d(p) - d(b) <= L |p - b|` for any surface point
+    /// `b`, and minimising over `b` gives `d(p) <= L * dist(p, S)`. At `L = 1`
+    /// the reported distance never exceeds the true one and a full step cannot
+    /// tunnel. Measured as a secant slope rather than a finite-difference
+    /// gradient: the secant is the definition, needs no step size, and does not
+    /// pick up the f32 noise a central difference divides back up.
+    #[test]
+    fn every_hand_written_body_sdf_is_one_lipschitz() {
+        // f32 slack: the secant divides two rounded evaluations by a rounded
+        // separation, so an exactly-1-Lipschitz function reads slightly over 1.
+        const SLACK: f32 = 1e-4;
+        for (name, sdf) in kernel_body_sdfs() {
+            let mut state = 0xC0FFEE_u64;
+            let mut worst = 0.0_f32;
+            for _ in 0..20_000 {
+                // 2.5 covers well inside (all shapes have unit circumradius)
+                // out to the region the bounding-sphere fast path takes over.
+                let a = lcg_vec4(&mut state, 2.5);
+                let b = a + lcg_vec4(&mut state, 0.5);
+                let separation = (a - b).length();
+                if separation > 1e-3 {
+                    worst = worst.max((sdf(a) - sdf(b)).abs() / separation);
+                }
+            }
+            assert!(
+                worst <= 1.0 + SLACK,
+                "{name} has Lipschitz constant {worst} > 1: its step scale is \
+                 1/{worst}, not the full step the kernel takes",
+            );
+        }
+    }
+
+    /// The other half of the lower-bound argument: each SDF is zero on its own
+    /// surface. Lipschitz-1 alone permits a constant offset; anchoring at the
+    /// surface is what turns it into `d <= dist`. One known surface point per
+    /// shape, taken from the shape's own definition above.
+    #[test]
+    fn every_hand_written_body_sdf_vanishes_on_its_own_surface() {
+        let surface_probes: [(&str, LocalSdf, Vec4); 8] = [
+            ("pentatope", pentatope_sdf_local_cpu, Vec4::W),
+            (
+                "tesseract",
+                tesseract_sdf_local_cpu,
+                Vec4::new(0.5, 0.5, 0.5, 0.5),
+            ),
+            ("16-cell", cell16_sdf_local_cpu, Vec4::X),
+            (
+                "24-cell",
+                cell24_sdf_local_cpu,
+                Vec4::new(
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    0.0,
+                    0.0,
+                ),
+            ),
+            ("3-sphere", sphere3_sdf_local_cpu, Vec4::X),
+            (
+                "duocylinder",
+                duocylinder_sdf_local_cpu,
+                Vec4::new(std::f32::consts::FRAC_1_SQRT_2, 0.0, 0.0, 0.0),
+            ),
+            (
+                "clifford-torus",
+                clifford_torus_sdf_local_cpu,
+                Vec4::new(0.7, 0.0, 0.5, 0.0),
+            ),
+            (
+                "spherinder",
+                spherinder_sdf_local_cpu,
+                Vec4::new(std::f32::consts::FRAC_1_SQRT_2, 0.0, 0.0, 0.0),
+            ),
+        ];
+        for (name, sdf, on_surface) in surface_probes {
+            let d = sdf(on_surface);
+            assert!(
+                d.abs() < 1e-6,
+                "{name} reads {d} at the surface point {on_surface:?}; a nonzero \
+                 offset there breaks the `d <= dist` bound the full step rests on",
+            );
+        }
     }
 
     // Inline vertex generators, mirroring loam_physics::euclidean_r4.
@@ -1538,37 +1709,57 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
     use glam::Vec3;
 
+    /// The kernel's sphere-trace step scale. 1.0 because every SDF the kernel
+    /// composes is 1-Lipschitz and vanishes on its surface, hence bounds the
+    /// true distance from below; see `fs_main`. Kept as a parameter of the
+    /// marcher below so a test can drive the superseded under-step and compare.
+    const KERNEL_STEP_SCALE: f32 = 1.0;
+    const KERNEL_HIT_EPS: f32 = 0.001;
+
     struct HyperHit {
         hit_pos: Vec3,
         body_idx: u32,
-        #[allow(dead_code)]
-        iter_count: u32,
     }
 
-    fn march_hyperslice_cpu<F>(ro: Vec3, rd: Vec3, sdf: F) -> Option<HyperHit>
+    /// `steps` counts SDF evaluations whether or not the ray converged; it is
+    /// what a march costs, and the miss paths (budget exhausted, `max_t`
+    /// exceeded) are where a step-scale change shows up most.
+    struct MarchResult {
+        hit: Option<HyperHit>,
+        steps: u32,
+    }
+
+    fn march_hyperslice_cpu<F>(ro: Vec3, rd: Vec3, step_scale: f32, sdf: F) -> MarchResult
     where
         F: Fn(Vec3) -> (f32, u32),
     {
         let mut t: f32 = 0.0;
         let max_t = 60.0_f32;
-        let hit_eps = 0.001_f32;
         let min_step = 0.0001_f32;
         for i in 0..384u32 {
             let p = ro + rd * t;
             let (d, body_idx) = sdf(p);
-            if d < hit_eps {
-                return Some(HyperHit {
-                    hit_pos: p,
-                    body_idx,
-                    iter_count: i,
-                });
+            if d < KERNEL_HIT_EPS {
+                return MarchResult {
+                    hit: Some(HyperHit {
+                        hit_pos: p,
+                        body_idx,
+                    }),
+                    steps: i + 1,
+                };
             }
-            t += (d * 0.85).max(min_step);
+            t += (d * step_scale).max(min_step);
             if t > max_t {
-                return None;
+                return MarchResult {
+                    hit: None,
+                    steps: i + 1,
+                };
             }
         }
-        None
+        MarchResult {
+            hit: None,
+            steps: 384,
+        }
     }
 
     /// Test scene: three hyperspheres at `w = 0` plus a `y = 0` floor. All hits attribute to
@@ -1595,11 +1786,14 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     fn cpu_march_hits_solo_sphere_top() {
         let ro = Vec3::new(0.0, 5.0, 1.5);
         let rd = Vec3::new(0.0, -1.0, 0.0);
-        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
-            .expect("ray pointing at solo sphere should hit something");
+        let hit = march_hyperslice_cpu(ro, rd, KERNEL_STEP_SCALE, |p| {
+            overlapping_sdfs_scene(p, 0.0)
+        })
+        .hit
+        .expect("ray pointing at solo sphere should hit something");
         assert_eq!(hit.body_idx, MAX_BODIES as u32, "static-scene hit");
         // Solo sphere at (0, 1, 1.5) r=1; top at y=2.0. Hit registers when SDF < hit_eps =
-        // 0.001; under-step factor + min_step bound the residual at < 5e-3.
+        // 0.001, and the last step before that lands within min_step of it.
         assert!(
             (hit.hit_pos.y - 2.0).abs() < 5e-3,
             "hit y {} should be near 2.0 (sphere top)",
@@ -1613,8 +1807,11 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     fn cpu_march_hits_floor_in_gap_between_spheres() {
         let ro = Vec3::new(0.0, 5.0, -3.5);
         let rd = Vec3::new(0.0, -1.0, 0.0);
-        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
-            .expect("ray pointing at empty floor should hit");
+        let hit = march_hyperslice_cpu(ro, rd, KERNEL_STEP_SCALE, |p| {
+            overlapping_sdfs_scene(p, 0.0)
+        })
+        .hit
+        .expect("ray pointing at empty floor should hit");
         assert_eq!(hit.body_idx, MAX_BODIES as u32, "static-scene hit");
         // Floor at y=0; hit_eps=0.001 so the hit y is in [0, 0.001].
         assert!(
@@ -1630,8 +1827,11 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     fn cpu_march_hits_twin_overlap_top_not_floor() {
         let ro = Vec3::new(0.0, 5.0, -1.5);
         let rd = Vec3::new(0.0, -1.0, 0.0);
-        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
-            .expect("ray pointing at twin overlap should hit");
+        let hit = march_hyperslice_cpu(ro, rd, KERNEL_STEP_SCALE, |p| {
+            overlapping_sdfs_scene(p, 0.0)
+        })
+        .hit
+        .expect("ray pointing at twin overlap should hit");
         assert_eq!(hit.body_idx, MAX_BODIES as u32);
         // Twin-saddle top sits at y ≈ 1.06, well above the floor.
         assert!(
@@ -1647,8 +1847,11 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     fn cpu_march_converges_on_shallow_ray_to_floor() {
         let ro = Vec3::new(0.0, 2.5, 5.0);
         let rd = Vec3::new(0.0, -0.05, -1.0).normalize();
-        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
-            .expect("shallow ray with clear path to floor should converge");
+        let hit = march_hyperslice_cpu(ro, rd, KERNEL_STEP_SCALE, |p| {
+            overlapping_sdfs_scene(p, 0.0)
+        })
+        .hit
+        .expect("shallow ray with clear path to floor should converge");
         assert_eq!(hit.body_idx, MAX_BODIES as u32);
         assert!(hit.hit_pos.y.abs() < 5e-3);
     }
@@ -1658,8 +1861,328 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     fn cpu_march_misses_into_empty_sky() {
         let ro = Vec3::new(0.0, 5.0, 0.0);
         let rd = Vec3::new(0.0, 1.0, 0.0);
-        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0));
+        let hit = march_hyperslice_cpu(ro, rd, KERNEL_STEP_SCALE, |p| {
+            overlapping_sdfs_scene(p, 0.0)
+        })
+        .hit;
         assert!(hit.is_none(), "ray into sky should miss the scene");
+    }
+
+    // ---- March cost: the full step against the superseded 0.85 under-step ----
+    //
+    // A pixel grid marched through the CPU port, standing in for a playground
+    // frame: four unit-circumradius bodies in a row at `BODY_SIZE` 0.7 and
+    // `BODY_Y` 0.9 over a `y = 0` floor, camera back along +Z. Everything these
+    // tests assert is an iteration count or a depth, both of which the port
+    // computes exactly as the kernel does.
+
+    /// The step scale the kernel used before the Lipschitz certification, kept
+    /// only so the tests below can measure what replacing it bought.
+    const SUPERSEDED_UNDER_STEP: f32 = 0.85;
+
+    const PROBE_WIDTH: usize = 160;
+    const PROBE_HEIGHT: usize = 90;
+
+    struct ProbeBody {
+        center: Vec4,
+        size: f32,
+        sdf: LocalSdf,
+    }
+
+    /// Mirror of `body_polytope_sdf_4d`, bounding-sphere fast path included.
+    fn probe_body_sdf(p4: Vec4, body: &ProbeBody) -> f32 {
+        let world_v = p4 - body.center;
+        let world_dist2 = world_v.dot(world_v);
+        let bound = body.size * 1.5;
+        if world_dist2 > bound * bound {
+            return world_dist2.sqrt() - body.size;
+        }
+        (body.sdf)(world_v / body.size) * body.size
+    }
+
+    fn probe_bodies() -> Vec<ProbeBody> {
+        let shapes: [LocalSdf; 4] = [
+            tesseract_sdf_local_cpu,
+            cell16_sdf_local_cpu,
+            cell24_sdf_local_cpu,
+            sphere3_sdf_local_cpu,
+        ];
+        shapes
+            .into_iter()
+            .enumerate()
+            .map(|(i, sdf)| ProbeBody {
+                center: Vec4::new((i as f32 - 1.5) * 1.8, 0.9, 0.0, 0.0),
+                size: 0.7,
+                sdf,
+            })
+            .collect()
+    }
+
+    fn probe_scene(p3: Vec3, w_slice: f32, bodies: &[ProbeBody]) -> (f32, u32) {
+        let p4 = Vec4::new(p3.x, p3.y, p3.z, w_slice);
+        let mut dist = p3.y;
+        let mut idx = MAX_BODIES as u32;
+        for (i, body) in bodies.iter().enumerate() {
+            let d = probe_body_sdf(p4, body);
+            if d < dist {
+                dist = d;
+                idx = i as u32;
+            }
+        }
+        (dist, idx)
+    }
+
+    /// Marched depth, hit mask and per-pixel primitive attribution over a pixel
+    /// grid, plus the total step count. `NO_PRIMITIVE` marks a miss.
+    struct ProbeFrame {
+        depth: Vec<f32>,
+        hit: Vec<bool>,
+        primitive: Vec<u32>,
+        steps: u64,
+        width: usize,
+        height: usize,
+    }
+
+    const NO_PRIMITIVE: u32 = u32::MAX;
+
+    impl ProbeFrame {
+        fn render(width: usize, height: usize, w_slice: f32, step_scale: f32) -> Self {
+            let bodies = probe_bodies();
+            let eye = Vec3::new(0.0, 1.2, 5.0);
+            let forward = Vec3::new(0.0, -0.12, -1.0).normalize();
+            let right = Vec3::X;
+            let up = right.cross(forward).normalize();
+            let fov_y_tan = (60.0_f32.to_radians() * 0.5).tan();
+            let aspect = width as f32 / height as f32;
+
+            let mut depth = vec![0.0_f32; width * height];
+            let mut hit = vec![false; width * height];
+            let mut primitive = vec![NO_PRIMITIVE; width * height];
+            let mut steps = 0_u64;
+            for y in 0..height {
+                for x in 0..width {
+                    let ndc_x = ((x as f32 + 0.5) / width as f32 * 2.0 - 1.0) * aspect;
+                    let ndc_y = -((y as f32 + 0.5) / height as f32 * 2.0 - 1.0);
+                    let rd = (forward + right * (ndc_x * fov_y_tan) + up * (ndc_y * fov_y_tan))
+                        .normalize();
+                    let marched = march_hyperslice_cpu(eye, rd, step_scale, |p| {
+                        probe_scene(p, w_slice, &bodies)
+                    });
+                    let i = y * width + x;
+                    steps += marched.steps as u64;
+                    if let Some(h) = marched.hit {
+                        depth[i] = (h.hit_pos - eye).length();
+                        hit[i] = true;
+                        primitive[i] = h.body_idx;
+                    }
+                }
+            }
+            Self {
+                depth,
+                hit,
+                primitive,
+                steps,
+                width,
+                height,
+            }
+        }
+
+        /// Bilinear on depth, nearest on the attribution (an interpolated
+        /// primitive index has no meaning), which is the cheapest upscale a
+        /// half-res pass could use and therefore the most favourable error it
+        /// could report. `depth` is `Some` only where all four taps attribute
+        /// to the same primitive: blending across a depth discontinuity
+        /// measures the discontinuity, which the attribution mask already
+        /// counts.
+        fn upscale_to(&self, width: usize, height: usize) -> (Vec<Option<f32>>, Vec<u32>) {
+            let mut depth = vec![None; width * height];
+            let mut primitive = vec![NO_PRIMITIVE; width * height];
+            for y in 0..height {
+                for x in 0..width {
+                    let fx = (x as f32 + 0.5) * self.width as f32 / width as f32 - 0.5;
+                    let fy = (y as f32 + 0.5) * self.height as f32 / height as f32 - 0.5;
+                    let x0 = (fx.floor().max(0.0) as usize).min(self.width - 1);
+                    let y0 = (fy.floor().max(0.0) as usize).min(self.height - 1);
+                    let x1 = (x0 + 1).min(self.width - 1);
+                    let y1 = (y0 + 1).min(self.height - 1);
+                    let ax = (fx - x0 as f32).clamp(0.0, 1.0);
+                    let ay = (fy - y0 as f32).clamp(0.0, 1.0);
+                    let prim_at = |xx: usize, yy: usize| self.primitive[yy * self.width + xx];
+                    let taps = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)];
+                    let uniform = prim_at(x0, y0) != NO_PRIMITIVE
+                        && taps
+                            .iter()
+                            .all(|&(xx, yy)| prim_at(xx, yy) == prim_at(x0, y0));
+                    if uniform {
+                        let at = |xx: usize, yy: usize| self.depth[yy * self.width + xx];
+                        depth[y * width + x] = Some(
+                            (at(x0, y0) * (1.0 - ax) + at(x1, y0) * ax) * (1.0 - ay)
+                                + (at(x0, y1) * (1.0 - ax) + at(x1, y1) * ax) * ay,
+                        );
+                    }
+                    let nx = if ax < 0.5 { x0 } else { x1 };
+                    let ny = if ay < 0.5 { y0 } else { y1 };
+                    primitive[y * width + x] = prim_at(nx, ny);
+                }
+            }
+            (depth, primitive)
+        }
+    }
+
+    /// The certified full step reaches the same surface as the superseded 0.85
+    /// under-step: wherever both marches hit, their depths agree to within the
+    /// hit epsilon, and the full step never loses a hit the under-step found.
+    ///
+    /// That asymmetry is the point. Both marches are lower-bound sphere traces,
+    /// so neither can pass through a surface; the only way they differ is that
+    /// the shorter step runs out of the 384-iteration budget on grazing rays the
+    /// full step converges. The change therefore adds silhouette pixels and
+    /// removes none.
+    #[test]
+    fn certified_full_step_matches_the_under_step_within_the_hit_epsilon() {
+        for w_slice in [0.0_f32, 0.6] {
+            let under =
+                ProbeFrame::render(PROBE_WIDTH, PROBE_HEIGHT, w_slice, SUPERSEDED_UNDER_STEP);
+            let full = ProbeFrame::render(PROBE_WIDTH, PROBE_HEIGHT, w_slice, KERNEL_STEP_SCALE);
+            let mut worst_depth_delta = 0.0_f32;
+            for i in 0..PROBE_WIDTH * PROBE_HEIGHT {
+                assert!(
+                    !under.hit[i] || full.hit[i],
+                    "w={w_slice} pixel {i}: the full step lost a hit the under-step \
+                     found, which a lower-bound sphere trace cannot legitimately do",
+                );
+                if under.hit[i] && full.hit[i] {
+                    worst_depth_delta =
+                        worst_depth_delta.max((under.depth[i] - full.depth[i]).abs());
+                }
+            }
+            assert!(
+                worst_depth_delta <= KERNEL_HIT_EPS,
+                "w={w_slice}: depth moved by {worst_depth_delta}, more than the \
+                 {KERNEL_HIT_EPS} hit epsilon the marcher stops within",
+            );
+        }
+    }
+
+    /// The full step costs strictly fewer marcher iterations than the 0.85
+    /// under-step. Both marches walk the same field, so the saving is exactly
+    /// the fraction of every step the under-step discarded; the bound below is
+    /// deliberately loose (the measured saving is ~15%) so the test pins the
+    /// direction and magnitude class rather than one machine's digits.
+    #[test]
+    fn certified_full_step_costs_fewer_iterations_than_the_under_step() {
+        for w_slice in [0.0_f32, 0.6] {
+            let under =
+                ProbeFrame::render(PROBE_WIDTH, PROBE_HEIGHT, w_slice, SUPERSEDED_UNDER_STEP);
+            let full = ProbeFrame::render(PROBE_WIDTH, PROBE_HEIGHT, w_slice, KERNEL_STEP_SCALE);
+            let saved = 1.0 - full.steps as f64 / under.steps as f64;
+            println!(
+                "w={w_slice}: march steps {} -> {} ({:+.1}%)",
+                under.steps,
+                full.steps,
+                -100.0 * saved
+            );
+            assert!(
+                saved > 0.08,
+                "w={w_slice}: the full step saved only {:.1}% of {} steps; the \
+                 under-step threw away 15% of every advance, so anything near \
+                 zero means the step scale is not reaching the marcher",
+                100.0 * saved,
+                under.steps,
+            );
+        }
+    }
+
+    /// Marching at half resolution and upscaling does not reconstruct the
+    /// full-res field: this states the bound on how wrong it is, which is why
+    /// no half-res-while-interacting path ships.
+    ///
+    /// At rest the error is zero by construction, since the renderer marches
+    /// every pixel; the numbers below are the in-motion error a half-res pass
+    /// would carry. Three quantities, because they fail differently:
+    /// misattributed pixels (the reconstruction names a different primitive, or
+    /// sky where there is a body), and, over the pixels it does attribute
+    /// correctly, depth L-infinity and RMS. Depth is in world units on a scene
+    /// whose bodies are 0.7 in circumradius about five units from the eye,
+    /// against a marcher whose own hit tolerance is 1e-3. The L-infinity is
+    /// dominated by grazing floor pixels, where world depth changes by a large
+    /// multiple of the pixel footprint and no interpolation can recover it.
+    #[test]
+    fn half_res_upscale_error_against_the_full_res_field_is_bounded() {
+        // Bounds as measured on the probe scene, rounded up. They exist so a
+        // change that makes reconstruction worse is visible; they are not a
+        // claim that this much error is acceptable.
+        const SAME_PRIMITIVE_DEPTH_LINF_BOUND: f32 = 2.0;
+        const SAME_PRIMITIVE_DEPTH_RMS_BOUND: f64 = 0.3;
+        const MISATTRIBUTION_FRACTION_BOUND: f64 = 0.02;
+
+        for w_slice in [0.0_f32, 0.6] {
+            let full = ProbeFrame::render(PROBE_WIDTH, PROBE_HEIGHT, w_slice, KERNEL_STEP_SCALE);
+            let half = ProbeFrame::render(
+                PROBE_WIDTH / 2,
+                PROBE_HEIGHT / 2,
+                w_slice,
+                KERNEL_STEP_SCALE,
+            );
+            let (depth, primitive) = half.upscale_to(PROBE_WIDTH, PROBE_HEIGHT);
+
+            let mut misattributed = 0_u64;
+            let mut linf = 0.0_f32;
+            let mut sum_sq = 0.0_f64;
+            let mut compared = 0_u64;
+            for i in 0..PROBE_WIDTH * PROBE_HEIGHT {
+                if primitive[i] != full.primitive[i] {
+                    misattributed += 1;
+                    continue;
+                }
+                if let (true, Some(d)) = (full.hit[i], depth[i]) {
+                    let e = (d - full.depth[i]).abs();
+                    linf = linf.max(e);
+                    sum_sq += (e as f64) * (e as f64);
+                    compared += 1;
+                }
+            }
+            let rms = (sum_sq / compared.max(1) as f64).sqrt();
+            let misattribution_fraction =
+                misattributed as f64 / (PROBE_WIDTH * PROBE_HEIGHT) as f64;
+            println!(
+                "w={w_slice}: half-res steps {} vs full {} ({:+.1}%), misattributed \
+                 {:.2}% of pixels, same-primitive depth Linf {linf:.4} rms \
+                 {rms:.6} over {compared} px",
+                half.steps,
+                full.steps,
+                100.0 * (half.steps as f64 - full.steps as f64) / full.steps as f64,
+                100.0 * misattribution_fraction,
+            );
+
+            assert!(
+                linf <= SAME_PRIMITIVE_DEPTH_LINF_BOUND,
+                "w={w_slice}: same-primitive depth Linf {linf}",
+            );
+            assert!(
+                rms <= SAME_PRIMITIVE_DEPTH_RMS_BOUND,
+                "w={w_slice}: same-primitive depth rms {rms}",
+            );
+            assert!(
+                misattribution_fraction <= MISATTRIBUTION_FRACTION_BOUND,
+                "w={w_slice}: misattributed {misattribution_fraction}",
+            );
+            // Not a rounding artifact: a half-res pass genuinely misattributes
+            // pixels, and the marcher's own tolerance is 1e-3.
+            assert!(
+                misattributed > 0 && linf > KERNEL_HIT_EPS,
+                "w={w_slice}: half-res reconstructed the full-res field exactly, \
+                 which would make the no-half-res decision wrong",
+            );
+        }
+    }
+
+    /// The kernel takes the whole reported distance. A resurrected under-step
+    /// would silently cost every march the same 15% again.
+    #[test]
+    fn kernel_marcher_takes_the_full_reported_distance() {
+        assert!(HYPERSLICE_KERNEL_WGSL.contains("t = t + max(h.dist, min_step);"));
+        assert!(!HYPERSLICE_KERNEL_WGSL.contains("h.dist * 0.85"));
     }
 
     // ---- Filmstrip batching ----

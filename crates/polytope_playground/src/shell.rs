@@ -7,11 +7,18 @@ use loam_app::shell::{SceneEntry, SceneRegistry};
 pub(crate) struct Playground;
 
 impl SceneRegistry for Playground {
-    const SCENES: &'static [SceneEntry] = &[SceneEntry {
-        slug: "rotate",
-        label: "Rotate polytopes",
-        build: |ctx| Ok(Box::new(crate::RotateScene::new(ctx)?)),
-    }];
+    const SCENES: &'static [SceneEntry] = &[
+        SceneEntry {
+            slug: "rotate",
+            label: "Rotate polytopes",
+            build: |ctx| Ok(Box::new(crate::RotateScene::new(ctx)?)),
+        },
+        SceneEntry {
+            slug: "s3",
+            label: "Polychora on S³",
+            build: |ctx| Ok(Box::new(crate::s3::S3Scene::new(ctx)?)),
+        },
+    ];
 }
 
 #[cfg(test)]
@@ -33,5 +40,19 @@ mod tests {
                 entry.slug
             );
         }
+    }
+
+    /// The curved-space scene is reachable by slug and is not index 0: both
+    /// `--scene=` / `?scene=` and the `scene` command resolve by position in
+    /// this table, and index 0 doubles as the unknown-slug fallback, so a
+    /// scene registered there would answer even to a name nothing claims.
+    #[test]
+    fn the_s3_scene_is_registered_by_slug_away_from_the_fallback_index() {
+        let index = Playground::SCENES
+            .iter()
+            .position(|entry| entry.slug == "s3")
+            .expect("`?scene=s3` must resolve");
+        assert_ne!(index, 0);
+        assert_eq!(Playground::SCENES[0].slug, "rotate", "boot scene unchanged");
     }
 }

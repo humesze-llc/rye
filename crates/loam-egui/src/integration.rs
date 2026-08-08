@@ -172,17 +172,15 @@ impl UiIntegration {
     /// height_px)`.
     ///
     /// `view` is the caller's UI-pass view of that attachment and carries the
-    /// format `new` was constructed with: on the direct-to-swapchain paths a
-    /// non-sRGB reinterpretation, of the multisampled attachment with MSAA on
-    /// and of the swapchain texture with MSAA off; on the composite path the
-    /// offscreen scene texture's own view, the one the scene pass drew
-    /// through, with the swapchain reached later by the composite pass rather
-    /// than here.
+    /// format `new` was constructed with: on the direct-to-swapchain paths the
+    /// swapchain texture's non-sRGB reinterpretation, whatever the scene's
+    /// sample count; on the composite path the offscreen scene texture's own
+    /// view, the one the scene pass drew through, with the swapchain reached
+    /// later by the composite pass rather than here.
     ///
-    /// `resolve_target` is `Some` exactly when `view` is multisampled: this
-    /// pass runs last, so it carries the frame's deferred MSAA resolve. Under
-    /// the windowed runner that target is a single-sampled view of the
-    /// swapchain texture.
+    /// `resolve_target` is `Some` only when `view` is multisampled. The
+    /// windowed runner resolves its multisampled scene attachment in a pass of
+    /// its own before this one and paints single-sampled, so it passes `None`.
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &mut self,

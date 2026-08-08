@@ -482,7 +482,6 @@ impl<A: App + 'static> WorkerRunner<A> {
         let ui = WorkerUi::new(
             &rd.device,
             rd.target_format(),
-            rd.sample_count(),
             width_px,
             height_px,
             device_pixel_ratio,
@@ -797,18 +796,21 @@ impl<A: App + 'static> WorkerRunner<A> {
             self.app.record(&mut ctx).context("App::record")?;
         }
 
-        // egui into the same encoder, overlaid on the scene. resolve_target
-        // is None at sample_count 1 (the current worker config).
+        // Scene MSAA resolve, matching the windowed runner. Dead at
+        // sample_count 1, which the browser's non-sRGB surface forces today.
+        if self.rd.sample_count() > 1 {
+            let _scope = loam_time::frame_trace::scope("scene-resolve");
+            self.rd.resolve_scene_to_swap(&mut encoder, &swap_view);
+        }
+
+        // egui into the same encoder, overlaid on the scene. Always
+        // single-sampled: the offscreen scene texture on the composite path,
+        // else the swapchain the resolve above wrote.
         {
             let _scope = loam_time::frame_trace::scope("ui-paint");
-            let resolve_target = (self.rd.sample_count() > 1).then_some(&swap_view);
-            self.ui.paint(
-                &self.rd.device,
-                &self.rd.queue,
-                &mut encoder,
-                render_view,
-                resolve_target,
-            );
+            let ui_view = self.rd.scene_view().unwrap_or(&swap_view);
+            self.ui
+                .paint(&self.rd.device, &self.rd.queue, &mut encoder, ui_view);
         }
 
         // Composite pass when the swap is non-sRGB (browser-WebGPU).

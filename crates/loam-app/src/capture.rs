@@ -24,10 +24,9 @@
 //!
 //! ## Pre-egui tap and MSAA
 //!
-//! With MSAA off the 3D pass writes the swapchain directly, so the pre-egui tap copies
-//! it as-is. With MSAA on the 3D content is only resolved at the end of the egui pass
-//! and multisamples can't be copied directly, so pre-egui captures are skipped (with a
-//! warning); disable MSAA via [`RunConfig::msaa_samples`](crate::RunConfig).
+//! Both taps copy the swapchain, never a multisampled attachment. With MSAA off the 3D
+//! pass writes the swapchain directly; with MSAA on the runner's scene resolve writes it
+//! before the pre-egui tap runs, so the tap copies resolved pixels either way.
 //!
 //! ## Output layout
 //!
@@ -78,7 +77,7 @@ use loam_egui::Console;
 /// Where in the frame pipeline the capture is taken from.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CaptureStage {
-    /// Pure 3D scene before egui paints. Requires MSAA off.
+    /// Pure 3D scene before egui paints.
     Pre,
     /// Final composite after egui paints. What DWM receives.
     Post,

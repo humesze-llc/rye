@@ -37,7 +37,6 @@ impl WorkerUi {
     pub fn new(
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
-        sample_count: u32,
         width_px: u32,
         height_px: u32,
         pixels_per_point: f32,
@@ -47,7 +46,7 @@ impl WorkerUi {
             device,
             target_format,
             egui_wgpu::RendererOptions {
-                msaa_samples: sample_count,
+                msaa_samples: crate::UI_PASS_SAMPLE_COUNT,
                 ..Default::default()
             },
         );
@@ -174,7 +173,8 @@ impl WorkerUi {
         &self.ctx
     }
 
-    /// Finish the frame and paint into `view`. Mirrors
+    /// Finish the frame and paint into `view`, which is single-sampled on
+    /// every path (see `crate::UI_PASS_SAMPLE_COUNT`). Mirrors
     /// `UiIntegration::paint` without the winit `handle_platform_output`
     /// step.
     pub fn paint(
@@ -183,7 +183,6 @@ impl WorkerUi {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        resolve_target: Option<&wgpu::TextureView>,
     ) {
         let full_output = self.ctx.end_pass();
         self.wants_input = self.ctx.wants_pointer_input() || self.ctx.wants_keyboard_input();
@@ -209,7 +208,7 @@ impl WorkerUi {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
                     depth_slice: None,
-                    resolve_target,
+                    resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,

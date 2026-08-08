@@ -550,6 +550,12 @@ struct InitArtifacts<A: App> {
     app: A,
 }
 
+/// The UI pass is single-sampled on every surface path: an MSAA scene attachment is
+/// resolved into the swapchain before egui paints (see
+/// [`RenderDevice::resolve_scene_to_swap`]), so egui never draws multisampled and never
+/// carries a resolve.
+const UI_PASS_SAMPLE_COUNT: u32 = 1;
+
 /// Format and sample count are the contract between `RenderDevice` (which owns the color
 /// attachments and the views onto them) and `UiIntegration` (which builds egui pipelines
 /// against exactly one of each). Building `UiIntegration` here, in the same place
@@ -582,13 +588,11 @@ fn setup_after_device<A: App>(
     };
     let app = A::setup(&mut ctx).map_err(|e| e.context("App::setup"))?;
 
-    // Sample count must match the multisampled scene attachment, since the UI pass
-    // writes into that same attachment and carries its deferred MSAA resolve (see
-    // [`UiIntegration::paint`]'s `resolve_target`). Format is `ui_format`, not
-    // `target_format`, because on the direct-to-swapchain paths the UI pass draws
-    // through the attachment's non-sRGB reinterpretation rather than the view the
-    // scene pass uses; on the composite path the two formats coincide.
-    let mut ui = UiIntegration::new(&rd.device, win, rd.ui_format(), rd.sample_count());
+    // Format is `ui_format`, not `target_format`, because on the direct-to-swapchain
+    // paths the UI pass draws through the swapchain's non-sRGB reinterpretation
+    // rather than the view the scene pass uses; on the composite path the two
+    // formats coincide.
+    let mut ui = UiIntegration::new(&rd.device, win, rd.ui_format(), UI_PASS_SAMPLE_COUNT);
 
     // Runner-side pipeline warming (N3). Forces lazy pipeline compilation for
     // egui-wgpu's shape variants and the browser-WebGPU composite pass during
@@ -607,7 +611,7 @@ fn setup_after_device<A: App>(
         &rd.queue,
         win,
         rd.ui_format(),
-        rd.sample_count(),
+        UI_PASS_SAMPLE_COUNT,
     );
     rd.warm_composite();
 
@@ -1182,6 +1186,7 @@ pub(crate) const FRAME_LOOP_SECTIONS: &[&str] = &[
     "hot-reload",
     "surface-acquire",
     "app-record",
+    "scene-resolve",
     "ui-paint",
     "composite",
     "present",
@@ -1442,21 +1447,20 @@ impl<A: App> Runner<A> {
         // 6. Render: scene (App::record) then UI overlay.
         //
         // Three attachment topologies, one per surface path. On the two
-        // direct-to-swapchain paths the color attachment is addressed through
-        // two views, an sRGB one for the scene pass and its non-sRGB
-        // reinterpretation for the UI pass, so egui blends in the gamma space
-        // its feathering assumes; where the adapter forbids the
-        // reinterpretation both views of a pair carry the attachment's own
-        // format and those two topologies are otherwise unchanged.
+        // direct-to-swapchain paths the swapchain texture is addressed through
+        // two views, an sRGB one for whatever the scene writes into it and its
+        // non-sRGB reinterpretation for the UI pass, so egui blends in the
+        // gamma space its feathering assumes; where the adapter forbids the
+        // reinterpretation the UI takes the sRGB view too and those two
+        // topologies are otherwise unchanged.
         //
-        //   sRGB swap, MSAA on:  scene into `rd.msaa_view()`, UI into
-        //     `rd.msaa_ui_view()` (same attachment) with the reinterpreted
-        //     swapchain view as `resolve_target`, so the deferred MSAA resolve
-        //     happens at the end of the egui pass. Nothing draws into the
-        //     `begin_frame` swapchain view.
+        //   sRGB swap, MSAA on:  scene into `rd.msaa_view()`, then
+        //     `resolve_scene_to_swap` resolves that attachment into the
+        //     `begin_frame` view, sRGB at both ends. UI into the reinterpreted
+        //     view of that same swapchain texture, single-sampled.
         //   sRGB swap, MSAA off: scene into the `begin_frame` swapchain view,
-        //     UI into the reinterpreted view of that same texture,
-        //     `resolve_target` is `None`.
+        //     UI into the reinterpreted view of that same texture. Nothing
+        //     resolves.
         //   non-sRGB swap (browser-WebGPU): no reinterpretation and one view
         //     per attachment. Scene and UI both draw into `rd.scene_view()`,
         //     the offscreen scene texture, and the end-of-frame composite pass
@@ -1469,12 +1473,10 @@ impl<A: App> Runner<A> {
         // therefore orders a composite ahead of its readback, so it gets
         // gamma-encoded pixels of the stage it names rather than an untouched
         // surface.
-        //   - `pre`-egui:  after App::record, before ui.paint. MSAA must be off (the
-        //     multisampled attachment isn't directly copyable). The pre tap reads
-        //     just the 3D pass output.
+        //   - `pre`-egui:  after App::record and the scene resolve, before ui.paint.
+        //     The pre tap reads just the 3D pass output.
         //   - `post`-egui: after ui.paint and the frame's composite, before
-        //     frame.present. Reads scene + UI (via the MSAA resolve when MSAA is
-        //     on). This is what DWM receives.
+        //     frame.present. Reads scene + UI. This is what DWM receives.
         // FPS-gate decides whether either tap fires this frame. Computed once before the
         // render pass so the same `now` is used to schedule the next capture interval.
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
@@ -1547,58 +1549,58 @@ impl<A: App> Runner<A> {
                     }
                 }
 
-                // Pre-egui capture tap. Only valid with MSAA off. Forces a mid-frame
-                // submit so the GPU has actually drawn the scene before we read it
-                // back; we restart the encoder afterwards for ui+composite.
+                // Scene MSAA resolve, in its own pass because `App::record` owns
+                // the scene passes. Branch rather than lean on the method's own
+                // guard so the MSAA-off steady state pays nothing.
+                if rd.sample_count() > 1 {
+                    let _scope = loam_time::frame_trace::scope("scene-resolve");
+                    rd.resolve_scene_to_swap(&mut encoder, &swap_view);
+                }
+
+                // Pre-egui capture tap. Forces a mid-frame submit so the GPU has
+                // actually drawn the scene before we read it back; we restart the
+                // encoder afterwards for ui+composite.
                 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
                 if do_capture && self.capture.wants_pre() {
-                    if rd.sample_count() > 1 {
-                        tracing::warn!(
-                            "capture: `pre` stage skipped because MSAA is on; \
-                             set RunConfig::msaa_samples = 1 for diagnostic capture"
-                        );
-                    } else {
-                        // Nothing has written the swapchain yet on the composite
-                        // path; the scene lives in the offscreen target. Encoding
-                        // it now is exactly the scene-only image this stage wants,
-                        // and the frame's own composite overwrites it after the UI
-                        // pass. No-op on the direct paths.
-                        if rd.scene_view().is_some() {
-                            rd.composite_to_swap(&mut encoder, &swap_view);
-                        }
-                        rd.queue.submit(Some(encoder.finish()));
-                        encoder =
-                            rd.device
-                                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                    label: Some("loam-app::frame-post-pre-capture"),
-                                });
-                        capture_consume(&mut self.capture, rd, &frame.texture, true, capture_now);
+                    // Nothing has written the swapchain yet on the composite
+                    // path; the scene lives in the offscreen target. Encoding
+                    // it now is exactly the scene-only image this stage wants,
+                    // and the frame's own composite overwrites it after the UI
+                    // pass. No-op on the direct paths, where the scene pass (or
+                    // the resolve above) already wrote the swapchain.
+                    if rd.scene_view().is_some() {
+                        rd.composite_to_swap(&mut encoder, &swap_view);
                     }
+                    rd.queue.submit(Some(encoder.finish()));
+                    encoder = rd
+                        .device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("loam-app::frame-post-pre-capture"),
+                        });
+                    capture_consume(&mut self.capture, rd, &frame.texture, true, capture_now);
                 }
 
                 if let Some(ui) = self.ui.as_mut() {
                     let _scope = loam_time::frame_trace::scope("ui-paint");
                     let viewport = (rd.surface_bundle.size.width, rd.surface_bundle.size.height);
                     // Direct-to-swapchain paths blend the UI in gamma space via
-                    // non-sRGB reinterpreted views (RenderDevice::ui_format).
-                    // The composite path keeps painting into the scene texture,
-                    // which the later composite pass consumes.
+                    // the swapchain's non-sRGB reinterpretation
+                    // (RenderDevice::ui_format). The composite path keeps
+                    // painting into the scene texture, which the later composite
+                    // pass consumes. Either target is single-sampled, so the UI
+                    // pass never carries a resolve.
                     let ui_swap_view =
                         (rd.scene_view().is_none()).then(|| rd.create_ui_swap_view(&frame));
-                    let (ui_view, ui_resolve) = match (&ui_swap_view, rd.msaa_ui_view()) {
-                        (Some(swap), Some(msaa)) => (msaa, Some(swap)),
-                        (Some(swap), None) => (swap, None),
-                        // Composite path. `RenderDevice` forces MSAA off when it
-                        // takes this path, so `render_view` is the offscreen
-                        // scene texture and there is never a resolve to attach.
-                        (None, _) => (render_view, None),
+                    let ui_view = match &ui_swap_view {
+                        Some(swap) => swap,
+                        None => render_view,
                     };
                     ui.paint(
                         &rd.device,
                         &rd.queue,
                         &mut encoder,
                         ui_view,
-                        ui_resolve,
+                        None,
                         win.as_ref(),
                         viewport,
                     );

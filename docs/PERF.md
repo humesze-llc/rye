@@ -76,13 +76,15 @@ surface is configured `PresentMode::Fifo` with
 `desired_maximum_frame_latency: 2`, and the fps cap is off by default, so the
 presentation engine holds that acquire until a swapchain image frees at the
 next flip. `present` is cheap (42.5us) because it queues the flip and returns.
-The rest of the uncovered region is encoder creation, three queue submits and
-the GPU-timer bookkeeping, none of which wait on the display; the new
+The rest of the uncovered region is encoder creation, three queue submits, the
+GPU-timer bookkeeping, and under the default `capture` feature a status
+publish plus, only while recording, a blocking readback poll. None of those
+waits on the display, and nothing was recording during this capture; the new
 `unscoped` row exists so the next capture can bound them instead of assuming.
 
 *The cadence is quantized, which is the vsync signature.* `between-frames`
 max/p50 is 4.04 and p95/p50 is 3.23: frame intervals cluster on integer
-multiples of the p50 period, to within 1% at the max. That is what a
+multiples of the p50 period, the max landing 1.0% above 4x. That is what a
 vsync-locked producer looks like and it is not implied by the accounting
 above. A p50 of 4.13ms puts the period at 242Hz, consistent with a 240Hz
 panel. The tail frames are ones that waited two or three extra flips.

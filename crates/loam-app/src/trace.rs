@@ -7,9 +7,9 @@
 //! `trace cap <N>` (rolling-window size).
 //!
 //! The summary carries a synthetic `unscoped` row: `frame` minus the sections
-//! the frame loop opens inside it ([`crate::FRAME_LOOP_SECTIONS`]). Without it
-//! a reader has to sum the table by hand to notice that the named sections
-//! cover only a fraction of the frame.
+//! the frame loop opens inside it (`crate::FRAME_LOOP_SECTIONS`, crate-private
+//! so not linkable from here). Without it a reader has to sum the table by
+//! hand to notice that the named sections cover only a fraction of the frame.
 //!
 //! ```ignore
 //! loam_app::trace::register_command(&mut c);
@@ -799,6 +799,45 @@ mod tests {
             row.max >= Duration::from_millis(4),
             "a frame whose work is entirely unscoped must report as unscoped, got {:?}",
             row.max,
+        );
+    }
+
+    /// Enough frames that the nearest-rank indices for p50, p95 and p99 are
+    /// three distinct slots (12, 23, 24), so a quantile that drifted between
+    /// the two implementations cannot hide behind a shared index.
+    const RANK_SPREAD_FRAMES: u32 = 25;
+
+    #[test]
+    fn unscoped_percentiles_agree_with_the_aggregate_they_are_shown_beside() {
+        // With no child sections the residual is the `frame` duration itself,
+        // so the two rows aggregate an identical sample set and any
+        // difference is a divergence in the percentile rule, not noise. The
+        // spin makes the samples distinct, which is what gives an index
+        // mismatch somewhere to show up.
+        for i in 0..RANK_SPREAD_FRAMES {
+            frame_trace::begin_frame();
+            {
+                let _frame = frame_trace::scope("frame");
+                let until = web_time::Instant::now() + Duration::from_micros(20 * (i as u64 + 1));
+                while web_time::Instant::now() < until {}
+            }
+            frame_trace::end_frame();
+        }
+        let residual = unscoped_stats().expect("recorded frames yield the row");
+        let frame_row = frame_trace::aggregate()
+            .into_iter()
+            .find(|s| s.name == "frame")
+            .expect("the recorded frames carry a `frame` section");
+        assert_eq!(residual.samples, frame_row.samples);
+        assert_eq!(residual.mean, frame_row.mean);
+        assert_eq!(residual.p50, frame_row.p50);
+        assert_eq!(residual.p95, frame_row.p95);
+        assert_eq!(residual.p99, frame_row.p99);
+        assert_eq!(residual.max, frame_row.max);
+        assert_ne!(
+            frame_row.p95, frame_row.p99,
+            "distinct samples must separate the ranks, else the equalities \
+             above hold for any quantile",
         );
     }
 

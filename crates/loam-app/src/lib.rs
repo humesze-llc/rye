@@ -1486,14 +1486,17 @@ impl<A: App> Runner<A> {
         //     only pass writing through it here. `RenderDevice` forces MSAA off
         //     on this path, so nothing resolves.
         //
-        // Capture taps read the swapchain texture, so they carry the frame's
-        // pixels only on the direct paths; under the composite the passes have
-        // not written it yet at either tap.
+        // Capture taps read the swapchain texture, which on the composite path
+        // holds nothing until `composite_to_swap` runs. Each tap therefore
+        // orders a composite ahead of its readback, so both stages read the
+        // gamma-encoded bits the presentation engine will get rather than an
+        // untouched surface.
         //   - `pre`-egui:  after App::record, before ui.paint. MSAA must be off (the
         //     multisampled attachment isn't directly copyable). The pre tap reads
         //     just the 3D pass output.
-        //   - `post`-egui: after ui.paint, before frame.present. Reads scene + UI
-        //     (via the MSAA resolve when MSAA is on). This is what DWM receives.
+        //   - `post`-egui: after ui.paint and the frame's composite, before
+        //     frame.present. Reads scene + UI (via the MSAA resolve when MSAA is
+        //     on). This is what DWM receives.
         // FPS-gate decides whether either tap fires this frame. Computed once before the
         // render pass so the same `now` is used to schedule the next capture interval.
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
@@ -1577,6 +1580,14 @@ impl<A: App> Runner<A> {
                              set RunConfig::msaa_samples = 1 for diagnostic capture"
                         );
                     } else {
+                        // Nothing has written the swapchain yet on the composite
+                        // path; the scene lives in the offscreen target. Encoding
+                        // it now is exactly the scene-only image this stage wants,
+                        // and the frame's own composite overwrites it after the UI
+                        // pass. No-op on the direct paths.
+                        if rd.scene_view().is_some() {
+                            rd.composite_to_swap(&mut encoder, &swap_view);
+                        }
                         rd.queue.submit(Some(encoder.finish()));
                         encoder =
                             rd.device
@@ -1615,9 +1626,20 @@ impl<A: App> Runner<A> {
                     );
                 }
 
+                // Composite pass: offscreen scene texture -> linear swapchain
+                // with manual gamma encoding. Writes into the same encoder as
+                // everything else (no separate submit). Ordered before the post
+                // tap because that tap reads the swapchain and this is the only
+                // pass that writes it on this path. No-op on the direct paths
+                // (scene_view() is None and rendering wrote the swapchain).
+                if rd.scene_view().is_some() {
+                    let _scope = loam_time::frame_trace::scope("composite");
+                    rd.composite_to_swap(&mut encoder, &swap_view);
+                }
+
                 // Post-egui capture tap. Like the pre-tap, forces a mid-frame submit
-                // before the readback so the composite has actually happened on the
-                // GPU. Restart the encoder for composite (if needed below).
+                // before the readback so the frame's passes have actually run on the
+                // GPU. Restart the encoder so the submit below still has one.
                 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
                 if do_capture && self.capture.wants_post() {
                     rd.queue.submit(Some(encoder.finish()));
@@ -1636,16 +1658,6 @@ impl<A: App> Runner<A> {
                 // even when do_capture is false (FPS-gated idle frames between writes).
                 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
                 capture::publish_status(self.capture.status());
-
-                // Composite pass: offscreen scene texture -> linear swapchain
-                // with manual gamma encoding. Writes into the same encoder as
-                // everything else (no separate submit). No-op on native (where
-                // scene_view() is None and rendering wrote directly into the
-                // swapchain).
-                if rd.scene_view().is_some() {
-                    let _scope = loam_time::frame_trace::scope("composite");
-                    rd.composite_to_swap(&mut encoder, &swap_view);
-                }
 
                 // GPU timer end + resolve. Stays in a separate small encoder for the
                 // same reason as the start timer: ordering vs the frame's main work.

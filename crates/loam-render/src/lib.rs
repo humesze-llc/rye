@@ -8,6 +8,8 @@
 //!   node to a sub-region of the framebuffer (e.g. carving out an egui side-panel area).
 //! - [`hypergimbal`]: the six SO(4) rotation planes as grabbable rings, from the
 //!   stereographic 16-cell projection; ring geometry, picking, and the drag-to-rotor map.
+//! - [`gizmo`]: those rings plus the four translation shafts as one handle set, with
+//!   a single pick, a single anchored drag, and a per-frame transform delta.
 //! - [`raymarch`]: ready-made fullscreen-triangle ray-march nodes (Euclidean, geodesic,
 //!   hyperslice 4D); the engine's main render path until rasterised geometry shows up.
 //!
@@ -17,6 +19,7 @@
 pub mod composite;
 pub mod depth;
 pub mod device;
+pub mod gizmo;
 pub mod gpu_timer;
 pub mod graph;
 pub mod hypergimbal;

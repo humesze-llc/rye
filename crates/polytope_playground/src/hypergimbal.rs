@@ -1,26 +1,31 @@
-//! Hypergimbal overlay: the six rotation planes as grabbable rings.
+//! Transform-gizmo overlay: the six rotation planes as grabbable rings and
+//! the four translation axes as grabbable arrows.
 //!
-//! Ring geometry, picking and the drag-to-rotor map are engine machinery in
-//! [`loam_render::hypergimbal`], derivation included. This module places the
-//! widget in the scene, arbitrates the left button against the flick
-//! gesture, and turns a grabbed ring into an edit of the same per-plane
-//! angle the Active-set slider writes.
+//! Handle geometry, picking and the drag-to-delta map are engine machinery in
+//! [`loam_render::gizmo`], derivation included. This module places the widget
+//! in the scene, arbitrates the left button against the flick gesture, and
+//! turns a held handle into either an edit of the same per-plane angle the
+//! Active-set slider writes or a move of the selected body in the physics
+//! world.
 
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 use loam_app::Input;
 use loam_camera::Ray;
 use loam_math::{EuclideanR3, Rotor4};
 use loam_render::device::RenderDevice;
-use loam_render::hypergimbal::{Hypergimbal, Ring, RingStyle};
+use loam_render::gizmo::{
+    GizmoStyle, Handle, HandleDrag, HandleId, TransformDelta, TransformGizmo,
+};
 use loam_shape::LineMesh;
 
 use crate::consts::BASE_ROTATION_RATE;
 use crate::physics::{ndc_from_pixels, PlaygroundPhysics};
 use crate::state::{Demo, RotationMode, ViewMode};
 
-/// Rings reach `(1 + √2)·scale` from the centre, so this puts the outer edge
-/// at 1.33 world units: just under twice `BODY_SIZE`, enough to enclose the
-/// shape it stands on without reaching its neighbour's column.
+/// Rings reach `(1 + √2)·scale` and arrow tips just under `3·scale`, so this
+/// puts the widget's outer edge at 1.64 world units: inside
+/// `BODY_X_SPACING`, so no handle reaches the centre of the neighbouring
+/// column, and enough to enclose the shape it stands on.
 const SCALE: f32 = 0.55;
 
 /// Grab radius in world units, about seven pixels at the startup framing
@@ -28,51 +33,54 @@ const SCALE: f32 = 0.55;
 /// which is what makes grabbing fussier as the camera pulls back.
 const PICK_TOLERANCE: f32 = 0.09;
 
-/// Colour for the ring under the cursor, or held.
+/// Colour for the handle under the cursor, or held.
 const HIGHLIGHT: [f32; 4] = [1.0, 0.94, 0.55, 1.0];
 
-/// Widget placement. The rings are the ambient rotation planes, so their
-/// shape never tracks the subject's orientation; only where they stand does.
-pub(crate) fn widget(center: Vec3) -> Hypergimbal {
-    Hypergimbal {
+/// Widget placement. The handles are the ambient rotation planes and the
+/// ambient axes, so their shape never tracks the subject's orientation; only
+/// where they stand does.
+pub(crate) fn widget(center: Vec3) -> TransformGizmo {
+    TransformGizmo {
         center,
         scale: SCALE,
     }
 }
 
-/// Where the rings stand: the live centre of the slot the controls are aimed
-/// at. A widget parked at the row's midpoint while it turns one body claims to
-/// turn the row, and there is nothing else on screen saying which body a drag
-/// will reach.
+/// Where the handles stand: the live centre of the slot the controls are
+/// aimed at. A widget parked at the row's midpoint while it turns one body
+/// claims to turn the row, and there is nothing else on screen saying which
+/// body a drag will reach.
 pub(crate) fn gimbal_center(physics: &PlaygroundPhysics, slot: usize, slots: usize) -> Vec3 {
     physics.pose(slot, slots, Rotor4::IDENTITY).position_r3()
 }
 
-/// A held ring, anchored at the press edge so the whole drag is measured
+/// A held handle, anchored at the press edge so the whole drag is measured
 /// against one origin rather than accumulated frame by frame.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct GimbalDrag {
-    ring: Ring,
-    /// Where the press ray met the ring's plane.
-    grab: Vec3,
-    /// Active-mode displayed angle for the ring's plane at the press edge.
+    held: HandleDrag,
+    /// Active-mode displayed angle for the held ring's plane at the press
+    /// edge. Unread by a translation drag.
     base_displayed: f32,
     /// Composer-mode pose at the press edge.
     base_rotor: Rotor4,
+    /// Selected body's world position at the press edge.
+    base_position: Vec4,
 }
 
 pub(crate) struct GimbalUi {
     pub(crate) enabled: bool,
     pub(crate) drag: Option<GimbalDrag>,
-    hover: Option<Ring>,
-    /// Highlighted plane the retained mesh was built for. The rings never
-    /// move, so this is the only thing that can dirty it.
-    built_highlight: Option<usize>,
+    hover: Option<HandleId>,
+    /// Highlighted handle the retained mesh was built for. The handles never
+    /// move relative to the widget, so this is the only thing that can dirty
+    /// it.
+    built_highlight: Option<HandleId>,
     mesh: LineMesh<3>,
 }
 
 impl Default for GimbalUi {
-    /// On at startup: the widget is the demo's answer to "how do I turn this
+    /// On at startup: the widget is the demo's answer to "how do I move this
     /// thing in 4D", and a hidden answer is no answer.
     fn default() -> Self {
         Self {
@@ -85,23 +93,22 @@ impl Default for GimbalUi {
     }
 }
 
-/// Ring the ray grabs, and where it met that ring's plane.
-fn grab_ring(gimbal: &Hypergimbal, ray: &Ray) -> Option<(Ring, Vec3)> {
-    let ring = gimbal.pick(ray.origin, ray.direction, PICK_TOLERANCE)?;
-    ring.ray_hit(ray.origin, ray.direction)
-        .map(|hit| (ring, hit))
+/// Handle the ray grabs, anchored where it met it.
+fn grab_handle(gizmo: &TransformGizmo, ray: &Ray) -> Option<HandleDrag> {
+    let handle = gizmo.pick(ray.origin, ray.direction, PICK_TOLERANCE)?;
+    HandleDrag::press(handle, ray.origin, ray.direction)
 }
 
-/// Active-mode `base_angles` entry a drag asks for. The displayed angle is
-/// `base + spin(t)`, so the drag has to hand back the spin it does not own;
-/// this is the same solve the Active slider does on a change.
-fn dragged_base_angle(drag: &GimbalDrag, cursor: Vec3, spin_contribution: f32) -> f32 {
-    drag.base_displayed + drag.ring.drag_angle(drag.grab, cursor) - spin_contribution
+/// Active-mode `base_angles` entry a ring drag asks for. The displayed angle
+/// is `base + spin(t)`, so the drag has to hand back the spin it does not
+/// own; this is the same solve the Active slider does on a change.
+fn dragged_base_angle(base_displayed: f32, drag_angle: f32, spin_contribution: f32) -> f32 {
+    base_displayed + drag_angle - spin_contribution
 }
 
 impl Demo {
-    /// Whether the rings are on screen this frame. Filmstrip composes its own
-    /// per-cell viewports around a single subject with no shared world
+    /// Whether the handles are on screen this frame. Filmstrip composes its
+    /// own per-cell viewports around a single subject with no shared world
     /// origin, so the widget has nowhere to stand; drawing and grabbing are
     /// gated together, because a handle that is grabbable while invisible is
     /// worse than no handle.
@@ -110,7 +117,7 @@ impl Demo {
     }
 
     /// This frame's widget, standing on the selected body.
-    fn gimbal_widget(&self) -> Hypergimbal {
+    fn gimbal_widget(&self) -> TransformGizmo {
         widget(gimbal_center(
             &self.physics,
             self.selected_slot(),
@@ -118,9 +125,21 @@ impl Demo {
         ))
     }
 
-    /// Update the hypergimbal against this frame's input. Returns `true`
-    /// while a ring is held, which is what keeps the flick gesture and the
-    /// orbit off the left button for the rest of the drag.
+    /// Live 4D position of the slot the controls are aimed at, read through
+    /// the same seam the render paths use.
+    fn selected_position(&self) -> Vec4 {
+        self.physics
+            .pose(
+                self.selected_slot(),
+                self.render_row().len(),
+                Rotor4::IDENTITY,
+            )
+            .position
+    }
+
+    /// Update the gizmo against this frame's input. Returns `true` while a
+    /// handle is held, which is what keeps the flick gesture and the orbit
+    /// off the left button for the rest of the drag.
     ///
     /// Reads `left_was_down` before [`Demo::update_throw`] refreshes it, so
     /// this must stay ahead of that call.
@@ -135,7 +154,7 @@ impl Demo {
             self.gimbal.hover = None;
             return false;
         }
-        let gimbal = self.gimbal_widget();
+        let gizmo = self.gimbal_widget();
         let down = input.buttons.left.down;
         let pressed = down && !self.left_was_down;
 
@@ -146,11 +165,14 @@ impl Demo {
                 let ray = self
                     .camera
                     .ray_from_ndc(ndc_from_pixels(press_px, viewport));
-                grab_ring(&gimbal, &ray).map(|(ring, hit)| GimbalDrag {
-                    ring,
-                    grab: hit,
-                    base_displayed: self.active_displayed_angle(ring.plane as usize),
+                grab_handle(&gizmo, &ray).map(|held| GimbalDrag {
+                    held,
+                    base_displayed: match held.id() {
+                        HandleId::Rotate(plane) => self.active_displayed_angle(plane as usize),
+                        HandleId::Translate(_) => 0.0,
+                    },
                     base_rotor: self.selected_rotor(),
+                    base_position: self.selected_position(),
                 })
             });
         }
@@ -159,49 +181,64 @@ impl Demo {
             .cursor_pos
             .map(|px| self.camera.ray_from_ndc(ndc_from_pixels(px, viewport)));
         self.gimbal.hover = match (self.gimbal.drag, cursor_ray) {
-            (Some(drag), _) => Some(drag.ring),
-            (None, Some(ray)) => gimbal.pick(ray.origin, ray.direction, PICK_TOLERANCE),
+            (Some(drag), _) => Some(drag.held.id()),
+            (None, Some(ray)) => gizmo
+                .pick(ray.origin, ray.direction, PICK_TOLERANCE)
+                .map(Handle::id),
             (None, None) => None,
         };
 
         let Some(drag) = self.gimbal.drag else {
             return false;
         };
-        // A cursor that left the window, or a camera that swung the ring
-        // edge-on, leaves the drag held at its last angle rather than
+        // A cursor that left the window, or a camera that swung the handle
+        // edge-on, leaves the drag held at its last delta rather than
         // snapping the subject somewhere arbitrary.
-        if let Some(cursor) =
-            cursor_ray.and_then(|ray| drag.ring.ray_hit(ray.origin, ray.direction))
-        {
-            self.apply_gimbal_drag(&drag, cursor);
+        if let Some(delta) = cursor_ray.and_then(|ray| drag.held.delta(ray.origin, ray.direction)) {
+            self.apply_gimbal_drag(&drag, delta);
         }
         true
     }
 
-    /// Turn a held ring into an edit of the SELECTED slot: the widget stands
-    /// on that body, so a drag can only reach the one under the rings.
-    fn apply_gimbal_drag(&mut self, drag: &GimbalDrag, cursor: Vec3) {
-        match self.rotation_mode {
-            RotationMode::Active => {
-                let plane_idx = drag.ring.plane as usize;
-                let spin = if self.spins.selected_spin().active[plane_idx] {
-                    self.rot_time * BASE_ROTATION_RATE
-                } else {
-                    0.0
-                };
-                self.spins.selected_spin_mut().base_angles[plane_idx] =
-                    dragged_base_angle(drag, cursor, spin);
-                self.apply_selected_active_edit();
-            }
-            RotationMode::Composer => {
-                self.spins.selected_spin_mut().rotor =
-                    (drag.ring.drag_rotor(drag.grab, cursor) * drag.base_rotor).normalize();
+    /// Turn a held handle into an edit of the SELECTED slot: the widget
+    /// stands on that body, so a drag can only reach the one under it.
+    fn apply_gimbal_drag(&mut self, drag: &GimbalDrag, delta: TransformDelta) {
+        match delta {
+            TransformDelta::Rotate { plane, angle } => match self.rotation_mode {
+                RotationMode::Active => {
+                    let plane_idx = plane as usize;
+                    let spin = if self.spins.selected_spin().active[plane_idx] {
+                        self.rot_time * BASE_ROTATION_RATE
+                    } else {
+                        0.0
+                    };
+                    self.spins.selected_spin_mut().base_angles[plane_idx] =
+                        dragged_base_angle(drag.base_displayed, angle, spin);
+                    self.apply_selected_active_edit();
+                }
+                RotationMode::Composer => {
+                    self.spins.selected_spin_mut().rotor =
+                        (delta.rotor() * drag.base_rotor).normalize();
+                    self.rebuild_bodies();
+                }
+            },
+            TransformDelta::Translate { .. } => {
+                let slot = self.selected_slot();
+                let body = &mut self.physics.world.bodies[slot];
+                body.position = drag.base_position + delta.translation();
+                // A held shaft owns the subject's position for the whole
+                // drag, so it takes the velocity with it: otherwise the
+                // frame's physics step integrates the body out from under
+                // the cursor and the drag never catches up.
+                body.velocity = Vec4::ZERO;
+                // The upload gate keys on a moving world and on changed
+                // rotors, and a teleport is neither.
                 self.rebuild_bodies();
             }
         }
     }
 
-    /// Draw the six rings. Last pass of the frame and depth-free: a
+    /// Draw the handles. Last pass of the frame and depth-free: a
     /// manipulator the scene can hide is a manipulator that cannot be
     /// grabbed.
     ///
@@ -218,11 +255,13 @@ impl Demo {
         if !self.gimbal_visible() {
             return;
         }
-        let highlight = self.gimbal.hover.map(|ring| ring.plane as usize);
+        let highlight = self.gimbal.hover;
         if self.gimbal.mesh.segments.is_empty() || self.gimbal.built_highlight != highlight {
-            let mut style = RingStyle::default();
-            if let Some(plane_idx) = highlight {
-                style.colors[plane_idx] = HIGHLIGHT;
+            let mut style = GizmoStyle::default();
+            match highlight {
+                Some(HandleId::Rotate(plane)) => style.rings.colors[plane as usize] = HIGHLIGHT,
+                Some(HandleId::Translate(axis)) => style.shafts.colors[axis as usize] = HIGHLIGHT,
+                None => {}
             }
             let mesh = &mut self.gimbal.mesh;
             mesh.segments.clear();
@@ -262,6 +301,7 @@ mod tests {
     use loam_app::{Camera, CameraController};
     use loam_camera::OrbitController;
     use loam_math::{Bivector, Plane4, Rotor};
+    use loam_render::gizmo::Axis4;
 
     const VIEWPORT: (u32, u32) = (1280, 720);
 
@@ -270,9 +310,9 @@ mod tests {
     const WIDEST_ROW: usize = crate::consts::MAX_ROW_LEN;
 
     /// The one placement a single-body row can produce, and the centre the
-    /// ring-geometry pins use when the claim is about the rings rather than
-    /// where they stand. Taken from the layout rather than restated, so it
-    /// cannot drift from [`gimbal_center`].
+    /// handle-geometry pins use when the claim is about the handles rather
+    /// than where they stand. Taken from the layout rather than restated, so
+    /// it cannot drift from [`gimbal_center`].
     fn row_center() -> Vec3 {
         gimbal_center(&PlaygroundPhysics::new(1, BODY_SIZE), 0, 1)
     }
@@ -287,16 +327,38 @@ mod tests {
 
     /// Point at great-circle parameter `θ` on the plane's coordinate circle,
     /// matching `loam_render::hypergimbal`'s `p(θ) = a cos θ + b sin θ`.
-    fn great_circle_point(plane: Plane4, theta: f32) -> glam::Vec4 {
+    fn great_circle_point(plane: Plane4, theta: f32) -> Vec4 {
         let (cos, sin) = (theta.cos(), theta.sin());
         match plane {
-            Plane4::Xy => glam::Vec4::new(cos, sin, 0.0, 0.0),
-            Plane4::Xz => glam::Vec4::new(cos, 0.0, sin, 0.0),
-            Plane4::Xw => glam::Vec4::new(cos, 0.0, 0.0, sin),
-            Plane4::Yz => glam::Vec4::new(0.0, cos, sin, 0.0),
-            Plane4::Yw => glam::Vec4::new(0.0, cos, 0.0, sin),
-            Plane4::Zw => glam::Vec4::new(0.0, 0.0, cos, sin),
+            Plane4::Xy => Vec4::new(cos, sin, 0.0, 0.0),
+            Plane4::Xz => Vec4::new(cos, 0.0, sin, 0.0),
+            Plane4::Xw => Vec4::new(cos, 0.0, 0.0, sin),
+            Plane4::Yz => Vec4::new(0.0, cos, sin, 0.0),
+            Plane4::Yw => Vec4::new(0.0, cos, 0.0, sin),
+            Plane4::Zw => Vec4::new(0.0, 0.0, cos, sin),
         }
+    }
+
+    /// Every point a handle occupies, at `samples` per handle: the ring
+    /// circumferences and the shaft segments. The one place the two halves
+    /// are enumerated together, so a framing or reachability pin cannot
+    /// silently cover only the rings.
+    fn handle_points(gizmo: &TransformGizmo, samples: usize) -> Vec<(HandleId, Vec3)> {
+        let mut out = Vec::new();
+        for ring in gizmo.rings() {
+            for step in 0..samples {
+                let chi = step as f32 / samples as f32 * std::f32::consts::TAU;
+                out.push((HandleId::Rotate(ring.plane), ring.point(chi)));
+            }
+        }
+        for shaft in gizmo.shafts() {
+            for step in 0..=samples {
+                let along =
+                    shaft.inner + (shaft.outer - shaft.inner) * step as f32 / samples as f32;
+                out.push((HandleId::Translate(shaft.axis), shaft.point(along)));
+            }
+        }
+        out
     }
 
     /// The demo's startup framing, reproduced through the same controller
@@ -331,6 +393,12 @@ mod tests {
         ))
     }
 
+    /// Ray the demo would build from a press aimed at `world`.
+    fn ray_at(camera: &Camera<EuclideanR3>, world: Vec3) -> Option<Ray> {
+        let pixels = pixels_of(camera, world)?;
+        Some(camera.ray_from_ndc(ndc_from_pixels(pixels, VIEWPORT)))
+    }
+
     /// The pixel seam is round-trip exact: a world point turned into pixels
     /// and back into a ray produces a ray through that point. Catches a
     /// dropped y-flip and a dropped aspect, either of which would leave the
@@ -338,47 +406,53 @@ mod tests {
     #[test]
     fn the_pixel_to_ray_seam_round_trips_a_world_point() {
         let camera = startup_camera();
-        for plane in Plane4::ALL {
-            let ring = widget(row_center()).ring(plane);
-            for step in 0..8 {
-                let world = ring.point(step as f32 / 8.0 * std::f32::consts::TAU);
-                let pixels = pixels_of(&camera, world).expect("ring is in front of the eye");
-                let ray = camera.ray_from_ndc(ndc_from_pixels(pixels, VIEWPORT));
-                let along = (world - ray.origin).dot(ray.direction);
-                let miss = (world - (ray.origin + ray.direction * along)).length();
-                assert!(miss < 1e-3, "{plane:?}: ray misses its own pixel by {miss}");
-            }
+        for (id, world) in handle_points(&widget(row_center()), 8) {
+            let ray = ray_at(&camera, world).expect("handle is in front of the eye");
+            let along = (world - ray.origin).dot(ray.direction);
+            let miss = (world - (ray.origin + ray.direction * along)).length();
+            assert!(miss < 1e-3, "{id:?}: ray misses its own pixel by {miss}");
         }
     }
 
     /// The widget is on screen at the startup framing WHEREVER the selection
     /// puts it, out to the widest row. This is as close as a headless test
-    /// gets to the visual claim: every ring point is in front of the eye and
-    /// inside the NDC square, so nothing is clipped away and no ring is
-    /// behind the camera.
+    /// gets to the visual claim: every ring point and every shaft point is in
+    /// front of the eye and inside the NDC square, so nothing is clipped away
+    /// and no handle is behind the camera.
     #[test]
-    fn every_ring_is_inside_the_startup_view_at_every_selectable_slot() {
+    fn every_handle_is_inside_the_startup_view_at_every_selectable_slot() {
         let camera = startup_camera();
         for slots in 1..=WIDEST_ROW {
             for (slot, center) in selectable_centers(slots).into_iter().enumerate() {
-                for plane in Plane4::ALL {
-                    let ring = widget(center).ring(plane);
-                    for step in 0..64 {
-                        let world = ring.point(step as f32 / 64.0 * std::f32::consts::TAU);
-                        let pixels = pixels_of(&camera, world)
-                            .unwrap_or_else(|| panic!("{plane:?} behind the eye"));
-                        assert!(
-                            (0.0..=VIEWPORT.0 as f32).contains(&pixels.x)
-                                && (0.0..=VIEWPORT.1 as f32).contains(&pixels.y),
-                            "{plane:?} on slot {slot} of {slots} leaves the viewport at {pixels:?}"
-                        );
-                    }
+                for (id, world) in handle_points(&widget(center), 48) {
+                    let pixels = pixels_of(&camera, world)
+                        .unwrap_or_else(|| panic!("{id:?} behind the eye"));
+                    assert!(
+                        (0.0..=VIEWPORT.0 as f32).contains(&pixels.x)
+                            && (0.0..=VIEWPORT.1 as f32).contains(&pixels.y),
+                        "{id:?} on slot {slot} of {slots} leaves the viewport at {pixels:?}"
+                    );
                 }
             }
         }
     }
 
-    /// The rings stand on the body the controls are aimed at: selecting the
+    /// No handle reaches the centre of the neighbouring column, so a widget
+    /// standing on one body never invites a grab that looks aimed at the
+    /// next one. This is the bound [`SCALE`] is chosen against.
+    #[test]
+    fn the_widget_stays_inside_its_own_column() {
+        let gizmo = widget(Vec3::ZERO);
+        for (id, world) in handle_points(&gizmo, 64) {
+            let reach = world.length();
+            assert!(
+                reach < crate::consts::BODY_X_SPACING,
+                "{id:?} reaches {reach}, past the neighbouring column"
+            );
+        }
+    }
+
+    /// The handles stand on the body the controls are aimed at: selecting the
     /// next slot moves the widget by exactly the layout spacing, and nothing
     /// else about the widget changes. A widget parked at the row's midpoint
     /// (which is what it was before the row carried per-slot rotations) never
@@ -399,24 +473,24 @@ mod tests {
         }
     }
 
-    /// A body a flick threw carries the rings with it, so the manipulator
+    /// A body a flick threw carries the handles with it, so the manipulator
     /// cannot be left behind on the layout position its subject vacated.
     #[test]
     fn the_widget_follows_a_thrown_subject() {
         let slots = 3;
         let mut physics = PlaygroundPhysics::new(slots, BODY_SIZE);
         let parked = gimbal_center(&physics, 1, slots);
-        physics.throw(1, glam::Vec4::new(0.0, 0.6, 0.0, 0.0));
+        physics.throw(1, Vec4::new(0.0, 0.6, 0.0, 0.0));
         physics.step(30);
         let moved = gimbal_center(&physics, 1, slots);
         assert!(
             (moved - parked).length() > 0.05,
-            "the rings stayed at {parked} while their subject moved to {moved}"
+            "the handles stayed at {parked} while their subject moved to {moved}"
         );
         assert_eq!(
             gimbal_center(&physics, 0, slots),
             selectable_centers(slots)[0],
-            "an untouched slot's rings moved"
+            "an untouched slot's handles moved"
         );
     }
 
@@ -427,21 +501,22 @@ mod tests {
     #[test]
     fn a_drag_along_a_ring_asks_its_own_plane_for_the_arc_it_swept() {
         let camera = startup_camera();
-        let gimbal = widget(row_center());
+        let gizmo = widget(row_center());
         let delta = 0.55_f32;
         for plane in Plane4::ALL {
-            // Rings cross on screen, so press where this one is the
+            // Handles cross on screen, so press where this ring is the
             // front-most candidate; a user picks such a spot by eye.
-            let (start_theta, ring, grab) = (0..48)
+            let (start_theta, held) = (0..48)
                 .find_map(|step| {
                     let theta = step as f32 / 48.0 * std::f32::consts::TAU;
-                    let world = gimbal.project(great_circle_point(plane, theta))?;
-                    let pixels = pixels_of(&camera, world)?;
-                    let ray = camera.ray_from_ndc(ndc_from_pixels(pixels, VIEWPORT));
-                    let (ring, hit) = grab_ring(&gimbal, &ray)?;
-                    (ring.plane == plane).then_some((theta, ring, hit))
+                    let world = gizmo
+                        .hypergimbal()
+                        .project(great_circle_point(plane, theta))?;
+                    let ray = ray_at(&camera, world)?;
+                    let held = grab_handle(&gizmo, &ray)?;
+                    (held.id() == HandleId::Rotate(plane)).then_some((theta, held))
                 })
-                .unwrap_or_else(|| panic!("{plane:?} is never the ring a press grabs"));
+                .unwrap_or_else(|| panic!("{plane:?} is never the handle a press grabs"));
 
             // Where `delta` of rotation in this plane actually sends the
             // grabbed point: the rotated point's projection, not a second
@@ -449,53 +524,61 @@ mod tests {
             let rotated = (plane.unit_bivector() * delta)
                 .exp()
                 .apply(great_circle_point(plane, start_theta));
-            let release_px =
-                pixels_of(&camera, gimbal.project(rotated).expect("image is finite")).unwrap();
-            let release_ray = camera.ray_from_ndc(ndc_from_pixels(release_px, VIEWPORT));
-            let cursor = ring
-                .ray_hit(release_ray.origin, release_ray.direction)
-                .expect("release ray meets the held ring's plane");
-
-            let drag = GimbalDrag {
-                ring,
-                grab,
-                base_displayed: 0.25,
-                base_rotor: Rotor4::IDENTITY,
+            let release = ray_at(
+                &camera,
+                gizmo
+                    .hypergimbal()
+                    .project(rotated)
+                    .expect("image is finite"),
+            )
+            .expect("release point is in front of the eye");
+            let Some(TransformDelta::Rotate { plane: got, angle }) =
+                held.delta(release.origin, release.direction)
+            else {
+                panic!("{plane:?} ring drag produced no rotation");
             };
-            let asked = dragged_base_angle(&drag, cursor, 0.0) - 0.25;
+            assert_eq!(got, plane);
+
+            let asked = dragged_base_angle(0.25, angle, 0.0) - 0.25;
             assert!(
                 (asked - delta).abs() < 5e-3,
                 "{plane:?}: drag asked for {asked}, not {delta}"
             );
             // The spin contribution is subtracted verbatim: the slider owns
             // it, the drag does not.
-            let with_spin = dragged_base_angle(&drag, cursor, 0.4);
+            let with_spin = dragged_base_angle(0.25, angle, 0.4);
             assert!((with_spin - (asked + 0.25 - 0.4)).abs() < 1e-6);
         }
     }
 
-    /// All six planes are reachable at the startup framing, without orbiting
-    /// first: each ring is the front-most grab over most of its own
-    /// circumference. The bar is half; the worst ring measures 32 of 48. A
-    /// ring the default camera sees edge-on scores zero here, which is what
-    /// an image frame with a ring plane square to a view axis produces.
+    /// All ten handles are reachable at the startup framing, without orbiting
+    /// first, at the demo's own grab tolerance. Rings cross each other, so
+    /// the bar there is that a ring is the front-most grab over most of its
+    /// own circumference; a shaft outranks a ring by rule, so the bar there
+    /// is every point of its arrowhead. A ring the default camera sees
+    /// edge-on scores zero on the first bar, which is what an image frame
+    /// with a ring plane square to a view axis produces.
     #[test]
-    fn every_plane_is_grabbable_at_the_startup_framing() {
+    fn every_handle_is_grabbable_at_the_startup_framing() {
         let camera = startup_camera();
-        let gimbal = widget(row_center());
+        let gizmo = widget(row_center());
         const SAMPLES: usize = 48;
         for plane in Plane4::ALL {
             let own = (0..SAMPLES)
                 .filter(|step| {
                     let theta = *step as f32 / SAMPLES as f32 * std::f32::consts::TAU;
-                    let Some(world) = gimbal.project(great_circle_point(plane, theta)) else {
+                    let Some(world) = gizmo
+                        .hypergimbal()
+                        .project(great_circle_point(plane, theta))
+                    else {
                         return false;
                     };
-                    let Some(pixels) = pixels_of(&camera, world) else {
+                    let Some(ray) = ray_at(&camera, world) else {
                         return false;
                     };
-                    let ray = camera.ray_from_ndc(ndc_from_pixels(pixels, VIEWPORT));
-                    grab_ring(&gimbal, &ray).is_some_and(|(ring, _)| ring.plane == plane)
+                    gizmo
+                        .pick(ray.origin, ray.direction, PICK_TOLERANCE)
+                        .is_some_and(|handle| handle.id() == HandleId::Rotate(plane))
                 })
                 .count();
             assert!(
@@ -503,23 +586,139 @@ mod tests {
                 "{plane:?} grabbable at only {own}/{SAMPLES} points from the startup camera"
             );
         }
+        for axis in Axis4::ALL {
+            let shaft = gizmo.shaft(axis);
+            for step in 0..=SAMPLES {
+                let along = shaft.head_start() + shaft.head * step as f32 / SAMPLES as f32;
+                let ray = ray_at(&camera, shaft.point(along)).expect("head is in front");
+                let picked = gizmo
+                    .pick(ray.origin, ray.direction, PICK_TOLERANCE)
+                    .map(Handle::id);
+                assert_eq!(
+                    picked,
+                    Some(HandleId::Translate(axis)),
+                    "{axis:?} at {along} out of the centre picked {picked:?}"
+                );
+            }
+        }
     }
 
-    /// A press that grabbed a ring and never moved asks for no change at
-    /// all, so holding the button still cannot drift the subject.
+    /// A press that grabbed a handle and never moved asks for no change at
+    /// all, so holding the button still cannot drift the subject. Covers all
+    /// ten, through the real pixel seam.
     #[test]
-    fn holding_a_ring_still_asks_for_no_rotation() {
-        let gimbal = widget(row_center());
-        for plane in Plane4::ALL {
-            let ring = gimbal.ring(plane);
-            let grab = ring.point(1.3);
-            let drag = GimbalDrag {
-                ring,
-                grab,
-                base_displayed: -0.9,
-                base_rotor: Rotor4::IDENTITY,
+    fn holding_a_handle_still_asks_for_no_change() {
+        let camera = startup_camera();
+        let gizmo = widget(row_center());
+        for (id, world) in handle_points(&gizmo, 12) {
+            let ray = ray_at(&camera, world).expect("handle is in front of the eye");
+            let Some(handle) = gizmo.pick(ray.origin, ray.direction, PICK_TOLERANCE) else {
+                continue;
             };
-            assert_eq!(dragged_base_angle(&drag, grab, 0.0), -0.9);
+            let held = HandleDrag::press(handle, ray.origin, ray.direction).expect("grab");
+            let delta = held.delta(ray.origin, ray.direction).expect("held still");
+            assert_eq!(
+                delta.translation(),
+                Vec4::ZERO,
+                "{id:?} drifted while held still"
+            );
+            match delta {
+                TransformDelta::Rotate { angle, .. } => assert_eq!(angle, 0.0),
+                TransformDelta::Translate { distance, .. } => assert_eq!(distance, 0.0),
+            }
+            assert_eq!(
+                dragged_base_angle(-0.9, 0.0, 0.0),
+                -0.9,
+                "the Active solve moved on a still drag"
+            );
         }
+    }
+
+    /// The acceptance property for the translation half, taken all the way
+    /// through the demo's own state: a drag on the `w` shaft moves the
+    /// selected body's `position.w` by the distance the cursor slid and
+    /// leaves `x`, `y`, `z` bit-identical, while the `x`, `y` and `z` shafts
+    /// each move their own component and no other. Every other slot is left
+    /// alone, because the widget stands on the selected body.
+    #[test]
+    fn a_shaft_drag_moves_one_component_of_the_selected_body_and_nothing_else() {
+        const SLOTS: usize = 3;
+        const SLOT: usize = 1;
+        let camera = startup_camera();
+        for axis in Axis4::ALL {
+            let mut physics = PlaygroundPhysics::new(SLOTS, BODY_SIZE);
+            let before: Vec<Vec4> = (0..SLOTS)
+                .map(|slot| physics.pose(slot, SLOTS, Rotor4::IDENTITY).position)
+                .collect();
+            let gizmo = widget(gimbal_center(&physics, SLOT, SLOTS));
+            let shaft = gizmo.shaft(axis);
+
+            let grab_at = shaft.outer - 0.1 * SCALE;
+            let travel = 0.37_f32;
+            let press = ray_at(&camera, shaft.point(grab_at)).expect("head is in front");
+            let held = grab_handle(&gizmo, &press).expect("the arrowhead is grabbable");
+            assert_eq!(held.id(), HandleId::Translate(axis));
+            let release =
+                ray_at(&camera, shaft.point(grab_at + travel)).expect("release is in front");
+            let delta = held
+                .delta(release.origin, release.direction)
+                .expect("release ray reaches the shaft");
+
+            // The write `apply_gimbal_drag` performs, against the same
+            // anchored base position.
+            physics.world.bodies[SLOT].position = before[SLOT] + delta.translation();
+
+            let after: Vec<Vec4> = (0..SLOTS)
+                .map(|slot| physics.pose(slot, SLOTS, Rotor4::IDENTITY).position)
+                .collect();
+            let moved = after[SLOT] - before[SLOT];
+            let index = axis as usize;
+            assert!(
+                (moved.to_array()[index] - travel).abs() < 5e-3,
+                "{axis:?} moved its own component by {}, not {travel}",
+                moved.to_array()[index]
+            );
+            for other in 0..4 {
+                if other == index {
+                    continue;
+                }
+                assert_eq!(
+                    after[SLOT].to_array()[other],
+                    before[SLOT].to_array()[other],
+                    "{axis:?} drag moved component {other}"
+                );
+            }
+            for slot in 0..SLOTS {
+                if slot == SLOT {
+                    continue;
+                }
+                assert_eq!(after[slot], before[slot], "slot {slot} moved");
+            }
+        }
+    }
+
+    /// The `w` drag is the one with no R³ consequence: it moves the slice the
+    /// body is cut at and leaves the position every raster path translates by
+    /// exactly where it was. The property behind the module's claim that the
+    /// `w` shaft is the handle a user cannot discover by watching the shape
+    /// move.
+    #[test]
+    fn a_w_drag_moves_the_slice_and_not_the_r3_position() {
+        let mut physics = PlaygroundPhysics::new(1, BODY_SIZE);
+        let before = physics.pose(0, 1, Rotor4::IDENTITY);
+        let shaft = widget(gimbal_center(&physics, 0, 1)).shaft(Axis4::W);
+        let slide = shaft.drag_translation(0.0, 0.42);
+
+        physics.world.bodies[0].position = before.position + slide;
+        let after = physics.pose(0, 1, Rotor4::IDENTITY);
+        assert_eq!(after.position_r3(), before.position_r3());
+        assert_eq!(after.position.w - before.position.w, 0.42);
+
+        // The slice frame the section cut and the wireframe read.
+        let canonical = Vec4::new(0.3, -0.6, 0.2, 0.5);
+        assert_eq!(
+            after.body_local(canonical, BODY_SIZE) - before.body_local(canonical, BODY_SIZE),
+            Vec4::W * 0.42
+        );
     }
 }

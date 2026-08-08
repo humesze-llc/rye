@@ -73,10 +73,13 @@ impl Demo {
                         let t_norm = t_idx as f32 / (t_n - 1) as f32;
                         t_norm * self.strip_t_extent
                     };
-                    // Cell's rotor: the orientation at `rot_time + t_offset`, via
-                    // the same `rotor_at_time` dispatch the spin + t-scrub use.
+                    // Cell's rotor: the SELECTED slot's orientation at
+                    // `rot_time + t_offset`, via the same `rotor_at_time`
+                    // dispatch the spin + t-scrub use. The strip renders one
+                    // subject, so it follows the one body the rotation
+                    // controls are aimed at rather than a row-wide rotor.
                     let cell_rotor = if t_offset == 0.0 {
-                        self.rot_state
+                        self.selected_rotor()
                     } else {
                         self.rotor_at_time(self.rot_time + t_offset)
                     };
@@ -1414,6 +1417,7 @@ mod tests {
     use super::*;
     use crate::catalog::ShapeEntry;
     use crate::physics::{PlaygroundPhysics, MAX_THROW_SPEED};
+    use crate::spins::SlotSpins;
     use crate::state::{body_position, RowFrame, SectionLayer};
     use loam_math::{EuclideanR4, Plane4, Projection};
     use loam_render::raymarch::RaymarchShape;
@@ -1650,6 +1654,14 @@ mod tests {
         )
     }
 
+    /// Every slot under one rotor, which is what these geometry fixtures mean
+    /// by "the spin": they pin where a body is drawn, not which body the
+    /// rotation controls are aimed at. Leaked so a fixture can keep taking a
+    /// `Rotor4` and handing back a [`RowFrame`] that borrows the store.
+    fn uniform_spins(slots: usize, rotor: Rotor4) -> &'static SlotSpins {
+        Box::leak(Box::new(SlotSpins::uniform(slots, rotor)))
+    }
+
     /// Every field of the seam a fixture might vary, spelled out.
     fn frame_of<'a>(
         physics: &'a PlaygroundPhysics,
@@ -1662,7 +1674,7 @@ mod tests {
         RowFrame {
             physics,
             row,
-            spin,
+            spins: uniform_spins(row.len(), spin),
             body_size: BODY_SIZE,
             projection,
             w_slice,
@@ -2678,7 +2690,7 @@ mod tests {
         RowFrame {
             physics,
             row,
-            spin: Rotor4::IDENTITY,
+            spins: uniform_spins(row.len(), Rotor4::IDENTITY),
             body_size: BODY_SIZE,
             projection: Projection::Identity,
             w_slice: 0.0,

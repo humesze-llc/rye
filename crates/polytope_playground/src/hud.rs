@@ -35,7 +35,7 @@ const HUD_COLOR: [f32; 4] = [0.92, 0.96, 1.0, 1.0];
 const HUD_SHADOW_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.7];
 const HUD_SHADOW_OFFSET_PT: f32 = 1.0;
 
-/// Plane order matches `Demo::active`: xy, xz, xw, yz, yw, zw.
+/// Plane order matches `Plane4::ALL`: xy, xz, xw, yz, yw, zw.
 const PLANE_NAMES: [&str; 6] = ["xy", "xz", "xw", "yz", "yw", "zw"];
 /// Placeholder for an inactive plane, same width as a plane name so the strip
 /// keeps a fixed column layout.
@@ -47,6 +47,11 @@ struct Readout {
     w_slice: f32,
     rot_time: f32,
     rate_scale: f32,
+    /// Slot the rotation controls are aimed at, and the row length it sits
+    /// in. The plane strip below is that slot's mask, not the row's, so the
+    /// readout has to name whose planes it is showing.
+    selected: usize,
+    slots: usize,
     active: [bool; 6],
 }
 
@@ -56,7 +61,9 @@ impl Readout {
             w_slice: demo.w_slice,
             rot_time: demo.rot_time,
             rate_scale: demo.rate_scale,
-            active: demo.active,
+            selected: demo.selected_slot(),
+            slots: demo.render_row().len(),
+            active: demo.spins.selected_spin().active,
         }
     }
 }
@@ -71,6 +78,12 @@ fn write_readout(out: &mut String, r: &Readout) {
     let _ = writeln!(out, "{:<6} {:>+8.3}", "w", r.w_slice);
     let _ = writeln!(out, "{:<6} {:>7.2}s", "t", r.rot_time);
     let _ = writeln!(out, "{:<6} {:>7.2}x", "rate", r.rate_scale);
+    let _ = writeln!(
+        out,
+        "{:<6} {:>7}",
+        "body",
+        format!("{}/{}", r.selected, r.slots)
+    );
     let _ = write!(out, "{:<6} ", "planes");
     for (i, name) in PLANE_NAMES.iter().enumerate() {
         if i > 0 {
@@ -237,6 +250,8 @@ mod tests {
             w_slice,
             rot_time,
             rate_scale,
+            selected: 7,
+            slots: 8,
             active,
         }
     }
@@ -312,12 +327,13 @@ mod tests {
     fn readout_line_count_is_fixed() {
         let mut out = String::new();
         write_readout(&mut out, &readout(0.0, 0.0, 1.0, [false; 6]));
-        assert_eq!(out.lines().count(), 4);
+        assert_eq!(out.lines().count(), 5);
         write_readout(&mut out, &readout(-1.0, 123.0, 4.0, [true; 6]));
-        assert_eq!(out.lines().count(), 4);
+        assert_eq!(out.lines().count(), 5);
     }
 
-    /// The strip names exactly the active planes, in `Demo::active` index order,
+    /// The strip names exactly the selected slot's active planes, in `Plane4::ALL`
+    /// index order,
     /// and holds its width when a plane is off.
     #[test]
     fn plane_strip_names_exactly_the_active_planes() {

@@ -17,6 +17,7 @@ use loam_shape::polytope::Polytope4;
 use crate::catalog::ShapeEntry;
 use crate::consts::{BASE_ROTATION_RATE, BODY_SIZE, BODY_X_SPACING, BODY_Y, T_SLIDER_INITIAL};
 use crate::physics::{BodyPose, PlaygroundPhysics, ThrowDrag};
+use crate::spins::SlotSpins;
 
 // Projection modes live in `projections.rs`; re-export so `impl Demo`, the test
 // module, and the other playground modules keep importing them from `state`.
@@ -81,12 +82,16 @@ pub(crate) fn render_row_entries<'a>(
 /// physics step: a body that comes to rest during the step still has a final
 /// pose to upload, and an at-rest world is an exact fixpoint of the integrator
 /// (see [`PlaygroundPhysics::at_rest`]), so it has none.
+///
+/// The rotor test is over the WHOLE row ([`SlotSpins::rotors_differ_from`]):
+/// each slot carries its own orientation, so one rotated body has to open the
+/// gate even while every other slot matches its uploaded copy.
 pub(crate) fn body_upload_needed(
-    rot_state: Rotor4,
-    uploaded_rotor: Rotor4,
+    spins: &SlotSpins,
+    uploaded_rotors: &[Rotor4],
     bodies_moving: bool,
 ) -> bool {
-    bodies_moving || rot_state != uploaded_rotor
+    bodies_moving || spins.rotors_differ_from(uploaded_rotors)
 }
 
 /// Assign `value` and report whether it differed, so a uniform write that
@@ -385,8 +390,11 @@ pub(crate) struct RowFrame<'a> {
     /// The rendered row (see [`render_row_entries`]); its length is the slot
     /// count [`PlaygroundPhysics::pose`] checks the world against.
     pub(crate) row: &'a [ShapeEntry],
-    /// UI spin, applied before each body's physics orientation.
-    pub(crate) spin: Rotor4,
+    /// Per-slot UI rotation, each applied before its own body's physics
+    /// orientation. A row-wide rotor here is what let one spin drive every
+    /// body; taking it per slot is what lets two bodies hold different
+    /// orientations in one frame.
+    pub(crate) spins: &'a SlotSpins,
     pub(crate) body_size: f32,
     /// The live 4D -> R³ map ([`Demo::resolved_wireframe_projection`]).
     pub(crate) projection: Projection<4>,
@@ -398,7 +406,8 @@ pub(crate) struct RowFrame<'a> {
 impl RowFrame<'_> {
     /// Live pose of `slot`.
     pub(crate) fn pose(&self, slot: usize) -> BodyPose {
-        self.physics.pose(slot, self.row.len(), self.spin)
+        self.physics
+            .pose(slot, self.row.len(), self.spins.rotor(slot))
     }
 
     /// `canonical` carried into `slot`'s live body frame at `scale` (refilling
@@ -411,8 +420,14 @@ impl RowFrame<'_> {
         scale: f32,
         out: &mut Vec<Vec4>,
     ) -> Vec3 {
-        self.physics
-            .body_frame(slot, self.row.len(), self.spin, canonical, scale, out)
+        self.physics.body_frame(
+            slot,
+            self.row.len(),
+            self.spins.rotor(slot),
+            canonical,
+            scale,
+            out,
+        )
     }
 
     /// World-R³ anchor for one canonical point of `slot`: body frame, then
@@ -461,10 +476,11 @@ pub(crate) struct Demo {
     /// Cleared by the single flush in [`crate::Demo::record`], so a frame in
     /// which nothing moved uploads nothing.
     pub(crate) sdf_upload_pending: bool,
-    /// Rotor the body slots were last built from. [`RotationMode::Active`]
-    /// recomposes `rot_state` from `rot_time` every frame, so only a value
-    /// comparison separates a spinning frame from a still one.
-    pub(crate) uploaded_rotor: Rotor4,
+    /// Rotors the body slots were last built from, one per rendered slot.
+    /// [`RotationMode::Active`] recomposes every slot's rotor from `rot_time`
+    /// each frame, so only a value comparison separates a spinning frame from
+    /// a still one. See [`body_upload_needed`].
+    pub(crate) uploaded_rotors: Vec<Rotor4>,
     /// Rasterizer node for the cross-section perimeter (cyan edges around each cap
     /// polygon). Filled caps are not drawn here; this only outlines the boundaries
     /// between adjacent cell contributions.
@@ -655,17 +671,10 @@ pub(crate) struct Demo {
     pub(crate) slider_right_held: bool,
 
     pub(crate) rotate: bool,
-    pub(crate) rot_state: Rotor4,
-    /// Toggle bitmap for the six rotation planes; an active plane participates in
-    /// the spin. See [`Plane4::ALL`] for the index -> plane mapping.
-    pub(crate) active: [bool; 6],
-    /// User-set baseline angle per plane in radians. Active mode treats plane i's
-    /// displayed angle as `base_angles[i] + rot_time * RATE * active[i]` and
-    /// composes `rot_state` as the ORDERED PRODUCT `∏ᵢ exp(planeᵢ · angle[i])`:
-    /// each plane is its own factor, so a slider only mutates its own plane. Still
-    /// BCH-coupled in the rotor; the UI is the source of truth instead of reading
-    /// back through `log(rot_state)` (which has no faithful 6-plane decomposition).
-    pub(crate) base_angles: [f32; 6],
+    /// Per-slot UI rotation for the rendered row, and the slot the rotation
+    /// controls are aimed at. Each slot holds its own baselines, plane mask
+    /// and composed rotor; see [`crate::spins`].
+    pub(crate) spins: SlotSpins,
     pub(crate) rate_scale: f32,
     /// Accumulated rotating time (advances only while `rotate`; resets on **R**).
     pub(crate) rot_time: f32,
@@ -776,7 +785,7 @@ impl Demo {
         match self.rotation_mode {
             RotationMode::Active => {
                 let mut omega = Bivector4::ZERO;
-                for (i, &on) in self.active.iter().enumerate() {
+                for (i, &on) in self.spins.selected_spin().active.iter().enumerate() {
                     if on {
                         omega = omega + Plane4::ALL[i].unit_bivector();
                     }
@@ -787,47 +796,65 @@ impl Demo {
         }
     }
 
-    /// Active-mode angle for plane `i` at time `t`. Parameterized over `t` so the
-    /// filmstrip can sample future times; [`Self::active_displayed_angle`] is the
-    /// `t = rot_time` specialization the sliders read.
+    /// The row slot every rotation control reads and writes. A press on a body
+    /// picks it; see [`crate::spins::SlotSpins::select_picked`].
+    pub(crate) fn selected_slot(&self) -> usize {
+        self.spins.selected()
+    }
+
+    /// The selected slot's live orientation, and the rotor the subject-driven
+    /// UI (formula popup, filmstrip) renders under.
+    pub(crate) fn selected_rotor(&self) -> Rotor4 {
+        self.spins.rotor(self.spins.selected())
+    }
+
+    /// Active-mode angle for the selected slot's plane `i` at time `t`.
+    /// Parameterized over `t` so the filmstrip can sample future times;
+    /// [`Self::active_displayed_angle`] is the `t = rot_time` specialization
+    /// the sliders read.
     pub(crate) fn active_angle_at(&self, plane_idx: usize, t: f32) -> f32 {
-        active_plane_angle(self.base_angles[plane_idx], self.active[plane_idx], t)
+        self.spins.selected_spin().angle_at(plane_idx, t)
     }
 
     /// Displayed Active-mode angle for plane `i` at the current `rot_time`. The
-    /// slider reads this; writing it sets `base_angles[i]` so a drag on a spinning
-    /// slider does not snap back to the pre-drag baseline.
+    /// slider reads this; writing it sets the selected slot's `base_angles[i]`
+    /// so a drag on a spinning slider does not snap back to the pre-drag
+    /// baseline.
     pub(crate) fn active_displayed_angle(&self, plane_idx: usize) -> f32 {
         self.active_angle_at(plane_idx, self.rot_time)
     }
 
-    /// Active-mode rotor at time `t`: ORDERED PRODUCT of per-plane simple rotations
-    /// in `Plane4::ALL` order. Each `base_angles[i]` is one factor, so sliders are
-    /// independent. See [`compose_active_rotor`].
-    pub(crate) fn active_rotor_at(&self, t: f32) -> Rotor4 {
-        compose_active_rotor(&self.base_angles, &self.active, t)
-    }
-
-    /// Active-mode rotor at the current `rot_time` (specializes
-    /// [`Self::active_rotor_at`]).
-    pub(crate) fn active_rotor(&self) -> Rotor4 {
-        self.active_rotor_at(self.rot_time)
-    }
-
-    /// Orientation rotor at time `t`, dispatched on the rotation mode. The single
-    /// source of truth every t-scrub and filmstrip-offset site MUST use so they
-    /// agree with the spin path:
+    /// Orientation rotor for the SELECTED slot at time `t`, dispatched on the
+    /// rotation mode. The single source of truth every t-scrub and
+    /// filmstrip-offset site MUST use so they agree with the spin path:
     ///
-    /// - **Active**: product-of-exp via [`Self::active_rotor_at`] (summing would
-    ///   reintroduce BCH coupling).
+    /// - **Active**: product-of-exp over that slot's baselines and mask
+    ///   (summing would reintroduce BCH coupling).
     /// - **Composer**: `exp(omega_animation * t)`.
     ///
     /// The two coincide for a single active plane; they diverge only with two or
     /// more non-commuting active planes.
     pub(crate) fn rotor_at_time(&self, t: f32) -> Rotor4 {
         match self.rotation_mode {
-            RotationMode::Active => self.active_rotor_at(t),
+            RotationMode::Active => self.spins.selected_spin().active_rotor_at(t),
             RotationMode::Composer => (self.omega_animation() * t).exp().normalize(),
+        }
+    }
+
+    /// Rebuild the row's rotors for the clock time `t`.
+    ///
+    /// Active mode's orientation is an absolute function of `t`, so every slot
+    /// is recomposed from its own baselines and mask. Composer mode integrates
+    /// a single authored seq, and there is only one of it: applying it to every
+    /// slot would be the row-wide spin per-slot rotation exists to remove, so it
+    /// drives the selected slot alone and the rest hold their pose.
+    pub(crate) fn recompose_spins_at(&mut self, t: f32) {
+        match self.rotation_mode {
+            RotationMode::Active => self.spins.recompose_active(t),
+            RotationMode::Composer => {
+                let rotor = (self.omega_animation() * t).exp().normalize();
+                self.spins.selected_spin_mut().rotor = rotor;
+            }
         }
     }
 
@@ -874,7 +901,7 @@ impl Demo {
         RowFrame {
             physics: &self.physics,
             row: self.render_row(),
-            spin: self.rot_state,
+            spins: &self.spins,
             body_size: self.effective_body_size(),
             projection: self.resolved_wireframe_projection(),
             w_slice: self.w_slice,
@@ -887,6 +914,15 @@ impl Demo {
     /// [`ViewMode::Single`] this is the `strip_subject`.
     pub(crate) fn schlegel_subject(&self) -> Option<Polytope4> {
         self.render_row().iter().find_map(|e| e.shape.polytope4())
+    }
+
+    /// Slot [`Self::schlegel_subject`] sits in. The projection is one map for
+    /// the whole scene, so it has to name the slot whose rotation it tracks
+    /// rather than a row-wide rotor.
+    fn schlegel_slot(&self) -> Option<usize> {
+        self.render_row()
+            .iter()
+            .position(|e| e.shape.polytope4().is_some())
     }
 
     /// Resolve and cache the canonical Schlegel parameters. Call at every
@@ -905,29 +941,33 @@ impl Demo {
 
     /// The live [`loam_math::Projection<4>`] for the wireframe overlay this frame.
     /// For Schlegel it builds the engine projection from the cached
-    /// [`SchlegelParams`], rotating the normal/basis by `rot_state` (so the chosen
-    /// cell stays the outer boundary) and scaling the offsets by
-    /// [`Self::effective_body_size`]. No allocation, no `face_planes` call: the
-    /// hot-path-safe counterpart to [`Self::resolve_schlegel_cache`]. Other modes
-    /// delegate to [`WireframeProjection::to_projection`].
+    /// [`SchlegelParams`], rotating the normal/basis by the subject slot's rotor
+    /// (so the chosen cell stays the outer boundary as THAT body turns) and
+    /// scaling the offsets by [`Self::effective_body_size`]. No allocation, no
+    /// `face_planes` call: the hot-path-safe counterpart to
+    /// [`Self::resolve_schlegel_cache`]. Other modes delegate to
+    /// [`WireframeProjection::to_projection`].
     pub(crate) fn resolved_wireframe_projection(&self) -> Projection<4> {
         match self.wireframe_projection {
-            WireframeProjection::Schlegel { .. } => match self.schlegel_params {
-                Some(p) => {
-                    let body_size = self.effective_body_size();
-                    let cell_normal = self.rot_state.apply(p.cell_normal);
-                    let basis = p.cell_basis.map(|axis| self.rot_state.apply(axis));
-                    Projection::schlegel_with_basis(
-                        cell_normal,
-                        p.cell_offset * body_size,
-                        p.viewpoint_distance * body_size,
-                        basis,
-                    )
+            WireframeProjection::Schlegel { .. } => {
+                match (self.schlegel_params, self.schlegel_slot()) {
+                    (Some(p), Some(slot)) => {
+                        let body_size = self.effective_body_size();
+                        let subject = self.spins.rotor(slot);
+                        let cell_normal = subject.apply(p.cell_normal);
+                        let basis = p.cell_basis.map(|axis| subject.apply(axis));
+                        Projection::schlegel_with_basis(
+                            cell_normal,
+                            p.cell_offset * body_size,
+                            p.viewpoint_distance * body_size,
+                            basis,
+                        )
+                    }
+                    // No polychoron in row: drop-w fallback (the wireframe draws
+                    // nothing anyway).
+                    _ => Projection::Identity,
                 }
-                // No polychoron in row: drop-w fallback (the wireframe draws
-                // nothing anyway).
-                None => Projection::Identity,
-            },
+            }
             // Substitute the live pole (`to_projection` returns the default).
             WireframeProjection::Stereographic => Projection::Stereographic {
                 pole: self.stereographic_pole,
@@ -942,39 +982,48 @@ impl Demo {
         hyperslice_cull_active(self.wireframe_hyperslice, self.wireframe_projection)
     }
 
-    /// Drive every body in the RENDERED row (see [`Self::render_row`]) with the
-    /// same rotor. Uploads via `set_bodies` (not slot-wise) so a stale row from a
-    /// previous mode cannot keep rendering.
-    pub(crate) fn write_all(&mut self, rotor: Rotor4) {
-        self.upload_render_row_bodies(rotor);
+    /// Flip plane `plane_idx` in the selected slot's mask (the 1..6 keys). The
+    /// Active recompose in `update` picks the change up on the next frame.
+    pub(crate) fn toggle_selected_plane(&mut self, plane_idx: usize) {
+        let spin = self.spins.selected_spin_mut();
+        spin.active[plane_idx] = !spin.active[plane_idx];
     }
 
-    /// Re-emit every rendered body's uniform. Called after row mutations, rotor
-    /// changes, view-mode changes, and surface-mode changes.
-    pub(crate) fn rebuild_bodies(&mut self) {
-        self.upload_render_row_bodies(self.rot_state);
+    /// Recompose the selected slot's Active-mode rotor from its baselines and
+    /// re-emit the row. Every Active control (slider, checkbox, gimbal ring)
+    /// ends here, so a control edit reaches exactly the body it was aimed at.
+    pub(crate) fn apply_selected_active_edit(&mut self) {
+        let t = self.rot_time;
+        let spin = self.spins.selected_spin_mut();
+        spin.rotor = spin.active_rotor_at(t);
+        self.rebuild_bodies();
     }
 
-    /// Build each rendered body's SDF uniform and upload via `set_bodies` (which
-    /// also sets the kernel's `body_count`). Shared by [`Self::write_all`] and
-    /// [`Self::rebuild_bodies`].
+    /// Re-emit every rendered body's uniform, each under its own slot's rotor.
+    /// Called after row mutations, rotation changes, view-mode changes, and
+    /// surface-mode changes.
+    ///
+    /// Uploads via `set_bodies` (not slot-wise) so a stale row from a previous
+    /// mode cannot keep rendering.
     ///
     /// `body_uniform_scratch` is taken out of `self` for the build (so it can
     /// borrow `&self`) and put back, keeping its capacity so the steady-state spin
     /// upload does not allocate.
     ///
     /// The single choke point where the rendered row's slot count is
-    /// materialized, so it is also where the physics world is reconciled with
-    /// it ([`PlaygroundPhysics::sync`]) and where [`Self::sdf_upload_pending`]
-    /// is raised. Every row, size and surface-mode edit calls it at the edit,
-    /// which is what lets `update` skip it on a frame that changed neither the
-    /// rotor nor a body pose.
-    fn upload_render_row_bodies(&mut self, rotor: Rotor4) {
-        self.uploaded_rotor = rotor;
+    /// materialized, so it is also where the physics world and the per-slot
+    /// rotations are reconciled with it ([`PlaygroundPhysics::sync`],
+    /// [`SlotSpins::sync`]) and where [`Self::sdf_upload_pending`] is raised.
+    /// Every row, size and surface-mode edit calls it at the edit, which is what
+    /// lets `update` skip it on a frame that changed neither a rotor nor a body
+    /// pose.
+    pub(crate) fn rebuild_bodies(&mut self) {
         self.sdf_upload_pending = true;
         let n = self.render_row().len();
         let size = self.effective_body_size();
         self.physics.sync(n, size);
+        self.spins.sync(n);
+        self.spins.record_rotors(&mut self.uploaded_rotors);
         let mut scratch = std::mem::take(&mut self.body_uniform_scratch);
         scratch.clear();
         for slot in 0..n {
@@ -984,7 +1033,7 @@ impl Demo {
                 entry,
                 slot,
                 n,
-                rotor,
+                self.spins.rotor(slot),
                 size,
                 self.surface_mode,
             ));
@@ -1000,7 +1049,7 @@ impl Demo {
         let parts: Vec<String> = match self.rotation_mode {
             RotationMode::Active => Plane4::ALL
                 .iter()
-                .zip(self.active.iter())
+                .zip(self.spins.selected_spin().active.iter())
                 .filter(|(_, on)| **on)
                 .map(|(p, _)| p.label().to_string())
                 .collect(),
@@ -1016,17 +1065,14 @@ impl Demo {
         }
     }
 
-    /// Full reset: pause spin, slice, rate, active set, orientation, time,
-    /// draft, and thrown bodies.
+    /// Full reset: pause spin, slice, rate, every slot's active set and
+    /// orientation, the selection, time, draft, and thrown bodies.
     /// `rotate` flips off too so the next `update()` does not immediately respin.
     pub(crate) fn reset(&mut self) {
         self.rotate = false;
         self.w_slice = 0.0;
         self.rate_scale = 1.0;
-        // xw-only default so a first-time user who resets then spins sees motion.
-        self.active = [false, false, true, false, false, false];
-        self.base_angles = [0.0; 6];
-        self.rot_state = Rotor4::IDENTITY;
+        self.spins.reset();
         self.rot_time = 0.0;
         self.t_slider_max = T_SLIDER_INITIAL;
         // Honest-slice baseline: drop-w cross-section on, reprojected cap off.
@@ -1039,7 +1085,7 @@ impl Demo {
         self.gimbal.drag = None;
         let slots = self.render_row().len();
         self.physics.respawn(slots, self.effective_body_size());
-        self.write_all(Rotor4::IDENTITY);
+        self.rebuild_bodies();
     }
 }
 
@@ -1055,6 +1101,7 @@ mod tests {
     };
     use crate::catalog::ShapeEntry;
     use crate::physics::{composed_rotor, PlaygroundPhysics};
+    use crate::spins::SlotSpins;
     use glam::Vec4;
     use loam_math::{Bivector, EuclideanR4, Plane4, Projection, Rotor, Rotor4};
     use loam_render::raymarch::{BodyUniform, RaymarchShape};
@@ -1599,7 +1646,7 @@ mod tests {
         }
     }
 
-    /// Under a non-identity `rot_state` the effective Schlegel normal and basis are
+    /// Under a non-identity subject rotor the effective Schlegel normal and basis are
     /// the canonical ones rotated by that rotor, so the chosen cell stays the outer
     /// boundary as the body spins. Verified at the math level (the rotor apply).
     #[test]
@@ -1841,6 +1888,59 @@ mod tests {
         physics
     }
 
+    /// The node's headline property, at the seam that actually reaches the
+    /// screen: two slots of one row upload two different orientations in the
+    /// same frame, both unit, over identical shapes at their own layout
+    /// positions. Every render path (SDF here, raster through
+    /// [`RowFrame::body_local`]) takes its rotor from the same per-slot store,
+    /// so a build that kept one rotor for the row cannot produce this.
+    #[test]
+    fn two_slots_upload_two_different_orientations_in_one_frame() {
+        const SLOTS: usize = 3;
+        let physics = PlaygroundPhysics::new(SLOTS, BODY_SIZE);
+        let shape = entry(RaymarchShape::Polytope(Polytope4::Cell24));
+        let mut spins = SlotSpins::new(SLOTS);
+        // Two masks that do not commute, so no time can bring them into
+        // agreement, plus a third slot left at the boot mask (xw) so all
+        // three orientations differ.
+        spins.select_picked(Some(0));
+        spins.selected_spin_mut().active = [true, false, false, false, false, false];
+        spins.select_picked(Some(1));
+        spins.selected_spin_mut().active = [false, false, false, false, false, true];
+        spins.recompose_active(1.7);
+
+        let uniform = |slot: usize| {
+            sdf_body_uniform(
+                &physics,
+                &shape,
+                slot,
+                SLOTS,
+                spins.rotor(slot),
+                BODY_SIZE,
+                SurfaceMode::Sdf,
+            )
+        };
+        let (first, second, control) = (uniform(0), uniform(1), uniform(2));
+        assert_ne!(
+            first.rotor, second.rotor,
+            "both bodies uploaded the same orientation"
+        );
+        assert_ne!(first.rotor, control.rotor);
+        assert_ne!(second.rotor, control.rotor);
+        // Same shape, own layout position: what separates them is orientation
+        // alone.
+        assert_eq!(first.radius_or_shape, second.radius_or_shape);
+        assert_eq!(first.position, body_position(0, SLOTS));
+        assert_eq!(second.position, body_position(1, SLOTS));
+        for (slot, uniform) in [first, second, control].into_iter().enumerate() {
+            let norm_squared: f32 = uniform.rotor.iter().map(|c| c * c).sum();
+            assert!(
+                (norm_squared - 1.0).abs() < 1e-5,
+                "slot {slot} uploaded a rotor off the unit sphere: |R|² = {norm_squared}"
+            );
+        }
+    }
+
     /// The raymarched body reads the PHYSICS pose, not the authored layout
     /// under the UI spin: a thrown, tumbling slot's uniform carries its live
     /// centre and `spin · orientation`. Reverting either to the authored value
@@ -1918,10 +2018,11 @@ mod tests {
         let physics = tumbling(slots);
         let row = [entry(RaymarchShape::Polytope(Polytope4::Cell24)); 3];
         let spin = (Plane4::Xy.unit_bivector() * 0.7).exp().normalize();
+        let spins = SlotSpins::uniform(row.len(), spin);
         let frame = super::RowFrame {
             physics: &physics,
             row: &row,
-            spin,
+            spins: &spins,
             body_size: BODY_SIZE,
             projection: Projection::Identity,
             w_slice: 0.0,
@@ -1987,22 +2088,40 @@ mod tests {
     }
 
     /// The per-frame body-upload gate never skips a frame whose rendered pose
-    /// changed. `Active` mode recomposes `rot_state` from `rot_time` every
-    /// frame, so the test has to be a value comparison against the rotor the
-    /// last upload used, not "was it assigned".
+    /// changed. `Active` mode recomposes every slot's rotor from `rot_time`
+    /// each frame, so the test has to be a value comparison against the rotors
+    /// the last upload used, not "was it assigned".
+    ///
+    /// Per slot, and that is the point: one rotated body in a row of four has
+    /// to open the gate. A gate comparing one rotor against one cached rotor,
+    /// which is what this was before the row carried per-slot rotations,
+    /// cannot see it.
     #[test]
     fn body_upload_gate_fires_on_every_pose_change_and_nothing_else() {
         let spun = (Plane4::Xw.unit_bivector() * 0.4).exp().normalize();
-        assert!(!body_upload_needed(
-            Rotor4::IDENTITY,
-            Rotor4::IDENTITY,
-            false
-        ));
-        assert!(!body_upload_needed(spun, spun, false));
-        assert!(body_upload_needed(spun, Rotor4::IDENTITY, false));
-        assert!(body_upload_needed(Rotor4::IDENTITY, spun, false));
-        // Motion alone forces it: the poses moved under an unchanged rotor.
-        assert!(body_upload_needed(spun, spun, true));
+        let still = SlotSpins::uniform(4, Rotor4::IDENTITY);
+        let mut uploaded = Vec::new();
+        still.record_rotors(&mut uploaded);
+        assert!(!body_upload_needed(&still, &uploaded, false));
+        // Motion alone forces it: the poses moved under unchanged rotors.
+        assert!(body_upload_needed(&still, &uploaded, true));
+
+        for slot in 0..4 {
+            let mut one_turned = SlotSpins::uniform(4, Rotor4::IDENTITY);
+            one_turned.select_picked(Some(slot));
+            one_turned.selected_spin_mut().rotor = spun;
+            assert!(
+                body_upload_needed(&one_turned, &uploaded, false),
+                "rotating slot {slot} alone left the gate closed"
+            );
+            let mut turned_upload = Vec::new();
+            one_turned.record_rotors(&mut turned_upload);
+            assert!(!body_upload_needed(&one_turned, &turned_upload, false));
+            assert!(
+                body_upload_needed(&still, &turned_upload, false),
+                "unrotating slot {slot} left the gate closed"
+            );
+        }
     }
 
     /// The dirty test gating the uniform flush reports a change on exactly the

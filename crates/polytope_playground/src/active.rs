@@ -7,7 +7,7 @@
 //! the ordered product `∏ᵢ exp(planeᵢ · displayed_angle[i])`. Because
 //! non-commuting planes make this a product, not a sum (Baker-
 //! Campbell-Hausdorff), each slider stays an independent factor; the
-//! cost is `log(rot_state)` does NOT recover the set angles, so Active
+//! cost is `log(R)` does NOT recover the set angles, so Active
 //! mode never reads back through `log`. Composer mode keeps the sum-of-
 //! bivectors model instead.
 
@@ -103,9 +103,9 @@ impl Demo {
     }
 
     /// One plane cell, all widths pinned by the caller. The slider
-    /// reads/writes `base_angles[plane_idx]` via `base +
-    /// spin_contribution`, keeping each slider an independent factor
-    /// in the rotor product (no log/exp round-trips).
+    /// reads/writes the SELECTED slot's `base_angles[plane_idx]` via
+    /// `base + spin_contribution`, keeping each slider an independent
+    /// factor in that body's rotor product (no log/exp round-trips).
     pub(crate) fn render_plane_slider_cell(
         &mut self,
         ui: &mut egui::Ui,
@@ -119,24 +119,24 @@ impl Demo {
         // Captured before the checkbox below flips `active[plane_idx]`,
         // so the toggle can be absorbed without teleporting the body.
         let displayed_before = self.active_displayed_angle(plane_idx);
-        // Wrap is display-only: `active_rotor()` uses the raw angle, and
+        // Wrap is display-only: the rotor is composed from the raw angle, and
         // `exp(plane * (x + 2π·k))` is the same rotor for a unit bivector.
         let mut deg = wrap_slider_deg(displayed_before.to_degrees());
         let checkbox_resp = ui.add_sized(
             [checkbox_w, 18.0],
-            egui::Checkbox::new(&mut self.active[plane_idx], ""),
+            egui::Checkbox::new(&mut self.spins.selected_spin_mut().active[plane_idx], ""),
         );
         if checkbox_resp.changed() {
             // Re-solve base so the displayed angle is continuous across the
             // toggle: base = displayed_before - spin_contribution(active_after).
-            let spin_contribution = if self.active[plane_idx] {
+            let spin_contribution = if self.spins.selected_spin().active[plane_idx] {
                 self.rot_time * crate::consts::BASE_ROTATION_RATE
             } else {
                 0.0
             };
-            self.base_angles[plane_idx] = displayed_before - spin_contribution;
-            self.rot_state = self.active_rotor();
-            self.write_all(self.rot_state);
+            self.spins.selected_spin_mut().base_angles[plane_idx] =
+                displayed_before - spin_contribution;
+            self.apply_selected_active_edit();
         }
         ui.add_sized(
             [label_w, 18.0],
@@ -178,14 +178,13 @@ impl Demo {
             // base = displayed - spin_contribution, so the displayed angle
             // matches the slider's new position.
             let target_rad = deg.to_radians();
-            let spin_contribution = if self.active[plane_idx] {
+            let spin_contribution = if self.spins.selected_spin().active[plane_idx] {
                 self.rot_time * crate::consts::BASE_ROTATION_RATE
             } else {
                 0.0
             };
-            self.base_angles[plane_idx] = target_rad - spin_contribution;
-            self.rot_state = self.active_rotor();
-            self.write_all(self.rot_state);
+            self.spins.selected_spin_mut().base_angles[plane_idx] = target_rad - spin_contribution;
+            self.apply_selected_active_edit();
         }
     }
 }

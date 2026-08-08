@@ -318,7 +318,6 @@ impl Demo {
         let initial_w = 0.0;
 
         Ok(Self {
-            space: EuclideanR3,
             physics,
             throw_drag: None,
             left_was_down: false,
@@ -428,10 +427,6 @@ impl Demo {
             formula_input: String::new(),
             formula_error: None,
         })
-    }
-
-    pub(crate) fn space(&self) -> &EuclideanR3 {
-        &self.space
     }
 
     pub(crate) fn update(&mut self, ctx: &mut FrameCtx<'_>) {
@@ -938,7 +933,7 @@ impl RotateScene {
 
 impl loam_app::shell::Scene for RotateScene {
     fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
-        shader_db.apply_events(self.shader_owner, events, self.demo.space());
+        shader_db.apply_events(self.shader_owner, events);
     }
 
     fn menus(&mut self, ui: &mut egui::Ui) {

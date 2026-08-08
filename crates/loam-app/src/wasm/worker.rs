@@ -40,10 +40,7 @@ use winit::keyboard::PhysicalKey;
 /// canvas-transfer init, then constructs `RenderDevice` + `WorkerRunner<A>`
 /// and starts the RAF loop. Returns synchronously; the work happens in the
 /// message + RAF callbacks, which the `forget()` calls keep alive.
-pub fn run<A: App + 'static>() -> Result<()>
-where
-    A::Space: 'static,
-{
+pub fn run<A: App + 'static>() -> Result<()> {
     // Worker has its own JS heap + console.
     install_logging_idempotent();
 
@@ -91,10 +88,7 @@ where
 fn handle_message<A: App + 'static>(
     scope: &DedicatedWorkerGlobalScope,
     event: MessageEvent,
-) -> Result<()>
-where
-    A::Space: 'static,
-{
+) -> Result<()> {
     let data: JsValue = event.data();
 
     let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
@@ -206,10 +200,7 @@ async fn init_renderer<A: App + 'static>(
     width: u32,
     height: u32,
     device_pixel_ratio: f32,
-) -> Result<()>
-where
-    A::Space: 'static,
-{
+) -> Result<()> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::BROWSER_WEBGPU,
         ..Default::default()
@@ -412,10 +403,7 @@ thread_local! {
 /// the wall-clock / tick bookkeeping. Drives the full App lifecycle
 /// (`update` + `ui` via [`WorkerUi`] + `record`) plus input fan-out via
 /// [`InputState`]. Lives inside the RAF closure via `Rc<RefCell>`.
-struct WorkerRunner<A: App + 'static>
-where
-    A::Space: 'static,
-{
+struct WorkerRunner<A: App + 'static> {
     rd: RenderDevice,
     /// Held so resize can set the OffscreenCanvas backing-store dimensions
     /// before reconfiguring the surface; without it the render stretches.
@@ -458,13 +446,9 @@ where
     /// sets `RunConfig::max_ticks_per_frame` changes the native stall cadence
     /// only.
     timestep: FixedTimestep,
-    _marker: PhantomData<A::Space>,
 }
 
-impl<A: App + 'static> WorkerRunner<A>
-where
-    A::Space: 'static,
-{
+impl<A: App + 'static> WorkerRunner<A> {
     /// Build ShaderDb + AssetWatcher (wasm stub) + WorkerUi and invoke
     /// `A::setup`. Async because `A::setup` may await on asset loading.
     async fn setup(
@@ -521,7 +505,6 @@ where
             last_redraw_anchor: None,
             tick_index: 0,
             timestep: FixedTimestep::new(60).with_max_catch_up(crate::DEFAULT_MAX_TICKS_PER_FRAME),
-            _marker: PhantomData,
         })
     }
 

@@ -129,8 +129,6 @@ impl TesseractApp {
 }
 
 impl App for TesseractApp {
-    type Space = EuclideanR3;
-
     fn setup(ctx: &mut SetupCtx<'_>) -> Result<Self> {
         let topo = Polytope4::Tesseract.topology();
 
@@ -210,10 +208,6 @@ impl App for TesseractApp {
         app.warm_pipelines(ctx.rd);
 
         Ok(app)
-    }
-
-    fn space(&self) -> &EuclideanR3 {
-        &EuclideanR3
     }
 
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {

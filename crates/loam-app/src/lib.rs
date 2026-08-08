@@ -81,7 +81,6 @@ use winit::{
 use loam_asset::AssetWatcher;
 use loam_egui::UiIntegration;
 use loam_input::{FrameInput, InputState};
-use loam_math::WgslSpace;
 use loam_render::device::RenderDevice;
 use loam_time::FixedTimestep;
 
@@ -98,31 +97,13 @@ pub use loam_shader::{ShaderDb, ShaderOwner};
 // App trait
 // ---------------------------------------------------------------------------
 
-/// The framework calls back into your App through this trait. All methods except
-/// [`App::setup`], [`App::space`], and [`App::render`] have default impls.
+/// The framework calls back into your App through this trait. Every method
+/// except [`App::setup`] has a default impl.
 pub trait App: Sized + 'static {
-    /// Shader-prelude geometry. The default [`App::apply_shader_events`] runs
-    /// hot-reload against this instance, so `loam_distance` / `loam_log` /
-    /// `loam_exp` in WGSL evaluate under this metric. Geometry-agnostic apps use
-    /// `EuclideanR3`.
-    ///
-    /// This is not a commitment about the camera, player, or scene; those are
-    /// user-owned and may use a different Space or none. Hazard: writing
-    /// `Camera<Self::Space>` commits the scene to that Space's coordinates. For
-    /// H³ (the Poincaré ball), a Euclidean-default orbit distance lands the camera
-    /// near the ideal boundary where the metric explodes; use `Camera<EuclideanR3>`
-    /// and treat `App::Space` purely as the shader-prelude axis when the scene
-    /// isn't actually in H³.
-    type Space: WgslSpace + 'static;
-
     /// One-shot construction after `RenderDevice` and `ShaderDb` are ready. Build
     /// render nodes, load shaders, allocate state, and store it all (including
-    /// `Self::Space` and any cameras) in the returned `Self`.
+    /// any Spaces and cameras) in the returned `Self`.
     fn setup(ctx: &mut SetupCtx<'_>) -> anyhow::Result<Self>;
-
-    /// Borrow the user-owned `Self::Space` for the default
-    /// [`App::apply_shader_events`].
-    fn space(&self) -> &Self::Space;
 
     /// Per-tick simulation step at the fixed-timestep rate: usually 0 or 1 per
     /// frame, spiking after a stall to the runner's catch-up cap. The native
@@ -158,12 +139,12 @@ pub trait App: Sized + 'static {
     }
 
     /// Recompile the shaders `events` touches. The default covers exactly what
-    /// this app loaded under [`ShaderDb::ROOT_OWNER`], against `Self::Space`. An
-    /// app hosting several independently spaced sub-scenes gives each one a
-    /// [`ShaderDb::new_owner`] and overrides this to fan out one scoped apply
-    /// per sub-scene, so no scene is recompiled against the host's metric.
+    /// this app loaded under [`ShaderDb::ROOT_OWNER`]; each module rebuilds
+    /// against the Space prelude it was loaded with. An app hosting sub-scenes
+    /// that took a [`ShaderDb::new_owner`] overrides this to fan out one scoped
+    /// apply per sub-scene, so each one recompiles exactly its own modules.
     fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
-        shader_db.apply_events(ShaderDb::ROOT_OWNER, events, self.space());
+        shader_db.apply_events(ShaderDb::ROOT_OWNER, events);
     }
 
     /// Hot-reload notification, after [`App::apply_shader_events`] has run;
@@ -464,10 +445,7 @@ impl Default for RunConfig {
 /// in each demo's `main()`. Demos that need finer control over the
 /// dispatch (e.g. inspecting `wasm::is_worker_context()` for setup-time
 /// side effects) can still call the lower-level entry points directly.
-pub fn run<A: App + 'static>(config: RunConfig) -> anyhow::Result<()>
-where
-    A::Space: 'static,
-{
+pub fn run<A: App + 'static>(config: RunConfig) -> anyhow::Result<()> {
     #[cfg(target_arch = "wasm32")]
     {
         if wasm::is_worker_context() {
@@ -1770,7 +1748,6 @@ impl<A: App> Runner<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loam_math::EuclideanR3;
     use std::time::Duration;
 
     /// One tick of the 60 Hz accumulator, as `FixedTimestep` stores it
@@ -1779,19 +1756,12 @@ mod tests {
 
     #[derive(Default)]
     struct TickRecorder {
-        space: EuclideanR3,
         times: Vec<f32>,
     }
 
     impl App for TickRecorder {
-        type Space = EuclideanR3;
-
         fn setup(_ctx: &mut SetupCtx<'_>) -> anyhow::Result<Self> {
             Ok(Self::default())
-        }
-
-        fn space(&self) -> &Self::Space {
-            &self.space
         }
 
         fn tick(&mut self, _dt: f32, ctx: &mut TickCtx) {

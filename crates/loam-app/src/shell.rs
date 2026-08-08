@@ -28,7 +28,6 @@ use std::sync::{Mutex, PoisonError};
 
 use anyhow::{anyhow, Result};
 use loam_egui::{cmd, Console};
-use loam_math::EuclideanR3;
 use loam_render::device::RenderDevice;
 
 use crate::args::Args;
@@ -40,9 +39,10 @@ use crate::{egui, App, AssetEvent, FrameCtx, RenderCtx, SetupCtx, ShaderDb};
 /// [`App::on_shader_reload`] reach no scene, because the shell forwards
 /// none of them: a scene that needs one cannot be hosted.
 pub trait Scene {
-    /// Recompile this scene's shaders against the Space the scene itself owns,
-    /// scoped to the [`ShaderOwner`](crate::ShaderOwner) it took at build time.
-    /// Scenes with no shaders of their own keep the no-op default.
+    /// Recompile this scene's shaders, scoped to the
+    /// [`ShaderOwner`](crate::ShaderOwner) it took at build time so the db
+    /// rebuilds them against the Space this scene loaded them with. Scenes with
+    /// no shaders of their own keep the no-op default.
     fn apply_shader_events(&mut self, _events: &[AssetEvent], _shader_db: &mut ShaderDb) {}
     /// Contributions to the shared menu bar, rendered after the Demo menu. A
     /// scene with nothing to add keeps the no-op default.
@@ -284,8 +284,6 @@ fn resolve_boot(scenes: &[SceneEntry], args: &Args) -> (usize, bool) {
 }
 
 impl<R: SceneRegistry> App for SceneShell<R> {
-    type Space = EuclideanR3;
-
     fn setup(ctx: &mut SetupCtx<'_>) -> Result<Self> {
         let (active, embed) = resolve_boot(R::SCENES, &Args::current());
         let mut shader_db = ShaderDb::new(ctx.rd.device.clone());
@@ -310,15 +308,9 @@ impl<R: SceneRegistry> App for SceneShell<R> {
         })
     }
 
-    /// The shell owns no shaders of its own, so this satisfies the prelude-axis
-    /// bound and nothing else; recompiles route through `apply_shader_events`.
-    fn space(&self) -> &EuclideanR3 {
-        &EuclideanR3
-    }
-
     /// Fanned out because each scene's apply is scoped to its own owner: a
-    /// scene reached here recompiles only the modules it loaded, against the
-    /// Space it holds, never the shell's `EuclideanR3`.
+    /// scene reached here recompiles only the modules it loaded, each against
+    /// the prelude that module was loaded with.
     /// The runner's `shader_db` goes unused; scene owners were minted from the
     /// shell's own db, and applying against the wrong db would find no entries.
     fn apply_shader_events(&mut self, events: &[AssetEvent], _shader_db: &mut ShaderDb) {
@@ -396,10 +388,13 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    /// A scene whose geometry is not the shell's, written to be compiled: no
-    /// `EuclideanR3` appears anywhere in the impl, and the reload hook
-    /// recompiles against the scene's own Space.
+    /// A scene holding a geometry of its own, written to be compiled: what is
+    /// under test is that `Scene` admits it, not what it does.
     struct HyperbolicScene {
+        /// Held, never read: a real scene keeps its Space to load shaders with
+        /// at build time, and holding one is what makes this fixture a scene in
+        /// H³ rather than a bare stub.
+        #[allow(dead_code)]
         space: HyperbolicH3,
         owner: ShaderOwner,
         /// Per-instance state the test can write from outside and read back
@@ -411,7 +406,7 @@ mod tests {
 
     impl Scene for HyperbolicScene {
         fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
-            shader_db.apply_events(self.owner, events, &self.space);
+            shader_db.apply_events(self.owner, events);
         }
 
         fn update(&mut self, _ctx: &mut FrameCtx<'_>) {}
@@ -437,11 +432,11 @@ mod tests {
 
     /// Pins that [`Scene`]'s required surface names no Space: the fixture above
     /// erases into a `SceneEntry` the shell resolves like any other. A `Scene`
-    /// method returning the shell's Space would make this unwritable. It also
-    /// pins that a scene contributing nothing to the menu bar registers without
+    /// method returning a fixed Space would make this unwritable. It also pins
+    /// that a scene contributing nothing to the menu bar registers without
     /// writing an empty `menus`, which is what a single-purpose demo does.
     #[test]
-    fn registry_admits_a_scene_outside_the_shell_space() {
+    fn registry_admits_a_scene_in_a_geometry_of_its_own() {
         const ENTRY: SceneEntry = SceneEntry {
             slug: "hyperbolic",
             label: "Hyperbolic",

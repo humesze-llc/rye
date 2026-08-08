@@ -1,5 +1,6 @@
 //! Shader database with hot-reload support.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -22,9 +23,9 @@ pub enum WgslValidationError {
 pub struct ShaderId(u32);
 
 /// Identifies who loaded a shader. The Space prelude is a property of the
-/// loader, not of the file, so hot-reload is scoped by owner: recompiling
-/// another owner's module against this one's Space would silently retune its
-/// metric.
+/// loader, not of the file, so one path loaded by two owners is two modules;
+/// hot-reload is scoped by owner so a host fanning one event slice at every
+/// owner it holds recompiles each module once rather than once per owner.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ShaderOwner(u32);
 
@@ -32,6 +33,11 @@ struct Entry {
     path: PathBuf,
     module: ShaderModule,
     scene_source: Option<String>,
+    /// The Space prelude this module was assembled with, kept so a reload
+    /// reproduces the entry's own geometry without the caller re-supplying a
+    /// Space it may no longer hold. Re-specializing against a mutated Space is
+    /// a fresh `load` on the same owner and path, which overwrites this.
+    prelude: Cow<'static, str>,
     /// Bumped on every successful (re)compile; render code rebuilds its pipeline
     /// on a generation mismatch.
     generation: u64,
@@ -130,7 +136,8 @@ impl ShaderDb {
         let path = canonicalize(path.as_ref())?;
         let source = std::fs::read_to_string(&path)
             .with_context(|| format!("reading shader {}", path.display()))?;
-        let module = self.compile(&path, &source, scene_source, space)?;
+        let prelude = space.wgsl_impl();
+        let module = self.compile(&path, &source, scene_source, &prelude)?;
 
         let label = path
             .file_name()
@@ -141,6 +148,7 @@ impl ShaderDb {
             let entry = self.entries.get_mut(&id).expect("path_index out of sync");
             entry.module = module;
             entry.scene_source = scene_source.map(str::to_owned);
+            entry.prelude = prelude;
             entry.generation += 1;
             entry.label = label;
             Ok(id)
@@ -157,6 +165,7 @@ impl ShaderDb {
                     path,
                     module,
                     scene_source: scene_source.map(str::to_owned),
+                    prelude,
                     generation: 1,
                     label,
                 },
@@ -184,16 +193,11 @@ impl ShaderDb {
         self.entries.get(&id).map(|e| e.generation).unwrap_or(0)
     }
 
-    /// Apply filesystem events to the shaders `owner` loaded, recompiling them
-    /// against `owner`'s `space`. Entries under any other owner are untouched,
-    /// including entries for the same path. Compile errors are logged but keep
-    /// the last good module; rendering continues until fixed.
-    pub fn apply_events<S: WgslSpace>(
-        &mut self,
-        owner: ShaderOwner,
-        events: &[AssetEvent],
-        space: &S,
-    ) {
+    /// Apply filesystem events to the shaders `owner` loaded, recompiling each
+    /// against the prelude it was loaded with. Entries under any other owner
+    /// are untouched, including entries for the same path. Compile errors are
+    /// logged but keep the last good module; rendering continues until fixed.
+    pub fn apply_events(&mut self, owner: ShaderOwner, events: &[AssetEvent]) {
         for event in events {
             let canonical = match canonicalize(&event.path) {
                 Ok(p) => p,
@@ -205,7 +209,7 @@ impl ShaderDb {
             };
             match event.kind {
                 AssetEventKind::Created | AssetEventKind::Modified => {
-                    if let Err(e) = self.reload(id, space) {
+                    if let Err(e) = self.reload(id) {
                         tracing::warn!("shader reload failed for {}: {e:#}", canonical.display());
                     } else {
                         tracing::info!("reloaded shader {}", canonical.display());
@@ -221,26 +225,30 @@ impl ShaderDb {
         }
     }
 
-    fn reload<S: WgslSpace>(&mut self, id: ShaderId, space: &S) -> Result<()> {
-        let path = self.entries[&id].path.clone();
-        let scene_source = self.entries[&id].scene_source.clone();
-        let source = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading shader {}", path.display()))?;
-        let module = self.compile(&path, &source, scene_source.as_deref(), space)?;
+    fn reload(&mut self, id: ShaderId) -> Result<()> {
+        let entry = &self.entries[&id];
+        let source = std::fs::read_to_string(&entry.path)
+            .with_context(|| format!("reading shader {}", entry.path.display()))?;
+        let module = self.compile(
+            &entry.path,
+            &source,
+            entry.scene_source.as_deref(),
+            &entry.prelude,
+        )?;
         let entry = self.entries.get_mut(&id).expect("id just looked up");
         entry.module = module;
         entry.generation += 1;
         Ok(())
     }
 
-    fn compile<S: WgslSpace>(
+    fn compile(
         &self,
         path: &Path,
         user_source: &str,
         scene_source: Option<&str>,
-        space: &S,
+        prelude: &str,
     ) -> Result<ShaderModule> {
-        let full = assemble_source_with_scene(&space.wgsl_impl(), scene_source, user_source);
+        let full = assemble_source_with_scene(prelude, scene_source, user_source);
         validate_wgsl(&full).with_context(|| format!("validating shader {}", path.display()))?;
         let label = path.file_name().and_then(|n| n.to_str());
         Ok(self.device.create_shader_module(ShaderModuleDescriptor {
@@ -1849,9 +1857,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     /// Rewrite `path` with source that still validates but differs byte-wise,
     /// so a recompile is observable as a generation bump rather than a no-op.
+    /// The needle is arity-free so it hits both probes.
     fn touch_with_edit(path: &Path) {
         let previous = std::fs::read_to_string(path).unwrap();
-        let edited = previous.replace("vec3<f32>(0.1, 0.2, 0.3)", "vec3<f32>(0.15, 0.25, 0.35)");
+        let edited = previous.replace("0.1, 0.2, 0.3", "0.15, 0.25, 0.35");
         assert_ne!(previous, edited, "the edit must actually change the file");
         std::fs::write(path, edited).unwrap();
     }
@@ -1898,7 +1907,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         touch_with_edit(&path);
         let events = modified(&path);
 
-        db.apply_events(spherical, &events, &SphericalS3);
+        db.apply_events(spherical, &events);
         assert_eq!(db.generation(in_s3), 2, "S3's owner asked for this reload");
         assert_eq!(
             db.generation(in_h3),
@@ -1906,11 +1915,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             "H3's module must be untouched by an apply scoped to S3's owner",
         );
 
-        db.apply_events(hyperbolic, &events, &HyperbolicH3);
+        db.apply_events(hyperbolic, &events);
         assert_eq!(
             db.generation(in_s3),
             2,
-            "H3's owner must not recompile S3's module against H3",
+            "H3's owner must not touch S3's module",
         );
         assert_eq!(db.generation(in_h3), 2);
     }
@@ -1935,13 +1944,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         touch_with_edit(&s3_path);
         let events = modified(&s3_path);
-        db.apply_events(spherical, &events, &SphericalS3);
-        db.apply_events(hyperbolic, &events, &HyperbolicH3);
+        db.apply_events(spherical, &events);
+        db.apply_events(hyperbolic, &events);
 
         assert_eq!(
             db.generation(in_s3),
             2,
-            "the edited shader must recompile once, under its own Space, not once per owner",
+            "the edited shader must recompile once, not once per owner",
         );
         assert_eq!(db.generation(in_h3), 1, "no event named H3's shader");
     }
@@ -1986,12 +1995,76 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
 
         touch_with_edit(&path);
-        db.apply_events(ShaderDb::ROOT_OWNER, &modified(&path), &EuclideanR3);
+        db.apply_events(ShaderDb::ROOT_OWNER, &modified(&path));
         assert_eq!(db.generation(in_root), 2);
         assert_eq!(
             db.generation(in_scene),
             1,
-            "the host's apply must not recompile a sub-scene's module against R3",
+            "the host's apply must not recompile a sub-scene's module",
+        );
+    }
+
+    /// An apply carries no Space, so each entry has to remember its own. The
+    /// two probes disagree on ABI arity, which makes the wrong prelude
+    /// observable: assembling the vec4 probe against `EuclideanR3` fails naga
+    /// validation, and a failed reload keeps the stale module at its old
+    /// generation. Both entries sit under one owner, so owner scoping cannot
+    /// stand in for per-entry storage here.
+    #[test]
+    fn a_reload_rebuilds_each_entry_against_the_prelude_it_was_loaded_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let flat3 = dir.path().join("flat3.wgsl");
+        let flat4 = dir.path().join("flat4.wgsl");
+        std::fs::write(&flat3, ABI_PROBE).unwrap();
+        std::fs::write(&flat4, ABI_PROBE_VEC4).unwrap();
+
+        let mut db = ShaderDb::new(noop_device());
+        let owner = ShaderDb::ROOT_OWNER;
+        let in_r3 = db.load(owner, &flat3, &EuclideanR3).unwrap();
+        let in_r4 = db.load(owner, &flat4, &EuclideanR4).unwrap();
+
+        touch_with_edit(&flat3);
+        touch_with_edit(&flat4);
+        let events = [modified(&flat3), modified(&flat4)].concat();
+        db.apply_events(owner, &events);
+
+        assert_eq!(db.generation(in_r3), 2);
+        assert_eq!(
+            db.generation(in_r4),
+            2,
+            "the ℝ⁴ entry must reassemble under the vec4 prelude it was loaded with",
+        );
+    }
+
+    /// The stored prelude is a cache of the last `load`, not a snapshot of the
+    /// first: re-loading a path under a new Space is the refresh path for a
+    /// Space whose parameters moved, and every later reload must follow it.
+    /// Storing the prelude once at entry creation would recompile a
+    /// re-specialized entry against the geometry it was specialized away from.
+    #[test]
+    fn re_loading_under_a_new_space_repoints_later_reloads_at_the_new_prelude() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("respecialized.wgsl");
+        std::fs::write(&path, ABI_PROBE).unwrap();
+
+        let mut db = ShaderDb::new(noop_device());
+        let owner = ShaderDb::ROOT_OWNER;
+        let id = db.load(owner, &path, &EuclideanR3).unwrap();
+
+        std::fs::write(&path, ABI_PROBE_VEC4).unwrap();
+        assert_eq!(
+            db.load(owner, &path, &EuclideanR4).unwrap(),
+            id,
+            "one owner's path stays one entry across a Space change",
+        );
+        assert_eq!(db.generation(id), 2);
+
+        touch_with_edit(&path);
+        db.apply_events(owner, &modified(&path));
+        assert_eq!(
+            db.generation(id),
+            3,
+            "the reload must use ℝ⁴'s prelude; ℝ³'s no longer validates this source",
         );
     }
 

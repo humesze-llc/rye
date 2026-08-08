@@ -432,7 +432,6 @@ impl RowFrame<'_> {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct Demo {
-    pub(crate) space: EuclideanR3,
     /// Rigid-body state for the rendered row, one body per slot. Drives every
     /// render path's pose; see [`crate::physics`].
     pub(crate) physics: PlaygroundPhysics,

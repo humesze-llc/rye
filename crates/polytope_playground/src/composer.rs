@@ -220,6 +220,8 @@ impl Demo {
         let mut proj_deg = proj_rad.to_degrees();
 
         const VALUE_CELL_W: f32 = 86.0;
+        // pi*sqrt(2) in degrees: the largest |log| any rotor returns.
+        const COMPOSE_PROJ_LIMIT_DEG: f32 = 254.558_44;
         let avail = ui.available_width();
         let spacing = ui.spacing().item_spacing.x;
         let slider_w = (avail - VALUE_CELL_W - spacing).max(140.0);
@@ -227,14 +229,19 @@ impl Demo {
         let row_size = egui::vec2(avail, CONTROL_H);
         let row_layout = egui::Layout::left_to_right(egui::Align::Center);
 
-        // -360..360 for the Spin(4) double cover: 360° lands at the
-        // negative rotor -1, 720° returns to identity.
+        // Bounded by SO(4)'s bi-invariant diameter, not by the double
+        // cover. `Rotor4::log` returns the minimal-norm generator, so
+        // |log| never exceeds pi*sqrt(2) and a projection onto a unit
+        // bivector cannot either. A wider range would let the drag write
+        // a rotor whose log reads back shorter, and the slider would snap
+        // on the next frame. Authoring a full turn needs a turn count
+        // carried beside the rotor, which this control does not have.
         let formatted = format!("f {proj_deg:>+6.1}°");
         ui.allocate_ui_with_layout(row_size, row_layout, |ui| {
             let interaction = slider_with_edit(
                 ui,
                 &mut proj_deg,
-                -360.0..=360.0,
+                -COMPOSE_PROJ_LIMIT_DEG..=COMPOSE_PROJ_LIMIT_DEG,
                 &formatted,
                 "°",
                 1,
@@ -500,5 +507,50 @@ impl Demo {
                 self.seq.remove(i);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use loam_math::{Bivector, Bivector4, Rotor};
+    use std::f32::consts::{PI, SQRT_2};
+
+    /// The scrub slider writes `exp(bivec + unit·Δ)` and re-reads
+    /// `log()` on the next frame, so a range wider than `log`'s own reach
+    /// is a control that snaps under the cursor. `Rotor4::log` returns
+    /// the minimal-norm generator, bounded by SO(4)'s bi-invariant
+    /// diameter, and the old ±360° range assumed the principal branch it
+    /// no longer returns.
+    #[test]
+    fn the_scrub_range_never_exceeds_what_log_can_return() {
+        const LIMIT_DEG: f32 = 254.558_44;
+        assert!(
+            LIMIT_DEG.to_radians() <= PI * SQRT_2,
+            "the slider reaches past every rotor's log; a drag there snaps back"
+        );
+
+        // A projection inside the range survives the write-then-read the
+        // slider performs each frame. At 360° it does not, which is the
+        // regression this pins.
+        let unit = Bivector4 {
+            xy: 1.0,
+            ..Default::default()
+        };
+        for deg in [10.0f32, 90.0, 179.0] {
+            let round_tripped = (unit * deg.to_radians()).exp().log().dot(unit).to_degrees();
+            assert!(
+                (round_tripped - deg).abs() < 1e-2,
+                "{deg}° read back as {round_tripped}°, so the slider would jump"
+            );
+        }
+        let past = (unit * 360.0f32.to_radians())
+            .exp()
+            .log()
+            .dot(unit)
+            .to_degrees();
+        assert!(
+            past.abs() < 1.0,
+            "360° should collapse toward identity under the minimal branch, got {past}"
+        );
     }
 }

@@ -1,11 +1,13 @@
 //! Glyph letter pipeline: font outline to a slab-embedded 4D solid.
 //!
 //! One pass per letter: `ab_glyph` outline curves are flattened to closed
-//! contours, the contours are baked into a 2D signed distance field, the field
-//! is cut into convex cross-section pieces, and each piece is extruded along
-//! `z` and embedded in a `w` slab. The result serves both roles a letter needs:
-//! a [`loam_shape::TriangleMesh`] through [`loam_shape::Visualizable`], and a
-//! set of convex [`loam_shape::Shape::ConvexPolytope4D`] colliders.
+//! contours, the contours are baked into a 2D signed distance field, and the
+//! field is decomposed twice, once per role, each result extruded along `z` and
+//! embedded in a `w` slab. Render geometry is a clip of the field into convex
+//! cross-section pieces, reaching a [`loam_shape::TriangleMesh`] through
+//! [`loam_shape::Visualizable`]. Colliders are a [`loam_shape::Isovolume`]
+//! cover at [`GlyphParams::collider_resolution`], emitted as convex
+//! [`loam_shape::Shape::ConvexPolytope4D`] boxes.
 //!
 //! Unlike [`crate::TextRenderer`]'s HUD path, which skips characters it cannot
 //! draw so a per-frame overlay never fails, this pipeline is a build-time step
@@ -26,6 +28,7 @@
 //! let letters = layout_word(&font, "LOAM", &GlyphParams::default())?;
 //! for letter in &letters {
 //!     let mesh = Visualizable::<3>::to_triangles(letter);
+//!     // `(centre, hull)` pairs, one static body each.
 //!     let colliders = letter.colliders_4d();
 //! }
 //! # Ok(()) }
@@ -45,8 +48,11 @@ use glam::Vec2;
 /// so callers can still combine it with `min`/`max` without producing NaN.
 pub const BLANK_DISTANCE: f32 = 1.0e9;
 
-/// Below this many cells per em the baked field cannot resolve a stem, and the
-/// cross-section comes out as disconnected specks rather than a letter.
+/// Floor for both grid pitches. Below this many cells per em the render bake
+/// cannot resolve a stem and the cross-section comes out as disconnected specks
+/// rather than a letter. The collider cover degrades the other way, to a
+/// letter-shaped blob, and at this floor its outward margin is already half an
+/// em, so the bound is a backstop for both rather than a usable setting.
 pub const MIN_RESOLUTION: u32 = 4;
 
 /// Why a character could not be turned into a solid.
@@ -75,9 +81,13 @@ pub enum GlyphError {
     #[error("GlyphParams::{field} must be positive, got {value}")]
     NonPositive { field: &'static str, value: f32 },
 
-    /// [`GlyphParams::resolution`] below [`MIN_RESOLUTION`].
-    #[error("GlyphParams::resolution must be at least {MIN_RESOLUTION}, got {resolution}")]
-    Resolution { resolution: u32 },
+    /// One of the two [`GlyphParams`] grid pitches, `resolution` or
+    /// `collider_resolution`, is below [`MIN_RESOLUTION`].
+    #[error("GlyphParams::{field} must be at least {MIN_RESOLUTION}, got {resolution}")]
+    Resolution {
+        field: &'static str,
+        resolution: u32,
+    },
 }
 
 /// How a word is turned into solids. All lengths are world units except
@@ -91,10 +101,16 @@ pub struct GlyphParams {
     pub depth: f32,
     /// `w` extent of the slab the letter occupies, `(min, max)`.
     pub slab: (f32, f32),
-    /// Grid cells per em. Fixed per word rather than per glyph so every letter
-    /// is sampled at the same fidelity. Bake cost and collider count both
-    /// scale with its square.
+    /// Grid cells per em for the bake and the render decomposition. Fixed per
+    /// word rather than per glyph so every letter is sampled at the same
+    /// fidelity. Bake cost and render piece count both scale with its square.
     pub resolution: u32,
+    /// Grid cells per em for the collider cover, independent of
+    /// [`Self::resolution`]: legibility sets that one, the solver's body budget
+    /// sets this one. Coarsening it shrinks the box count and widens
+    /// [`GlyphSolid::collider_margin`] proportionally, and unlike the render
+    /// pitch it cannot lose a stem, only fatten it.
+    pub collider_resolution: u32,
     /// Maximum chord deviation when flattening Bezier segments, in em.
     pub flatten_tolerance_em: f32,
     /// Per-vertex colour of the emitted meshes, RGBA linear.
@@ -110,6 +126,12 @@ impl Default for GlyphParams {
             // 48 cells across an em resolves the thinnest stems of a text-weight
             // face while keeping the bake under a few million distance tests.
             resolution: 48,
+            // The same pitch for the cover, which is the conservative end of
+            // the useful range: LOAM comes out at 96 boxes and a 0.042 em
+            // margin, against 73 boxes and 0.063 em at 32 and 39 boxes and
+            // 0.125 em, about a stem width, at 16. See
+            // `examples/glyph_collider_budget.rs`.
+            collider_resolution: 48,
             flatten_tolerance_em: 0.002,
             color: [1.0, 1.0, 1.0, 1.0],
         }
@@ -128,10 +150,13 @@ impl GlyphParams {
                 return Err(GlyphError::NonPositive { field, value });
             }
         }
-        if self.resolution < MIN_RESOLUTION {
-            return Err(GlyphError::Resolution {
-                resolution: self.resolution,
-            });
+        for (field, resolution) in [
+            ("resolution", self.resolution),
+            ("collider_resolution", self.collider_resolution),
+        ] {
+            if resolution < MIN_RESOLUTION {
+                return Err(GlyphError::Resolution { field, resolution });
+            }
         }
         Ok(())
     }
@@ -192,15 +217,7 @@ pub fn layout_word(
             }
         };
 
-        solids.push(GlyphSolid::new(
-            ch,
-            pen_origin,
-            advance,
-            params.depth,
-            params.slab,
-            params.color,
-            field,
-        ));
+        solids.push(GlyphSolid::new(ch, pen_origin, advance, params, field));
         pen_x += advance;
         previous = Some(id);
     }
@@ -265,13 +282,27 @@ mod tests {
             GlyphError::NonPositive { field: "slab", .. }
         ));
 
-        let coarse = GlyphParams {
+        // Both pitches carry the floor, and each names itself when it trips.
+        let coarse_render = GlyphParams {
             resolution: MIN_RESOLUTION - 1,
             ..GlyphParams::default()
         };
         assert_eq!(
-            coarse.validate().unwrap_err(),
+            coarse_render.validate().unwrap_err(),
             GlyphError::Resolution {
+                field: "resolution",
+                resolution: MIN_RESOLUTION - 1
+            }
+        );
+
+        let coarse_collider = GlyphParams {
+            collider_resolution: MIN_RESOLUTION - 1,
+            ..GlyphParams::default()
+        };
+        assert_eq!(
+            coarse_collider.validate().unwrap_err(),
+            GlyphError::Resolution {
+                field: "collider_resolution",
                 resolution: MIN_RESOLUTION - 1
             }
         );
@@ -445,8 +476,8 @@ mod tests {
     }
 
     /// The same letter is both render geometry and a collider source, and the
-    /// two agree: every collider vertex is on or inside the surface the mesh
-    /// bounds.
+    /// two agree: no collider vertex, placed by its extrinsic centre, lies
+    /// further outside the letter than the cover's stated margin.
     #[test]
     fn letters_serve_as_render_geometry_and_colliders() {
         let Some(bytes) = system_font() else { return };
@@ -459,22 +490,156 @@ mod tests {
             assert_eq!(mesh.colors.len(), mesh.vertices.len());
 
             let colliders = letter.colliders_4d();
-            assert_eq!(colliders.len(), letter.piece_count());
+            assert_eq!(colliders.len(), letter.collider_count());
             assert!(!colliders.is_empty());
-            let cell = letter.field().expect("field").cell_size();
-            for collider in &colliders {
+            // The extrusion spans the depth and the slab exactly, so only the
+            // cross-section can overshoot and the 4D bound is the 2D one.
+            let margin = letter.collider_margin();
+            for (centre, collider) in &colliders {
                 let Shape::ConvexPolytope4D { vertices } = collider else {
                     panic!("collider is not 4D convex: {:?}", collider.kind());
                 };
-                assert!(vertices.len() >= 12, "prism needs 3 ring vertices minimum");
+                assert_eq!(vertices.len(), 16);
                 for v in vertices {
+                    let world = *centre + *v;
                     assert!(
-                        letter.distance_4d(*v) <= cell,
-                        "{:?} collider vertex {v} lies outside the letter",
-                        letter.ch()
+                        letter.distance_4d(world) <= margin,
+                        "{:?} collider vertex {world} lies {} outside the letter",
+                        letter.ch(),
+                        letter.distance_4d(world)
                     );
                 }
             }
+        }
+    }
+
+    /// The count criterion, reported by `examples/glyph_collider_budget.rs`
+    /// and pinned here: a laid-out word is tens of convex bodies, not
+    /// thousands. The bound sits ~12% above the measured 96 at the default
+    /// pitch, and the render decomposition of the same word is 3717 pieces.
+    #[test]
+    fn a_laid_out_word_stays_inside_the_solver_body_budget() {
+        let Some(bytes) = system_font() else { return };
+        let font = FontRef::try_from_slice(&bytes).expect("parse font");
+        let letters = layout_word(&font, "LOAM", &GlyphParams::default()).expect("layout");
+
+        let colliders: usize = letters.iter().map(GlyphSolid::collider_count).sum();
+        let render_pieces: usize = letters.iter().map(GlyphSolid::piece_count).sum();
+        assert!(colliders > 0);
+        assert!(
+            colliders <= 108,
+            "LOAM emits {colliders} colliders, past the measured budget"
+        );
+        assert!(
+            colliders * 20 < render_pieces,
+            "{colliders} colliders against {render_pieces} render pieces is not a cut"
+        );
+    }
+
+    /// Enclosure for a real letter, checked against the baked field rather
+    /// than against the extractor: every point the field calls ink is inside
+    /// some collider box, and no covered point is further outside the ink than
+    /// the stated margin. Counters and notches are what the second half pins,
+    /// since a cover that filled them would pass the first half alone.
+    #[test]
+    fn the_cover_encloses_every_letter_without_filling_its_counters() {
+        let Some(bytes) = system_font() else { return };
+        let font = FontRef::try_from_slice(&bytes).expect("parse font");
+        let letters = layout_word(&font, "LOAM", &params()).expect("layout");
+
+        for letter in &letters {
+            let cover = letter.collider_cover().expect("cover");
+            assert!(!cover.clipped(), "{:?} ran off its domain", letter.ch());
+            let margin = letter.collider_margin();
+
+            // Sweep the letter's advance box and a full em of height, offset
+            // off both grids so probes never land on a cell centre.
+            const PROBES: usize = 161;
+            let x0 = letter.pen_origin().x - 0.25 * letter.advance();
+            let width = 1.5 * letter.advance();
+            let (mut ink, mut clear) = (0, 0);
+            for j in 0..PROBES {
+                for i in 0..PROBES {
+                    let p = Vec2::new(
+                        x0 + width * (i as f32 + 0.317) / PROBES as f32,
+                        -0.25 + 1.25 * (j as f32 + 0.211) / PROBES as f32,
+                    );
+                    let d = letter.distance_2d(p);
+                    if d <= 0.0 {
+                        ink += 1;
+                        assert!(
+                            cover.contains(p.to_array()),
+                            "{:?} leaves ink at {p} uncovered",
+                            letter.ch()
+                        );
+                    } else if d > margin {
+                        clear += 1;
+                        assert!(
+                            !cover.contains(p.to_array()),
+                            "{:?} covers {p}, which is {d} clear of the ink",
+                            letter.ch()
+                        );
+                    }
+                }
+            }
+            assert!(ink > 1_000, "{:?}: only {ink} ink probes", letter.ch());
+            assert!(
+                clear > 1_000,
+                "{:?}: only {clear} clear probes",
+                letter.ch()
+            );
+        }
+    }
+
+    /// The two pitches are independent knobs: coarsening the collider pitch
+    /// cuts the box count and leaves the render mesh bit-identical.
+    #[test]
+    fn the_collider_pitch_moves_the_box_count_and_not_the_render_mesh() {
+        let Some(bytes) = system_font() else { return };
+        let font = FontRef::try_from_slice(&bytes).expect("parse font");
+        let fine = layout_word(&font, "LOAM", &params()).expect("layout");
+        let coarse_params = GlyphParams {
+            collider_resolution: 12,
+            ..params()
+        };
+        let coarse = layout_word(&font, "LOAM", &coarse_params).expect("layout");
+
+        let count = |ls: &[GlyphSolid]| ls.iter().map(GlyphSolid::collider_count).sum::<usize>();
+        assert!(
+            count(&coarse) < count(&fine),
+            "coarse {} is not below fine {}",
+            count(&coarse),
+            count(&fine)
+        );
+        for (a, b) in fine.iter().zip(&coarse) {
+            let (ma, mb) = (
+                Visualizable::<3>::to_triangles(a).expect("mesh"),
+                Visualizable::<3>::to_triangles(b).expect("mesh"),
+            );
+            assert_eq!(ma.vertices, mb.vertices);
+            assert_eq!(ma.indices, mb.indices);
+        }
+    }
+
+    /// Every letter's cover runs on the same pitch, so a short letter is not
+    /// given a finer grid than a tall one and the emitted boxes are all the
+    /// same scale. The tolerance is the round trip through
+    /// `Isovolume`'s own `extent / resolution`.
+    #[test]
+    fn all_letters_share_one_collider_pitch() {
+        let Some(bytes) = system_font() else { return };
+        let font = FontRef::try_from_slice(&bytes).expect("parse font");
+        let params = params();
+        let letters = layout_word(&font, "Loam.", &params).expect("layout");
+
+        let expected = params.em_size / params.collider_resolution as f32;
+        for letter in &letters {
+            let cell = letter.collider_cover().expect("cover").cell_size();
+            assert!(
+                (cell - expected).abs() <= 4.0 * f32::EPSILON * expected,
+                "{:?} covers at {cell}, not {expected}",
+                letter.ch()
+            );
         }
     }
 
@@ -490,6 +655,7 @@ mod tests {
         assert!(letters[1].is_blank());
         assert!(letters[1].advance() > 0.0);
         assert!(letters[1].colliders_4d().is_empty());
+        assert!(letters[1].collider_cover().is_none());
         assert!(!letters[0].is_blank() && !letters[2].is_blank());
         assert!(letters[2].pen_origin().x > letters[0].pen_origin().x + letters[0].advance());
     }

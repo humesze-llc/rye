@@ -31,6 +31,9 @@ Applies to README, public docs, and error messages. State facts. No
 hype, no idiom that costs precision, no self-congratulation. A claim
 carries its evidence (test, measurement, citation) or gets cut.
 
+Which claims owe evidence, where it goes, and what each tracked
+document promises: `docs/DOCUMENTATION.md`.
+
 ## Scope
 
 One purpose per branch. No ridealong refactors, no goldplating, no

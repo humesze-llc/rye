@@ -1,7 +1,7 @@
 # Quality bar
 
 The gate a change clears before it ships. Items 1-7 are mechanical and run in
-CI (`.github/workflows/ci.yml`); 8-10 are review judgment; 11 is release-only.
+CI (`.github/workflows/ci.yml`); 8-11 are review judgment; 12 is release-only.
 A red required item blocks the merge.
 
 ## Mechanical (CI-enforced)
@@ -38,10 +38,14 @@ A red required item blocks the merge.
 10. **No magic numbers**: every constant has a named binding or an inline note
     tying it to a formula or a measured bound. No defensive abstraction (a
     trait with one impl, a flag with one consumer).
+11. **Public-doc claims**: every sentence added to a tracked document is a
+    decision, a fact naming a grep-resolvable falsifier in a trailing
+    parenthetical, or a stamped measurement. The audience, the per-document
+    promises, and the rule are in [DOCUMENTATION.md](DOCUMENTATION.md).
 
 ## Release (manual)
 
-11. **Public surface current**: `README.md` describes what actually ships (no
+12. **Public surface current**: `README.md` describes what actually ships (no
     stale run commands, no aspirational claims stated as present tense); the
     rustdoc and any hosted demo reflect the current branch; a representative
     screenshot/gallery exists for visual features.

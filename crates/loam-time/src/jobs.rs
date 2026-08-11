@@ -58,9 +58,9 @@ pub fn partition_len(units: usize, workers: usize) -> usize {
 ///
 /// # Cost, and why more workers is currently a regression
 ///
-/// Partition 0 runs on the calling thread and the rest are
-/// `std::thread::scope`-spawned per call, so a single-partition stage spawns
-/// nothing and a multi-partition stage pays one thread creation per extra
+/// Partition 0 runs on the calling thread and the rest are spawned per call
+/// through `std::thread::scope`, so a single-partition stage spawns nothing
+/// and a multi-partition stage pays one thread creation per extra
 /// partition. `benches/jobs.rs` measures that at about 45us per extra
 /// partition, so a stage has to cost on the order of 1.6ms serially before
 /// splitting it breaks even, and an eight-phase tick would spend 3.2ms of a

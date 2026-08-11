@@ -161,9 +161,11 @@ impl GlyphSolid {
 
     /// The collider cover of the cross-section, absent for a blank.
     ///
-    /// Extraction scaled the field by [`LIPSCHITZ_SCALE`], so
+    /// Extraction scaled the field by 1/sqrt(2), the Lipschitz correction a
+    /// 2D outline field needs before a conservative cover is sound, so
     /// [`Isovolume::enclosure_margin`] under-reports this cover by that same
-    /// factor. [`Self::collider_margin`] is the bound that holds.
+    /// factor. [`Self::collider_margin`] is the bound that holds, and is the
+    /// one to quote.
     pub fn collider_cover(&self) -> Option<&Isovolume<2>> {
         self.cover.as_ref()
     }

@@ -225,7 +225,7 @@ pub fn epa<A: SupportFn, B: SupportFn>(
 
 /// Grow the seed tetrahedron until its closest face lies on the Minkowski
 /// boundary, returning the polytope with that face. `None` for a zero-volume
-/// seed or a polytope a degenerate expansion collapsed.
+/// seed, a non-finite support, or a polytope a degenerate expansion collapsed.
 fn expand_to_boundary<A: SupportFn, B: SupportFn>(
     a: &A,
     b: &B,
@@ -498,9 +498,11 @@ mod tests {
     /// the admissible normals are the signed axes attaining it. Every case here
     /// has an axis exactly flush, which is what tiles a facet of that body with
     /// coplanar triangles; without [`FACE_COPLANAR_EPS`] the first and the last
-    /// resolve against a face interior to the body, returning a depth short by
-    /// a third to a half on an axis tens of degrees off the separating one, and
-    /// both wrong contacts clear the caller's contact validation.
+    /// resolve against a face interior to the body. The first returns 0.85 for
+    /// an exact 1.9 on a normal 27 degrees off the nearest separating axis, and
+    /// clears the caller's contact validation on the way to the solver; the
+    /// last collapses to zero depth, which that validation drops, leaving an
+    /// overlapping pair with no contact at all.
     #[test]
     fn flush_box_contacts_resolve_against_a_difference_body_facet() {
         let cases: [(f32, Vec3, &[Vec3]); 5] = [

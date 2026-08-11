@@ -1172,6 +1172,15 @@ pub(crate) fn build_wireframe_meshes(
 /// switches rather than one master: the overlay exists to isolate a suspect
 /// quantity, and a contact cloud drawn over the normals hides exactly the
 /// direction error it was turned on to find.
+///
+/// No per-body w-extent layer. Every body's collider is
+/// `Collider::sphere_at_origin` at the row's one radius, so its extent is
+/// orientation-invariant, and `w = 0` is closed under the chamber:
+/// [`crate::physics::throw_impulse`] extends with a literal zero and the
+/// sphere-sphere normal between two centres on the slice has no w. The extent
+/// is therefore `±body_size` for every body on every frame. The wireframe's
+/// `w-depth` colour mode reads out the rendered hull's w, which is the part
+/// that has real extent.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(crate) struct PhysicsOverlay {
     /// Axis cross at each contact's world point.

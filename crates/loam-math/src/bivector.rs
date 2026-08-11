@@ -40,7 +40,7 @@ pub trait Bivector: Copy + Add<Output = Self> + Mul<f32, Output = Self> {
 /// A rotor in G(N, 0): an element of Spin(N), unit-norm by construction.
 pub trait Rotor: Copy + Mul<Output = Self> {
     /// Generator algebra: `log` lands here and `exp` comes back, so the two
-    /// are mutual inverses on the principal branch.
+    /// are mutual inverses on the branch each `log` documents.
     type Bivector: Bivector<Rotor = Self>;
 
     /// Vector space the sandwich product acts on, `R^N` for this rotor's `N`.
@@ -56,7 +56,10 @@ pub trait Rotor: Copy + Mul<Output = Self> {
     /// Rotate a vector via the sandwich product.
     fn apply(&self, v: Self::Vector) -> Self::Vector;
 
-    /// Inverse of [`Bivector::exp`]; principal branch, angle in `[−π, π]`.
+    /// Inverse of [`Bivector::exp`]. Which of a rotation's two rotors the
+    /// result is anchored to is per-impl: [`Rotor2`] and [`Rotor3`] generate
+    /// the rotor itself, [`Rotor4`] generates the rotation by the shortest
+    /// path and so may generate `−self`.
     fn log(self) -> Self::Bivector;
 }
 
@@ -663,9 +666,15 @@ impl Bivector for Bivector4 {
         }
 
         // General compound case: θ₁, θ₂ nonzero and distinct. Positive root
-        // for θ₁, δ-signed root for θ₂.
+        // for θ₁; θ₂ from the product 2·θ₁·θ₂ = δ rather than from the
+        // difference (s − disc)/2. The two agree in exact arithmetic, but
+        // disc rounds to s once |δ|/s falls below √ε, and the difference then
+        // underflows to a zero that s₂/t₂ below divides by, so the whole
+        // rotor comes out NaN. Taking the small root of a quadratic from the
+        // product of the roots is the standard cure (Press et al., Numerical
+        // Recipes 3rd ed., §5.6).
         let t1 = ((s + disc) * 0.5).max(0.0).sqrt();
-        let t2 = ((s - disc) * 0.5).max(0.0).sqrt() * delta.signum();
+        let t2 = delta / (2.0 * t1);
 
         let half1 = t1 * 0.5;
         let half2 = t2 * 0.5;
@@ -674,7 +683,8 @@ impl Bivector for Bivector4 {
         let c2 = half2.cos();
         let s2 = half2.sin();
 
-        // t1 > 0 and t2 ≠ 0 here, so both divisions are safe.
+        // t1 > 0 because s does, and t2 inherits δ, which the simple case
+        // above has already bounded away from zero.
         let s1_t1 = s1 / t1;
         let s2_t2 = s2 / t2;
 
@@ -751,6 +761,27 @@ impl Rotor4 {
             + self.yw * self.yw
             + self.zw * self.zw
             + self.xyzw * self.xyzw
+    }
+
+    /// Rejection test for the one rotation [`Rotor::log`] cannot describe:
+    /// the isoclinic half-turn `R = ±I`, both invariant angles π. It negates
+    /// every vector, every plane pair through the origin is an invariant pair
+    /// of it, and `|log|` is π√2 whichever pair is named, so the pair is not
+    /// in the rotor to recover. `log` returns zero there. Authoring paths
+    /// that need a plane must refuse such an input; nothing downstream can
+    /// repair it.
+    ///
+    /// True inside a neighbourhood as well, since the recovered plane divides
+    /// the bivector part by its own norm `d` and an f32 component error of ~ε
+    /// lands as a direction error of ~ε/d. The radius is √ε, where half the
+    /// mantissa of the direction is gone.
+    pub fn is_isoclinic_half_turn(self) -> bool {
+        // f32::EPSILON.sqrt(), which is not const-evaluable.
+        const RADIUS: f32 = 3.4526698e-4;
+        // Distance to the pseudoscalar axis: s² + |R₂|², which on the unit
+        // manifold is 1 − p².
+        let off_axis_squared = self.norm_squared() - self.xyzw * self.xyzw;
+        off_axis_squared <= RADIUS * RADIUS
     }
 
     /// Renormalize onto the Spin(4) unit manifold; apply to counter f32
@@ -943,7 +974,14 @@ impl Rotor for Rotor4 {
     /// split of Λ²R⁴, which is what collapses the invariant decomposition to
     /// a single branch-free formula.
     ///
-    /// Recovers the principal branch: `(θ₁ ± θ₂)/2 ∈ [0, π]`.
+    /// Recovers the minimal-norm generator of the rotation: `|log| ≤ π√2`,
+    /// the bi-invariant diameter of SO(4). That branch cannot also track the
+    /// double cover, so `exp` of the result is `±self`. The sign is invisible
+    /// to [`Rotor::apply`], but a caller comparing rotor components, or one
+    /// carrying the spinor sheet deliberately, sees it.
+    ///
+    /// One rotation is degenerate here: see
+    /// [`Rotor4::is_isoclinic_half_turn`].
     fn log(self) -> Bivector4 {
         // Write R₂ for the bivector part and R₂* for its Hodge dual. The
         // combination R₂ ∓ R₂* carries the half-angle h± = (θ₁ ± θ₂)/2 alone:
@@ -965,18 +1003,27 @@ impl Rotor for Rotor4 {
         // and near the isoclinic locus (Kahan 2006, "How Futile are Mindless
         // Assessments of Roundoff in Floating-Point Computation?", Mangled
         // Angles).
-        let c = self.s;
-        let p = self.xyzw;
-        let sum_part = Vec3::new(self.xy + self.zw, self.xz - self.yw, self.xw + self.yz);
-        let diff_part = Vec3::new(self.xy - self.zw, self.xz + self.yw, self.xw - self.yz);
+        //
+        // R and −R are the same rotation, and negating R sends each h± to
+        // π − h±. Since |B|² = 2·(h₊² + h₋²), the difference between the two
+        // representatives is 2π·(π − h₊ − h₋), so the shorter one is the one
+        // with h₊ + h₋ ≤ π. With both half-angles in [0, π] that is exactly
+        // cos h₊ + cos h₋ ≥ 0, and cos h₊ + cos h₋ = (c − p) + (c + p) = 2·s:
+        // one scalar test. Taking the other branch turns an 18° rotation into
+        // a 342° one the other way.
+        let branch = if self.s < 0.0 { -1.0 } else { 1.0 };
+        let c = branch * self.s;
+        let p = branch * self.xyzw;
+        let sum_part = Vec3::new(self.xy + self.zw, self.xz - self.yw, self.xw + self.yz) * branch;
+        let diff_part = Vec3::new(self.xy - self.zw, self.xz + self.yw, self.xw - self.yz) * branch;
         let sin_sum = sum_part.length();
         let sin_diff = diff_part.length();
 
         // h/sin(h) -> 1 as h -> 0, so the guard covers only the exact 0/0.
-        // The
-        // other zero of the sine, h = π, is the branch cut: the eigenpart's
-        // plane is then unrecoverable from the rotor, and scaling the zero
-        // vector by 1 drops that half-turn rather than returning infinities.
+        // The sine's other zero, h = π, survives the branch above only where
+        // h₊ = π forces h₋ = 0: the isoclinic half-turn, whose plane pair is
+        // genuinely absent from the rotor. Scaling the zero vector by 1 drops
+        // that half-turn rather than returning infinities.
         let k_sum = if sin_sum > 0.0 {
             sin_sum.atan2(c - p) / sin_sum
         } else {
@@ -1002,7 +1049,7 @@ impl Rotor for Rotor4 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::f32::consts::{FRAC_PI_2, PI, TAU};
+    use std::f32::consts::{FRAC_PI_2, PI, SQRT_2, TAU};
 
     fn assert_close(a: f32, b: f32) {
         assert!(
@@ -1715,6 +1762,174 @@ mod tests {
         );
         for v in [Vec4::X, Vec4::W, Vec4::new(1.0, -0.5, 0.3, 0.7)] {
             assert_vec4_close_tol(back.exp().apply(v), v * -1.0, 1e-5);
+        }
+    }
+
+    /// The branch defect: a simple rotation past the half-turn used to log as
+    /// the long way round. `exp(1.9π·e_xy)` turns 18° from `y` toward `x`,
+    /// and logging it as +1.9π sends anything interpolated along that
+    /// generator 342° the other way instead.
+    #[test]
+    fn rotor4_log_of_a_simple_turn_takes_the_short_way_round() {
+        let long_way = 1.9 * PI;
+        let logged = Bivector4::new(long_way, 0.0, 0.0, 0.0, 0.0, 0.0)
+            .exp()
+            .log();
+        assert_close(logged.xy, long_way - TAU);
+        assert_close(logged.magnitude(), TAU - long_way);
+
+        // Odd step count, so no sample lands on the ±π tie where the two
+        // representatives are the same length and the sign is roundoff's.
+        const STEPS: i32 = 47;
+        for step in -STEPS..=STEPS {
+            let theta = step as f32 * (TAU / STEPS as f32);
+            let short = theta - TAU * (theta / TAU).round();
+            let back = Bivector4::new(0.0, 0.0, 0.0, theta, 0.0, 0.0).exp().log();
+            assert!(
+                (back.yz - short).abs() <= 1e-5 && back.magnitude() <= PI,
+                "a turn of {theta} logged as {back:?}, not {short}"
+            );
+        }
+    }
+
+    /// xorshift32; the sweep below needs 10⁵ deterministic samples and a
+    /// seeded generator is the only kind allowed in this crate's tests.
+    struct Xorshift(u32);
+
+    impl Xorshift {
+        fn next_u32(&mut self) -> u32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 17;
+            self.0 ^= self.0 << 5;
+            self.0
+        }
+
+        /// Uniform in `[-span, span)`.
+        fn signed(&mut self, span: f32) -> f32 {
+            let unit = self.next_u32() as f32 / u32::MAX as f32;
+            (unit * 2.0 - 1.0) * span
+        }
+
+        fn bivector4(&mut self, span: f32) -> Bivector4 {
+            Bivector4::new(
+                self.signed(span),
+                self.signed(span),
+                self.signed(span),
+                self.signed(span),
+                self.signed(span),
+                self.signed(span),
+            )
+        }
+    }
+
+    /// The branch invariant, over rotors whose generators wind several turns
+    /// past the cut in every plane at once: `h₊ + h₋ ≤ π` (the minimality
+    /// condition itself, read back off the returned bivector's own
+    /// eigenparts), hence `|log| ≤ π√2`, SO(4)'s bi-invariant diameter. The
+    /// bound alone would not pin minimality: `(h₊, h₋) = (0.9π, 0.1π)` and
+    /// its long-way twin both sit under it.
+    ///
+    /// The recovered generator must still generate the rotation it came from,
+    /// which is what stops "return zero" from passing the bound.
+    #[test]
+    fn rotor4_log_is_the_shorter_of_the_two_representatives() {
+        const SAMPLES: usize = 100_000;
+        let probes = [Vec4::X, Vec4::W, Vec4::new(1.0, -0.5, 0.3, 0.7)];
+        let mut rng = Xorshift(0x5eed_4104);
+        for _ in 0..SAMPLES {
+            let rotor = rng.bivector4(TAU).exp();
+            let back = rotor.log();
+            let sum = Vec3::new(back.xy + back.zw, back.xz - back.yw, back.xw + back.yz);
+            let diff = Vec3::new(back.xy - back.zw, back.xz + back.yw, back.xw - back.yz);
+            // |sum| = 2·h₊ and |diff| = 2·h₋, so the tolerance is 5e-6 rad of
+            // slack on h₊ + h₋.
+            assert!(
+                sum.length() + diff.length() <= 2.0 * PI + 1e-5,
+                "long way round: {rotor:?} -> {back:?}"
+            );
+            assert!(
+                back.magnitude() <= PI * SQRT_2 + 1e-5,
+                "past the SO(4) diameter: {rotor:?} -> {back:?}"
+            );
+            // 5.6e-4 is the sweep's measured worst case, and it is `exp`'s
+            // conditioning rather than the branch: the generators here reach
+            // |B| = 2π√6 before wrapping.
+            let regenerated = back.exp();
+            for v in probes {
+                assert_vec4_close_tol(regenerated.apply(v), rotor.apply(v), 1e-3);
+            }
+        }
+    }
+
+    /// The compound branch takes its second angle from the product
+    /// `2·θ₁·θ₂ = δ`, so a double rotation with one tiny angle survives:
+    /// reading it off `(s − disc)/2` instead returned an all-NaN rotor once
+    /// `disc` rounded to `s`, which needs only `|δ|/|B|² < √ε`.
+    #[test]
+    fn rotor4_exp_survives_a_double_rotation_with_one_tiny_angle() {
+        for (t1, t2) in [(3.0_f32, 1.0e-4_f32), (1.0, 1.0e-5), (0.5, -1.0e-4)] {
+            let b = Bivector4::new(t1, 0.0, 0.0, 0.0, 0.0, t2);
+            let rotor = b.exp();
+            assert_close(rotor.norm_squared(), 1.0);
+            let back = rotor.log();
+            assert!(
+                (back + b * (-1.0)).magnitude() <= 1e-6,
+                "({t1}, {t2}) round-tripped as {back:?}"
+            );
+        }
+    }
+
+    /// The one rotation with no generator to recover, and the guard that
+    /// names it. `log` cannot serve the isoclinic half-turn: it returns zero,
+    /// which regenerates the identity rather than the negation of every
+    /// vector, so a caller that skips the guard gets a silently wrong
+    /// rotation. Rotations arbitrarily close to it are fine.
+    #[test]
+    fn only_the_isoclinic_half_turn_hides_its_plane_pair_from_log() {
+        let pseudoscalar = Rotor4 {
+            s: 0.0,
+            xy: 0.0,
+            xz: 0.0,
+            xw: 0.0,
+            yz: 0.0,
+            yw: 0.0,
+            zw: 0.0,
+            xyzw: 1.0,
+        };
+        assert!(pseudoscalar.is_isoclinic_half_turn());
+        assert_eq!(pseudoscalar.log(), Bivector4::ZERO);
+        for v in [Vec4::X, Vec4::new(1.0, -0.5, 0.3, 0.7)] {
+            assert_vec4_close_tol(pseudoscalar.apply(v), v * -1.0, 1e-6);
+            assert_vec4_close_tol(pseudoscalar.log().exp().apply(v), v, 1e-6);
+        }
+
+        // Both complementary plane pairs, both chiralities: θ₁ = θ₂ = π is
+        // the whole degenerate set, whatever pair it is written on.
+        for b in [
+            Bivector4::new(PI, 0.0, 0.0, 0.0, 0.0, PI),
+            Bivector4::new(PI, 0.0, 0.0, 0.0, 0.0, -PI),
+            Bivector4::new(0.0, PI, 0.0, 0.0, PI, 0.0),
+            Bivector4::new(0.0, 0.0, PI, PI, 0.0, 0.0),
+        ] {
+            assert!(b.exp().is_isoclinic_half_turn(), "{b:?} not flagged");
+        }
+
+        // A rotation is only degenerate at the point itself: an isoclinic
+        // pair 0.01π short of the half-turn still carries its planes, and
+        // sits just inside the diameter.
+        let near = Bivector4::new(0.99 * PI, 0.0, 0.0, 0.0, 0.0, 0.99 * PI);
+        assert!(!near.exp().is_isoclinic_half_turn());
+        let back = near.exp().log();
+        assert!(back.magnitude() <= PI * SQRT_2);
+        assert!((back + near * (-1.0)).magnitude() <= 1e-3, "{back:?}");
+
+        for b in [
+            Bivector4::ZERO,
+            Bivector4::new(PI, 0.0, 0.0, 0.0, 0.0, 0.0),
+            Bivector4::new(FRAC_PI_2, 0.0, 0.0, 0.0, 0.0, FRAC_PI_2),
+            Bivector4::new(0.3, 0.1, -0.2, 0.4, 0.1, 0.0),
+        ] {
+            assert!(!b.exp().is_isoclinic_half_turn(), "{b:?} wrongly flagged");
         }
     }
 

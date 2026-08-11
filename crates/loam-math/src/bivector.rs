@@ -778,9 +778,18 @@ impl Rotor4 {
     pub fn is_isoclinic_half_turn(self) -> bool {
         // f32::EPSILON.sqrt(), which is not const-evaluable.
         const RADIUS: f32 = 3.4526698e-4;
-        // Distance to the pseudoscalar axis: s² + |R₂|², which on the unit
-        // manifold is 1 − p².
-        let off_axis_squared = self.norm_squared() - self.xyzw * self.xyzw;
+        // Squared distance to the pseudoscalar axis, summed directly rather
+        // than taken as norm_squared() − p². Those agree in exact
+        // arithmetic, but everything this predicate must resolve has p²
+        // within RADIUS² = ε of the norm, and ε is one ulp of 1: the
+        // subtraction has no bits left to separate the band from its edge.
+        let off_axis_squared = self.s * self.s
+            + self.xy * self.xy
+            + self.xz * self.xz
+            + self.xw * self.xw
+            + self.yz * self.yz
+            + self.yw * self.yw
+            + self.zw * self.zw;
         off_axis_squared <= RADIUS * RADIUS
     }
 
@@ -1005,9 +1014,9 @@ impl Rotor for Rotor4 {
         // Angles).
         //
         // R and −R are the same rotation, and negating R sends each h± to
-        // π − h±. Since |B|² = 2·(h₊² + h₋²), the difference between the two
-        // representatives is 2π·(π − h₊ − h₋), so the shorter one is the one
-        // with h₊ + h₋ ≤ π. With both half-angles in [0, π] that is exactly
+        // π − h±. Since |B|² = 2·(h₊² + h₋²), negating changes |B|² by
+        // 4π·(π − h₊ − h₋), so the shorter representative is the one with
+        // h₊ + h₋ ≤ π. With both half-angles in [0, π] that is exactly
         // cos h₊ + cos h₋ ≥ 0, and cos h₊ + cos h₋ = (c − p) + (c + p) = 2·s:
         // one scalar test. Taking the other branch turns an 18° rotation into
         // a 342° one the other way.
@@ -1912,6 +1921,32 @@ mod tests {
             Bivector4::new(0.0, 0.0, PI, PI, 0.0, 0.0),
         ] {
             assert!(b.exp().is_isoclinic_half_turn(), "{b:?} not flagged");
+        }
+
+        // The guard's radius, from both sides. Nothing above pins the lower
+        // side: a guard that only ever fired on the exact pseudoscalar would
+        // satisfy every assertion so far. These rotors sit at a chosen
+        // off-axis distance by construction (unit norm, and 2·s·p = 0 = δ(B)
+        // so they are in Spin(4)), which keeps the boundary independent of
+        // exp's conditioning near θ = π.
+        for (scale, flagged) in [(0.25, true), (4.0, false)] {
+            let off_axis = f32::EPSILON.sqrt() * scale;
+            let r = Rotor4 {
+                s: 0.0,
+                xy: off_axis,
+                xz: 0.0,
+                xw: 0.0,
+                yz: 0.0,
+                yw: 0.0,
+                zw: 0.0,
+                xyzw: (1.0 - off_axis * off_axis).sqrt(),
+            };
+            assert_close(r.norm_squared(), 1.0);
+            assert_eq!(
+                r.is_isoclinic_half_turn(),
+                flagged,
+                "off-axis {off_axis} misjudged"
+            );
         }
 
         // A rotation is only degenerate at the point itself: an isoclinic

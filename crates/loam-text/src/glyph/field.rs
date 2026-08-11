@@ -44,8 +44,9 @@ impl DistanceField2D {
     /// outline rather than a blank.
     ///
     /// The caller fixes `cell` rather than a per-glyph subdivision count so
-    /// that every letter of a word is sampled at the same fidelity and yields
-    /// colliders of the same scale, regardless of how tall its own outline is.
+    /// that every letter of a word is sampled at the same fidelity regardless
+    /// of how tall its own outline is. [`super::solid`]'s collider cover takes
+    /// the same rule at its own pitch.
     ///
     /// Cost is `samples * edges` exact point-segment tests. This is a one-time
     /// bake per glyph, not per-frame work.

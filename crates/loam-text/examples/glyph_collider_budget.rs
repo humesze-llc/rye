@@ -1,0 +1,149 @@
+//! Collider budget for a laid-out word: how many convex bodies the glyph path
+//! emits at each collider pitch, and what a solver pays to carry them. Run with
+//! `cargo run --release -p loam-text --example glyph_collider_budget`.
+//!
+//! The first table is the decomposition. `render` is the clip decomposition's
+//! piece count at the default render pitch, which is what one collider per
+//! cross-section piece used to cost. `boxes` is the [`Isovolume`] cover the
+//! collider path emits instead, at the pitch in the first column. `margin` is
+//! the cover's outward bound in em.
+//!
+//! The second table is the price: a settled scene of the word's boxes as static
+//! bodies with dynamic 4D spheres resting on them, timed per fixed step against
+//! a 60 Hz frame.
+
+use std::time::Instant;
+
+use ab_glyph::FontRef;
+use glam::Vec4;
+use loam_math::EuclideanR4;
+use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
+use loam_physics::{Gravity, RigidBody, World};
+use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
+
+const WORD: &str = "LOAM";
+const FIXED_HZ: f32 = 60.0;
+const SETTLE_STEPS: usize = 300;
+const TIMED_STEPS: usize = 60;
+const BALL_RADIUS: f32 = 0.04;
+/// Dynamic bodies dropped onto the word, roughly the count a title-screen beat
+/// would rain on it.
+const BALLS: usize = 30;
+
+/// Fonts are not vendored; probe the usual system locations.
+fn system_font() -> Option<Vec<u8>> {
+    const CANDIDATES: &[&str] = &[
+        r"C:\Windows\Fonts\arial.ttf",
+        r"C:\Windows\Fonts\segoeui.ttf",
+        "/Library/Fonts/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ];
+    CANDIDATES
+        .iter()
+        .find_map(|path| std::fs::read(path).ok())
+        .or_else(|| {
+            eprintln!("no system font found in {CANDIDATES:?}");
+            None
+        })
+}
+
+/// Xorshift64 (Marsaglia, 2003, "Xorshift RNGs", eq. for the 13/7/17 triple),
+/// so the drop pattern is seeded and the timing is reproducible.
+struct Xorshift64(u64);
+
+impl Xorshift64 {
+    fn unit(&mut self) -> f32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 >> 40) as f32 / (1u32 << 24) as f32
+    }
+}
+
+fn main() {
+    let Some(bytes) = system_font() else { return };
+    let font = FontRef::try_from_slice(&bytes).expect("parse font");
+
+    let render = GlyphParams::default();
+    let render_pieces: usize = layout_word(&font, WORD, &render)
+        .expect("layout")
+        .iter()
+        .map(GlyphSolid::piece_count)
+        .sum();
+
+    println!("{WORD}, render pitch {} cells/em", render.resolution);
+    println!("pitch    L    O    A    M  boxes  render  margin/em   bake");
+    for collider_resolution in [16u32, 24, 32, 48, 96] {
+        let params = GlyphParams {
+            collider_resolution,
+            ..GlyphParams::default()
+        };
+        let started = Instant::now();
+        let letters = layout_word(&font, WORD, &params).expect("layout");
+        let elapsed = started.elapsed();
+        let per_letter: Vec<usize> = letters.iter().map(GlyphSolid::collider_count).collect();
+        println!(
+            "{collider_resolution:5} {:4} {:4} {:4} {:4} {:6} {render_pieces:7} {:10.4} {elapsed:>6.1?}",
+            per_letter[0],
+            per_letter[1],
+            per_letter[2],
+            per_letter[3],
+            per_letter.iter().sum::<usize>(),
+            letters[0].collider_margin(),
+        );
+    }
+
+    let letters = layout_word(&font, WORD, &GlyphParams::default()).expect("layout");
+    let (bodies, micros) = time_word(&letters);
+    let frame = 1.0e6 / FIXED_HZ as f64;
+    println!();
+    println!(
+        "{bodies} bodies ({} static boxes + {BALLS} spheres): {micros:.1} us/step, {:.2}% of a {FIXED_HZ:.0} Hz frame",
+        bodies - BALLS,
+        100.0 * micros / frame,
+    );
+}
+
+/// Settle the word's colliders under a rain of spheres, then time the steady
+/// state. Returns the body count and the mean microseconds per fixed step.
+fn time_word(letters: &[GlyphSolid]) -> (usize, f64) {
+    let mut world = World::new(EuclideanR4);
+    register_default_narrowphase(&mut world.narrowphase);
+    // Along -z, so the spheres land on the letters' front faces rather than
+    // edge-on against a silhouette one cell thick.
+    world.push_field(Box::new(Gravity::new(Vec4::new(0.0, 0.0, -9.8, 0.0))));
+
+    for letter in letters {
+        for (centre, hull) in letter.colliders_4d() {
+            world.push_body(RigidBody::fixed(centre, hull, 1.0, &EuclideanR4));
+        }
+    }
+
+    let span_x = letters
+        .iter()
+        .fold(0.0f32, |m, l| m.max(l.pen_origin().x + l.advance()));
+    let mut rng = Xorshift64(0x2545_F491_4F6C_DD1D);
+    for _ in 0..BALLS {
+        let position = Vec4::new(
+            rng.unit() * span_x,
+            rng.unit() * 0.7,
+            0.3 + rng.unit() * 0.3,
+            0.0,
+        );
+        world.push_body(sphere_body_r4(position, Vec4::ZERO, BALL_RADIUS, 1.0));
+    }
+
+    let dt = 1.0 / FIXED_HZ;
+    for _ in 0..SETTLE_STEPS {
+        world.step(dt);
+    }
+    let started = Instant::now();
+    for _ in 0..TIMED_STEPS {
+        world.step(dt);
+    }
+    let micros = started.elapsed().as_secs_f64() * 1.0e6 / TIMED_STEPS as f64;
+    (world.bodies.iter().count(), micros)
+}

@@ -22,3 +22,8 @@ glam       = { workspace = true }
 
 [dev-dependencies]
 pollster.workspace = true
+# The glyph collider path exists to feed a solver, so its budget measurement
+# and its acceptance test step a real `World`. Dev-only: nothing shipped from
+# this crate depends on physics.
+loam-math    = { path = "../loam-math",    version = "0.1.0" }
+loam-physics = { path = "../loam-physics", version = "0.1.0" }

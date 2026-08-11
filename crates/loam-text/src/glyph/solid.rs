@@ -2,23 +2,48 @@
 //! extruded 3D surface mesh, the slab-embedded 4D colliders, and the analytic
 //! 4D distance.
 //!
-//! The cross-section is recovered by splitting every grid cell into two
-//! triangles and clipping each against the half-space `d <= 0` (Sutherland &
-//! Hodgman, 1974). Clipping a triangle by one half-space always yields a
-//! convex polygon, which is what makes the same decomposition serve as both
-//! render geometry and a set of convex colliders. The triangle split also
-//! sidesteps the saddle ambiguity a marching-squares cell would have: the
-//! interpolated point on a shared cell edge depends only on that edge's two
-//! samples, so neighbouring cells agree and the union is watertight. The two
-//! cells traverse that edge in opposite directions, so their interpolants agree
-//! algebraically but can land an ulp apart; nothing downstream resolves
-//! anywhere near that.
+//! The two consumers want opposite decompositions, so they get different ones.
+//!
+//! **Render.** The cross-section is recovered by splitting every grid cell into
+//! two triangles and clipping each against the half-space `d <= 0` (Sutherland
+//! & Hodgman, 1974). The triangle split sidesteps the saddle ambiguity a
+//! marching-squares cell would have: the interpolated point on a shared cell
+//! edge depends only on that edge's two samples, so neighbouring cells agree
+//! and the union is watertight. The two cells traverse that edge in opposite
+//! directions, so their interpolants agree algebraically but can land an ulp
+//! apart; nothing downstream resolves anywhere near that. The piece count is
+//! `Theta(res^2)`, because the letter's interior contributes as many pieces as
+//! its boundary does, and that is the right trade for geometry a rasterizer
+//! consumes in one draw.
+//!
+//! **Collision.** A solver pays per body, so the same count is ruinous there.
+//! The colliders come instead from an [`Isovolume`] cover of the cross-section
+//! at its own pitch, extruded through the depth and the slab. The cover's count
+//! tracks silhouette complexity rather than interior area, and its error is a
+//! bounded outward margin rather than a lost stem, which is what lets the
+//! collider pitch be coarsened independently of legibility.
 
 use glam::{Vec2, Vec3, Vec4};
-use loam_shape::{LineMesh, NotVisualizable, PointMesh, Shape, TriangleMesh, Visualizable};
+use loam_shape::{
+    Isovolume, LineMesh, NotVisualizable, PointMesh, Shape, TriangleMesh, Visualizable,
+};
 
 use super::field::DistanceField2D;
-use super::BLANK_DISTANCE;
+use super::{GlyphParams, BLANK_DISTANCE};
+
+/// [`DistanceField2D::sample`] is 1-Lipschitz per axis, hence only
+/// `sqrt(2)`-Lipschitz in L2, while [`Isovolume::extract`] requires a true
+/// 1-Lipschitz field and silently loses its enclosure guarantee without one.
+/// Scaling by `1/sqrt(2)` restores the precondition and leaves the zero level
+/// where it was, at the price of an occupancy test that reaches a full cell
+/// instead of `cell/sqrt(2)`.
+const LIPSCHITZ_SCALE: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+/// Collider cells of empty space kept around the render grid.
+/// [`Isovolume::clipped`] flags a marked cell touching the domain boundary,
+/// and the field's own padding is counted in render cells, which are the finer
+/// of the two whenever the collider pitch is coarsened.
+const COVER_PADDING_CELLS: f32 = 2.0;
 
 /// Ring vertices closer than this fraction of a cell are the same vertex.
 /// A grid sample landing exactly on the zero level makes the clip emit the
@@ -67,8 +92,10 @@ pub struct GlyphSolid {
     slab_center: f32,
     slab_half: f32,
     color: [f32; 4],
+    collider_cell: f32,
     field: Option<DistanceField2D>,
     pieces: Vec<Piece>,
+    cover: Option<Isovolume<2>>,
 }
 
 impl GlyphSolid {
@@ -76,22 +103,26 @@ impl GlyphSolid {
         ch: char,
         pen_origin: Vec2,
         advance: f32,
-        depth: f32,
-        slab: (f32, f32),
-        color: [f32; 4],
+        params: &GlyphParams,
         field: Option<DistanceField2D>,
     ) -> Self {
+        let collider_cell = params.em_size / params.collider_resolution as f32;
         let pieces = field.as_ref().map(extract_pieces).unwrap_or_default();
+        let cover = field
+            .as_ref()
+            .map(|field| extract_cover(field, collider_cell));
         Self {
             ch,
             pen_origin,
             advance,
-            half_depth: 0.5 * depth,
-            slab_center: 0.5 * (slab.0 + slab.1),
-            slab_half: 0.5 * (slab.1 - slab.0),
-            color,
+            half_depth: 0.5 * params.depth,
+            slab_center: 0.5 * (params.slab.0 + params.slab.1),
+            slab_half: 0.5 * (params.slab.1 - params.slab.0),
+            color: params.color,
+            collider_cell,
             field,
             pieces,
+            cover,
         }
     }
 
@@ -121,9 +152,38 @@ impl GlyphSolid {
         self.field.as_ref()
     }
 
-    /// Convex cross-section pieces; one 4D collider is emitted per piece.
+    /// Convex cross-section pieces backing the render mesh. Render-only: the
+    /// colliders come from [`Self::collider_cover`], which is a different
+    /// decomposition at a different pitch.
     pub fn piece_count(&self) -> usize {
         self.pieces.len()
+    }
+
+    /// The collider cover of the cross-section, absent for a blank.
+    ///
+    /// Extraction scaled the field by [`LIPSCHITZ_SCALE`], so
+    /// [`Isovolume::enclosure_margin`] under-reports this cover by that same
+    /// factor. [`Self::collider_margin`] is the bound that holds.
+    pub fn collider_cover(&self) -> Option<&Isovolume<2>> {
+        self.cover.as_ref()
+    }
+
+    /// Number of 4D colliders this letter emits, i.e. the number of bodies a
+    /// solver pays for.
+    pub fn collider_count(&self) -> usize {
+        self.cover.as_ref().map_or(0, Isovolume::piece_count)
+    }
+
+    /// Upper bound on how far the collider cover reaches past the letter's
+    /// baked surface: two collider cells.
+    ///
+    /// A cell is marked when its centre samples `LIPSCHITZ_SCALE * d <= m`
+    /// for the half-diagonal `m = cell/sqrt(2)`, i.e. when `d <= cell`. From
+    /// that centre to any point of the cell is at most one cell in L1, and
+    /// [`DistanceField2D::sample`] is 1-Lipschitz in L1, so the far corner has
+    /// `d <= 2 * cell`. Halving the collider resolution doubles this.
+    pub fn collider_margin(&self) -> f32 {
+        2.0 * self.collider_cell
     }
 
     /// Signed distance to the 2D cross-section, negative inside.
@@ -145,32 +205,79 @@ impl GlyphSolid {
         extend(extruded, p.w, self.slab_center, self.slab_half)
     }
 
-    /// Convex 4D colliders covering the solid exactly, one per cross-section
-    /// piece. Each is a `ring x z-interval x w-interval` prism, which is
-    /// convex, so `loam-physics`' 4D GJK/EPA narrowphase consumes them
-    /// directly.
+    /// Convex 4D colliders enclosing the letter, as `(centre, hull)` pairs.
+    /// Pose is extrinsic per the [`Shape`] contract, so `centre` is the body
+    /// position and the hull is a 16-vertex box about the origin.
     ///
-    /// The count scales with the bake resolution squared; a caller wanting one
-    /// rigid body per letter bakes the collider copy at a coarser resolution
-    /// than the render copy.
-    pub fn colliders_4d(&self) -> Vec<Shape> {
-        let w_min = self.slab_center - self.slab_half;
-        let w_max = self.slab_center + self.slab_half;
-        self.pieces
-            .iter()
-            .map(|piece| {
-                let mut vertices = Vec::with_capacity(piece.ring.len() * 4);
-                for w in [w_min, w_max] {
-                    for z in [-self.half_depth, self.half_depth] {
-                        for q in &piece.ring {
-                            vertices.push(Vec4::new(q.x, q.y, z, w));
+    /// Each hull is one box of [`Self::collider_cover`] extruded through the
+    /// depth and the slab. The union encloses the letter and overshoots its ink
+    /// by at most [`Self::collider_margin`]; counters and notches stay open,
+    /// because the occupancy test never marks a cell they cover.
+    ///
+    /// # Static bodies only
+    ///
+    /// Spawn these fixed. `loam-physics` gives a rigid body exactly one
+    /// collider and no per-collider local offset, so a letter made dynamic is
+    /// as many independent bodies as it has boxes and they separate on the
+    /// first impulse. Two changes there, not here, lift that: a compound shape
+    /// carrying per-part offsets, and a narrowphase emitting more than one
+    /// contact per pair. The second is needed even for a hand-authored
+    /// one-hull letter, since with a single contact a flat box hands the
+    /// solver one of its tied deepest corners each step and never settles.
+    pub fn colliders_4d(&self) -> Vec<(Vec4, Shape)> {
+        let Some(cover) = &self.cover else {
+            return Vec::new();
+        };
+        (0..cover.piece_count())
+            .map(|index| {
+                let (lo, hi) = cover.piece_bounds(index);
+                let centre = Vec4::new(
+                    0.5 * (lo[0] + hi[0]),
+                    0.5 * (lo[1] + hi[1]),
+                    0.0,
+                    self.slab_center,
+                );
+                let half = Vec4::new(
+                    0.5 * (hi[0] - lo[0]),
+                    0.5 * (hi[1] - lo[1]),
+                    self.half_depth,
+                    self.slab_half,
+                );
+                let mut vertices = Vec::with_capacity(16);
+                for sw in [-1.0f32, 1.0] {
+                    for sz in [-1.0f32, 1.0] {
+                        for sy in [-1.0f32, 1.0] {
+                            for sx in [-1.0f32, 1.0] {
+                                vertices.push(half * Vec4::new(sx, sy, sz, sw));
+                            }
                         }
                     }
                 }
-                Shape::ConvexPolytope4D { vertices }
+                (centre, Shape::ConvexPolytope4D { vertices })
             })
             .collect()
     }
+}
+
+/// Cover the letter's cross-section with axis-aligned boxes on a grid of the
+/// given pitch.
+fn extract_cover(field: &DistanceField2D, cell: f32) -> Isovolume<2> {
+    let (cells_x, cells_y) = field.cell_counts();
+    let padding = Vec2::splat(COVER_PADDING_CELLS * cell);
+    let lo = field.corner(0, 0) - padding;
+    let span = field.corner(cells_x, cells_y) + padding - lo;
+    let counts = (span / cell).ceil().max(Vec2::ONE);
+    // Handing `Isovolume` the longer axis' cell count as its resolution makes
+    // the pitch it derives the one asked for, so every letter of a word covers
+    // on one pitch however wide its own ink is, matching the render bake's
+    // fixed-cell rule.
+    let resolution = counts.max_element() as usize;
+    Isovolume::extract(
+        lo.to_array(),
+        (lo + counts * cell).to_array(),
+        resolution,
+        |p| LIPSCHITZ_SCALE * field.sample(Vec2::from_array(p)),
+    )
 }
 
 /// Rendered geometry is the 3D cross-section of the 4D solid. Every `w` in the
@@ -402,14 +509,97 @@ mod tests {
     }
 
     fn square_solid(half: f32, resolution: u32, depth: f32, slab: (f32, f32)) -> GlyphSolid {
+        collider_solid(half, resolution, resolution, depth, slab)
+    }
+
+    /// Fixture params on a synthetic em: the fixture's own extent is one em, so
+    /// `collider_cells` reads as cells across the shape exactly the way the
+    /// render `cells` does.
+    fn fixture_params(
+        em: f32,
+        collider_cells: u32,
+        depth: f32,
+        slab: (f32, f32),
+    ) -> super::GlyphParams {
+        super::GlyphParams {
+            em_size: em,
+            depth,
+            slab,
+            collider_resolution: collider_cells,
+            ..super::GlyphParams::default()
+        }
+    }
+
+    /// The two pitches are independent, so fixtures name both. `cells` counts
+    /// cells across the square in each case, so a `collider_cells` below
+    /// `cells` is the decoupled-collider-resolution case.
+    fn collider_solid(
+        half: f32,
+        cells: u32,
+        collider_cells: u32,
+        depth: f32,
+        slab: (f32, f32),
+    ) -> GlyphSolid {
         GlyphSolid::new(
             'X',
             Vec2::ZERO,
             2.0 * half,
-            depth,
-            slab,
-            [1.0; 4],
-            Some(square_field(half, resolution)),
+            &fixture_params(2.0 * half, collider_cells, depth, slab),
+            Some(square_field(half, cells)),
+        )
+    }
+
+    /// A square rotated 45 degrees. Convex, so the render clip still tiles it
+    /// at `Theta(res^2)` pieces, while the axis-aligned cover of its diagonal
+    /// boundary is a staircase whose box count tracks the collider pitch. That
+    /// separation is what the two-pitch design is for; an axis-aligned fixture
+    /// covers in one box at every resolution and shows nothing.
+    fn diamond_solid(half: f32, cells: u32, collider_cells: u32) -> GlyphSolid {
+        let contour = Contour {
+            points: vec![
+                Vec2::new(-half, 0.0),
+                Vec2::new(0.0, -half),
+                Vec2::new(half, 0.0),
+                Vec2::new(0.0, half),
+            ],
+        };
+        let field = DistanceField2D::bake(&[contour], 2.0 * half / cells as f32).expect("bake");
+        GlyphSolid::new(
+            'X',
+            Vec2::ZERO,
+            2.0 * half,
+            &fixture_params(2.0 * half, collider_cells, 0.4, (-0.2, 0.2)),
+            Some(field),
+        )
+    }
+
+    /// A square annulus: an outer ring with a counter-wound hole, i.e. the
+    /// topology of `O` without a font. The hole is what a bounding-volume
+    /// shortcut would fill in.
+    fn annulus_solid(outer: f32, inner: f32, cells: u32, collider_cells: u32) -> GlyphSolid {
+        let ring = |half: f32, counter_clockwise: bool| {
+            let mut points = vec![
+                Vec2::new(-half, -half),
+                Vec2::new(half, -half),
+                Vec2::new(half, half),
+                Vec2::new(-half, half),
+            ];
+            if !counter_clockwise {
+                points.reverse();
+            }
+            Contour { points }
+        };
+        let field = DistanceField2D::bake(
+            &[ring(outer, true), ring(inner, false)],
+            2.0 * outer / cells as f32,
+        )
+        .expect("bake");
+        GlyphSolid::new(
+            'O',
+            Vec2::ZERO,
+            2.0 * outer,
+            &fixture_params(2.0 * outer, collider_cells, 0.4, (-0.2, 0.2)),
+            Some(field),
         )
     }
 
@@ -520,49 +710,240 @@ mod tests {
         assert_eq!(points.sizes.len(), points.positions.len());
     }
 
-    /// One collider per piece, each spanning the full slab and depth, and each
-    /// a `ring x z x w` prism, so the vertex count is four per ring vertex.
+    /// One 16-vertex box per cover piece, origin-centred with the extrinsic
+    /// centre carrying the placement, spanning the full depth and slab. A box
+    /// that did not span both would leave the letter open on a face.
     #[test]
-    fn colliders_are_prisms_spanning_depth_and_slab() {
+    fn colliders_are_origin_centred_boxes_spanning_depth_and_slab() {
         let slab = (-0.75, 0.25);
         let depth = 0.6;
-        let solid = square_solid(1.0, 12, depth, slab);
+        let solid = collider_solid(1.0, 24, 12, depth, slab);
+        let cover = solid.collider_cover().expect("cover");
         let colliders = solid.colliders_4d();
-        assert_eq!(colliders.len(), solid.piece_count());
-        for (collider, piece) in colliders.iter().zip(&solid.pieces) {
+        assert_eq!(colliders.len(), solid.collider_count());
+        assert_eq!(colliders.len(), cover.piece_count());
+        assert!(!colliders.is_empty());
+
+        for (index, (centre, collider)) in colliders.iter().enumerate() {
             let Shape::ConvexPolytope4D { vertices } = collider else {
                 panic!("expected ConvexPolytope4D, got {:?}", collider.kind());
             };
-            assert_eq!(vertices.len(), piece.ring.len() * 4);
-            let z_min = vertices.iter().fold(f32::INFINITY, |m, v| m.min(v.z));
-            let z_max = vertices.iter().fold(f32::NEG_INFINITY, |m, v| m.max(v.z));
-            let w_min = vertices.iter().fold(f32::INFINITY, |m, v| m.min(v.w));
-            let w_max = vertices.iter().fold(f32::NEG_INFINITY, |m, v| m.max(v.w));
-            assert!((z_min + 0.5 * depth).abs() < 1e-6);
-            assert!((z_max - 0.5 * depth).abs() < 1e-6);
-            assert!((w_min - slab.0).abs() < 1e-6);
-            assert!((w_max - slab.1).abs() < 1e-6);
+            assert_eq!(vertices.len(), 16);
+            let sum: Vec4 = vertices.iter().copied().sum();
+            assert!(sum.length() < 1e-5, "hull is not origin-centred");
+
+            let (lo, hi) = cover.piece_bounds(index);
+            let expect = Vec4::new(
+                0.5 * (lo[0] + hi[0]),
+                0.5 * (lo[1] + hi[1]),
+                0.0,
+                0.5 * (slab.0 + slab.1),
+            );
+            assert!(
+                centre.distance(expect) < 1e-6,
+                "centre {centre} vs {expect}"
+            );
+            let half = Vec4::new(
+                0.5 * (hi[0] - lo[0]),
+                0.5 * (hi[1] - lo[1]),
+                0.5 * depth,
+                0.5 * (slab.1 - slab.0),
+            );
+            for v in vertices {
+                assert!((v.abs() - half).abs().max_element() < 1e-6);
+            }
         }
     }
 
-    /// Every collider vertex is inside the solid: the convex pieces cover the
-    /// cross-section without spilling past the silhouette by more than the
-    /// grid's interpolation error.
+    /// The criterion the cover exists for, checked against the field rather
+    /// than against the extractor's own occupancy: every point the baked field
+    /// calls solid lies inside some collider box. The probe lattice is offset
+    /// off both grids so it cannot sit on cell centres by construction.
     #[test]
-    fn collider_vertices_lie_on_or_inside_the_solid() {
-        let solid = square_solid(1.0, 24, 0.5, (0.0, 1.0));
-        let cell = solid.field().unwrap().cell_size();
-        for collider in solid.colliders_4d() {
-            let Shape::ConvexPolytope4D { vertices } = collider else {
-                unreachable!()
-            };
-            for v in vertices {
+    fn every_point_the_field_calls_solid_lies_inside_a_collider_box() {
+        let solid = collider_solid(1.0, 32, 12, 0.5, (-0.25, 0.25));
+        let cover = solid.collider_cover().expect("cover");
+        const PROBES: usize = 201;
+        let coord = |i: usize| -1.3 + 2.6 * (i as f32 + 0.317) / PROBES as f32;
+        let mut interior = 0;
+        for j in 0..PROBES {
+            for i in 0..PROBES {
+                let p = Vec2::new(coord(i), coord(j));
+                if solid.distance_2d(p) > 0.0 {
+                    continue;
+                }
+                interior += 1;
                 assert!(
-                    solid.distance_4d(v) <= cell,
-                    "collider vertex {v} sits {} outside the solid",
-                    solid.distance_4d(v)
+                    cover.contains(p.to_array()),
+                    "interior probe {p} is outside every collider box"
                 );
             }
+        }
+        assert!(interior > 10_000, "only {interior} interior probes");
+        assert!(!cover.clipped(), "the cover ran off its sampling domain");
+    }
+
+    /// The cover does not spill: no box corner is further outside the letter
+    /// than [`GlyphSolid::collider_margin`], which is the Lipschitz bound the
+    /// occupancy test earns. Without this an enclosure test would pass on a
+    /// bounding box.
+    #[test]
+    fn no_collider_corner_exceeds_the_stated_margin() {
+        let solid = collider_solid(1.0, 32, 12, 0.5, (-0.25, 0.25));
+        let cover = solid.collider_cover().expect("cover");
+        let margin = solid.collider_margin();
+        let mut worst = f32::NEG_INFINITY;
+        for index in 0..cover.piece_count() {
+            let (lo, hi) = cover.piece_bounds(index);
+            for y in [lo[1], hi[1]] {
+                for x in [lo[0], hi[0]] {
+                    worst = worst.max(solid.distance_2d(Vec2::new(x, y)));
+                }
+            }
+        }
+        assert!(worst <= margin, "corner reaches {worst}, past {margin}");
+    }
+
+    /// A collider pitch coarser than the render pitch is the whole point of
+    /// the two being separate: the render mesh keeps its detail while the box
+    /// count collapses. The clip decomposition at the same coarse pitch is
+    /// what this replaces, so the comparison is against the fine render count.
+    #[test]
+    fn a_coarser_collider_pitch_cuts_boxes_without_touching_the_render_mesh() {
+        let fine = diamond_solid(1.0, 48, 48);
+        let coarse = diamond_solid(1.0, 48, 12);
+        assert_eq!(fine.piece_count(), coarse.piece_count());
+        assert!(
+            coarse.collider_count() < fine.collider_count(),
+            "coarse {} is not below fine {}",
+            coarse.collider_count(),
+            fine.collider_count()
+        );
+        assert!(
+            coarse.collider_count() * 20 < fine.piece_count(),
+            "{} boxes against {} render pieces is not a cut",
+            coarse.collider_count(),
+            fine.piece_count()
+        );
+        assert!(coarse.collider_margin() > fine.collider_margin());
+    }
+
+    /// A hole in the letter stays a hole, at a collider pitch four times
+    /// coarser than the render pitch. A convex hull and a bounding volume both
+    /// lose this, and both would still pass every enclosure check.
+    ///
+    /// The bound is the same Lipschitz derivation as
+    /// [`GlyphSolid::collider_margin`], read the other way: a covered point
+    /// lies in a marked cell, whose centre has `d <= cell` and is within one
+    /// cell of it in L1, so no point with `d > 2 * cell` can be covered.
+    #[test]
+    fn a_counter_stays_open_past_the_margin() {
+        let solid = annulus_solid(1.0, 0.6, 48, 16);
+        let cover = solid.collider_cover().expect("cover");
+        let margin = solid.collider_margin();
+        assert!(
+            solid.distance_2d(Vec2::ZERO) > margin,
+            "fixture hole is smaller than the margin"
+        );
+
+        const PROBES: usize = 121;
+        let coord = |i: usize| -0.6 + 1.2 * (i as f32 + 0.317) / PROBES as f32;
+        let mut clear = 0;
+        for j in 0..PROBES {
+            for i in 0..PROBES {
+                let p = Vec2::new(coord(i), coord(j));
+                if solid.distance_2d(p) <= margin {
+                    continue;
+                }
+                clear += 1;
+                assert!(!cover.contains(p.to_array()), "counter filled at {p}");
+            }
+        }
+        assert!(clear > 5_000, "only {clear} probes deep inside the counter");
+    }
+
+    /// The occupancy threshold [`LIPSCHITZ_SCALE`] buys, stated exactly: a
+    /// cover cell is marked when its centre samples `d <= cell`, not
+    /// `d <= cell/sqrt(2)`. That factor is the whole enclosure argument, and
+    /// dropping it fails no containment probe on a fixture whose worst
+    /// Lipschitz case the probes happen to miss, so the threshold is pinned
+    /// directly rather than through its consequences.
+    ///
+    /// A cell centre is interior to exactly one cell and every box is a union
+    /// of marked cells, so `contains` at a centre reads the occupancy bit.
+    #[test]
+    fn a_cover_cell_is_marked_out_to_a_full_cell_of_clearance() {
+        // A single pitch quantises the sampled distances into an arithmetic
+        // progression that can step straight over the band between the two
+        // thresholds, so the fixture is swept rather than fixed.
+        let (mut band, mut clear) = (0, 0);
+        for collider_cells in [11u32, 12, 13, 16, 17] {
+            let solid = diamond_solid(1.0, 48, collider_cells);
+            let cover = solid.collider_cover().expect("cover");
+            let cell = cover.cell_size();
+            let margin = solid.collider_margin();
+            assert!(
+                (2.0 * cell - margin).abs() <= 4.0 * f32::EPSILON * margin,
+                "stated margin {margin} is not two extractor cells of {cell}"
+            );
+
+            // Box bounds sit on grid nodes, so one of them anchors the lattice.
+            let anchor = Vec2::from_array(cover.piece_bounds(0).0);
+            let tolerance = 1.0e-4 * cell;
+            let half_threshold = std::f32::consts::FRAC_1_SQRT_2 * cell;
+
+            for j in -40..=40 {
+                for i in -40..=40 {
+                    let centre = anchor + (Vec2::new(i as f32, j as f32) + Vec2::splat(0.5)) * cell;
+                    let d = solid.distance_2d(centre);
+                    if d <= cell - tolerance {
+                        assert!(
+                            cover.contains(centre.to_array()),
+                            "cell centre {centre} at d = {d} is unmarked inside one cell"
+                        );
+                        if d > half_threshold + tolerance {
+                            band += 1;
+                        }
+                    } else if d >= cell + tolerance {
+                        clear += 1;
+                        assert!(
+                            !cover.contains(centre.to_array()),
+                            "cell centre {centre} at d = {d} is marked past one cell"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            band > 0,
+            "no cell centre lands between the scaled and unscaled thresholds, \
+             so the sqrt(2) correction is untested by these fixtures"
+        );
+        assert!(
+            clear > 0,
+            "only {clear} cell centres clear of the threshold"
+        );
+    }
+
+    /// The cover is a pure fixed-order scan over the baked field, so two bakes
+    /// of the same letter emit the same boxes in the same order. A collider set
+    /// that reordered would break the solver's deterministic pair ordering.
+    #[test]
+    fn collider_emission_is_reproducible() {
+        let build = || collider_solid(1.0, 24, 16, 0.5, (-0.25, 0.25)).colliders_4d();
+        let (a, b) = (build(), build());
+        assert_eq!(a.len(), b.len());
+        assert!(a.len() > 1);
+        for ((ca, sa), (cb, sb)) in a.iter().zip(&b) {
+            assert_eq!(ca, cb);
+            let (
+                Shape::ConvexPolytope4D { vertices: va },
+                Shape::ConvexPolytope4D { vertices: vb },
+            ) = (sa, sb)
+            else {
+                unreachable!()
+            };
+            assert_eq!(va, vb);
         }
     }
 
@@ -596,9 +977,17 @@ mod tests {
     /// own vocabulary instead of returning empty buffers.
     #[test]
     fn blank_glyph_reports_degenerate_and_emits_no_colliders() {
-        let blank = GlyphSolid::new(' ', Vec2::ZERO, 0.25, 0.5, (0.0, 1.0), [1.0; 4], None);
+        let blank = GlyphSolid::new(
+            ' ',
+            Vec2::ZERO,
+            0.25,
+            &fixture_params(1.0, 20, 0.5, (0.0, 1.0)),
+            None,
+        );
         assert!(blank.is_blank());
         assert_eq!(blank.piece_count(), 0);
+        assert_eq!(blank.collider_count(), 0);
+        assert!(blank.collider_cover().is_none());
         assert!(blank.colliders_4d().is_empty());
         assert_eq!(
             Visualizable::<3>::to_triangles(&blank).unwrap_err(),

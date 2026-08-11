@@ -1522,6 +1522,8 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "glam",
+ "loam-math",
+ "loam-physics",
  "loam-shape",
  "pollster",
  "thiserror 1.0.69",

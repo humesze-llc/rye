@@ -2039,42 +2039,57 @@ mod tests {
     fn the_thread_budget_prefers_args_and_reads_zero_as_let_the_runner_pick() {
         let picked = default_sim_threads();
         assert!(picked >= 1, "the runner's own pick must be a legal budget");
+        // Offset off the pick rather than literal, so no assertion below can
+        // pass by coinciding with the core count of the machine running it.
+        let flagged = picked + 1;
+        let configured = picked + 2;
+        let flagged_arg = flagged.to_string();
 
         let flag = |value: &str| Args::from_pairs([(SIM_THREADS_KEY, value)]);
-        assert_eq!(resolve_sim_threads(&flag("3"), None), 3);
+        assert_eq!(resolve_sim_threads(&flag(&flagged_arg), None), flagged);
         assert_eq!(
-            resolve_sim_threads(&flag("3"), Some(9)),
-            3,
+            resolve_sim_threads(&flag(&flagged_arg), Some(configured)),
+            flagged,
             "the flag must win over RunConfig, not the other way round"
         );
-        assert_eq!(resolve_sim_threads(&Args::default(), Some(9)), 9);
+        assert_eq!(
+            resolve_sim_threads(&Args::default(), Some(configured)),
+            configured
+        );
         assert_eq!(resolve_sim_threads(&Args::default(), None), picked);
-        assert_eq!(resolve_sim_threads(&flag("0"), Some(9)), picked);
+        assert_eq!(resolve_sim_threads(&flag("0"), Some(configured)), picked);
         assert_eq!(resolve_sim_threads(&Args::default(), Some(0)), picked);
         // A value that is not a count must fall through to the next source,
         // never be rounded into one.
-        assert_eq!(resolve_sim_threads(&flag("many"), Some(9)), 9);
         assert_eq!(
-            resolve_sim_threads(&Args::from_argv(["--threads", "4"]), Some(9)),
-            9,
+            resolve_sim_threads(&flag("many"), Some(configured)),
+            configured
+        );
+        assert_eq!(
+            resolve_sim_threads(
+                &Args::from_argv(["--threads", &flagged_arg]),
+                Some(configured)
+            ),
+            configured,
             "a bare flag drops its value, so it must not read as a request"
         );
     }
 
     #[test]
     fn every_tick_of_a_run_sees_the_one_pool_the_runner_resolved() {
-        // Not the platform's pick, so a path that quietly re-resolved instead
-        // of reading the runner's pool would show a different number.
-        const BUDGET: usize = 3;
+        // Offset off the platform's pick, so a path that quietly re-resolved
+        // instead of reading the runner's pool shows a different number on
+        // any machine rather than only on one whose core count differs.
+        let budget = default_sim_threads() + 1;
 
         let jobs = JobPool::new(resolve_sim_threads(
-            &Args::from_pairs([(SIM_THREADS_KEY, "3")]),
-            Some(9),
+            &Args::from_pairs([(SIM_THREADS_KEY, budget.to_string())]),
+            Some(budget + 1),
         ));
         let mut runner = Runner::<TickRecorder>::new(RunConfig::default(), jobs);
         assert_eq!(
             runner.jobs.threads(),
-            BUDGET,
+            budget,
             "the resolved budget must be what the runner stores"
         );
 
@@ -2095,7 +2110,7 @@ mod tests {
         assert_eq!(app.workers.len(), 5, "the frames must have produced ticks");
         assert_eq!(
             app.workers,
-            vec![BUDGET; app.workers.len()],
+            vec![budget; app.workers.len()],
             "the pool a tick borrows is the runner's, at the resolved budget"
         );
     }

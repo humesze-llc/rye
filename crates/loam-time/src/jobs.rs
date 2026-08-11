@@ -274,6 +274,37 @@ mod tests {
     }
 
     #[test]
+    fn a_spawned_partitions_panic_reaches_the_caller_carrying_its_own_payload() {
+        const UNITS: usize = 8;
+        const WORKERS: usize = 4;
+        // Not 0, so the panic crosses the join rather than unwinding straight
+        // out of the caller's own kernel call.
+        const PANICKING: usize = 2;
+        const MESSAGE: &str = "kernel panic under test";
+
+        let pool = JobPool::new(WORKERS);
+        let mut units = vec![0u32; UNITS];
+        let mut partials: Vec<usize> = Vec::new();
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pool.run_stage(&mut units, &mut partials, |partition, _slice| {
+                assert_ne!(partition, PANICKING, "{MESSAGE}");
+                partition
+            });
+        }));
+
+        let payload = unwound.expect_err("a partition's panic must reach the caller");
+        // The payload, not merely the fact of a panic: `thread::scope` would
+        // panic at its own exit regardless, with a message naming the scope
+        // instead of what the kernel was asserting.
+        let text = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .expect("the kernel's own payload, not the scope's");
+        assert!(text.contains(MESSAGE), "resumed some other panic: {text}");
+    }
+
+    #[test]
     fn a_budget_of_zero_still_yields_one_worker() {
         assert_eq!(JobPool::new(0).threads(), 1);
         assert_eq!(JobPool::new(1).threads(), 1);

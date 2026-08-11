@@ -32,6 +32,7 @@ use loam_asset::AssetWatcher;
 use loam_input::InputState;
 use loam_render::device::RenderDevice;
 use loam_shader::ShaderDb;
+use loam_time::jobs::JobPool;
 use loam_time::FixedTimestep;
 use winit::event::{ElementState, MouseScrollDelta};
 use winit::keyboard::PhysicalKey;
@@ -446,6 +447,12 @@ struct WorkerRunner<A: App + 'static> {
     /// sets `RunConfig::max_ticks_per_frame` changes the native stall cadence
     /// only.
     timestep: FixedTimestep,
+    /// Resolved through the same `resolve_sim_threads` the native runner
+    /// uses, which is why the knob is an `Args` key: `RunConfig` never
+    /// crosses the init message but the page query is forwarded before
+    /// `A::setup`. `JobPool` then clamps to one worker here, so a page asking
+    /// for more gets the platform's answer rather than a divergent schedule.
+    jobs: JobPool,
 }
 
 impl<A: App + 'static> WorkerRunner<A> {
@@ -468,11 +475,16 @@ impl<A: App + 'static> WorkerRunner<A> {
                 None
             }
         };
+        let jobs = JobPool::new(crate::resolve_sim_threads(
+            &crate::args::Args::current(),
+            None,
+        ));
         let mut ctx = SetupCtx {
             rd: &rd,
             shader_db: &mut shader_db,
             watcher: watcher.as_mut(),
             time: 0.0,
+            sim_threads: jobs.threads(),
         };
         let app = A::setup(&mut ctx).map_err(|e| e.context("App::setup"))?;
 
@@ -504,6 +516,7 @@ impl<A: App + 'static> WorkerRunner<A> {
             last_redraw_anchor: None,
             tick_index: 0,
             timestep: FixedTimestep::new(60).with_max_catch_up(crate::DEFAULT_MAX_TICKS_PER_FRAME),
+            jobs,
         })
     }
 
@@ -737,6 +750,7 @@ impl<A: App + 'static> WorkerRunner<A> {
             &mut self.tick_index,
             now,
             60,
+            &self.jobs,
         );
 
         // `take_frame` drains the accumulated FrameInput and resets per-tick

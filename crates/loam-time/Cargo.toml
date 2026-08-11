@@ -33,3 +33,7 @@ tracing = { workspace = true }
 # `TapeError` is matched at a real callsite: a loader distinguishes "written by
 # another build, re-record it" from "corrupt" and reports differently.
 thiserror = { workspace = true }
+
+[[bench]]
+name = "jobs"
+harness = false

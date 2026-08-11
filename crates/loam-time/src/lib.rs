@@ -37,6 +37,7 @@
 pub mod alloc;
 mod fixed_timestep;
 pub mod frame_trace;
+pub mod jobs;
 pub mod replay;
 
 pub use fixed_timestep::{FixedTimestep, DEFAULT_MAX_CATCH_UP};

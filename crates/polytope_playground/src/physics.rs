@@ -53,6 +53,39 @@ const TUNNELING_MARGIN: f32 = 0.9;
 /// in flight cannot sum past it.
 pub(crate) const MAX_THROW_SPEED: f32 = TUNNELING_MARGIN * MAX_PER_STEP_DISPLACEMENT / PHYSICS_DT;
 
+/// Per-step displacement the R⁴ narrowphase still resolves BODY against BODY
+/// at [`crate::consts::BODY_SIZE`]. The chamber holds no static geometry, so
+/// this, not the wall figure above, is the band a spinning body's rim has to
+/// stay inside. It is the 8-cell pair's number rather than the sphere pair's,
+/// because a convex polychoron presents twice its own width along the launch
+/// axis where a bounding ball presents twice the circumradius, and the tighter
+/// of the two is what a ceiling is worth deriving against.
+///
+/// A floor, not a two-sided pin, in the same sense as the R⁴ tunneling gate's
+/// own constants: `the_body_tunneling_band_is_one_the_narrowphase_resolves`
+/// fires when a pair resolves LESS than this, and a scan that finds more
+/// reach should raise the number rather than fail.
+const BODY_TUNNELING_BAND: f32 = 1.4075;
+
+/// Angular speed ceiling for a thrown body, derived against the same budget as
+/// [`MAX_THROW_SPEED`] and in the same units. The fastest material point on a
+/// body of radius `R` covers `(|v| + |ω|·R) · PHYSICS_DT` per step, and the
+/// linear ceiling already spends `MAX_THROW_SPEED · PHYSICS_DT` of that, so
+/// the rotation gets what is left of `TUNNELING_MARGIN · BODY_TUNNELING_BAND`:
+/// 97.0 rad/s at `R = BODY_SIZE`. Without it, a full-scale flick landing at
+/// the bounding sphere's rim turns its whole impulse into spin at a rate the
+/// body's inertia sets and the clamp on linear speed cannot see; at a quarter
+/// of `ball4_inertia` that is 138.9 rad/s, 1.62 of rim travel per step from
+/// the rotation alone, outside the band.
+///
+/// `R` is the authored [`crate::consts::BODY_SIZE`] and not the live
+/// `effective_body_size`: `surface scale` multiplies the band and the rim
+/// radius alike, so the rotation's share of the band is scale-invariant at
+/// 80%, and the linear term is the only one whose share moves.
+const MAX_ANGULAR_SPEED: f32 = (TUNNELING_MARGIN * BODY_TUNNELING_BAND
+    - MAX_THROW_SPEED * PHYSICS_DT)
+    / (crate::consts::BODY_SIZE * PHYSICS_DT);
+
 /// Cursor travel, in physical pixels, that a flick needs to reach
 /// [`MAX_THROW_SPEED`]. Roughly a quarter of a 1080p window's height, so a
 /// full-power throw is a deliberate gesture and an idle click is nearly zero.
@@ -281,19 +314,37 @@ impl PlaygroundPhysics {
         nearest.map(|(slot, _)| slot)
     }
 
-    /// Throw `slot`: apply `impulse` and clamp the resulting speed to
-    /// [`MAX_THROW_SPEED`], which is the tunneling bound expressed as a
-    /// velocity. Out-of-range slots are ignored, because a row edit can
-    /// retire the slot a drag started on.
+    /// Throw `slot`: apply `impulse` and clamp what the body is left carrying
+    /// to the tunneling budget. Out-of-range slots are ignored, because a row
+    /// edit can retire the slot a drag started on.
     pub(crate) fn throw(&mut self, slot: usize, impulse: Vec4) {
         if slot >= self.world.bodies.len() {
             return;
         }
+        self.world.bodies[slot].apply_impulse(impulse);
+        self.clamp_to_tunneling_budget(slot);
+    }
+
+    /// Clamp `slot`'s linear speed to [`MAX_THROW_SPEED`] and its angular
+    /// speed to [`MAX_ANGULAR_SPEED`], the two halves of the per-step rim
+    /// travel the narrowphase can still resolve. Enforced on the resulting
+    /// velocities rather than on an impulse, so repeated flicks at a body
+    /// already in motion cannot sum past either.
+    ///
+    /// Clamping `Bivector4::magnitude` is conservative for a double rotation:
+    /// it is `sqrt(θ₁² + θ₂²)` while the fastest material point turns at
+    /// `max(θ₁, θ₂)`, so an isoclinic spin is held to `1/sqrt(2)` of the rim
+    /// speed a simple one gets. The alternative is the invariant
+    /// decomposition per throw, which buys nothing a user could perceive.
+    fn clamp_to_tunneling_budget(&mut self, slot: usize) {
         let body = &mut self.world.bodies[slot];
-        body.apply_impulse(impulse);
         let speed = body.velocity.length();
         if speed > MAX_THROW_SPEED {
             body.velocity *= MAX_THROW_SPEED / speed;
+        }
+        let angular_speed = body.angular_velocity.magnitude();
+        if angular_speed > MAX_ANGULAR_SPEED {
+            body.angular_velocity = body.angular_velocity * (MAX_ANGULAR_SPEED / angular_speed);
         }
     }
 
@@ -463,6 +514,8 @@ impl Demo {
 mod tests {
     use super::*;
     use loam_math::{Bivector, Plane4};
+    use loam_physics::RigidBody;
+    use loam_shape::polytope::Polytope4;
 
     const RADIUS: f32 = crate::consts::BODY_SIZE;
 
@@ -785,6 +838,183 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Travel per step of the fastest material point on the bounding sphere's
+    /// rim, which is the quantity the tunneling band bounds: the body's own
+    /// speed plus what the spin adds at radius [`RADIUS`].
+    fn rim_travel_per_step(body: &RigidBody<EuclideanR4>) -> f32 {
+        (body.velocity.length() + body.angular_velocity.magnitude() * RADIUS) * PHYSICS_DT
+    }
+
+    /// Launch alignments per scan. Whether a sample lands where the pair
+    /// overlaps is a function of where the fixed step lattice falls relative
+    /// to the band, so one launch measures its own alignment and not the
+    /// reach.
+    const LAUNCH_PHASES: u32 = 16;
+
+    /// Fire a body along +x at a static twin of itself at the origin, at
+    /// `displacement` per step from a start `phase` further back, and report
+    /// whether the narrowphase produced a contact at any point in the flight.
+    /// The body-versus-body form of the R⁴ tunneling gate in
+    /// `loam_physics::world`, whose fixture is a sphere against a thin wall.
+    fn contact_is_detected(collider: Collider, displacement: f32, phase: f32) -> bool {
+        // Clear of the widest overlap band either collider presents, in front
+        // and behind, so the flight is decided by the sampling and not by
+        // where it started or stopped.
+        const CLEARANCE: f32 = 2.0;
+        let inertia = ball4_inertia(BODY_MASS, RADIUS);
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+        world.push_body(RigidBody::fixed(
+            Vec4::ZERO,
+            collider.clone(),
+            inertia,
+            &EuclideanR4,
+        ));
+        world.push_body(RigidBody::new(
+            Vec4::new(-(CLEARANCE + phase), 0.0, 0.0, 0.0),
+            Vec4::new(displacement / PHYSICS_DT, 0.0, 0.0, 0.0),
+            collider,
+            BODY_MASS,
+            inertia,
+            &EuclideanR4,
+        ));
+        let steps = ((2.0 * CLEARANCE + phase) / displacement).ceil() as usize + 1;
+        (0..steps).any(|_| {
+            world.step(PHYSICS_DT);
+            !world.manifolds.is_empty()
+        })
+    }
+
+    /// [`BODY_TUNNELING_BAND`] is a floor on reach the narrowphase actually
+    /// has, not a number copied into a constant: at exactly that displacement
+    /// per step a pair still meets at every launch alignment. Measured for the
+    /// sphere pair the row carries and for an 8-cell pair at the same
+    /// circumradius, which is the tighter of the two and the one the band is
+    /// set from. A band widened past what the step resolves would let
+    /// [`MAX_ANGULAR_SPEED`] license a spin that tunnels.
+    #[test]
+    fn the_body_tunneling_band_is_one_the_narrowphase_resolves() {
+        let tesseract: Vec<Vec4> = Polytope4::Tesseract
+            .topology()
+            .vertices
+            .iter()
+            .map(|v| *v * RADIUS)
+            .collect();
+        for (pair, collider) in [
+            ("sphere", Collider::sphere_at_origin(RADIUS)),
+            (
+                "8-cell",
+                Collider::ConvexPolytope4D {
+                    vertices: tesseract,
+                },
+            ),
+        ] {
+            for phase in 0..LAUNCH_PHASES {
+                let offset = BODY_TUNNELING_BAND * phase as f32 / LAUNCH_PHASES as f32;
+                assert!(
+                    contact_is_detected(collider.clone(), BODY_TUNNELING_BAND, offset),
+                    "the {pair} pair missed each other at {BODY_TUNNELING_BAND} per step, \
+                     launch phase {phase} of {LAUNCH_PHASES}: the band is wider than the \
+                     reach MAX_ANGULAR_SPEED is derived against"
+                );
+            }
+        }
+    }
+
+    /// The ceiling is the band's remainder rather than a number someone liked:
+    /// a body at both ceilings at once puts its rim exactly at the usable
+    /// share of the band, and no further. Retyping either constant without
+    /// redoing the arithmetic fails here.
+    #[test]
+    fn the_throw_ceilings_together_spend_exactly_the_usable_band() {
+        let spent = (MAX_THROW_SPEED + MAX_ANGULAR_SPEED * RADIUS) * PHYSICS_DT;
+        let usable = TUNNELING_MARGIN * BODY_TUNNELING_BAND;
+        assert!(
+            (spent - usable).abs() < 1e-6,
+            "the two ceilings spend {spent} of the band per step, not the \
+             {usable} they are derived from"
+        );
+    }
+
+    /// The hazard the angular ceiling exists for: the flick's own impulse
+    /// landing at the bounding sphere's rim instead of at the centre of mass.
+    /// Swept over levers and over inertias below the bounding ball's, because
+    /// a solid polychoron's inertia is a fraction of the ball's and a smaller
+    /// inertia is a faster spin for the same torque; whatever the pair, the
+    /// clamp leaves the rim inside the band the narrowphase resolves.
+    #[test]
+    fn a_full_speed_off_centre_flick_stays_inside_the_body_tunneling_band() {
+        let layout = Vec4::from_array(body_position(0, 1));
+        let impulse = throw_impulse(Vec2::new(FULL_SCALE_DRAG_PIXELS, 0.0), RIGHT, UP);
+        let ball = ball4_inertia(BODY_MASS, RADIUS);
+        let usable = TUNNELING_MARGIN * BODY_TUNNELING_BAND;
+        let mut worst_unclamped = 0.0_f32;
+        for inertia in [ball, ball / 4.0, ball / 16.0, ball / 64.0] {
+            // Levers off the impulse axis, so each carries a nonzero torque;
+            // the diagonal one puts it in two planes at once.
+            for offset in [Vec4::W, Vec4::Y, (Vec4::Y + Vec4::W).normalize()] {
+                let mut physics = PlaygroundPhysics::new(1, RADIUS);
+                physics.world.bodies[0].inertia = inertia;
+                physics.world.bodies[0].apply_impulse_at_point(
+                    &EuclideanR4,
+                    impulse,
+                    layout + offset * RADIUS,
+                );
+                worst_unclamped =
+                    worst_unclamped.max(rim_travel_per_step(&physics.world.bodies[0]));
+                physics.clamp_to_tunneling_budget(0);
+                let travel = rim_travel_per_step(&physics.world.bodies[0]);
+                assert!(
+                    travel <= usable + 1e-5,
+                    "a rim flick at inertia {inertia} on lever {offset} left {travel} \
+                     of rim travel per step, past the {usable} the band allows"
+                );
+            }
+        }
+        assert!(
+            worst_unclamped > BODY_TUNNELING_BAND,
+            "no case in the sweep outran the band unclamped ({worst_unclamped}), \
+             so the clamp above was never exercised"
+        );
+    }
+
+    /// The clamp scales the spin rather than replacing it: a throw at ten
+    /// times the ceiling comes out pointing where it did. A clamp that zeroed
+    /// the bivector, or that clamped per component, fails here.
+    #[test]
+    fn clamping_the_spin_preserves_its_plane() {
+        let mut physics = PlaygroundPhysics::new(1, RADIUS);
+        let spin = Bivector4::new(1.0, -2.0, 0.5, 3.0, -1.5, 0.25);
+        let over = spin * (10.0 * MAX_ANGULAR_SPEED / spin.magnitude());
+        physics.world.bodies[0].angular_velocity = over;
+        physics.throw(0, Vec4::ZERO);
+
+        let clamped = physics.world.bodies[0].angular_velocity;
+        assert!(
+            (clamped.magnitude() - MAX_ANGULAR_SPEED).abs() < 1e-3,
+            "clamped to {}, not the ceiling",
+            clamped.magnitude()
+        );
+        let expected = spin * (MAX_ANGULAR_SPEED / spin.magnitude());
+        assert!(
+            (clamped + expected * -1.0).magnitude() < 1e-3,
+            "the clamp turned the spin from {expected:?} to {clamped:?}"
+        );
+    }
+
+    /// A spin already inside the ceiling is left alone to the bit, so the
+    /// clamp cannot become a slow leak on a body a contact set tumbling.
+    #[test]
+    fn a_spin_inside_the_ceiling_is_untouched() {
+        let mut physics = PlaygroundPhysics::new(1, RADIUS);
+        let spin = Bivector4::new(0.0, 0.0, 0.5 * MAX_ANGULAR_SPEED, 0.0, 0.0, 0.0);
+        physics.world.bodies[0].angular_velocity = spin;
+        for _ in 0..8 {
+            physics.throw(0, Vec4::ZERO);
+        }
+        assert_eq!(physics.world.bodies[0].angular_velocity, spin);
     }
 
     /// The half of "throw feels proportional to drag" a test can hold: speed

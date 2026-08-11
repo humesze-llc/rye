@@ -160,6 +160,10 @@ impl GlyphSolid {
     }
 
     /// The collider cover of the cross-section, absent for a blank.
+    ///
+    /// Extraction scaled the field by [`LIPSCHITZ_SCALE`], so
+    /// [`Isovolume::enclosure_margin`] under-reports this cover by that same
+    /// factor. [`Self::collider_margin`] is the bound that holds.
     pub fn collider_cover(&self) -> Option<&Isovolume<2>> {
         self.cover.as_ref()
     }
@@ -856,6 +860,69 @@ mod tests {
             }
         }
         assert!(clear > 5_000, "only {clear} probes deep inside the counter");
+    }
+
+    /// The occupancy threshold [`LIPSCHITZ_SCALE`] buys, stated exactly: a
+    /// cover cell is marked when its centre samples `d <= cell`, not
+    /// `d <= cell/sqrt(2)`. That factor is the whole enclosure argument, and
+    /// dropping it fails no containment probe on a fixture whose worst
+    /// Lipschitz case the probes happen to miss, so the threshold is pinned
+    /// directly rather than through its consequences.
+    ///
+    /// A cell centre is interior to exactly one cell and every box is a union
+    /// of marked cells, so `contains` at a centre reads the occupancy bit.
+    #[test]
+    fn a_cover_cell_is_marked_out_to_a_full_cell_of_clearance() {
+        // A single pitch quantises the sampled distances into an arithmetic
+        // progression that can step straight over the band between the two
+        // thresholds, so the fixture is swept rather than fixed.
+        let (mut band, mut clear) = (0, 0);
+        for collider_cells in [11u32, 12, 13, 16, 17] {
+            let solid = diamond_solid(1.0, 48, collider_cells);
+            let cover = solid.collider_cover().expect("cover");
+            let cell = cover.cell_size();
+            let margin = solid.collider_margin();
+            assert!(
+                (2.0 * cell - margin).abs() <= 4.0 * f32::EPSILON * margin,
+                "stated margin {margin} is not two extractor cells of {cell}"
+            );
+
+            // Box bounds sit on grid nodes, so one of them anchors the lattice.
+            let anchor = Vec2::from_array(cover.piece_bounds(0).0);
+            let tolerance = 1.0e-4 * cell;
+            let half_threshold = std::f32::consts::FRAC_1_SQRT_2 * cell;
+
+            for j in -40..=40 {
+                for i in -40..=40 {
+                    let centre = anchor + (Vec2::new(i as f32, j as f32) + Vec2::splat(0.5)) * cell;
+                    let d = solid.distance_2d(centre);
+                    if d <= cell - tolerance {
+                        assert!(
+                            cover.contains(centre.to_array()),
+                            "cell centre {centre} at d = {d} is unmarked inside one cell"
+                        );
+                        if d > half_threshold + tolerance {
+                            band += 1;
+                        }
+                    } else if d >= cell + tolerance {
+                        clear += 1;
+                        assert!(
+                            !cover.contains(centre.to_array()),
+                            "cell centre {centre} at d = {d} is marked past one cell"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            band > 0,
+            "no cell centre lands between the scaled and unscaled thresholds, \
+             so the sqrt(2) correction is untested by these fixtures"
+        );
+        assert!(
+            clear > 0,
+            "only {clear} cell centres clear of the threshold"
+        );
     }
 
     /// The cover is a pure fixed-order scan over the baked field, so two bakes

@@ -33,7 +33,7 @@ loam-player           math  input
 loam-shader           math  asset                 dev: scene
 loam-scene            math  shape
 loam-physics          math  shape  time
-loam-text             shape
+loam-text             shape                          dev: math  physics
 loam-render           math  shape  time           dev: scene  shader
 loam-egui             math  camera  console
 loam-app              math  asset  input  time  camera  egui  render  shader

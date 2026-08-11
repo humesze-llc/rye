@@ -208,6 +208,10 @@ pub struct SceneShell<R: SceneRegistry> {
     active: usize,
     /// Embed mode: no menu bar; the page chrome owns navigation.
     embed: bool,
+    /// `SetupCtx::sim_threads` retained from boot, because a scene built on a
+    /// later switch gets a `SetupCtx` the shell assembles and must see the
+    /// budget the runner resolved, not a fresh guess at it.
+    sim_threads: usize,
     capture_panel: crate::capture::CapturePanel,
     perf: crate::trace::PerfOverlay,
     /// `R` is reachable only through its associated const, so nothing else in
@@ -227,7 +231,7 @@ impl<R: SceneRegistry> SceneShell<R> {
     /// it and only lends it for the duration of `setup`, so a scene built later
     /// cannot register new watch paths. Reload events still reach it through
     /// `apply_shader_events`.
-    fn apply_pending_switch(&mut self, rd: &RenderDevice, time: f32) {
+    fn apply_pending_switch(&mut self, rd: &RenderDevice, time: f32, sim_threads: usize) {
         let Self {
             scenes,
             shader_db,
@@ -240,6 +244,7 @@ impl<R: SceneRegistry> SceneShell<R> {
                 shader_db,
                 watcher: None,
                 time,
+                sim_threads,
             };
             (R::SCENES[next].build)(&mut setup)
         });
@@ -293,6 +298,7 @@ impl<R: SceneRegistry> App for SceneShell<R> {
                 shader_db: &mut shader_db,
                 watcher: ctx.watcher.as_deref_mut(),
                 time: ctx.time,
+                sim_threads: ctx.sim_threads,
             };
             (R::SCENES[active].build)(&mut setup)
         })?;
@@ -302,6 +308,7 @@ impl<R: SceneRegistry> App for SceneShell<R> {
             shader_db,
             active,
             embed,
+            sim_threads: ctx.sim_threads,
             capture_panel: crate::capture::CapturePanel::new(),
             perf: crate::trace::PerfOverlay::new(),
             registry: PhantomData,
@@ -356,7 +363,7 @@ impl<R: SceneRegistry> App for SceneShell<R> {
         // Drained after the scene's `ui` returns: the `scene` command runs
         // inside it, holding the borrow a switch would invalidate. Menu-bar
         // clicks queue through the same slot, so both paths land here.
-        self.apply_pending_switch(frame.rd, frame.time);
+        self.apply_pending_switch(frame.rd, frame.time, self.sim_threads);
     }
 
     fn on_key(

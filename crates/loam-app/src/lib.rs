@@ -83,7 +83,10 @@ use loam_asset::AssetWatcher;
 use loam_egui::UiIntegration;
 use loam_input::{FrameInput, InputState};
 use loam_render::device::RenderDevice;
+use loam_time::jobs::JobPool;
 use loam_time::FixedTimestep;
+
+use crate::args::Args;
 
 // Convenience re-exports so apps depend on `loam-app` alone for common types.
 pub use loam_asset::AssetEvent;
@@ -111,7 +114,7 @@ pub trait App: Sized + 'static {
     /// runner takes rate and cap from [`RunConfig`]; the wasm worker hardcodes
     /// 60Hz and [`DEFAULT_MAX_TICKS_PER_FRAME`], since `RunConfig` never
     /// crosses its init message.
-    fn tick(&mut self, _dt: f32, _ctx: &mut TickCtx) {}
+    fn tick(&mut self, _dt: f32, _ctx: &mut TickCtx<'_>) {}
 
     /// Per-frame update with drained input, after all the frame's ticks. Advance
     /// the camera controller, recompute uniforms, etc.
@@ -224,6 +227,7 @@ pub(crate) fn drive_fixed_ticks<A: App>(
     tick_index: &mut u64,
     now: Instant,
     fixed_hz: u32,
+    jobs: &JobPool,
 ) -> usize {
     let _scope = loam_time::frame_trace::scope("sim-ticks");
     let ticks = timestep.advance(now);
@@ -234,6 +238,7 @@ pub(crate) fn drive_fixed_ticks<A: App>(
         let mut tctx = TickCtx {
             time: tick as f32 * dt,
             tick,
+            jobs,
         };
         app.tick(dt, &mut tctx);
         // Derived from the range rather than incremented independently, so
@@ -252,11 +257,17 @@ pub struct SetupCtx<'a> {
     pub watcher: Option<&'a mut AssetWatcher>,
     /// Wall-clock seconds since `run`. Always 0 in `setup`.
     pub time: f32,
+    /// Sim worker budget the runner resolved once before `setup`, and the
+    /// same integer [`TickCtx::jobs`] partitions against. An app that owns a
+    /// sim with its own worker-count field writes this into it here; the
+    /// runner never reaches into app state to do it, and there is no second
+    /// place the count can be set, so the two cannot disagree.
+    pub sim_threads: usize,
 }
 
 /// Per-tick context. Visible to [`App::tick`]. Deliberately GPU-free so sim code stays
 /// bit-deterministic.
-pub struct TickCtx {
+pub struct TickCtx<'a> {
     /// Sim time in seconds: `tick` scaled by the runner's fixed-timestep
     /// interval (`1.0 / RunConfig::fixed_hz` natively, 1/60 in the wasm
     /// worker). Derived from the tick index rather than read from the clock, so
@@ -265,6 +276,12 @@ pub struct TickCtx {
     /// determinism boundary.
     pub time: f32,
     pub tick: u64,
+    /// The runner's worker pool, lent for the tick. The one runner-owned
+    /// resource a deterministic tick may reach: its partition is a pure
+    /// function of (unit count, worker count), so what a stage computes does
+    /// not depend on how the pool scheduled it. Its timings do, and nothing
+    /// in a tick may branch on them.
+    pub jobs: &'a JobPool,
 }
 
 /// Render-time context for `App::record`. Owns the shared frame encoder; the
@@ -332,6 +349,60 @@ pub struct FrameCtx<'a> {
 /// override it, so it is never the effective cap here.
 pub const DEFAULT_MAX_TICKS_PER_FRAME: u32 = 4;
 
+/// [`Args`] key naming the sim worker budget: `--threads=N` natively,
+/// `?threads=N` on the page.
+///
+/// `Args` rather than [`RunConfig`] because `RunConfig` does not cross the
+/// wasm worker's postMessage boundary while the page query is forwarded into
+/// the worker, so this is the only surface that means the same thing on both
+/// runners.
+const SIM_THREADS_KEY: &str = "threads";
+
+/// Resolve the sim worker budget. Called once per process, before
+/// `App::setup`, and never again: a mid-run change would make the schedule a
+/// function of when the operator typed it, so a replay from tick 0 would stop
+/// reproducing the run. That is why this is not a console command while
+/// `fps` and `vsync` are.
+///
+/// `Args` beats `configured` ([`RunConfig::sim_threads`], the programmatic
+/// default a demo can pin without an argv). Either at `0`, or neither
+/// present, asks the runner to pick.
+pub(crate) fn resolve_sim_threads(args: &Args, configured: Option<usize>) -> usize {
+    let requested = match args.get(SIM_THREADS_KEY) {
+        Some(raw) => raw.parse::<usize>().ok().or_else(|| {
+            tracing::warn!("--{SIM_THREADS_KEY}={raw} is not a worker count; ignoring");
+            None
+        }),
+        None => {
+            // The value a bare `--threads N` meant to carry stays a
+            // positional and is dropped, so silence here would read as "the
+            // user asked for the default".
+            if args.has_bare_flag(SIM_THREADS_KEY) {
+                tracing::warn!(
+                    "--{SIM_THREADS_KEY} needs an attached value (--{SIM_THREADS_KEY}=N); ignoring"
+                );
+            }
+            None
+        }
+    };
+    match requested.or(configured) {
+        Some(n) if n > 0 => n,
+        _ => default_sim_threads(),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn default_sim_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+/// One browser thread, and `frame_trace`'s thread-local state is sound only
+/// because of it. A platform fact, not a policy.
+#[cfg(target_arch = "wasm32")]
+fn default_sim_threads() -> usize {
+    1
+}
+
 /// Runtime knobs. New fields land with defaults so adding configuration is non-breaking.
 pub struct RunConfig {
     pub window: WindowAttributes,
@@ -344,6 +415,11 @@ pub struct RunConfig {
     /// sim entirely. Native only: the wasm worker hardcodes
     /// [`DEFAULT_MAX_TICKS_PER_FRAME`] whatever this says.
     pub max_ticks_per_frame: u32,
+    /// Programmatic sim worker budget, overridden by `--threads=N` /
+    /// `?threads=N`. `None` or `Some(0)` lets the runner pick
+    /// (`available_parallelism` natively, 1 on wasm32). Reaches `App::setup`
+    /// as [`SetupCtx::sim_threads`] and each tick as [`TickCtx::jobs`].
+    pub sim_threads: Option<usize>,
     /// `EnvFilter`-style log filter. `None` means keep whatever `tracing-subscriber`
     /// was already configured with (or the `RUST_LOG` env var); `Some` installs a new
     /// global default subscriber.
@@ -413,6 +489,7 @@ impl Default for RunConfig {
                 .with_visible(false),
             fixed_hz: 60,
             max_ticks_per_frame: DEFAULT_MAX_TICKS_PER_FRAME,
+            sim_threads: None,
             log_filter: None,
             esc_exits: true,
             render_error_budget: 8,
@@ -518,7 +595,10 @@ pub fn run_with_config<A: App>(config: RunConfig) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let runner = Runner::<A>::new(config);
+    // The one read of the thread knob in the process. Everything downstream
+    // reads the resolved count back off the pool.
+    let jobs = JobPool::new(resolve_sim_threads(&Args::current(), config.sim_threads));
+    let runner = Runner::<A>::new(config, jobs);
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -570,6 +650,7 @@ const UI_PASS_SAMPLE_COUNT: u32 = 1;
 fn setup_after_device<A: App>(
     win: &Arc<Window>,
     rd: RenderDevice,
+    jobs: &JobPool,
 ) -> anyhow::Result<InitArtifacts<A>> {
     let mut shader_db = ShaderDb::new(rd.device.clone());
 
@@ -589,6 +670,10 @@ fn setup_after_device<A: App>(
         shader_db: &mut shader_db,
         watcher: watcher.as_mut(),
         time: 0.0,
+        // Read off the pool rather than stored beside it, so the integer an
+        // app writes into its sim cannot drift from the one the pool
+        // partitions against.
+        sim_threads: jobs.threads(),
     };
     let app = A::setup(&mut ctx).map_err(|e| e.context("App::setup"))?;
 
@@ -688,6 +773,10 @@ fn attach_canvas_to_dom(win: &winit::window::Window) -> anyhow::Result<()> {
 struct Runner<A: App> {
     config: RunConfig,
 
+    /// Resolved once in [`run_with_config`] and immutable for the process.
+    /// The only storage of the worker budget: `SetupCtx::sim_threads` and
+    /// `TickCtx::jobs` both read it from here.
+    jobs: JobPool,
     timestep: FixedTimestep,
     input: InputState,
     start: Instant,
@@ -747,11 +836,12 @@ struct Runner<A: App> {
 }
 
 impl<A: App> Runner<A> {
-    fn new(config: RunConfig) -> Self {
+    fn new(config: RunConfig, jobs: JobPool) -> Self {
         let timestep =
             FixedTimestep::new(config.fixed_hz).with_max_catch_up(config.max_ticks_per_frame);
         Self {
             config,
+            jobs,
             timestep,
             input: InputState::default(),
             start: Instant::now(),
@@ -930,6 +1020,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
         }
 
         let msaa = self.config.msaa_samples;
+        let jobs = self.jobs;
         let win_for_future = win.clone();
         let cell: PendingInit<A> = std::rc::Rc::new(std::cell::RefCell::new(None));
         let cell_for_future = cell.clone();
@@ -942,7 +1033,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
                 let rd = RenderDevice::new(win_for_future.clone(), msaa)
                     .await
                     .map_err(|e| anyhow::anyhow!("RenderDevice::new: {e:#}"))?;
-                setup_after_device::<A>(&win_for_future, rd)
+                setup_after_device::<A>(&win_for_future, rd, &jobs)
             }
             .await;
             *cell_for_future.borrow_mut() = Some(result);
@@ -972,7 +1063,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
         // for debugging negotiated MSAA count; the actual count is in `rd.sample_count()`
         // tracing::info!("scale_factor: {}, msaa: {}x", win.scale_factor(), rd.sample_count());
 
-        let artifacts = match setup_after_device::<A>(&win, rd) {
+        let artifacts = match setup_after_device::<A>(&win, rd, &self.jobs) {
             Ok(a) => a,
             Err(e) => {
                 self.deferred_error = Some(e);
@@ -1349,6 +1440,7 @@ impl<A: App> Runner<A> {
                 &mut self.tick_index,
                 Instant::now(),
                 self.config.fixed_hz,
+                &self.jobs,
             )
         } else {
             0
@@ -1414,6 +1506,7 @@ impl<A: App> Runner<A> {
                         shader_db,
                         watcher: self.watcher.as_mut(),
                         time: self.start.elapsed().as_secs_f32(),
+                        sim_threads: self.jobs.threads(),
                     };
                     app.on_shader_reload(&mut ctx);
                 }
@@ -1770,6 +1863,9 @@ mod tests {
     #[derive(Default)]
     struct TickRecorder {
         times: Vec<f32>,
+        /// Worker budget observed through `TickCtx`, one entry per tick, so a
+        /// pool that changed or went missing mid-run is visible.
+        workers: Vec<usize>,
     }
 
     impl App for TickRecorder {
@@ -1777,8 +1873,9 @@ mod tests {
             Ok(Self::default())
         }
 
-        fn tick(&mut self, _dt: f32, ctx: &mut TickCtx) {
+        fn tick(&mut self, _dt: f32, ctx: &mut TickCtx<'_>) {
             self.times.push(ctx.time);
+            self.workers.push(ctx.jobs.threads());
         }
     }
 
@@ -1794,8 +1891,16 @@ mod tests {
         let mut app = TickRecorder::default();
         let mut timestep = FixedTimestep::new(60).with_max_catch_up(max_catch_up);
         let mut tick_index = 0u64;
+        let jobs = JobPool::new(1);
         for offset in offsets {
-            drive_fixed_ticks(&mut app, &mut timestep, &mut tick_index, base + *offset, 60);
+            drive_fixed_ticks(
+                &mut app,
+                &mut timestep,
+                &mut tick_index,
+                base + *offset,
+                60,
+                &jobs,
+            );
         }
         (app.times, timestep, tick_index)
     }
@@ -1862,7 +1967,7 @@ mod tests {
             max_ticks_per_frame: 2,
             ..RunConfig::default()
         };
-        let mut runner = Runner::<TickRecorder>::new(config);
+        let mut runner = Runner::<TickRecorder>::new(config, JobPool::new(1));
         let base = Instant::now();
         runner.timestep.advance(base);
         let ticks = runner.timestep.advance(base + TICK * 10);
@@ -1883,6 +1988,7 @@ mod tests {
             let mut app = TickRecorder::default();
             let mut timestep = FixedTimestep::new(60).with_max_catch_up(cap);
             let mut tick_index = 0u64;
+            let jobs = JobPool::new(1);
 
             // Prime, three steady frames, a 30-tick stall, three steady frames.
             let steps = [
@@ -1898,7 +2004,14 @@ mod tests {
             let mut elapsed = Duration::ZERO;
             for step in steps {
                 elapsed += step;
-                drive_fixed_ticks(&mut app, &mut timestep, &mut tick_index, base + elapsed, 60);
+                drive_fixed_ticks(
+                    &mut app,
+                    &mut timestep,
+                    &mut tick_index,
+                    base + elapsed,
+                    60,
+                    &jobs,
+                );
                 assert_eq!(
                     tick_index,
                     timestep.tick(),
@@ -1920,5 +2033,85 @@ mod tests {
                 .collect();
             assert_eq!(app.times, expected_times, "cap {cap}");
         }
+    }
+
+    #[test]
+    fn the_thread_budget_prefers_args_and_reads_zero_as_let_the_runner_pick() {
+        let picked = default_sim_threads();
+        assert!(picked >= 1, "the runner's own pick must be a legal budget");
+        // Offset off the pick rather than literal, so no assertion below can
+        // pass by coinciding with the core count of the machine running it.
+        let flagged = picked + 1;
+        let configured = picked + 2;
+        let flagged_arg = flagged.to_string();
+
+        let flag = |value: &str| Args::from_pairs([(SIM_THREADS_KEY, value)]);
+        assert_eq!(resolve_sim_threads(&flag(&flagged_arg), None), flagged);
+        assert_eq!(
+            resolve_sim_threads(&flag(&flagged_arg), Some(configured)),
+            flagged,
+            "the flag must win over RunConfig, not the other way round"
+        );
+        assert_eq!(
+            resolve_sim_threads(&Args::default(), Some(configured)),
+            configured
+        );
+        assert_eq!(resolve_sim_threads(&Args::default(), None), picked);
+        assert_eq!(resolve_sim_threads(&flag("0"), Some(configured)), picked);
+        assert_eq!(resolve_sim_threads(&Args::default(), Some(0)), picked);
+        // A value that is not a count must fall through to the next source,
+        // never be rounded into one.
+        assert_eq!(
+            resolve_sim_threads(&flag("many"), Some(configured)),
+            configured
+        );
+        assert_eq!(
+            resolve_sim_threads(
+                &Args::from_argv(["--threads", &flagged_arg]),
+                Some(configured)
+            ),
+            configured,
+            "a bare flag drops its value, so it must not read as a request"
+        );
+    }
+
+    #[test]
+    fn every_tick_of_a_run_sees_the_one_pool_the_runner_resolved() {
+        // Offset off the platform's pick, so a path that quietly re-resolved
+        // instead of reading the runner's pool shows a different number on
+        // any machine rather than only on one whose core count differs.
+        let budget = default_sim_threads() + 1;
+
+        let jobs = JobPool::new(resolve_sim_threads(
+            &Args::from_pairs([(SIM_THREADS_KEY, budget.to_string())]),
+            Some(budget + 1),
+        ));
+        let mut runner = Runner::<TickRecorder>::new(RunConfig::default(), jobs);
+        assert_eq!(
+            runner.jobs.threads(),
+            budget,
+            "the resolved budget must be what the runner stores"
+        );
+
+        let base = Instant::now();
+        let mut app = TickRecorder::default();
+        let mut tick_index = 0u64;
+        for frame in 0..=5u32 {
+            drive_fixed_ticks(
+                &mut app,
+                &mut runner.timestep,
+                &mut tick_index,
+                base + TICK * frame,
+                runner.config.fixed_hz,
+                &runner.jobs,
+            );
+        }
+
+        assert_eq!(app.workers.len(), 5, "the frames must have produced ticks");
+        assert_eq!(
+            app.workers,
+            vec![budget; app.workers.len()],
+            "the pool a tick borrows is the runner's, at the resolved budget"
+        );
     }
 }

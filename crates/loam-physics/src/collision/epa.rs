@@ -20,6 +20,36 @@ const EPA_TOLERANCE: f32 = 1e-4;
 /// a degenerate stall.
 const EPA_MAX_VERTICES: usize = 96;
 
+/// Band around a face plane in which a support point counts as lying on it, so
+/// that `expand` retires the face instead of keeping it.
+///
+/// A facet of a Minkowski difference of polytopes is generally not a simplex:
+/// the difference body of two boxes is a box, whose square facets are each
+/// tiled by at least two coplanar triangles, and a support point lands exactly
+/// on their shared plane. Retiring one tile while keeping its coplanar
+/// neighbour stitches the new vertex into a facet that is already covered, so
+/// the surface stops being convex and later iterations resolve against faces
+/// interior to the difference body. Sibling of `epa_r4::FACE_COPLANAR_EPS`:
+/// same value, same conditioning class.
+///
+/// Measured over 11160 axis-aligned box pairs spanning scales 0.02 to 10, the
+/// band that resolves every one against a real facet is `[3e-7, 1e-4]`. The
+/// floor is where f32 stops resolving the plane residual of a unit-scale dot
+/// product; the ceiling is `EPA_TOLERANCE`, above which the epsilon retires
+/// faces whose support gap is the very thing EPA is still closing, and the
+/// crate's sphere fixtures start losing depth (at 3e-4 one fails, at 1e-3 two).
+/// 1e-5 is 33x above the floor and an order below the ceiling.
+///
+/// Below 3e-7 is worse than zero, not merely weaker. `add_or_remove_edge`
+/// cancels horizon edges by winding, so retiring part of a coplanar band and
+/// keeping the rest leaves edges with no reverse to cancel against, the horizon
+/// stops being a topological disc, and each iteration stitches more faces than
+/// it removed. `expand` caps iterations and vertices but not faces, so the
+/// count climbs geometrically: over that same grid, peak faces at 1e-7 is 5368
+/// against 180 at exactly zero, and at 1e-8 the wrong-contact count rises from
+/// 21 to 28.
+const FACE_COPLANAR_EPS: f32 = 1e-5;
+
 /// Resolved contact info for a [`crate::Contact`].
 #[derive(Clone, Copy, Debug)]
 pub struct ContactInfo {
@@ -91,7 +121,7 @@ impl Polytope {
 
         for f in self.faces.drain(..) {
             let view = support.point - self.vertices[f.v[0]].point;
-            if f.normal.dot(view) > 0.0 {
+            if f.normal.dot(view) > -FACE_COPLANAR_EPS {
                 add_or_remove_edge(&mut horizon, f.v[0], f.v[1]);
                 add_or_remove_edge(&mut horizon, f.v[1], f.v[2]);
                 add_or_remove_edge(&mut horizon, f.v[2], f.v[0]);
@@ -189,6 +219,18 @@ pub fn epa<A: SupportFn, B: SupportFn>(
     b: &B,
     initial_simplex: [MinkowskiPoint; 4],
 ) -> Option<ContactInfo> {
+    let (polytope, face) = expand_to_boundary(a, b, initial_simplex)?;
+    contact_from_face(&polytope, face)
+}
+
+/// Grow the seed tetrahedron until its closest face lies on the Minkowski
+/// boundary, returning the polytope with that face. `None` for a zero-volume
+/// seed or a polytope a degenerate expansion collapsed.
+fn expand_to_boundary<A: SupportFn, B: SupportFn>(
+    a: &A,
+    b: &B,
+    initial_simplex: [MinkowskiPoint; 4],
+) -> Option<(Polytope, Face)> {
     // Reject a near-coplanar (zero-volume) seed: |det([p1-p0, p2-p0, p3-p0])|.
     let p0 = initial_simplex[0].point;
     let p1 = initial_simplex[1].point;
@@ -215,8 +257,7 @@ pub fn epa<A: SupportFn, B: SupportFn>(
         }
 
         if (new_distance - face.distance).abs() < EPA_TOLERANCE {
-            // Face is on the Minkowski boundary.
-            return contact_from_face(&polytope, face);
+            return Some((polytope, face));
         }
 
         polytope.expand(support);
@@ -233,7 +274,8 @@ pub fn epa<A: SupportFn, B: SupportFn>(
         "EPA 3D hit iteration cap; returning best-estimate contact",
     );
     let face_idx = polytope.closest_face()?;
-    contact_from_face(&polytope, polytope.faces[face_idx])
+    let face = polytope.faces[face_idx];
+    Some((polytope, face))
 }
 
 fn contact_from_face(polytope: &Polytope, face: Face) -> Option<ContactInfo> {
@@ -447,6 +489,84 @@ mod tests {
         assert!(
             info.normal.dot(Vec3::X) > 0.999,
             "normal must run from A toward B along +x, got {:?}",
+            info.normal
+        );
+    }
+
+    /// The difference body of two axis-aligned boxes is the box of summed
+    /// half-extents centred at `-t`, so the depth is `min_i (h_i - |t_i|)` and
+    /// the admissible normals are the signed axes attaining it. Every case here
+    /// has an axis exactly flush, which is what tiles a facet of that body with
+    /// coplanar triangles; without [`FACE_COPLANAR_EPS`] the first and the last
+    /// resolve against a face interior to the body, returning a depth short by
+    /// a third to a half on an axis tens of degrees off the separating one, and
+    /// both wrong contacts clear the caller's contact validation.
+    #[test]
+    fn flush_box_contacts_resolve_against_a_difference_body_facet() {
+        let cases: [(f32, Vec3, &[Vec3]); 5] = [
+            (1.0, Vec3::new(0.1, 0.1, 0.0), &[Vec3::X, Vec3::Y]),
+            (1.0, Vec3::new(0.1, 0.05, 0.0), &[Vec3::X]),
+            (1.0, Vec3::new(0.0, 0.05, 0.1), &[Vec3::Z]),
+            (0.1, Vec3::new(0.002, 0.0, 0.0), &[Vec3::X]),
+            (0.1, Vec3::new(0.0, 0.0, -0.002), &[Vec3::NEG_Z]),
+        ];
+
+        for (half, offset, admissible) in cases {
+            let va = box_vertices(Vec3::ZERO, Vec3::splat(half));
+            let vb = box_vertices(offset, Vec3::splat(half));
+            let a = ConvexHull { vertices: &va };
+            let b = ConvexHull { vertices: &vb };
+
+            let info = run(&a, &b, offset);
+            assert_close(
+                info.penetration,
+                2.0 * half - offset.abs().max_element(),
+                EPA_TOLERANCE,
+            );
+            let alignment = admissible.iter().fold(f32::NEG_INFINITY, |best, &axis| {
+                best.max(info.normal.dot(axis))
+            });
+            assert!(
+                alignment > 0.999,
+                "half {half}, offset {offset:?}: normal {:?} on none of {admissible:?}",
+                info.normal
+            );
+        }
+    }
+
+    /// Two axes exactly flush and a 5% depth deficit on the third. Without
+    /// [`FACE_COPLANAR_EPS`] this configuration retires part of a coplanar band
+    /// and keeps the rest, which leaves horizon edges with no reverse to cancel
+    /// against, so every iteration stitches more faces than it removed. Neither
+    /// the iteration cap nor the vertex cap bounds face growth, so the count
+    /// climbs geometrically to order 3e5 by the 48th iteration, and
+    /// `add_or_remove_edge` scans the horizon linearly on every one of them.
+    /// Converged, this expansion is 16 faces.
+    #[test]
+    fn two_axis_flush_expansion_terminates_with_a_bounded_face_count() {
+        let offset = Vec3::new(0.0, 0.0, -0.01);
+        let va = box_vertices(Vec3::ZERO, Vec3::splat(0.1));
+        let vb = box_vertices(offset, Vec3::splat(0.1));
+        let a = ConvexHull { vertices: &va };
+        let b = ConvexHull { vertices: &vb };
+
+        let simplex = match gjk_intersect(&a, &b, offset) {
+            GjkResult::Intersecting { simplex } => simplex,
+            GjkResult::Separated => panic!("boxes overlap; GJK must report intersecting"),
+        };
+        let (polytope, face) = expand_to_boundary(&a, &b, simplex).expect("EPA should converge");
+
+        assert!(
+            polytope.faces.len() <= 24,
+            "expansion left {} faces",
+            polytope.faces.len()
+        );
+
+        let info = contact_from_face(&polytope, face).expect("a converged face yields a contact");
+        assert_close(info.penetration, 0.19, EPA_TOLERANCE);
+        assert!(
+            info.normal.dot(Vec3::NEG_Z) > 0.999,
+            "normal must run from A toward B along -z, got {:?}",
             info.normal
         );
     }

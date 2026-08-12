@@ -96,7 +96,7 @@ pub use loam_asset::AssetEvent;
 pub use loam_camera::{
     Camera, CameraController, CameraView, FirstPersonController, OrbitController,
 };
-pub use loam_egui::{egui, world_to_screen, BottomOverlay, LinearIndicator};
+pub use loam_egui::{egui, world_to_screen};
 pub use loam_input::FrameInput as Input;
 pub use loam_shader::{ShaderDb, ShaderOwner};
 

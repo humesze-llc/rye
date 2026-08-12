@@ -286,10 +286,11 @@ pub(crate) fn angular_velocity_from_seq(seq: &[RotorTerm], rate_scale: f32) -> B
 // Deferred action queue
 // ---------------------------------------------------------------------------
 
-/// State mutations queued during overlay rendering and applied AFTER the
-/// overlay's measure + visible passes. Anything that changes the overlay's
-/// content height must defer; mutating mid-frame makes the two `BottomOverlay`
-/// passes disagree on height and flicker.
+/// State mutations queued during overlay rendering and applied once the
+/// overlay closure has returned. Anything that changes the overlay's widget
+/// set must defer: applying mid-render lays out the remainder of the frame
+/// against the new state while the rows already emitted used the old, so the
+/// overlay's auto-sized height is measured off a mixture of the two.
 #[derive(Clone, Debug)]
 pub(crate) enum DeferredAction {
     /// `+xy` etc. button on the plane row: append to draft.

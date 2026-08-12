@@ -2086,11 +2086,11 @@ mod drag_tests {
     }
 
     /// Regression: drag ids keyed by `egui::Id::new(...)` (not ui-scoped)
-    /// collide across `BottomOverlay`'s two passes, breaking drag detection in
-    /// release and tripping a `debug_assert!`. The fix scopes the id per pass
-    /// via `make_persistent_id`. Area-routed input does not reach the headless
-    /// interaction step, so this verifies the no-panic + distinct-id contract
-    /// rather than drag detection directly.
+    /// collide when one source is rendered into two layers, breaking drag
+    /// detection in release and tripping a `debug_assert!`. The fix scopes
+    /// the id per layer via `make_persistent_id`. Area-routed input does not
+    /// reach the headless interaction step, so this verifies the no-panic +
+    /// distinct-id contract rather than drag detection directly.
     #[test]
     fn make_persistent_id_per_pass_avoids_layer_collision() {
         let ctx = egui::Context::default();

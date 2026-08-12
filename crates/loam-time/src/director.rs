@@ -372,11 +372,12 @@ impl Playhead {
 
 /// Which clock writes a channel this frame.
 ///
-/// A host reads every channel a director might own through this, so it cannot
-/// integrate its own wall-clock animation on a frame the director is also
-/// writing. Two clocks on one rotor is the defect the director exists to
-/// prevent, and a two-armed match makes the suppression the same branch as
-/// the read rather than a flag the caller can forget.
+/// A host reads every channel a director might own through this, so "who
+/// writes this frame" is answered at the read rather than by a separate flag
+/// the caller can forget to check. Two clocks on one rotor is the defect the
+/// director exists to prevent; the `Host` arm is where a host runs its own
+/// clock, and nothing outside the host enforces that it does not run one in
+/// the other arm too.
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[must_use]
 pub enum Drive<T> {
@@ -536,6 +537,32 @@ mod tests {
         // not a machine one.
         assert_eq!(track.sample(30, FPS), Some(5.0));
         assert_eq!(track.sample(60, FPS), Some(10.0));
+    }
+
+    #[test]
+    fn a_span_runs_from_the_earlier_key_and_is_eased_by_the_later_one() {
+        // Sampled off the midpoint, the one fraction at which a reversed
+        // parameter is invisible, and with a different curve on each key, so
+        // reading the ease off the earlier one is visible too.
+        let track = Track::new()
+            .key(0.0, 0.0, Ease::OutCubic)
+            .key(1.0, 10.0, Ease::InOutCubic);
+        // InOutCubic(0.25) = 4·0.25³, so 0.625. No easing at all would give
+        // 2.5, the earlier key's OutCubic 5.78, a reversed fraction 9.375.
+        let quarter = track.sample(15, FPS).unwrap();
+        assert!((quarter - 0.625).abs() < 1e-6, "sampled {quarter}");
+    }
+
+    #[test]
+    fn vec4_keys_lerp_componentwise_including_the_w_channel() {
+        let track = Track::new()
+            .key(0.0, Vec4::new(0.0, 0.0, 0.0, -4.0), Ease::Linear)
+            .key(1.0, Vec4::new(2.0, -6.0, 0.0, 4.0), Ease::Linear);
+        let quarter = track.sample(15, FPS).unwrap();
+        assert!(
+            (quarter - Vec4::new(0.5, -1.5, 0.0, -2.0)).length() < 1e-6,
+            "sampled {quarter}"
+        );
     }
 
     #[test]
@@ -837,9 +864,10 @@ mod tests {
     #[test]
     fn a_directed_channel_never_advances_the_hosts_wall_clock() {
         // Models the playground's spin path, `rot_time += dt * rate_scale`
-        // once per update. Reading the channel through `Drive` is what makes
-        // the suppression unforgettable: there is no arm that yields a rotor
-        // and also runs the host's clock.
+        // once per update, written the way `Drive` invites: the clock runs in
+        // the `Host` arm only. The pin is that the `Directed` arm is taken on
+        // every frame the timeline names the channel, so a host shaped this
+        // way never integrates.
         let mut director = Director::new(spin_timeline()).unwrap();
         let mut host_rot_time = 0.0f32;
         let mut directed_frames = 0;

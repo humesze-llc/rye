@@ -28,6 +28,11 @@ impl SceneRegistry for Playground {
             label: "Title screen",
             build: |ctx| Ok(Box::new(crate::title::TitleScene::new(ctx)?)),
         },
+        SceneEntry {
+            slug: "hero",
+            label: "Hero: LOAM in the rain",
+            build: |ctx| Ok(Box::new(crate::hero::HeroScene::new(ctx)?)),
+        },
     ];
 }
 
@@ -64,6 +69,18 @@ mod tests {
             .expect("`?scene=s3` must resolve");
         assert_ne!(index, 0);
         assert_eq!(Playground::SCENES[0].slug, "rotate", "boot scene unchanged");
+    }
+
+    /// The hero scene answers to `--scene=hero` / `?scene=hero` and does not
+    /// sit at index 0: it is a scripted sequence with one seed and no
+    /// controls, so a cold boot must not land on it.
+    #[test]
+    fn the_hero_scene_is_registered_by_slug_away_from_the_fallback_index() {
+        let index = Playground::SCENES
+            .iter()
+            .position(|entry| entry.slug == "hero")
+            .expect("`?scene=hero` must resolve");
+        assert_ne!(index, 0);
     }
 
     /// The editor answers to `--scene=sdf` / `?scene=sdf` and does not sit at

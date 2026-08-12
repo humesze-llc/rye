@@ -23,6 +23,8 @@
 //!         create UiIntegration (egui)
 //!         A::setup(&mut SetupCtx) -> A
 //!   * on each redraw:
+//!         command::drain -> A::apply_command for each, stamped with the
+//!             tick index the drain precedes
 //!         FixedTimestep::advance -> ticks
 //!         for each tick: A::tick(dt, &mut TickCtx)
 //!         input.take_frame()
@@ -57,6 +59,7 @@ pub mod args;
 #[cfg(any(not(feature = "capture"), target_arch = "wasm32"))]
 #[path = "capture_stub.rs"]
 pub mod capture;
+pub mod command;
 pub mod cursor;
 pub mod fps;
 pub mod frame_pacing;
@@ -115,6 +118,20 @@ pub trait App: Sized + 'static {
     /// 60Hz and [`DEFAULT_MAX_TICKS_PER_FRAME`], since `RunConfig` never
     /// crosses its init message.
     fn tick(&mut self, _dt: f32, _ctx: &mut TickCtx<'_>) {}
+
+    /// Apply one command from [`crate::command`]'s queue, before the tick it is
+    /// stamped for. The runner's engine-verb table is consulted first, so a name
+    /// it claims never arrives here.
+    ///
+    /// The default refuses rather than swallowing: a command with nowhere to go
+    /// is a wiring mistake, and silence is how it would stay one.
+    fn apply_command(
+        &mut self,
+        cmd: &command::CommandLine,
+        _ctx: &mut command::CommandCtx<'_>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("no command target for `{}`", cmd.name)
+    }
 
     /// Per-frame update with drained input, after all the frame's ticks. Advance
     /// the camera controller, recompute uniforms, etc.
@@ -1430,7 +1447,16 @@ impl<A: App> Runner<A> {
         // CPU work this frame" vs. "what's the dominant section."
         let _frame_scope = loam_time::frame_trace::scope("frame");
 
-        // 1. Fixed-timestep ticks, through the same `drive_fixed_ticks` the
+        // 1. Command queue, drained immediately before the ticks and stamped
+        // with the index they start from, so a command's position in sim time
+        // is a property of the recording and not of how many catch-up ticks
+        // this frame happens to run. The worker drains at the same place for
+        // the same reason.
+        if let Some(app) = self.app.as_mut() {
+            command::apply_drained(app, rd, self.tick_index);
+        }
+
+        // 2. Fixed-timestep ticks, through the same `drive_fixed_ticks` the
         // wasm worker uses. The accumulator logic is shared; the rate is not,
         // since the worker hardcodes 60Hz and cannot read `RunConfig`.
         let n_ticks = if let Some(app) = self.app.as_mut() {
@@ -1446,7 +1472,7 @@ impl<A: App> Runner<A> {
             0
         };
 
-        // 2. Per-frame update with drained input + UI build.
+        // 3. Per-frame update with drained input + UI build.
         // egui's focus reading reflects the *previous* frame's state
         // (egui hasn't run yet for this frame). That one-frame
         // staleness is fine: focus changes one frame at a time, and
@@ -1492,7 +1518,7 @@ impl<A: App> Runner<A> {
             }
         }
 
-        // 3. Hot-reload poll.
+        // 4. Hot-reload poll.
         {
             let _scope = loam_time::frame_trace::scope("hot-reload");
             let reload_events = self.watcher.as_mut().map(|w| w.poll()).unwrap_or_default();
@@ -1513,7 +1539,7 @@ impl<A: App> Runner<A> {
             }
         }
 
-        // 4. FPS + title (rate-limited to ~1 Hz).
+        // 5. FPS + title (rate-limited to ~1 Hz).
         self.frame_count += 1;
         let elapsed = self.last_fps_update.elapsed().as_secs_f32();
         if elapsed >= 1.0 {
@@ -1534,7 +1560,7 @@ impl<A: App> Runner<A> {
             }
         }
 
-        // 5. Drain any queued capture requests + update the state machine BEFORE the
+        // 6. Drain any queued capture requests + update the state machine BEFORE the
         // render pass. Requests come from console commands and hotkey binds; they're
         // applied here so this frame can honor them.
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
@@ -1548,7 +1574,7 @@ impl<A: App> Runner<A> {
             }
         }
 
-        // 6. Render: scene (App::record) then UI overlay.
+        // 7. Render: scene (App::record) then UI overlay.
         //
         // Three attachment topologies, one per surface path. On the two
         // direct-to-swapchain paths the swapchain texture is addressed through
@@ -2112,6 +2138,162 @@ mod tests {
             app.workers,
             vec![budget; app.workers.len()],
             "the pool a tick borrows is the runner's, at the resolved budget"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Command queue ordering
+    // -----------------------------------------------------------------
+
+    /// What the frame loop did, in the order it did it. The drain and the tick
+    /// loop write to one log so their interleaving is the thing under test.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum FrameEvent {
+        Applied { stamp: u64, line: String },
+        Ticked(u64),
+    }
+
+    #[derive(Default)]
+    struct EventRecorder {
+        log: std::rc::Rc<std::cell::RefCell<Vec<FrameEvent>>>,
+    }
+
+    impl App for EventRecorder {
+        fn setup(_ctx: &mut SetupCtx<'_>) -> anyhow::Result<Self> {
+            Ok(Self::default())
+        }
+
+        fn tick(&mut self, _dt: f32, ctx: &mut TickCtx<'_>) {
+            self.log.borrow_mut().push(FrameEvent::Ticked(ctx.tick));
+        }
+    }
+
+    /// Replay the two runners' frame order: drain and record, then tick. One
+    /// command is submitted per frame, standing in for the console line or
+    /// bound key that would have been typed during the previous frame's UI.
+    /// That the runners really call in this order is a separate assertion,
+    /// `command::tests::each_runner_drains_once_and_before_its_ticks`.
+    fn drive_with_commands(offsets: &[Duration], max_catch_up: u32) -> Vec<FrameEvent> {
+        let _held = command::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = command::drain(0);
+
+        let mut app = EventRecorder::default();
+        let log = app.log.clone();
+        let mut timestep = FixedTimestep::new(60).with_max_catch_up(max_catch_up);
+        let mut tick_index = 0u64;
+        let jobs = JobPool::new(1);
+        let base = Instant::now();
+        for (frame, offset) in offsets.iter().enumerate() {
+            for stamped in command::drain(tick_index) {
+                log.borrow_mut().push(FrameEvent::Applied {
+                    stamp: stamped.tick,
+                    line: stamped.command.name.clone(),
+                });
+            }
+            drive_fixed_ticks(
+                &mut app,
+                &mut timestep,
+                &mut tick_index,
+                base + *offset,
+                60,
+                &jobs,
+            );
+            command::submit_line(&format!("mark{frame}"));
+        }
+        let _ = command::drain(tick_index);
+        let events = log.borrow().clone();
+        events
+    }
+
+    /// The contract the whole queue exists for: a command stamped T is applied
+    /// after tick T-1 and before tick T, whatever the pacing. Dispatching in
+    /// the UI phase, as the console used to, puts the mutation after the
+    /// frame's whole tick batch instead, and the batch size is a wall-clock
+    /// accident.
+    #[test]
+    fn a_command_applies_after_the_previous_tick_and_before_the_one_it_is_stamped_for() {
+        let smooth: Vec<Duration> = (0..=40).map(|k| TICK * k).collect();
+        let stuttered: Vec<Duration> = (0..=8).map(|k| TICK * (k * 5)).collect();
+        // Two-thirds of a tick per frame: most frames run none, some run one.
+        let subtick: Vec<Duration> = (0..=40).map(|k| (TICK * 2 * k) / 3).collect();
+
+        for (name, offsets) in [
+            ("one tick per frame", smooth),
+            ("five ticks per frame", stuttered),
+            ("two thirds of a tick per frame", subtick),
+        ] {
+            let events = drive_with_commands(&offsets, 10);
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, FrameEvent::Applied { .. })),
+                "{name}: nothing was applied, so the assertions below are vacuous"
+            );
+            let mut last_tick: Option<u64> = None;
+            for (i, event) in events.iter().enumerate() {
+                match event {
+                    FrameEvent::Ticked(t) => last_tick = Some(*t),
+                    FrameEvent::Applied { stamp, line } => {
+                        assert_eq!(
+                            last_tick.map(|t| t + 1).unwrap_or(0),
+                            *stamp,
+                            "{name}: `{line}` is stamped {stamp} but the tick before it \
+                             was {last_tick:?}"
+                        );
+                        let next_tick = events[i + 1..].iter().find_map(|e| match e {
+                            FrameEvent::Ticked(t) => Some(*t),
+                            FrameEvent::Applied { .. } => None,
+                        });
+                        if let Some(next) = next_tick {
+                            assert_eq!(
+                                next, *stamp,
+                                "{name}: `{line}` stamped {stamp} must be applied before \
+                                 tick {stamp}, not before tick {next}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A frame that runs zero ticks still drains, and its commands carry the
+    /// same stamp as the next frame's. Concatenation preserves order, so one
+    /// tick's worth of commands split over many frames arrives in submission
+    /// order at one boundary.
+    #[test]
+    fn commands_split_over_zero_tick_frames_reach_one_boundary_in_order() {
+        // A quarter tick per frame: three frames of nothing, then one tick.
+        let offsets: Vec<Duration> = (0..=12).map(|k| (TICK * k) / 4).collect();
+        let events = drive_with_commands(&offsets, 10);
+
+        let batched: Vec<(u64, String)> = events
+            .iter()
+            .filter_map(|e| match e {
+                FrameEvent::Applied { stamp, line } => Some((*stamp, line.clone())),
+                FrameEvent::Ticked(_) => None,
+            })
+            .collect();
+        assert!(
+            batched.iter().any(|(stamp, _)| batched
+                .iter()
+                .filter(|(other, _)| other == stamp)
+                .count()
+                > 1),
+            "the pacing must produce at least one stamp carrying several commands"
+        );
+
+        // Submission order is the `markN` order, and stamps never go backwards.
+        let submitted: Vec<u32> = batched
+            .iter()
+            .map(|(_, line)| line.trim_start_matches("mark").parse().expect("markN"))
+            .collect();
+        let mut sorted = submitted.clone();
+        sorted.sort_unstable();
+        assert_eq!(submitted, sorted, "the queue reordered submissions");
+        assert!(
+            batched.windows(2).all(|w| w[0].0 <= w[1].0),
+            "stamps must be monotone: {batched:?}"
         );
     }
 }

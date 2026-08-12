@@ -1,16 +1,15 @@
 //! Frame-indexed console scripts: `--script=<path>`.
 //!
-//! A script file is lines of `<frame> <console command>`. The driver runs
-//! each command through the host's existing [`Console`] registry on the frame
-//! whose index the line names, then asks the runner to exit a fixed margin
-//! past the last line. Reaching a configured state costs one flag instead of
-//! a click-through, and two runs issue the same commands on the same frame
-//! numbers, which is what makes a before/after pixel hash a diff rather than
-//! a coincidence.
+//! A script file is lines of `<frame> <console command>`. The driver submits
+//! each command to [`crate::command`]'s queue on the frame whose index the
+//! line names, then asks the runner to exit a fixed margin past the last line.
+//! Reaching a configured state costs one flag instead of a click-through, and
+//! two runs issue the same commands on the same frame numbers, which is what
+//! makes a before/after pixel hash a diff rather than a coincidence.
 //!
-//! No new command language: the tokenizer, the registry lookup and the
-//! dispatch are [`Console::execute`]'s, so a script line is exactly what the
-//! user would type.
+//! No new command language and no second dispatch path: a script line is
+//! submitted exactly as a typed line is, tokenized by the same grammar, and
+//! applied at the runner's one drain point.
 //!
 //! ## Timebase
 //!
@@ -24,14 +23,14 @@
 //!
 //! ## Focus and synthesized input
 //!
-//! [`ScriptDriver::advance`] takes a `&mut Console<Ctx>` and a `&mut Ctx` and
-//! nothing else. That signature is the fence: with no `Window` and no
-//! event-loop handle in scope, cursor warping, focus requests and event
-//! injection are not callable from here, and every state change a script
-//! makes goes through a command handler that can only touch `Ctx`. Widening
-//! that one signature to carry a window handle is the single change that
-//! would end the property; `the_driver_names_no_window_or_input_api` fails if
-//! this module ever mentions one.
+//! [`ScriptDriver::advance`] takes nothing at all. That signature is the
+//! fence: with no `Window` and no event-loop handle in scope, cursor warping,
+//! focus requests and event injection are not callable from here, and every
+//! state change a script makes goes through the command queue, which reaches
+//! only what a typed line reaches. Widening that one signature to carry a
+//! window handle is the single change that would end the property;
+//! `the_driver_names_no_window_or_input_api` fails if this module ever
+//! mentions one.
 //!
 //! ## Exiting
 //!
@@ -45,7 +44,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{anyhow, bail, Context as _, Result};
 
-use loam_egui::Console;
+use crate::command;
 
 /// Frames the driver keeps running past the last scheduled command before it
 /// asks for exit. Long enough for that command's effect to reach the
@@ -163,20 +162,19 @@ impl ScriptDriver {
         self.frame
     }
 
-    /// Run every command due on the current frame, in file order, then step
+    /// Submit every command due on the current frame, in file order, then step
     /// the playhead. Steps whose frame the playhead has already passed still
     /// fire, so a host that skips a frame loses ordering but never a command.
-    pub fn advance<Ctx: 'static>(
-        &mut self,
-        console: &mut Console<Ctx>,
-        ctx: &mut Ctx,
-    ) -> ScriptStatus {
+    ///
+    /// Submission, not application: the queue applies at the runner's drain,
+    /// which is the same one frame of deferral a typed line takes.
+    pub fn advance(&mut self) -> ScriptStatus {
         while let Some(step) = self.script.steps.get(self.next) {
             if step.frame > self.frame {
                 break;
             }
             tracing::info!("script: frame {}: {}", self.frame, step.command);
-            console.execute(&step.command, ctx);
+            command::submit_line(&step.command);
             self.next += 1;
         }
         let status = if self.frame >= self.exit_frame {
@@ -204,40 +202,28 @@ pub fn exit_requested() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loam_egui::cmd;
 
-    /// Records what the registry actually dispatched, and on which frame. The
-    /// frame is stamped by the harness before each `advance` rather than read
-    /// from a clock, so a firing order assertion is exact.
-    #[derive(Default)]
-    struct Recorder {
-        frame: u64,
-        fired: Vec<(u64, String)>,
-    }
-
-    fn recorder_console() -> Console<Recorder> {
-        let mut console = Console::<Recorder>::new();
-        console.register(cmd(
-            "mark",
-            "record the call for the test",
-            |args: &[&str], rec: &mut Recorder, _out| {
-                rec.fired.push((rec.frame, args.join(" ")));
-                Ok(())
-            },
-        ));
-        console
-    }
-
-    /// Drive `script` for `frames` frames and return what fired.
+    /// Drive `script` for `frames` frames, draining the queue between advances
+    /// the way the runner does, and return `(frame, command line)` for
+    /// everything that reached it.
     fn play(script: Script, frames: u64) -> Vec<(u64, String)> {
-        let mut console = recorder_console();
-        let mut rec = Recorder::default();
+        let _held = command::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = command::drain(0);
         let mut driver = ScriptDriver::new(script);
+        let mut fired = Vec::new();
         for _ in 0..frames {
-            rec.frame = driver.frame();
-            driver.advance(&mut console, &mut rec);
+            let frame = driver.frame();
+            driver.advance();
+            for stamped in command::drain(frame) {
+                let mut line = stamped.command.name.clone();
+                for arg in &stamped.command.args {
+                    line.push(' ');
+                    line.push_str(arg);
+                }
+                fired.push((stamped.tick, line));
+            }
         }
-        rec.fired
+        fired
     }
 
     #[test]
@@ -330,10 +316,10 @@ mod tests {
         assert_eq!(
             play(script, 8),
             [
-                (0, "boot".to_string()),
-                (2, "second-a".to_string()),
-                (2, "second-b".to_string()),
-                (5, "last".to_string()),
+                (0, "mark boot".to_string()),
+                (2, "mark second-a".to_string()),
+                (2, "mark second-b".to_string()),
+                (5, "mark last".to_string()),
             ]
         );
     }
@@ -347,47 +333,40 @@ mod tests {
         assert_eq!(first.len(), 4);
     }
 
+    /// A verb no registry claims is rejected where every other unclaimed verb
+    /// is, at the drain; the playhead does not care and the next line still
+    /// fires on its own frame.
     #[test]
-    fn a_command_the_registry_does_not_know_does_not_stall_the_timeline() {
+    fn a_command_no_target_claims_does_not_stall_the_timeline() {
         let script = Script::parse("0 nonesuch\n1 mark after\n").unwrap();
-        assert_eq!(play(script, 4), [(1, "after".to_string())]);
+        assert_eq!(
+            play(script, 4),
+            [(0, "nonesuch".to_string()), (1, "mark after".to_string())]
+        );
     }
 
     #[test]
     fn the_run_finishes_exactly_one_settle_margin_after_the_last_command() {
         let last = 5;
-        let mut console = recorder_console();
-        let mut rec = Recorder::default();
         let mut driver = ScriptDriver::new(Script::parse(&format!("{last} mark end")).unwrap());
         for frame in 0..last + SETTLE_FRAMES {
             assert_eq!(
-                driver.advance(&mut console, &mut rec),
+                driver.advance(),
                 ScriptStatus::Running,
                 "frame {frame} is still inside the run"
             );
         }
-        assert_eq!(
-            driver.advance(&mut console, &mut rec),
-            ScriptStatus::Finished
-        );
+        assert_eq!(driver.advance(), ScriptStatus::Finished);
     }
 
     /// An empty script is legal (a file of comments) and still terminates.
     #[test]
     fn an_empty_script_settles_and_finishes() {
-        let mut console = recorder_console();
-        let mut rec = Recorder::default();
         let mut driver = ScriptDriver::new(Script::parse("# nothing here\n").unwrap());
         for _ in 0..SETTLE_FRAMES {
-            assert_eq!(
-                driver.advance(&mut console, &mut rec),
-                ScriptStatus::Running
-            );
+            assert_eq!(driver.advance(), ScriptStatus::Running);
         }
-        assert_eq!(
-            driver.advance(&mut console, &mut rec),
-            ScriptStatus::Finished
-        );
+        assert_eq!(driver.advance(), ScriptStatus::Finished);
     }
 
     /// This module's code, with comments and this test module removed. The
@@ -407,7 +386,7 @@ mod tests {
         // A scan over an empty string passes everything, so prove the split
         // still holds the dispatch the scans are about.
         assert!(
-            code.contains("console.execute(&step.command, ctx)"),
+            code.contains("command::submit_line(&step.command)"),
             "the extraction dropped the driver it is supposed to scan"
         );
         code
@@ -438,10 +417,11 @@ mod tests {
     }
 
     /// Criterion: no focus, no synthesized input. The driver's only outside
-    /// call is `Console::execute`, and its signature admits no window handle,
-    /// so the OS-level APIs that would need one are unreachable. A locked
-    /// workstation nulls a synthesized cursor position before the next frame,
-    /// so a driver that needed one would fail there and nowhere else.
+    /// call is a submit that carries a name and its args, and that signature
+    /// admits no window handle, so the OS-level APIs that would need one are
+    /// unreachable. A locked workstation nulls a synthesized cursor position
+    /// before the next frame, so a driver that needed one would fail there and
+    /// nowhere else.
     #[test]
     fn the_driver_names_no_window_or_input_api() {
         let code = driver_code();
@@ -457,7 +437,21 @@ mod tests {
             assert!(
                 !code.contains(needle),
                 "`{needle}` reaches for the window; the driver's fence is \
-                 `advance(&mut Console<Ctx>, &mut Ctx)`"
+                 `advance(&mut self)`"
+            );
+        }
+    }
+
+    /// Criterion: one path. The script driver must not reach a registry
+    /// directly, because a second dispatch site is a second ordering and the
+    /// queue's stamp then describes only half the mutations.
+    #[test]
+    fn the_driver_holds_no_console_and_dispatches_nothing_itself() {
+        let code = driver_code();
+        for needle in ["Console", "execute", "dispatch"] {
+            assert!(
+                !code.contains(needle),
+                "`{needle}` puts a second dispatch path beside the queue"
             );
         }
     }

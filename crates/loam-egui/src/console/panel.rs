@@ -41,25 +41,15 @@ const ROW_INPUT_HEIGHT: f32 = 24.0;
 const DETACHED_DEFAULT_W: f32 = 520.0;
 const DETACHED_DEFAULT_H: f32 = 320.0;
 
-pub(super) fn draw<Ctx: 'static>(
-    console: &mut Console<Ctx>,
-    ctx: &egui::Context,
-    app_ctx: &mut Ctx,
-    progress: f32,
-) {
+pub(super) fn draw<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &egui::Context, progress: f32) {
     if console.is_detached() {
-        draw_detached(console, ctx, app_ctx);
+        draw_detached(console, ctx);
     } else {
-        draw_docked(console, ctx, app_ctx, progress);
+        draw_docked(console, ctx, progress);
     }
 }
 
-fn draw_docked<Ctx: 'static>(
-    console: &mut Console<Ctx>,
-    ctx: &egui::Context,
-    app_ctx: &mut Ctx,
-    progress: f32,
-) {
+fn draw_docked<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &egui::Context, progress: f32) {
     let viewport = ctx.content_rect();
     let panel_height = (viewport.height() * PANEL_HEIGHT_FRACTION).round();
     let y_offset = -panel_height * (1.0 - progress);
@@ -94,14 +84,14 @@ fn draw_docked<Ctx: 'static>(
                     Layout::top_down(egui::Align::Min),
                     |ui| {
                         let scroll_h = panel_height - ROW_TITLE_HEIGHT - ROW_INPUT_HEIGHT - 2.0;
-                        draw_content(ui, console, app_ctx, width, scroll_h);
+                        draw_content(ui, console, width, scroll_h);
                     },
                 );
             });
         });
 }
 
-fn draw_detached<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &egui::Context, app_ctx: &mut Ctx) {
+fn draw_detached<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &egui::Context) {
     let viewport = ctx.content_rect();
     let default_pos = egui::pos2(
         (viewport.right() - DETACHED_DEFAULT_W - 16.0).max(viewport.left() + 16.0),
@@ -135,7 +125,7 @@ fn draw_detached<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &egui::Context, 
             let width = ui.available_width();
             let scroll_h =
                 (ui.available_height() - ROW_TITLE_HEIGHT - ROW_INPUT_HEIGHT - 2.0).max(60.0);
-            draw_content(ui, console, app_ctx, width, scroll_h);
+            draw_content(ui, console, width, scroll_h);
         });
 }
 
@@ -144,7 +134,6 @@ fn draw_detached<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &egui::Context, 
 fn draw_content<Ctx: 'static>(
     ui: &mut egui::Ui,
     console: &mut Console<Ctx>,
-    app_ctx: &mut Ctx,
     width: f32,
     scroll_height: f32,
 ) {
@@ -152,7 +141,7 @@ fn draw_content<Ctx: 'static>(
     draw_separator(ui, width);
     draw_scrollback(ui, console, scroll_height, width);
     draw_separator(ui, width);
-    draw_input_row(ui, console, app_ctx, width);
+    draw_input_row(ui, console, width);
 }
 
 fn draw_title_row<Ctx: 'static>(ui: &mut egui::Ui, console: &mut Console<Ctx>, width: f32) {
@@ -280,12 +269,7 @@ fn scrollback_layout_job(history: &std::collections::VecDeque<HistoryLine>) -> L
     job
 }
 
-fn draw_input_row<Ctx: 'static>(
-    ui: &mut egui::Ui,
-    console: &mut Console<Ctx>,
-    app_ctx: &mut Ctx,
-    width: f32,
-) {
+fn draw_input_row<Ctx: 'static>(ui: &mut egui::Ui, console: &mut Console<Ctx>, width: f32) {
     ui.allocate_ui_with_layout(
         egui::vec2(width, ROW_INPUT_HEIGHT),
         Layout::left_to_right(egui::Align::Center),
@@ -355,7 +339,7 @@ fn draw_input_row<Ctx: 'static>(
             }
 
             if enter_pressed {
-                console.submit(app_ctx);
+                console.submit();
                 response.request_focus();
             }
         },

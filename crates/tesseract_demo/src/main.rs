@@ -210,6 +210,15 @@ impl App for TesseractApp {
         Ok(app)
     }
 
+    fn apply_command(
+        &mut self,
+        cmd: &loam_app::command::CommandLine,
+        _ctx: &mut loam_app::command::CommandCtx<'_>,
+    ) -> Result<()> {
+        self.console.dispatch(&cmd.name, &cmd.arg_refs(), &mut ());
+        Ok(())
+    }
+
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
         // Wall-clock dt so the spin tracks real cadence; clamped so a multi-second
         // stall doesn't catapult the rotor through a half-revolution on catch-up.
@@ -371,9 +380,12 @@ impl App for TesseractApp {
             });
         // F3-toggle perf overlay; cheap when hidden.
         self.perf.show(ctx);
-        // Mirror tracing events into the console (when `log on`), then draw it.
+        // Mirror tracing events and applied-command output into the console
+        // (the former only when `log on`), then draw it.
         loam_app::log::pump_into(&mut self.console);
-        self.console.ui(ctx, &mut ());
+        loam_app::command::pump_into(&mut self.console);
+        self.console.ui(ctx);
+        loam_app::command::forward_pending(&mut self.console);
     }
 
     fn title(&self, fps: f32) -> std::borrow::Cow<'static, str> {

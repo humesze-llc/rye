@@ -28,9 +28,41 @@
 //!
 //! [`fps`]: crate::fps
 
-use loam_egui::{cmd, Console};
+use loam_egui::{cmd, Console, ConsoleWriter};
 
 use crate::frame_pacing;
+
+/// Apply `vsync`. The runner's verb table
+/// ([`crate::command`]) reaches this before any App hook does, so this is where
+/// the verb's behaviour lives; [`register_command`] exists so `help` and tab
+/// completion still know the name, and so a console driven without a loam-app
+/// runner still works.
+pub(crate) fn apply(args: &[&str], out: &mut ConsoleWriter) {
+    match args.first().copied() {
+        None => {
+            // Without access to RenderDevice from the handler we can only report
+            // what was last requested. That's sufficient for the common workflow;
+            // the user typed it, they know what they asked for.
+            out.line("vsync: use 'vsync on' (Fifo) or 'vsync off' (Mailbox/Immediate)");
+        }
+        Some("on") => {
+            frame_pacing::request_vsync_on();
+            out.line("vsync: requested ON (Fifo); applies on next frame");
+        }
+        Some("off") => {
+            frame_pacing::request_vsync_off();
+            out.line(
+                "vsync: requested OFF (Mailbox preferred, Immediate fallback) \
+                 ; applies on next frame",
+            );
+        }
+        Some(other) => {
+            out.line(format!(
+                "vsync: unknown subcommand '{other}' (try 'on' or 'off')"
+            ));
+        }
+    }
+}
 
 /// Register the `vsync` console command.
 pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
@@ -39,33 +71,7 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
             "vsync",
             "show or set the surface present mode (on = Fifo, off = Mailbox/Immediate)",
             |args, _ctx: &mut Ctx, out| {
-                match args.first().copied() {
-                    None => {
-                        // Without access to RenderDevice from the handler we
-                        // can only report what was last requested. That's
-                        // sufficient for the common workflow; the user
-                        // typed it, they know what they asked for. A future
-                        // refactor that plumbs rd through Ctx could read the
-                        // applied mode here instead.
-                        out.line("vsync: use 'vsync on' (Fifo) or 'vsync off' (Mailbox/Immediate)");
-                    }
-                    Some("on") => {
-                        frame_pacing::request_vsync_on();
-                        out.line("vsync: requested ON (Fifo); applies on next frame");
-                    }
-                    Some("off") => {
-                        frame_pacing::request_vsync_off();
-                        out.line(
-                            "vsync: requested OFF (Mailbox preferred, Immediate fallback) \
-                            ; applies on next frame",
-                        );
-                    }
-                    Some(other) => {
-                        out.line(format!(
-                            "vsync: unknown subcommand '{other}' (try 'on' or 'off')"
-                        ));
-                    }
-                }
+                apply(args, out);
                 Ok(())
             },
         )
@@ -75,28 +81,25 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
 
 #[cfg(test)]
 mod tests {
+    use super::apply;
     use crate::frame_pacing;
     use crate::frame_pacing::TEST_LOCK;
+    use loam_egui::ConsoleWriter;
 
-    fn build_console() -> loam_egui::Console<()> {
-        let mut c = loam_egui::Console::<()>::new();
-        super::register_command(&mut c);
-        c
-    }
-
-    fn clear_pending() {
+    /// Run the verb's one body, which is what both the runner's table and the
+    /// console registration reach.
+    fn run(args: &[&str]) -> Option<bool> {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = frame_pacing::take_pending_vsync();
+        let mut out = ConsoleWriter::new();
+        apply(args, &mut out);
+        frame_pacing::take_pending_vsync()
     }
 
     #[test]
     fn vsync_on_records_pending_request() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_pending();
-        let mut c = build_console();
-        let mut ctx = ();
-        c.execute("vsync on", &mut ctx);
         assert_eq!(
-            frame_pacing::take_pending_vsync(),
+            run(&["on"]),
             Some(true),
             "vsync on should queue a vsync-on request"
         );
@@ -104,13 +107,8 @@ mod tests {
 
     #[test]
     fn vsync_off_records_pending_request() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_pending();
-        let mut c = build_console();
-        let mut ctx = ();
-        c.execute("vsync off", &mut ctx);
         assert_eq!(
-            frame_pacing::take_pending_vsync(),
+            run(&["off"]),
             Some(false),
             "vsync off should queue a vsync-off request"
         );
@@ -118,13 +116,8 @@ mod tests {
 
     #[test]
     fn vsync_bare_invocation_does_not_change_pending() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_pending();
-        let mut c = build_console();
-        let mut ctx = ();
-        c.execute("vsync", &mut ctx);
         assert_eq!(
-            frame_pacing::take_pending_vsync(),
+            run(&[]),
             None,
             "bare `vsync` should print help, not request a transition"
         );
@@ -132,13 +125,8 @@ mod tests {
 
     #[test]
     fn vsync_unknown_subcommand_does_not_change_pending() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_pending();
-        let mut c = build_console();
-        let mut ctx = ();
-        c.execute("vsync foo", &mut ctx);
         assert_eq!(
-            frame_pacing::take_pending_vsync(),
+            run(&["foo"]),
             None,
             "unknown subcommand should print error, not queue a transition"
         );

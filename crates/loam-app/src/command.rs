@@ -5,7 +5,7 @@
 //!
 //! **Commands stamped with tick T are applied, in submission order, before tick
 //! T runs, however the frames were paced.** Both runners drain immediately
-//! before [`crate::drive_fixed_ticks`] and stamp with the `tick_index` that call
+//! before the runner's `drive_fixed_ticks` and stamp with the `tick_index` that call
 //! is about to start from, so a frame that runs zero ticks hands its commands the
 //! same T as the next frame's and concatenation preserves order. That is what
 //! makes the position of a mutation in simulation time a property of the
@@ -22,9 +22,9 @@
 //!
 //! ## Where a drained line goes
 //!
-//! Engine verbs first, through [`apply_engine_verb`]; the runner owns those
+//! Engine verbs first, through the runner's own verb table; it owns those
 //! and no App is consulted for them. Everything else reaches
-//! [`App::apply_command`](crate::App::apply_command), which `SceneShell` fans out
+//! [`App::apply_command`], which `SceneShell` fans out
 //! to the active [`Scene::apply_command`](crate::shell::Scene::apply_command).
 //!
 //! Output produced at the drain has no console in scope (the runner does not own
@@ -117,7 +117,8 @@ pub struct CommandCtx<'a> {
     pub rd: &'a RenderDevice,
     /// The tick this command was stamped for; it has not run yet.
     pub tick: u64,
-    /// Where an applier writes user-facing output. Drained into [`OUTPUT`] after
+    /// Where an applier writes user-facing output. Drained into the module's
+    /// bounded output buffer after
     /// the command returns; a target that owns a console (a scene dispatching
     /// against its own registry) writes to that instead and leaves this empty.
     pub out: &'a mut ConsoleWriter,

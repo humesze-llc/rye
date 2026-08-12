@@ -6,6 +6,15 @@
 //! under the `frame-trace` feature (default); feature OFF degrades the module to
 //! zero-sized types and empty drops that optimize away.
 //!
+//! Recording is thread-local: a section lands in the buffer of whichever thread
+//! opened it, and a worker thread's buffer dies with the thread. That would
+//! silently drop exactly the measurements a parallel stage has to justify itself
+//! with, so [`take_worker_trace`] and [`merge_worker_trace`] move a worker's
+//! sections onto the thread that owns the frame.
+//! [`crate::jobs::JobPool::run_stage`] calls the pair at its join barrier, in
+//! ascending partition index, so a frame's section list is a function of the
+//! partition and not of which worker finished first.
+//!
 //! `thread_local!` is sound on `wasm32-unknown-unknown` (single browser thread);
 //! multi-threaded wasm is not on the roadmap.
 
@@ -55,7 +64,6 @@ pub const DEFAULT_CAPACITY: usize = 120;
 
 #[cfg(feature = "frame-trace")]
 struct Tracer {
-    current: FrameTrace,
     history: VecDeque<FrameTrace>,
     capacity: usize,
 }
@@ -64,7 +72,6 @@ struct Tracer {
 impl Tracer {
     fn new(capacity: usize) -> Self {
         Self {
-            current: FrameTrace::default(),
             history: VecDeque::with_capacity(capacity),
             capacity,
         }
@@ -80,6 +87,10 @@ pub type HeapSampler = fn() -> Option<u64>;
 #[cfg(feature = "frame-trace")]
 thread_local! {
     static TRACER: RefCell<Tracer> = RefCell::new(Tracer::new(DEFAULT_CAPACITY));
+    /// The in-flight frame's sections, held apart from [`TRACER`] so that a
+    /// worker thread which recorded nothing pays no rolling-history allocation
+    /// to report that, and so `Scope::drop` never touches the history buffer.
+    static CURRENT_SECTIONS: RefCell<Vec<Section>> = const { RefCell::new(Vec::new()) };
     /// Last `end_frame` timestamp; with the next frame's begin/end it splits
     /// cadence into our work (`frame`) and browser idle (`idle`).
     static LAST_FRAME_END: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
@@ -124,11 +135,11 @@ impl Drop for Scope {
     fn drop(&mut self) {
         let elapsed = self.start.elapsed();
         let name = self.name;
-        // try_borrow_mut: don't panic if the tracer is mid-rotation (a scope
-        // dropping while end_frame reads history).
-        TRACER.with(|t| {
-            if let Ok(mut t) = t.try_borrow_mut() {
-                t.current.sections.push(Section { name, elapsed });
+        // try_borrow_mut: a scope dropping while `end_frame` rotates the buffer
+        // loses its sample rather than panicking inside a `Drop`.
+        CURRENT_SECTIONS.with(|s| {
+            if let Ok(mut s) = s.try_borrow_mut() {
+                s.push(Section { name, elapsed });
             }
         });
     }
@@ -209,59 +220,54 @@ pub fn end_frame() {
         n
     });
 
-    // Snapshot section names + durations for max_ever + spike-log so the work
-    // can happen after the TRACER borrow drops (avoids a nested borrow).
     let threshold = SPIKE_THRESHOLD.with(|c| c.get());
-    let mut new_max: Vec<(&'static str, Duration)> = Vec::new();
-    let mut over_threshold: Vec<(&'static str, Duration)> = Vec::new();
+    let mut sections = CURRENT_SECTIONS.with(|s| std::mem::take(&mut *s.borrow_mut()));
 
-    TRACER.with(|t| {
-        let mut t = t.borrow_mut();
-        t.current.heap_delta_bytes = heap_delta_bytes;
-        t.current.allocs = alloc_delta;
-        if let Some(last_end) = last_end {
-            let between_frames = now.saturating_duration_since(last_end);
-            t.current.sections.push(Section {
-                name: "between-frames",
-                elapsed: between_frames,
+    if let Some(last_end) = last_end {
+        let between_frames = now.saturating_duration_since(last_end);
+        sections.push(Section {
+            name: "between-frames",
+            elapsed: between_frames,
+        });
+        // Skip `idle` when begin_frame wasn't called rather than emit a bogus
+        // value.
+        if let Some(frame_start) = frame_start {
+            let idle = frame_start.saturating_duration_since(last_end);
+            sections.push(Section {
+                name: "idle",
+                elapsed: idle,
             });
-            // Skip `idle` when begin_frame wasn't called rather than emit a bogus
-            // value.
-            if let Some(frame_start) = frame_start {
-                let idle = frame_start.saturating_duration_since(last_end);
-                t.current.sections.push(Section {
-                    name: "idle",
-                    elapsed: idle,
-                });
-            }
         }
+    }
 
-        // Pre-scan so MAX_EVER updates + warnings happen outside the TRACER
-        // borrow; keeping the two RefCells independent avoids a re-entrant
-        // tracing subscriber deadlocking on a nested borrow.
-        for section in &t.current.sections {
-            new_max.push((section.name, section.elapsed));
+    // Owning the sections here keeps MAX_EVER, TRACER and the warn loop from
+    // ever nesting their borrows, which is what a re-entrant tracing subscriber
+    // would deadlock on.
+    let mut over_threshold: Vec<(&'static str, Duration)> = Vec::new();
+    MAX_EVER.with(|m| {
+        let mut m = m.borrow_mut();
+        for section in &sections {
+            let entry = m.entry(section.name).or_insert(Duration::ZERO);
+            if section.elapsed > *entry {
+                *entry = section.elapsed;
+            }
             if section.elapsed > threshold {
                 over_threshold.push((section.name, section.elapsed));
             }
         }
+    });
 
+    TRACER.with(|t| {
+        let mut t = t.borrow_mut();
         let cap = t.capacity;
-        let frame = std::mem::take(&mut t.current);
         if t.history.len() >= cap {
             t.history.pop_front();
         }
-        t.history.push_back(frame);
-    });
-
-    MAX_EVER.with(|m| {
-        let mut m = m.borrow_mut();
-        for (name, elapsed) in new_max {
-            let entry = m.entry(name).or_insert(Duration::ZERO);
-            if elapsed > *entry {
-                *entry = elapsed;
-            }
-        }
+        t.history.push_back(FrameTrace {
+            sections,
+            heap_delta_bytes,
+            allocs: alloc_delta,
+        });
     });
 
     // Outside the trace borrows so a re-entrant tracing subscriber can't
@@ -309,9 +315,9 @@ pub fn history() -> Vec<FrameTrace> {
 
 /// Run `f` with a borrow of the rolling history. Zero-allocation read path.
 ///
-/// `f` must NOT call `frame_trace` mutators (`scope`, `end_frame`,
-/// `record_external`) while the borrow is held; that deadlocks the `RefCell`.
-/// `last_frame`, `max_ever`, etc. are fine (separate cells). Returns `f`'s value.
+/// `f` must NOT call [`end_frame`] or [`set_capacity`] while the borrow is held;
+/// that deadlocks the `RefCell`. Everything else, including [`scope`] and
+/// [`record_external`], writes a different cell. Returns `f`'s value.
 #[cfg(feature = "frame-trace")]
 pub fn with_history<R>(f: impl FnOnce(&std::collections::VecDeque<FrameTrace>) -> R) -> R {
     TRACER.with(|t| f(&t.borrow().history))
@@ -362,9 +368,9 @@ pub fn set_spike_threshold(threshold: Duration) {
 /// rolling-window aggregate absorbs.
 #[cfg(feature = "frame-trace")]
 pub fn record_external(name: &'static str, elapsed: Duration) {
-    TRACER.with(|t| {
-        if let Ok(mut t) = t.try_borrow_mut() {
-            t.current.sections.push(Section { name, elapsed });
+    CURRENT_SECTIONS.with(|s| {
+        if let Ok(mut s) = s.try_borrow_mut() {
+            s.push(Section { name, elapsed });
         }
     });
 }
@@ -372,6 +378,48 @@ pub fn record_external(name: &'static str, elapsed: Duration) {
 /// Feature-OFF stub: drops the section, no-op.
 #[cfg(not(feature = "frame-trace"))]
 pub fn record_external(_name: &'static str, _elapsed: Duration) {}
+
+/// Sections one worker thread recorded, in transit to the thread that joins it.
+/// Empty for a kernel that opened no scope, and an empty one owns no allocation.
+#[cfg(feature = "frame-trace")]
+#[derive(Debug, Default)]
+pub struct WorkerTrace(Vec<Section>);
+
+/// Detach the calling thread's in-flight sections so a joining thread can merge
+/// them.
+///
+/// For a worker at the end of its partition: its buffer dies with the thread, so
+/// the sections either ride back out or are lost. Calling this on the thread
+/// that owns the frame steals that frame's own sections instead.
+#[cfg(feature = "frame-trace")]
+pub fn take_worker_trace() -> WorkerTrace {
+    CURRENT_SECTIONS.with(|s| WorkerTrace(std::mem::take(&mut *s.borrow_mut())))
+}
+
+/// Append a joined worker's sections to the caller's in-flight frame.
+///
+/// Ordering is the caller's responsibility and is what makes the merge
+/// deterministic: [`crate::jobs::JobPool::run_stage`] calls this in ascending
+/// partition index, never in completion order. Sections keep the names the
+/// kernel gave them, so a name opened on every partition contributes one sample
+/// per partition per frame to [`aggregate`].
+#[cfg(feature = "frame-trace")]
+pub fn merge_worker_trace(trace: WorkerTrace) {
+    CURRENT_SECTIONS.with(|s| s.borrow_mut().extend(trace.0));
+}
+
+/// Feature-OFF stub: zero-sized, so a pool joining it moves nothing.
+#[cfg(not(feature = "frame-trace"))]
+#[derive(Debug, Default)]
+pub struct WorkerTrace;
+
+#[cfg(not(feature = "frame-trace"))]
+pub fn take_worker_trace() -> WorkerTrace {
+    WorkerTrace
+}
+
+#[cfg(not(feature = "frame-trace"))]
+pub fn merge_worker_trace(_trace: WorkerTrace) {}
 
 #[cfg(not(feature = "frame-trace"))]
 pub fn max_ever(_name: &'static str) -> Duration {
@@ -553,6 +601,45 @@ mod tests {
             .heap_delta_bytes
             .expect("sampler is registered; delta should be Some");
         assert_eq!(delta, 4096, "expected one-increment delta, got {delta}");
+    }
+
+    #[test]
+    fn merged_worker_traces_land_in_merge_order_and_the_take_empties_the_source() {
+        end_frame(); // discard any pre-existing in-flight frame
+
+        {
+            let _s = scope("recorded-first");
+        }
+        let first = take_worker_trace();
+        assert_eq!(first.0.len(), 1, "the take should carry the one section");
+        assert!(
+            take_worker_trace().0.is_empty(),
+            "the take must leave the recording thread's buffer empty"
+        );
+
+        {
+            let _s = scope("recorded-second");
+        }
+        let second = take_worker_trace();
+
+        {
+            let _s = scope("local");
+        }
+        // Merged against the order they were recorded in: the frame has to
+        // follow the merge calls, which is the whole basis of the pool's
+        // ascending-partition join.
+        merge_worker_trace(second);
+        merge_worker_trace(first);
+        end_frame();
+
+        let names: Vec<&str> = last_frame()
+            .expect("end_frame should produce a frame")
+            .sections
+            .iter()
+            .map(|s| s.name)
+            .filter(|name| !matches!(*name, "between-frames" | "idle"))
+            .collect();
+        assert_eq!(names, ["local", "recorded-second", "recorded-first"]);
     }
 
     #[test]

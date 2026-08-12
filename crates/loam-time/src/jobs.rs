@@ -3,8 +3,8 @@
 //!
 //! Lives here rather than in the app crate because the sim crates must be
 //! able to take it without depending on wgpu, winit and egui, and because
-//! [`crate::frame_trace`] is the other half of the same seam: a cross-worker
-//! trace merge has to happen at this pool's join barrier.
+//! [`crate::frame_trace`] is the other half of the same seam: the cross-worker
+//! trace merge happens at this pool's join barrier.
 
 use std::num::NonZeroUsize;
 
@@ -117,6 +117,14 @@ impl JobPool {
     /// Panics from a kernel are resumed on the calling thread after the
     /// barrier, so a partition panicking cannot leave the caller believing
     /// the stage ran.
+    ///
+    /// A kernel may open [`crate::frame_trace::scope`] freely: recording is
+    /// thread-local, so a spawned partition's sections would die with its
+    /// thread, and the barrier merges them into the caller's in-flight frame
+    /// in ascending partition index instead. What that costs a reader is that
+    /// one name opened on every partition lands in the frame once per
+    /// partition, so its row in the trace summary counts partitions times
+    /// frames and its mean is per partition, not per stage.
     pub fn run_stage<T, R, F>(&self, units: &mut [T], partials: &mut Vec<R>, kernel: F)
     where
         T: Send,
@@ -140,14 +148,23 @@ impl JobPool {
                 let head = chunks.next();
                 let mut handles = Vec::with_capacity(self.workers.get() - 1);
                 for (index, slice) in chunks {
-                    handles.push(scope.spawn(move || kernel(index, slice)));
+                    handles.push(scope.spawn(move || {
+                        let partial = kernel(index, slice);
+                        (partial, crate::frame_trace::take_worker_trace())
+                    }));
                 }
+                // Partition 0 records straight into the caller's frame, and it
+                // runs before any join, so the merge below extends an ascending
+                // sequence rather than interleaving with one.
                 if let Some((index, slice)) = head {
                     partials.push(kernel(index, slice));
                 }
                 for handle in handles {
                     match handle.join() {
-                        Ok(partial) => partials.push(partial),
+                        Ok((partial, trace)) => {
+                            partials.push(partial);
+                            crate::frame_trace::merge_worker_trace(trace);
+                        }
                         Err(payload) => std::panic::resume_unwind(payload),
                     }
                 }
@@ -302,6 +319,109 @@ mod tests {
             .map(String::as_str)
             .expect("the kernel's own payload, not the scope's");
         assert!(text.contains(MESSAGE), "resumed some other panic: {text}");
+    }
+
+    /// One `&'static str` per partition index. Scope names are static by
+    /// construction, so naming the recorder is a table lookup, not a format.
+    #[cfg(feature = "frame-trace")]
+    const PARTITION_SCOPES: [&str; 4] =
+        ["partition-0", "partition-1", "partition-2", "partition-3"];
+
+    /// Section names the rolled frame carries after a stage in which every
+    /// partition opens its own scope. Lower partitions spin longer, so the
+    /// spawned partitions complete in descending index order and a merge that
+    /// followed completion would come back reversed.
+    #[cfg(feature = "frame-trace")]
+    fn stage_section_names(workers: usize) -> Vec<&'static str> {
+        use crate::frame_trace;
+        const UNITS: usize = 64;
+        const SKEW: u32 = 200_000;
+
+        // Drain what this test thread had in flight so the frame rolled below
+        // holds this stage and nothing else.
+        frame_trace::end_frame();
+
+        let pool = JobPool::new(workers);
+        let mut units = vec![0u32; UNITS];
+        let partitions = UNITS.div_ceil(partition_len(UNITS, pool.threads()));
+        let mut partials: Vec<()> = Vec::new();
+        pool.run_stage(&mut units, &mut partials, |partition, _slice| {
+            let _section = frame_trace::scope(PARTITION_SCOPES[partition]);
+            let mut acc = 0u32;
+            for i in 0..(partitions - partition) as u32 * SKEW {
+                acc = acc.wrapping_add(std::hint::black_box(i));
+            }
+            std::hint::black_box(acc);
+        });
+        frame_trace::end_frame();
+
+        frame_trace::last_frame()
+            .expect("end_frame rolls a frame")
+            .sections
+            .iter()
+            .map(|section| section.name)
+            .filter(|name| PARTITION_SCOPES.contains(name))
+            .collect()
+    }
+
+    #[cfg(feature = "frame-trace")]
+    #[test]
+    fn a_spawned_partitions_sections_reach_the_callers_rolling_aggregate() {
+        use crate::frame_trace;
+        use std::time::Duration;
+
+        frame_trace::set_capacity(4);
+        let names = stage_section_names(4);
+        assert_eq!(names.len(), 4, "every partition should have recorded once");
+
+        // The trace summary reads the aggregate, so landing in the frame is
+        // necessary and not sufficient.
+        let stats = frame_trace::aggregate();
+        for name in PARTITION_SCOPES {
+            let row = stats
+                .iter()
+                .find(|row| row.name == name)
+                .unwrap_or_else(|| panic!("'{name}' never reached the aggregate: {stats:?}"));
+            assert!(
+                row.max > Duration::ZERO,
+                "'{name}' aggregated a zero max, so nothing was actually timed"
+            );
+        }
+    }
+
+    #[cfg(feature = "frame-trace")]
+    #[test]
+    fn merged_sections_follow_partition_index_not_completion_order() {
+        assert_eq!(
+            stage_section_names(4),
+            PARTITION_SCOPES.to_vec(),
+            "the join must merge traces by partition index"
+        );
+    }
+
+    #[cfg(feature = "frame-trace")]
+    #[test]
+    fn one_worker_records_exactly_the_sections_an_unpooled_call_would() {
+        use crate::frame_trace;
+
+        let pooled = stage_section_names(1);
+
+        frame_trace::end_frame();
+        {
+            let _section = frame_trace::scope(PARTITION_SCOPES[0]);
+        }
+        frame_trace::end_frame();
+        let unpooled: Vec<&'static str> = frame_trace::last_frame()
+            .expect("end_frame rolls a frame")
+            .sections
+            .iter()
+            .map(|section| section.name)
+            .filter(|name| PARTITION_SCOPES.contains(name))
+            .collect();
+
+        // A merge that ran on the serial path would duplicate partition 0.
+        assert_eq!(pooled, unpooled);
+        assert_eq!(pooled, vec![PARTITION_SCOPES[0]]);
     }
 
     #[test]

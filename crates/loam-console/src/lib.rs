@@ -1756,20 +1756,22 @@ mod tests {
     }
 
     #[test]
-    fn execute_echoes_input_and_collects_output() {
+    fn a_registry_line_lands_as_its_record_then_its_output() {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
         run(&mut c, "echo hello world", &mut ctx);
 
-        // Invariant: one Input then one Output line; Input echoes the typed text,
-        // Output carries the joined args. Exact prompt prefix is not pinned.
+        // Invariant: one Input then one Output line; Input carries the line as
+        // issued, Output the joined args. Exact prompt prefix is not pinned.
+        // The record is written by `dispatch`, not `execute`: a registry line
+        // has not run yet when `execute` parks it.
         let lines: Vec<&HistoryLine> = c.history.iter().collect();
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].kind, LineKind::Input);
         assert!(
             lines[0].text.contains("echo hello world"),
-            "Input line should include the user's typed text, got: {:?}",
+            "Input line should include the line as issued, got: {:?}",
             lines[0].text
         );
         assert_eq!(lines[1].kind, LineKind::Output);

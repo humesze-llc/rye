@@ -14,9 +14,11 @@
 //! echoed into the scrollback by whichever site runs it, so an unattended run
 //! leaves the same record a session at the prompt would.
 //!
-//! One difference, and it is in timing only: a built-in typed at the prompt runs
-//! inside `Console::execute` on the frame it was typed, where a scripted one
-//! waits for the drain like every other queued line.
+//! Two differences remain. A built-in typed at the prompt runs inside
+//! `Console::execute` on the frame it was typed, where a scripted one waits for
+//! the drain like every other queued line. And a scripted line never passes
+//! through `Console::execute` at all, so it leaves no entry in the prompt's
+//! up-arrow recall.
 //!
 //! ## Timebase
 //!

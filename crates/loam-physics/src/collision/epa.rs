@@ -14,7 +14,7 @@
 //! caller's `scale` raised to the homogeneity degree of the quantity it guards,
 //! so the resolved depth and normal are equivariant under a uniform scaling of
 //! both bodies; the contact point is not, for the reason
-//! [`super::epa_r4`][mod@super::epa_r4] gives. See [`Thresholds`], and that
+//! [`super::epa_r4`][mod@super::epa_r4] gives. See that
 //! module for the 4D twin of the same treatment.
 
 use glam::Vec3;

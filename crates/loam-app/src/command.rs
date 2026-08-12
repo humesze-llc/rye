@@ -22,8 +22,8 @@
 //!
 //! ## Where a drained line goes
 //!
-//! Engine verbs first, through [`apply_engine_verb`]; the runner owns those and
-//! no App is consulted for them. Everything else reaches
+//! Engine verbs first, through [`apply_engine_verb`]; the runner owns those
+//! and no App is consulted for them. Everything else reaches
 //! [`App::apply_command`](crate::App::apply_command), which `SceneShell` fans out
 //! to the active [`Scene::apply_command`](crate::shell::Scene::apply_command).
 //!

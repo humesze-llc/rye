@@ -75,7 +75,7 @@ impl Interpolate for Vec4 {
 }
 
 impl Interpolate for Rotor4 {
-    /// Geodesic of the bi-invariant metric on Spin(4),
+    /// Geodesic of the bi-invariant metric on Spin(4), given by
     /// `R(u) = R₀·exp(u·log(R₀⁻¹·R₁))`: the SO(4) reading of the quaternion
     /// slerp (Shoemake 1985, "Animating Rotation with Quaternion Curves",
     /// SIGGRAPH '85, §3). [`Rotor4::log`] returns the minimal-norm generator,

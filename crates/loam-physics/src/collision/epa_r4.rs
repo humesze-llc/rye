@@ -16,7 +16,8 @@
 //! guards, so the resolved depth and normal are equivariant under a uniform
 //! scaling of both bodies. The contact point is not, and cannot be: a facet
 //! tiled by several coplanar tetra offers one witness per tile, and which tile
-//! terminates the expansion is not a similarity invariant. See [`Thresholds`].
+//! terminates the expansion is not a similarity invariant. The scaled
+//! threshold set is private; `scale` is the whole of its public contract.
 
 use glam::Vec4;
 

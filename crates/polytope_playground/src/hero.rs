@@ -1199,10 +1199,6 @@ mod tests {
         }
     }
 
-    /// The scene's second criterion: the rain is what moves the letters. The
-    /// displacement is measured from the settled pose at the tick before the
-    /// first spawn, so nothing of the landing is counted in it.
-    #[test]
     /// The figures the module comments quote, asserted rather than trusted.
     /// All three were wrong on arrival: the cover count was carried in from a
     /// brief that predated the implementation, and the other two were measured

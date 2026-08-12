@@ -550,6 +550,44 @@ mod tests {
         }
     }
 
+    /// Which seeds the volume floor rejects is fixed by the seed's shape and
+    /// not by its size, which is the whole content of the floor being degree 3:
+    /// `seed_of_height` has `|det| = 4·h`, so at size `s` it reads `4·h·s³`
+    /// against `SEED_DEGENERATE_VOLUME·(SPHERE_PAIR_SCALE·s)³` and the two
+    /// heights below stay 20x under and 50x over the floor at every `s`. The
+    /// scaling property test cannot see this guard at all, because its seeds
+    /// come from GJK and sit nowhere near the floor.
+    #[test]
+    fn the_seed_volume_floor_admits_the_same_seed_shapes_at_every_size() {
+        fn resized(seed: [MinkowskiPoint; 4], s: f32) -> [MinkowskiPoint; 4] {
+            seed.map(|p| MinkowskiPoint {
+                point: p.point * s,
+                sa: p.sa * s,
+                sb: p.sb * s,
+            })
+        }
+
+        for s in [1e-3_f32, 1.0, 1e3] {
+            let a = Sphere {
+                center: Vec3::ZERO,
+                radius: s,
+            };
+            let b = Sphere {
+                center: Vec3::new(0.5 * s, 0.0, 0.0),
+                radius: s,
+            };
+            let scale = SPHERE_PAIR_SCALE * s;
+            assert!(
+                epa(&a, &b, resized(seed_of_height(1e-9), s), scale).is_none(),
+                "at size {s} a seed 20x under the volume floor resolved a contact"
+            );
+            assert!(
+                epa(&a, &b, resized(seed_of_height(1e-6), s), scale).is_some(),
+                "at size {s} a seed 50x over the volume floor resolved to nothing"
+            );
+        }
+    }
+
     /// The rest of the degeneracy ladder: a seed collapsed to a segment, and
     /// one with a repeated vertex. Both have zero volume by a different route
     /// than coplanarity, and both must take the same exit.

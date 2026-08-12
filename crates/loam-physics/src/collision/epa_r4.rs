@@ -265,7 +265,6 @@ fn sort_triangle(t: Triangle) -> (usize, usize, usize) {
 /// within its own tolerance of the origin, so on a near-tangency the origin can
 /// sit outside the seed. Orienting one face against it there inverts that face
 /// and EPA converges on a plane that is not the boundary at all.
-#[allow(clippy::too_many_arguments)]
 fn build_face(
     verts: &[MinkowskiPoint4],
     a: usize,
@@ -695,6 +694,44 @@ mod tests {
             assert!(
                 contact.penetration >= 0.0,
                 "seed of height {h}: negative depth"
+            );
+        }
+    }
+
+    /// Which seeds the volume floor rejects is fixed by the seed's shape and
+    /// not by its size, which is the whole content of the floor being degree 4:
+    /// `seed_of_height` has `|det| = 8·h`, so at size `s` it reads `8·h·s⁴`
+    /// against `SEED_DEGENERATE_VOLUME·(SPHERE_PAIR_SCALE·s)⁴` and the two
+    /// heights below stay 20x under and 50x over the floor at every `s`. The
+    /// scaling property test cannot see the exponent, only that it is not zero:
+    /// its seeds come from GJK and sit far above the floor.
+    #[test]
+    fn the_seed_volume_floor_admits_the_same_seed_shapes_at_every_size() {
+        fn resized(seed: [MinkowskiPoint4; 5], s: f32) -> [MinkowskiPoint4; 5] {
+            seed.map(|p| MinkowskiPoint4 {
+                point: p.point * s,
+                sa: p.sa * s,
+                sb: p.sb * s,
+            })
+        }
+
+        for s in [1e-3_f32, 1.0, 1e3] {
+            let a = Sphere4 {
+                center: Vec4::ZERO,
+                radius: s,
+            };
+            let b = Sphere4 {
+                center: Vec4::new(0.5 * s, 0.0, 0.0, 0.0),
+                radius: s,
+            };
+            let scale = SPHERE_PAIR_SCALE * s;
+            assert!(
+                epa_r4(&a, &b, resized(seed_of_height(1e-9), s), scale).is_none(),
+                "at size {s} a seed 20x under the volume floor resolved a contact"
+            );
+            assert!(
+                epa_r4(&a, &b, resized(seed_of_height(1e-6), s), scale).is_some(),
+                "at size {s} a seed 50x over the volume floor resolved to nothing"
             );
         }
     }

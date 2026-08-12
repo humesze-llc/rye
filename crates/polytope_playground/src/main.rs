@@ -516,10 +516,12 @@ impl Demo {
             }
         }
         // Rigid bodies advance on the tick count, not on `dt_secs`, so a
-        // trajectory is frame-rate independent. `rebuild_bodies` then
-        // reconciles the world with the rendered row and uploads the resulting
-        // poses, but only on a frame that moved something: see
+        // trajectory is frame-rate independent. The collider sync runs ahead
+        // of the step so the tick collides this frame's rotor rather than the
+        // previous one's; `rebuild_bodies` then reconciles the row and uploads
+        // the resulting poses, but only on a frame that moved something: see
         // [`state::body_upload_needed`] for why the motion test is read first.
+        self.sync_physics_row();
         let bodies_moving = !self.physics.at_rest();
         self.physics.step(ctx.n_ticks);
         if state::body_upload_needed(&self.spins, &self.uploaded_rotors, bodies_moving) {

@@ -6,6 +6,7 @@
 use anyhow::{anyhow, Result};
 use loam_app::args::Args;
 use loam_app::egui;
+use loam_physics::euclidean_r4::MAX_POLYTOPE4_VERTICES;
 use loam_render::raymarch::RaymarchShape;
 use loam_shape::polytope::Polytope4;
 
@@ -19,6 +20,22 @@ pub(crate) struct ShapeEntry {
     pub(crate) body_color: [f32; 3],
     pub(crate) label: &'static str,
     pub(crate) long_name: &'static str,
+}
+
+impl ShapeEntry {
+    /// The polychoron this entry collides as its own hull, or `None` to keep
+    /// the bounding ball.
+    ///
+    /// Two independent reasons for `None`, and the budget is the interesting
+    /// one: a vertex list longer than [`MAX_POLYTOPE4_VERTICES`] is truncated
+    /// by the narrowphase in release, which is a corrupt hull rather than a
+    /// coarse one, so the 120-cell (600 vertices) and 600-cell (120) have to
+    /// stay spheres. The four smooth solids simply have no vertex list.
+    pub(crate) fn collider_polytope(&self) -> Option<Polytope4> {
+        self.shape
+            .polytope4()
+            .filter(|p| p.vertex_count() <= MAX_POLYTOPE4_VERTICES)
+    }
 }
 
 /// Default row when no `shapes` argument is given. 24-cell first (most
@@ -217,6 +234,47 @@ pub(crate) fn parse_row(args: &Args) -> Result<Vec<ShapeEntry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sweeps the whole catalog rather than the four entries the collider swap
+    /// was written for: exactly the shapes whose hull fits the narrowphase
+    /// budget get one, and each of those has an exact inertia to carry with
+    /// it. A shape added to the catalog with 33 vertices, or a polychoron that
+    /// fits the budget but has no derived second moment, fails here rather
+    /// than colliding a truncated hull or a bounding-ball inertia in silence.
+    #[test]
+    fn every_catalog_entry_gets_a_hull_or_a_ball_and_a_matching_inertia() {
+        let with_hull: Vec<&str> = SHAPE_CATALOG
+            .iter()
+            .filter(|e| e.collider_polytope().is_some())
+            .map(|e| e.label)
+            .collect();
+        assert_eq!(with_hull, ["5-cell", "8-cell", "16-cell", "24-cell"]);
+
+        for entry in SHAPE_CATALOG {
+            match entry.collider_polytope() {
+                Some(shape) => {
+                    assert!(shape.vertex_count() <= MAX_POLYTOPE4_VERTICES, "{shape:?}");
+                    assert!(
+                        loam_physics::euclidean_r4::regular_polytope4_inertia(shape, 1.0, 1.0)
+                            .is_some(),
+                        "{} collides its hull with no exact inertia to go with it",
+                        entry.label
+                    );
+                }
+                None => {
+                    let over_budget = entry
+                        .shape
+                        .polytope4()
+                        .is_some_and(|p| p.vertex_count() > MAX_POLYTOPE4_VERTICES);
+                    assert!(
+                        over_budget || entry.shape.polytope4().is_none(),
+                        "{} has a hull that fits but was left on the ball",
+                        entry.label
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn row_comes_from_the_args_value_not_the_process_environment() {

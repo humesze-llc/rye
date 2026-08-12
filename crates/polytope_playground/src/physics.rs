@@ -285,7 +285,7 @@ impl PlaygroundPhysics {
     ///
     /// Everything else, the two polychora that overflow the cap and the four
     /// smooth solids, keeps the bounding ball. See
-    /// [`ShapeEntry::collider_polytope`] and
+    /// [`crate::catalog::ShapeEntry::collider_polytope`] and
     /// [`loam_physics::euclidean_r4::regular_polytope4_inertia`].
     pub(crate) fn sync(&mut self, row: &[ShapeEntry], spins: &SlotSpins, size: f32) {
         if self.world.bodies.len() != row.len() {

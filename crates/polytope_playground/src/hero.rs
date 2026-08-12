@@ -23,7 +23,7 @@
 //! collider that would be required to give it one.
 //!
 //! **Which polychora rain.** Only the four under the narrowphase's vertex cap
-//! carry a hull ([`ShapeEntry::collider_polytope`]); the 120-cell, the 600-cell
+//! carry a hull ([`crate::catalog::ShapeEntry::collider_polytope`]); the 120-cell, the 600-cell
 //! and the four smooth solids keep a bounding ball. A ball has no corner to
 //! catch on a letter and no offset contact to spin itself about, so raining
 //! them would be raining spheres. [`RAIN_SHAPES`] is therefore the hulled four,
@@ -94,8 +94,8 @@ const ENTRY_SPAN: f32 = 3.2;
 /// here.
 const RELEASE_CLEARANCE: f32 = 0.05;
 
-/// Ticks after release before the first polychoron is spawned. Every letter
-/// is at rest well inside this, which
+/// Ticks after release before the first polychoron is spawned. Every letter is
+/// at rest well inside this, which the test
 /// `every_letter_is_at_rest_on_the_floor_before_the_rain_starts` pins at the
 /// last tick before the spawn.
 const SETTLE_TICKS: u32 = 120;
@@ -517,7 +517,7 @@ fn unit(draw: u64) -> f32 {
     ((draw >> 40) as u32) as f32 * (1.0 / 16_777_216.0)
 }
 
-/// Draw in `[-1, 1)`, same exactness argument as [`unit`].
+/// Draw in `[-1, 1)`, same exactness argument as the unit draw above.
 fn signed_unit(draw: u64) -> f32 {
     2.0 * unit(draw) - 1.0
 }
@@ -948,7 +948,7 @@ impl loam_app::shell::Scene for HeroScene {
             (cfg.width, cfg.height),
             rd.sample_count(),
         );
-        let depth = self.depth.as_ref().expect("ensure() guarantees Some");
+        let depth = self.depth.as_ref().expect("ensure() guarantees Some"); // ok: called on the line above
         let _ = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("hero depth clear pass"),
             color_attachments: &[],
@@ -1012,7 +1012,7 @@ mod tests {
     const REST_SPREAD: f32 = 0.02;
 
     /// Displacement, in em, that counts as a letter having been knocked aside
-    /// rather than nudged. Measured at this seed by
+    /// rather than nudged. Measured at this seed by the test
     /// `the_quoted_figures_are_the_ones_the_scene_produces`: the rain moves
     /// `L` 0.770, `O` 0.940, `A` 1.384 and `M` 1.751 em, so the criterion has
     /// 3x of margin on the least-moved letter and the threshold is not the
@@ -1042,9 +1042,9 @@ mod tests {
     }
 
     /// The character a letter index stands for, for readable failures.
-    /// `WORD` holds no whitespace, so its characters and the scene's letters
-    /// are the same list in the same order;
-    /// `the_assembled_word_is_in_reading_order_on_the_baseline` pins that.
+    /// `WORD` holds no whitespace, so its characters and the scene's letters are
+    /// the same list in the same order, which the test
+    /// `the_assembled_word_is_in_reading_order_on_the_baseline` pins.
     fn label(index: usize) -> char {
         WORD.chars()
             .nth(index)
@@ -1240,6 +1240,10 @@ mod tests {
         );
     }
 
+    /// The scene's second criterion: the rain is what moves the letters. The
+    /// displacement is measured from the settled pose at the tick before the
+    /// first spawn, so nothing of the landing is counted in it.
+    #[test]
     fn the_rain_knocks_at_least_one_letter_past_the_scatter_threshold() {
         let mut scene = scene();
         scene.run_to(RAIN_START_TICK);

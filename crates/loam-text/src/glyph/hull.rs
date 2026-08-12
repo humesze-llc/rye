@@ -155,7 +155,7 @@ mod tests {
             .collect()
     }
 
-    /// A hull is counter-clockwise, carries no collinear vertex, and keeps
+    /// A hull is counter-clockwise, carries no collinear vertex, and encloses
     /// every input point. Interior and edge-midpoint inputs are what a
     /// collinear-tolerant turn test would leak through.
     #[test]
@@ -174,9 +174,20 @@ mod tests {
             Vec2::new(0.0, 1.0),
             Vec2::new(1.0, 1.0),
         ]);
-        let hull = convex_hull(points);
+        let hull = convex_hull(points.clone());
         assert_eq!(hull.len(), 4, "hull kept a collinear or interior point");
         assert!(double_area(&hull) > 0.0, "hull is clockwise");
+        let n = hull.len();
+        for p in &points {
+            for k in 0..n {
+                let a = hull[k];
+                let b = hull[(k + 1) % n];
+                assert!(
+                    (b - a).perp_dot(*p - a) >= 0.0,
+                    "input {p} lies outside hull edge {k}"
+                );
+            }
+        }
     }
 
     /// The property every downstream claim rests on: reduction only grows the

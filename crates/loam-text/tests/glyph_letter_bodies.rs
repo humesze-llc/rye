@@ -26,22 +26,27 @@ use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 const WORD: &str = "LOAM";
 const GRAVITY: f32 = -9.8;
 
-/// 240 Hz. At 120 Hz the same drops leave a letter 0.14 to 0.29 em below its
-/// rest pose after ten seconds: the Baumgarte correction cannot climb back out
-/// faster than the letter rocks back in, and the single deepest-vertex contact
-/// gives it one point per step to climb on.
+/// 240 Hz. At 120 Hz the same drops do not come to rest: over ten seconds `O`,
+/// `A` and `M` skid 0.45 to 0.61 em off their spawn column and end with their
+/// centre 0.14 to 0.25 em lower, deepest vertex still on the floor, i.e. tipped
+/// rather than sunk. The narrowphase reports one deepest vertex per step and a
+/// manifold holds four, so halving the rate halves the constraints the solver
+/// has accumulated by the time the letter has rocked onto a corner.
 const DT: f32 = 1.0 / 240.0;
 
 /// Clearance between a letter's lowest hull vertex and the floor at spawn, so
 /// the landing is at 1.0 m/s.
 ///
-/// Deliberately gentle, and the number is a measured ceiling rather than a
-/// taste. `polytope_halfspace_r4` reports one deepest vertex per step and a
-/// manifold holds four, so a level 4D landing has more tied deepest corners
-/// than the solver can carry constraints for. Swept in 0.01 steps, every drop
-/// up to 0.05 em settles to under 0.005 em of residual motion and every drop
-/// past it leaves the letter rocking at 0.08 to 0.5 em indefinitely. Raising
-/// this is a multi-contact narrowphase in `loam-physics`, not a change here.
+/// Deliberately gentle, and a sampled point rather than the top of an envelope.
+/// `polytope_halfspace_r4` reports one deepest vertex per step and a manifold
+/// holds four, so a level 4D landing has more tied deepest corners than the
+/// solver can carry constraints for, and whether a given landing recovers is
+/// not monotone in drop height. Sampled at 0.01 through 0.17 em over twenty
+/// seconds: 0.05 holds every letter within 0.005 em of residual motion and
+/// 0.082 em of its spawn column, while 0.02 lets `O` skid 0.48 em, 0.04 lets
+/// `M` skid 0.83 em, and everything from 0.06 up skids 0.27 to 2.2 em. Widening
+/// this to a range is a multi-contact narrowphase in `loam-physics`, not a
+/// change here.
 const DROP_CLEARANCE: f32 = 0.05;
 
 /// 8 s. The letter lands inside 0.15 s; the rest is the window in which a

@@ -271,9 +271,9 @@ mod tests {
         });
     }
 
-    /// The table shadows rather than duplicates: `apply_drained` consults the
-    /// App hook only when this returns false, so what the table claims is the
-    /// whole of the precedence rule.
+    /// A claimed name has to be the applied one and an unclaimed name has to
+    /// leave engine state untouched; those two together are what
+    /// `apply_drained` reads when it decides whether to consult the App hook.
     #[test]
     fn the_engine_table_claims_vsync_and_leaves_unknown_verbs_to_the_app_hook() {
         let _held = crate::frame_pacing::TEST_LOCK
@@ -301,5 +301,57 @@ mod tests {
             None,
             "an unclaimed verb must leave engine state alone"
         );
+    }
+
+    /// Shipped code of `source`: comments dropped, because the prose names the
+    /// very call sites the scan counts, and the test module dropped with it.
+    fn shipped_code(source: &str) -> String {
+        source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split yields the head")
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn call_sites(code: &str, needle: &str) -> Vec<usize> {
+        code.match_indices(needle).map(|(at, _)| at).collect()
+    }
+
+    /// Criterion: one drain point, ahead of the ticks it stamps for, in each
+    /// runner. Read off the source because neither frame loop is reachable
+    /// from a headless test: the windowed one needs a surface and the worker
+    /// one a browser. A behavioural test that rebuilds the frame order in the
+    /// harness pins the queue, not the placement, and stays green when the
+    /// call moves.
+    #[test]
+    fn each_runner_drains_once_and_before_its_ticks() {
+        for (runner, source) in [
+            ("windowed runner", include_str!("lib.rs")),
+            ("wasm worker", include_str!("wasm/worker.rs")),
+        ] {
+            let code = shipped_code(source);
+            let drains = call_sites(&code, "apply_drained(");
+            let ticks = call_sites(&code, "drive_fixed_ticks(");
+            assert_eq!(
+                drains.len(),
+                1,
+                "{runner}: a second drain is a second ordering, and the stamp \
+                 then describes only part of the frame's mutations"
+            );
+            assert_eq!(
+                ticks.len(),
+                1,
+                "{runner}: the scan needs exactly one tick call to order the \
+                 drain against"
+            );
+            assert!(
+                drains[0] < ticks[0],
+                "{runner}: the drain must precede the ticks, or a command is \
+                 applied after the batch it was stamped ahead of"
+            );
+        }
     }
 }

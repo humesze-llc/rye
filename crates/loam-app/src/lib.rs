@@ -2168,9 +2168,11 @@ mod tests {
         }
     }
 
-    /// Run the two runners' frame order for real: drain and record, then tick.
-    /// One command is submitted per frame, standing in for the console line or
+    /// Replay the two runners' frame order: drain and record, then tick. One
+    /// command is submitted per frame, standing in for the console line or
     /// bound key that would have been typed during the previous frame's UI.
+    /// That the runners really call in this order is a separate assertion,
+    /// `command::tests::each_runner_drains_once_and_before_its_ticks`.
     fn drive_with_commands(offsets: &[Duration], max_catch_up: u32) -> Vec<FrameEvent> {
         let _held = command::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = command::drain(0);

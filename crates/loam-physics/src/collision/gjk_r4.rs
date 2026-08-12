@@ -384,7 +384,9 @@ mod tests {
             let b = ConvexHull4 { vertices: &vb };
             let depth = match gjk_intersect_r4(&a, &b, Vec4::X) {
                 GjkResult4::Intersecting { simplex } => {
-                    epa_r4(&a, &b, simplex).map_or(0.0, |c| c.penetration)
+                    // Both hulls are circumradius 1, so the Minkowski
+                    // difference's characteristic length is 2.
+                    epa_r4(&a, &b, simplex, 2.0).map_or(0.0, |c| c.penetration)
                 }
                 GjkResult4::Separated => 0.0,
             };

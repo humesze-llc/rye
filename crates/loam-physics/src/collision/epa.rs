@@ -9,19 +9,31 @@
 //! Each iteration: find the closest face, query a support along its outward normal,
 //! terminate if that support's distance matches the face's, else add the support
 //! (remove faces it sees, stitch new triangles from each horizon edge to it).
+//!
+//! Every geometric threshold here is a dimensionless coefficient times the
+//! caller's `scale` raised to the homogeneity degree of the quantity it guards,
+//! so the resolved contact is equivariant under a uniform scaling of both
+//! bodies. See [`Thresholds`], and [`super::epa_r4`][mod@super::epa_r4] for the
+//! 4D twin of the same treatment.
 
 use glam::Vec3;
 
 use super::gjk::{minkowski_support, MinkowskiPoint, SupportFn};
 
 const EPA_MAX_ITERATIONS: u32 = 48;
-const EPA_TOLERANCE: f32 = 1e-4;
 /// Sanity cap: a well-formed EPA finishes with < 30 vertices; past this we are in
 /// a degenerate stall.
 const EPA_MAX_VERTICES: usize = 96;
 
-/// Band around a face plane in which a support point counts as lying on it, so
-/// that `expand` retires the face instead of keeping it.
+/// Support gap at which the expansion has reached the boundary, per unit of
+/// `scale`. Degree 1: the compared quantity is the distance between two planes
+/// with the same unit normal. Held absolute it buys a fixed number of world
+/// units of depth accuracy rather than a fixed number of digits.
+const EPA_TOLERANCE: f32 = 1e-4;
+
+/// Band around a face plane, per unit of `scale`, in which a support point
+/// counts as lying on it, so that `expand` retires the face instead of keeping
+/// it.
 ///
 /// A facet of a Minkowski difference of polytopes is generally not a simplex:
 /// the difference body of two boxes is a box, whose square facets are each
@@ -32,15 +44,18 @@ const EPA_MAX_VERTICES: usize = 96;
 /// interior to the difference body. Sibling of `epa_r4::FACE_COPLANAR_EPS`:
 /// same value, same conditioning class.
 ///
-/// Measured over 11160 axis-aligned box pairs spanning scales 0.02 to 10, the
-/// band that resolves every one against a real facet is `[3e-7, 1e-4]`. The
-/// floor is where f32 stops resolving the plane residual of a unit-scale dot
-/// product; the ceiling is `EPA_TOLERANCE`, above which the epsilon retires
-/// faces whose support gap is the very thing EPA is still closing, and the
-/// crate's sphere fixtures start losing depth (at 3e-4 one fails, at 1e-3 two).
-/// 1e-5 is 33x above the floor and an order below the ceiling.
+/// Degree 1: the residual is a distance along a unit normal. Measured over
+/// 11160 axis-aligned box pairs spanning scales 0.02 to 10, the band that
+/// resolves every one against a real facet is `[3e-7, 1e-4]` absolute, and it
+/// covered both ends of that grid at once only because the coefficient sits
+/// near the band's logarithmic centre. The floor is where f32 stops resolving
+/// the plane residual of a dot product at the operands' magnitude, so it tracks
+/// the geometry; the ceiling is `EPA_TOLERANCE`, above which the epsilon
+/// retires faces whose support gap is the very thing EPA is still closing. Both
+/// ends being degree 1, the band scales with `scale` and 1e-5 keeps its 33x of
+/// floor clearance and its order of ceiling clearance at every size.
 ///
-/// Below 3e-7 is worse than zero, not merely weaker. `add_or_remove_edge`
+/// Below the floor is worse than zero, not merely weaker. `add_or_remove_edge`
 /// cancels horizon edges by winding, so retiring part of a coplanar band and
 /// keeping the rest leaves edges with no reverse to cancel against, the horizon
 /// stops being a topological disc, and each iteration stitches more faces than
@@ -49,6 +64,48 @@ const EPA_MAX_VERTICES: usize = 96;
 /// against 180 at exactly zero, and at 1e-8 the wrong-contact count rises from
 /// 21 to 28.
 const FACE_COPLANAR_EPS: f32 = 1e-5;
+
+/// Floor on `|(b−a) × (c−a)|`, per `scale` squared, below which a face has no
+/// usable normal direction and one is fabricated. Degree 2: the cross product
+/// of two edge vectors is an area.
+const FACE_DEGENERATE_CROSS: f32 = 1e-8;
+
+/// Floor on the seed tetrahedron's `|(p1−p0)·((p2−p0)×(p3−p0))|`, per `scale`
+/// cubed, below which the seed is coplanar and has no interior to orient faces
+/// against. Degree 3: a scalar triple product is a volume, so it loses three
+/// decades of headroom per decade of shrinkage. Held absolute this is the first
+/// guard to fire on the small side, and it is what rejected 1040 of 1208
+/// axis-aligned box pairs at half-extent 0.02.
+const SEED_DEGENERATE_VOLUME: f32 = 1e-8;
+
+/// Floor on the Gram determinant of a face's two edge vectors, per `scale` to
+/// the fourth, below which the barycentric solve has no pivot and falls back to
+/// the first vertex. Degree 4: `d00·d11 − d01²` is a product of two inner
+/// products.
+const BARYCENTRIC_SINGULAR_EPS: f32 = 1e-12;
+
+/// The scale-derived thresholds of one `epa` call: each constant times `scale`
+/// raised to that constant's degree, evaluated once at entry because `scale` is
+/// fixed for the call while `build_face_vs_point` runs once per horizon edge
+/// per iteration.
+#[derive(Clone, Copy)]
+struct Thresholds {
+    support_gap: f32,
+    coplanar_band: f32,
+    cross_norm: f32,
+    barycentric_gram: f32,
+}
+
+impl Thresholds {
+    fn for_scale(scale: f32) -> Self {
+        Self {
+            support_gap: EPA_TOLERANCE * scale,
+            coplanar_band: FACE_COPLANAR_EPS * scale,
+            cross_norm: FACE_DEGENERATE_CROSS * scale * scale,
+            barycentric_gram: BARYCENTRIC_SINGULAR_EPS * scale.powi(4),
+        }
+    }
+}
 
 /// Resolved contact info for a [`crate::Contact`].
 #[derive(Clone, Copy, Debug)]
@@ -80,21 +137,30 @@ struct Polytope {
     /// it orients new faces outward. An arbitrary old vertex can sit on a new
     /// face's plane and flip the orientation, corrupting the polytope.
     interior: glam::Vec3,
+    thresholds: Thresholds,
 }
 
 impl Polytope {
-    fn from_tetra(tetra: [MinkowskiPoint; 4]) -> Self {
+    fn from_tetra(tetra: [MinkowskiPoint; 4], thresholds: Thresholds) -> Self {
         let vertices = tetra.to_vec();
         let interior = (tetra[0].point + tetra[1].point + tetra[2].point + tetra[3].point) * 0.25;
         // Four faces, each wound so its normal points away from the opposite vertex.
         let mut faces = Vec::with_capacity(4);
         for &(i, j, k, l) in &[(0, 1, 2, 3), (0, 3, 1, 2), (0, 2, 3, 1), (1, 3, 2, 0)] {
-            faces.push(build_face_vs_point(&vertices, i, j, k, vertices[l].point));
+            faces.push(build_face_vs_point(
+                &vertices,
+                i,
+                j,
+                k,
+                vertices[l].point,
+                thresholds.cross_norm,
+            ));
         }
         Self {
             vertices,
             faces,
             interior,
+            thresholds,
         }
     }
 
@@ -119,9 +185,10 @@ impl Polytope {
         let mut horizon: Vec<(usize, usize)> = Vec::new();
         let mut keep = Vec::with_capacity(self.faces.len());
 
+        let coplanar_band = self.thresholds.coplanar_band;
         for f in self.faces.drain(..) {
             let view = support.point - self.vertices[f.v[0]].point;
-            if f.normal.dot(view) > -FACE_COPLANAR_EPS {
+            if f.normal.dot(view) > -coplanar_band {
                 add_or_remove_edge(&mut horizon, f.v[0], f.v[1]);
                 add_or_remove_edge(&mut horizon, f.v[1], f.v[2]);
                 add_or_remove_edge(&mut horizon, f.v[2], f.v[0]);
@@ -134,9 +201,16 @@ impl Polytope {
         // Stitch each horizon edge to the new vertex, oriented against the seed
         // centroid (a guaranteed interior reference; see the `interior` field).
         let interior = self.interior;
+        let cross_norm = self.thresholds.cross_norm;
         for &(i, j) in &horizon {
-            self.faces
-                .push(build_face_vs_point(&self.vertices, i, j, new_idx, interior));
+            self.faces.push(build_face_vs_point(
+                &self.vertices,
+                i,
+                j,
+                new_idx,
+                interior,
+                cross_norm,
+            ));
         }
     }
 }
@@ -149,6 +223,7 @@ fn build_face_vs_point(
     b: usize,
     c: usize,
     interior_point: Vec3,
+    cross_norm_floor: f32,
 ) -> Face {
     let pa = verts[a].point;
     let pb = verts[b].point;
@@ -156,7 +231,7 @@ fn build_face_vs_point(
 
     let mut normal = (pb - pa).cross(pc - pa);
     let len = normal.length();
-    if len < 1e-8 {
+    if len < cross_norm_floor {
         normal = Vec3::Y;
     } else {
         normal /= len;
@@ -193,7 +268,7 @@ fn add_or_remove_edge(horizon: &mut Vec<(usize, usize)>, a: usize, b: usize) {
 
 /// Barycentric coords `(u, v, w)` of `p` projected onto triangle `(a, b, c)`, with
 /// `u·a + v·b + w·c` the projection.
-fn barycentric(a: Vec3, b: Vec3, c: Vec3, p: Vec3) -> (f32, f32, f32) {
+fn barycentric(a: Vec3, b: Vec3, c: Vec3, p: Vec3, gram_floor: f32) -> (f32, f32, f32) {
     let v0 = b - a;
     let v1 = c - a;
     let v2 = p - a;
@@ -203,7 +278,7 @@ fn barycentric(a: Vec3, b: Vec3, c: Vec3, p: Vec3) -> (f32, f32, f32) {
     let d20 = v2.dot(v0);
     let d21 = v2.dot(v1);
     let denom = d00 * d11 - d01 * d01;
-    if denom.abs() < 1e-12 {
+    if denom.abs() < gram_floor {
         return (1.0, 0.0, 0.0);
     }
     let v = (d11 * d20 - d01 * d21) / denom;
@@ -214,12 +289,20 @@ fn barycentric(a: Vec3, b: Vec3, c: Vec3, p: Vec3) -> (f32, f32, f32) {
 
 /// Penetration normal, depth, and contact point for two overlapping shapes, given
 /// GJK's terminating tetrahedron.
+///
+/// `scale` is the characteristic length of the Minkowski difference; the
+/// caller's contract is to pass the sum of the two bodies' bounding radii,
+/// which every caller already computes for its broadphase pre-cull. Each of the
+/// five thresholds in this module is its constant times `scale` raised to that
+/// constant's degree, which is what makes the result equivariant under a
+/// uniform scaling of both bodies.
 pub fn epa<A: SupportFn, B: SupportFn>(
     a: &A,
     b: &B,
     initial_simplex: [MinkowskiPoint; 4],
+    scale: f32,
 ) -> Option<ContactInfo> {
-    let (polytope, face) = expand_to_boundary(a, b, initial_simplex)?;
+    let (polytope, face) = expand_to_boundary(a, b, initial_simplex, scale)?;
     contact_from_face(&polytope, face)
 }
 
@@ -230,18 +313,21 @@ fn expand_to_boundary<A: SupportFn, B: SupportFn>(
     a: &A,
     b: &B,
     initial_simplex: [MinkowskiPoint; 4],
+    scale: f32,
 ) -> Option<(Polytope, Face)> {
+    let thresholds = Thresholds::for_scale(scale);
+
     // Reject a near-coplanar (zero-volume) seed: |det([p1-p0, p2-p0, p3-p0])|.
     let p0 = initial_simplex[0].point;
     let p1 = initial_simplex[1].point;
     let p2 = initial_simplex[2].point;
     let p3 = initial_simplex[3].point;
     let volume6 = (p1 - p0).dot((p2 - p0).cross(p3 - p0)).abs();
-    if volume6 < 1e-8 {
+    if volume6 < SEED_DEGENERATE_VOLUME * scale.powi(3) {
         return None;
     }
 
-    let mut polytope = Polytope::from_tetra(initial_simplex);
+    let mut polytope = Polytope::from_tetra(initial_simplex, thresholds);
 
     for _ in 0..EPA_MAX_ITERATIONS {
         // A collapsed polytope (no faces) is outside EPA's domain; bail cleanly.
@@ -256,7 +342,7 @@ fn expand_to_boundary<A: SupportFn, B: SupportFn>(
             return None;
         }
 
-        if (new_distance - face.distance).abs() < EPA_TOLERANCE {
+        if (new_distance - face.distance).abs() < thresholds.support_gap {
             return Some((polytope, face));
         }
 
@@ -286,7 +372,13 @@ fn contact_from_face(polytope: &Polytope, face: Face) -> Option<ContactInfo> {
     // Closest point on the face to the origin, in Minkowski-diff space.
     let closest = face.normal * face.distance;
 
-    let (u, v, w) = barycentric(v0.point, v1.point, v2.point, closest);
+    let (u, v, w) = barycentric(
+        v0.point,
+        v1.point,
+        v2.point,
+        closest,
+        polytope.thresholds.barycentric_gram,
+    );
 
     // Same weights against the cached supports recover the points on A and B.
     let point_a = v0.sa * u + v1.sa * v + v2.sa * w;
@@ -317,11 +409,19 @@ mod tests {
         ]
     }
 
-    fn run(a: &impl SupportFn, b: &impl SupportFn, d: Vec3) -> ContactInfo {
+    fn run(a: &impl SupportFn, b: &impl SupportFn, d: Vec3, scale: f32) -> ContactInfo {
         match gjk_intersect(a, b, d) {
-            GjkResult::Intersecting { simplex } => epa(a, b, simplex).expect("EPA should converge"),
+            GjkResult::Intersecting { simplex } => {
+                epa(a, b, simplex, scale).expect("EPA should converge")
+            }
             GjkResult::Separated => panic!("GJK says separated, EPA can't run"),
         }
+    }
+
+    /// Bounding radius of `box_vertices(_, splat(half))` about its own centre,
+    /// which is the term `epa`'s `scale` contract asks a box to contribute.
+    fn box_radius(half: f32) -> f32 {
+        half * 3.0_f32.sqrt()
     }
 
     fn assert_close(a: f32, b: f32, tol: f32) {
@@ -342,7 +442,7 @@ mod tests {
             center: Vec3::new(1.5, 0.0, 0.0),
             radius: 1.0,
         };
-        let info = run(&a, &b, Vec3::new(1.5, 0.0, 0.0));
+        let info = run(&a, &b, Vec3::new(1.5, 0.0, 0.0), 2.0);
         assert_close(info.penetration, 0.5, 1e-3);
         assert!(info.normal.dot(Vec3::X) > 0.99, "normal: {:?}", info.normal);
     }
@@ -355,7 +455,7 @@ mod tests {
         let a = ConvexHull { vertices: &va };
         let b = ConvexHull { vertices: &vb };
 
-        let info = run(&a, &b, Vec3::new(1.5, 0.0, 0.0));
+        let info = run(&a, &b, Vec3::new(1.5, 0.0, 0.0), 2.0 * box_radius(1.0));
         assert!(
             info.normal.dot(Vec3::X) > 0.99,
             "normal must run from A toward B along +x, got {:?}",
@@ -376,7 +476,7 @@ mod tests {
         };
 
         // Box as A, sphere as B so normal A->B points toward (1,1,1)/√3.
-        let info = run(&b, &s, Vec3::new(1.0, 1.0, 1.0));
+        let info = run(&b, &s, Vec3::new(1.0, 1.0, 1.0), box_radius(1.0) + 0.5);
         let expected = Vec3::new(1.0, 1.0, 1.0).normalize();
         assert!(
             info.normal.dot(expected) > 0.95,
@@ -386,6 +486,9 @@ mod tests {
         );
         assert_close(info.penetration, 0.5 - 3.0_f32.sqrt() * 0.2, 1e-2);
     }
+
+    /// Both degeneracy fixtures below drive the same pair of radius-1 spheres.
+    const SPHERE_PAIR_SCALE: f32 = 2.0;
 
     /// Pre-images are irrelevant to a seed that never reaches contact
     /// reconstruction, so they are the difference points themselves.
@@ -398,8 +501,10 @@ mod tests {
     }
 
     /// Base triangle around the origin plus an apex at height `h`, giving
-    /// `|det| = 4·h` against the seed's 1e-8 volume floor: `h = 0` is the flat
-    /// seed, everything above it is admissible.
+    /// `|det| = 4·h` against a volume floor of
+    /// `SEED_DEGENERATE_VOLUME·SPHERE_PAIR_SCALE³` = 8e-8: `h = 0` is the flat
+    /// seed, and every height sampled below clears the floor by more than an
+    /// order.
     fn seed_of_height(h: f32) -> [MinkowskiPoint; 4] {
         seed([
             Vec3::new(-1.0, -1.0, 0.0),
@@ -426,11 +531,11 @@ mod tests {
         };
 
         assert!(
-            epa(&a, &b, seed_of_height(0.0)).is_none(),
+            epa(&a, &b, seed_of_height(0.0), SPHERE_PAIR_SCALE).is_none(),
             "a seed with no 3-volume has no interior to orient against"
         );
         for h in [1e-6, 1e-4, 1e-2, 1.0] {
-            let contact = epa(&a, &b, seed_of_height(h))
+            let contact = epa(&a, &b, seed_of_height(h), SPHERE_PAIR_SCALE)
                 .unwrap_or_else(|| panic!("seed of height {h} clears the volume floor"));
             assert!(
                 contact.normal.is_finite()
@@ -470,8 +575,8 @@ mod tests {
             Vec3::new(1.0, -1.0, -1.0),
             Vec3::new(0.0, 1.0, 1.0),
         ]);
-        assert!(epa(&a, &b, collinear).is_none());
-        assert!(epa(&a, &b, repeated).is_none());
+        assert!(epa(&a, &b, collinear, SPHERE_PAIR_SCALE).is_none());
+        assert!(epa(&a, &b, repeated, SPHERE_PAIR_SCALE).is_none());
     }
 
     /// Boxes nested deeply enough that separating along the shallowest axis is a
@@ -484,7 +589,7 @@ mod tests {
         let vb = box_vertices(Vec3::new(0.3, 0.1, 0.2), Vec3::ONE);
         let a = ConvexHull { vertices: &va };
         let b = ConvexHull { vertices: &vb };
-        let info = run(&a, &b, Vec3::new(0.3, 0.1, 0.2));
+        let info = run(&a, &b, Vec3::new(0.3, 0.1, 0.2), 2.0 * box_radius(1.0));
         assert_close(info.penetration, 2.0 - 0.3, EPA_TOLERANCE);
         assert!(
             info.normal.dot(Vec3::X) > 0.999,
@@ -519,7 +624,7 @@ mod tests {
             let a = ConvexHull { vertices: &va };
             let b = ConvexHull { vertices: &vb };
 
-            let info = run(&a, &b, offset);
+            let info = run(&a, &b, offset, 2.0 * box_radius(half));
             assert_close(
                 info.penetration,
                 2.0 * half - offset.abs().max_element(),
@@ -556,7 +661,8 @@ mod tests {
             GjkResult::Intersecting { simplex } => simplex,
             GjkResult::Separated => panic!("boxes overlap; GJK must report intersecting"),
         };
-        let (polytope, face) = expand_to_boundary(&a, &b, simplex).expect("EPA should converge");
+        let (polytope, face) = expand_to_boundary(&a, &b, simplex, 2.0 * box_radius(0.1))
+            .expect("EPA should converge");
 
         assert!(
             polytope.faces.len() <= 24,
@@ -571,5 +677,125 @@ mod tests {
             "normal must run from A toward B along -z, got {:?}",
             info.normal
         );
+    }
+
+    /// The scaling twin of the fixtures above, and the 3D half of the property
+    /// `epa_r4_contact_is_equivariant_under_uniform_scaling` pins in R⁴. Each
+    /// case is similar to itself at every `s`, so the difference body is `s`
+    /// times the unit one, the depth is `s` times the unit depth, and the
+    /// normal does not move at all.
+    ///
+    /// Every guard in this module compares a distance, an area, a volume or a
+    /// Gram determinant, so a threshold held absolute loses one, two, three or
+    /// four decades of headroom per decade of shrinkage. Passing `scale = 1` at
+    /// every `s`, which is what the pre-`scale` thresholds amount to, fails
+    /// this at the small end on the curved fixture: the spheres come out 4.5%
+    /// shallow at `s = 1e-3` with a normal 17 degrees off the separating axis,
+    /// and 0.3% shallow at `s = 1e-2` with 4.3 degrees. `EPA_TOLERANCE` is the
+    /// guard that does it, because absolute it buys a fixed number of world
+    /// units of support gap while the whole depth at `s = 1e-3` is 5e-4. The
+    /// box families return the exact depth at every `s` either way; they are
+    /// here to keep the flush-facet path in the property, not because a
+    /// threshold moves them.
+    ///
+    /// The seed is taken once at unit scale and scaled, rather than re-derived
+    /// by `gjk_intersect` at each `s`. GJK compares `length_squared` against
+    /// absolute constants of its own, so below `s ~ 1e-2` it calls these
+    /// overlapping pairs separated and no seed arrives at all. That is a defect
+    /// in `gjk`, in a module this change does not touch, and scaling the seed
+    /// is what isolates the property being pinned here.
+    #[test]
+    fn epa_contact_is_equivariant_under_uniform_scaling() {
+        fn scaled(simplex: [MinkowskiPoint; 4], s: f32) -> [MinkowskiPoint; 4] {
+            simplex.map(|p| MinkowskiPoint {
+                point: p.point * s,
+                sa: p.sa * s,
+                sb: p.sb * s,
+            })
+        }
+
+        fn seed_at_unit_scale(
+            a: &impl SupportFn,
+            b: &impl SupportFn,
+            d: Vec3,
+        ) -> [MinkowskiPoint; 4] {
+            match gjk_intersect(a, b, d) {
+                GjkResult::Intersecting { simplex } => simplex,
+                GjkResult::Separated => panic!("unit-scale fixture must overlap"),
+            }
+        }
+
+        // Generic position and one-axis flush are the two box families the
+        // coplanar band separates; the spheres carry the curved support.
+        let box_offsets = [Vec3::new(0.3, 0.1, 0.2), Vec3::new(0.1, 0.05, 0.0)];
+        let unit_seeds: Vec<[MinkowskiPoint; 4]> = box_offsets
+            .iter()
+            .map(|&offset| {
+                let va = box_vertices(Vec3::ZERO, Vec3::ONE);
+                let vb = box_vertices(offset, Vec3::ONE);
+                seed_at_unit_scale(
+                    &ConvexHull { vertices: &va },
+                    &ConvexHull { vertices: &vb },
+                    offset,
+                )
+            })
+            .collect();
+        let sphere_seed = seed_at_unit_scale(
+            &Sphere {
+                center: Vec3::ZERO,
+                radius: 1.0,
+            },
+            &Sphere {
+                center: Vec3::new(1.5, 0.0, 0.0),
+                radius: 1.0,
+            },
+            Vec3::X,
+        );
+
+        for s in [1e-3_f32, 1e-2, 1.0, 1e2, 1e3] {
+            let sphere_a = Sphere {
+                center: Vec3::ZERO,
+                radius: s,
+            };
+            let sphere_b = Sphere {
+                center: Vec3::new(1.5 * s, 0.0, 0.0),
+                radius: s,
+            };
+            let scale = 2.0 * s;
+            let contact = epa(&sphere_a, &sphere_b, scaled(sphere_seed, s), scale)
+                .unwrap_or_else(|| panic!("spheres at scale {s} resolved to no contact"));
+            assert!(
+                (contact.penetration - 0.5 * s).abs() <= EPA_TOLERANCE * scale,
+                "spheres at scale {s}: depth {} is not {}",
+                contact.penetration,
+                0.5 * s
+            );
+            assert!(
+                contact.normal.dot(Vec3::X) > 0.999,
+                "spheres at scale {s}: normal {:?}",
+                contact.normal
+            );
+
+            for (&offset, &unit_seed) in box_offsets.iter().zip(unit_seeds.iter()) {
+                let va = box_vertices(Vec3::ZERO, Vec3::splat(s));
+                let vb = box_vertices(offset * s, Vec3::splat(s));
+                let a = ConvexHull { vertices: &va };
+                let b = ConvexHull { vertices: &vb };
+                let scale = 2.0 * box_radius(s);
+                let contact = epa(&a, &b, scaled(unit_seed, s), scale)
+                    .unwrap_or_else(|| panic!("boxes {offset:?} at scale {s}: no contact"));
+                let want = (2.0 - offset.abs().max_element()) * s;
+                assert!(
+                    (contact.penetration - want).abs() <= EPA_TOLERANCE * scale,
+                    "boxes {offset:?} at scale {s}: depth {} is not {want}",
+                    contact.penetration
+                );
+                assert!(
+                    contact.normal.dot(Vec3::X) > 0.999,
+                    "boxes {offset:?} at scale {s}: normal {:?}",
+                    contact.normal
+                );
+            }
+        }
     }
 }

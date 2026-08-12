@@ -282,7 +282,7 @@ fn polytope_polytope_r3(
         GjkResult::Intersecting { simplex } => simplex,
         GjkResult::Separated => return None,
     };
-    let info = epa(&hull_a, &hull_b, simplex)?;
+    let info = epa(&hull_a, &hull_b, simplex, combined)?;
     validate_contact(&info, a, b)
 }
 
@@ -318,7 +318,7 @@ fn sphere_polytope_r3(
         GjkResult::Intersecting { simplex } => simplex,
         GjkResult::Separated => return None,
     };
-    let info = epa(&support_a, &support_b, simplex)?;
+    let info = epa(&support_a, &support_b, simplex, combined)?;
     validate_contact(&info, a, b)
 }
 

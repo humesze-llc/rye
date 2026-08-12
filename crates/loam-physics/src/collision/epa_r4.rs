@@ -13,8 +13,10 @@
 //!
 //! Every geometric threshold here is a dimensionless coefficient times the
 //! caller's `scale` raised to the homogeneity degree of the quantity it
-//! guards, so the resolved contact is equivariant under a uniform scaling of
-//! both bodies. See [`Thresholds`].
+//! guards, so the resolved depth and normal are equivariant under a uniform
+//! scaling of both bodies. The contact point is not, and cannot be: a facet
+//! tiled by several coplanar tetra offers one witness per tile, and which tile
+//! terminates the expansion is not a similarity invariant. See [`Thresholds`].
 
 use glam::Vec4;
 
@@ -341,9 +343,9 @@ fn det3(
 /// caller's contract is to pass the sum of the two bodies' bounding radii,
 /// which every caller already computes for its broadphase pre-cull. Each of
 /// the four thresholds below is its constant times `scale` raised to that
-/// constant's degree, which is what makes the result equivariant under a
-/// uniform scaling of both bodies. A `scale` that does not track the geometry
-/// narrows or widens all four bands at once.
+/// constant's degree, which is what makes the depth and normal equivariant
+/// under a uniform scaling of both bodies. A `scale` that does not track the
+/// geometry narrows or widens all four bands at once.
 pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
     a: &A,
     b: &B,

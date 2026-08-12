@@ -12,9 +12,10 @@
 //!
 //! Every geometric threshold here is a dimensionless coefficient times the
 //! caller's `scale` raised to the homogeneity degree of the quantity it guards,
-//! so the resolved contact is equivariant under a uniform scaling of both
-//! bodies. See [`Thresholds`], and [`super::epa_r4`][mod@super::epa_r4] for the
-//! 4D twin of the same treatment.
+//! so the resolved depth and normal are equivariant under a uniform scaling of
+//! both bodies; the contact point is not, for the reason
+//! [`super::epa_r4`][mod@super::epa_r4] gives. See [`Thresholds`], and that
+//! module for the 4D twin of the same treatment.
 
 use glam::Vec3;
 
@@ -294,8 +295,8 @@ fn barycentric(a: Vec3, b: Vec3, c: Vec3, p: Vec3, gram_floor: f32) -> (f32, f32
 /// caller's contract is to pass the sum of the two bodies' bounding radii,
 /// which every caller already computes for its broadphase pre-cull. Each of the
 /// five thresholds in this module is its constant times `scale` raised to that
-/// constant's degree, which is what makes the result equivariant under a
-/// uniform scaling of both bodies.
+/// constant's degree, which is what makes the depth and normal equivariant
+/// under a uniform scaling of both bodies.
 pub fn epa<A: SupportFn, B: SupportFn>(
     a: &A,
     b: &B,

@@ -103,6 +103,7 @@ mod shapes;
 mod shell;
 mod spins;
 mod state;
+mod title;
 mod ui;
 mod wireframe_geom;
 

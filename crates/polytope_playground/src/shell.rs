@@ -23,6 +23,11 @@ impl SceneRegistry for Playground {
             label: "SDF editor",
             build: |ctx| Ok(Box::new(crate::sdf::SdfScene::new(ctx)?)),
         },
+        SceneEntry {
+            slug: "title",
+            label: "Title screen",
+            build: |ctx| Ok(Box::new(crate::title::TitleScene::new(ctx)?)),
+        },
     ];
 }
 
@@ -71,5 +76,14 @@ mod tests {
             .position(|entry| entry.slug == "sdf")
             .expect("`?scene=sdf` must resolve");
         assert_ne!(index, 0);
+    }
+
+    /// The title screen answers to `--scene=title` / `?scene=title`. Promoting
+    /// it to index 0, where a cold boot lands, is the maintainer's call and not
+    /// a scene registration detail, so this pins reachability and leaves the
+    /// boot scene where the test above asserts it is.
+    #[test]
+    fn the_title_screen_is_registered_by_slug() {
+        assert!(Playground::SCENES.iter().any(|entry| entry.slug == "title"));
     }
 }

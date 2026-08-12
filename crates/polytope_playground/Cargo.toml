@@ -15,6 +15,7 @@ categories = ["game-development", "graphics", "visualization"]
 # `crates/polytope_playground/index.html` is the Trunk entry point.
 
 [dependencies]
+ab_glyph = "0.2"
 anyhow.workspace = true
 glam.workspace = true
 tracing.workspace = true

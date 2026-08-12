@@ -48,6 +48,17 @@ impl GeodesicRayMarchNode {
         self.0.flush_uniforms(queue);
     }
 
+    /// Record into the caller's frame-wide encoder without submitting; see
+    /// [`RayMarchNode::record_in_viewport`].
+    pub fn record_in_viewport(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        viewport: crate::Viewport,
+    ) {
+        self.0.record_in_viewport(encoder, view, viewport);
+    }
+
     pub fn execute_panel(
         &mut self,
         rd: &RenderDevice,

@@ -150,7 +150,9 @@ fn non_finite_constant(shape: &Shape) -> Option<f32> {
     }
 }
 
-fn check_leaf(shape: &Shape) -> Result<(), String> {
+/// Shared with [`crate::edit`], so a tree an editor writes is a tree this
+/// module would have accepted from a file.
+pub(crate) fn check_leaf(shape: &Shape) -> Result<(), String> {
     match non_finite_constant(shape) {
         None => Ok(()),
         Some(value) => Err(format!(
@@ -167,18 +169,23 @@ fn check_node(node: &SceneNode) -> Result<(), String> {
         | SceneNode::Intersection(left, right)
         | SceneNode::Difference(left, right) => check_node(left).and_then(|()| check_node(right)),
         SceneNode::SmoothUnion { k, left, right } => {
-            // The emitted `smin` divides by `k` and the CPU twin divides by the
-            // same constant, so a zero blend radius is an infinity in the
-            // distance field and a negative one inverts the blend into a field
-            // that is no longer an underestimate of `min`.
-            if !k.is_finite() || *k <= 0.0 {
-                return Err(format!(
-                    "smooth-union blend radius must be finite and positive, got {k:?}",
-                ));
-            }
+            check_blend_radius(*k)?;
             check_node(left).and_then(|()| check_node(right))
         }
     }
+}
+
+/// The emitted `smin` divides by `k` and the CPU twin divides by the same
+/// constant, so a zero blend radius is an infinity in the distance field and a
+/// negative one inverts the blend into a field that is no longer an
+/// underestimate of `min`. Shared with [`crate::edit`].
+pub(crate) fn check_blend_radius(k: f32) -> Result<(), String> {
+    if !k.is_finite() || k <= 0.0 {
+        return Err(format!(
+            "smooth-union blend radius must be finite and positive, got {k:?}",
+        ));
+    }
+    Ok(())
 }
 
 fn check_node_4d(node: &SceneNode4) -> Result<(), String> {

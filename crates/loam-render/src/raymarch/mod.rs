@@ -305,6 +305,43 @@ impl RayMarchNode {
         self.execute_impl(rd, view, clear, Some(scissor))
     }
 
+    /// Like [`RenderNode::execute`] but records into the caller's `encoder` and
+    /// draws only inside `viewport` (the clear still covers the whole
+    /// attachment). **Does not submit**: a host that owns one encoder per frame
+    /// cannot use the submitting entry points without reordering its own
+    /// passes behind this one.
+    ///
+    /// The fragment shader still receives framebuffer-space
+    /// `@builtin(position)`, so a shader drawn into an offset viewport gets its
+    /// own origin from the caller (the four free
+    /// [`RayMarchUniforms::params`] slots are the place for it).
+    pub fn record_in_viewport(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        viewport: crate::Viewport,
+    ) {
+        let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("raymarch pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
+                    load: LoadOp::Clear(self.clear_color),
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        viewport.apply(&mut rp);
+        rp.set_pipeline(&self.pipeline);
+        rp.set_bind_group(0, &self.bind_group, &[]);
+        rp.draw(0..3, 0..1);
+    }
+
     fn execute_impl(
         &mut self,
         rd: &RenderDevice,

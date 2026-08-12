@@ -28,6 +28,7 @@ loam-math    = { path = "../loam-math",    version = "0.1.0" }
 loam-physics = { path = "../loam-physics", version = "0.1.0" }
 loam-render  = { path = "../loam-render",  version = "0.1.0" }
 loam-scene   = { path = "../loam-scene",   version = "0.1.0" }
+loam-shader  = { path = "../loam-shader",  version = "0.1.0" }
 loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
 loam-text    = { path = "../loam-text",    version = "0.1.0" }
 loam-time    = { path = "../loam-time",    version = "0.1.0" }
@@ -36,6 +37,11 @@ loam-time    = { path = "../loam-time",    version = "0.1.0" }
 # already in the tree under egui's `default_fonts`, so this adds a dependency
 # edge rather than a committed font.
 epaint_default_fonts = "0.33"
+
+[dev-dependencies]
+# Headless device request in the `sdf_edit_latency` example. Dev-only: the demo
+# itself gets its device from the runner.
+pollster.workspace = true
 
 [features]
 # Default to capture-on for native dev (matches the previous `cargo run --example`

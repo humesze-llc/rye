@@ -288,6 +288,15 @@ fn polytope_label(p: Polytope4) -> &'static str {
 }
 
 impl loam_app::shell::Scene for S3Scene {
+    fn apply_command(
+        &mut self,
+        cmd: &loam_app::command::CommandLine,
+        _ctx: &mut loam_app::command::CommandCtx<'_>,
+    ) -> anyhow::Result<()> {
+        self.console.dispatch(&cmd.name, &cmd.arg_refs(), &mut ());
+        Ok(())
+    }
+
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
         if self.spin {
             self.angle += self.rate * ctx.dt;
@@ -306,7 +315,9 @@ impl loam_app::shell::Scene for S3Scene {
     fn ui(&mut self, ctx: &egui::Context, _frame: &mut FrameCtx<'_>) {
         self.panel(ctx);
         loam_app::log::pump_into(&mut self.console);
-        self.console.ui(ctx, &mut ());
+        loam_app::command::pump_into(&mut self.console);
+        self.console.ui(ctx);
+        loam_app::command::forward_pending(&mut self.console);
         self.last_egui_keyboard = ctx.wants_keyboard_input();
     }
 

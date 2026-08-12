@@ -920,7 +920,7 @@ mod tests {
     fn the_help_listing_describes_the_scene_switcher() {
         let mut console = Console::<()>::new();
         loam_app::shell::register_command::<(), shell::Playground>(&mut console);
-        console.execute("help", &mut ());
+        console.execute("help");
         let listed = console
             .history()
             .iter()
@@ -931,7 +931,7 @@ mod tests {
         assert!(!listed.is_empty(), "the listing carries no description");
 
         console.clear_history();
-        console.execute("help scene", &mut ());
+        console.execute("help scene");
         let long = console
             .history()
             .iter()

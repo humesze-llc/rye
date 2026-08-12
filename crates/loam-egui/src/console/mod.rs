@@ -14,8 +14,9 @@ mod key;
 mod panel;
 
 pub use loam_console::{
-    cmd, console_echo_enabled, set_console_echo, subcommands, Command, Console, ConsoleWriter,
-    FnCommand, HistoryLine, Key, LineKind, SubcommandSet, MAX_HISTORY_LINES, MAX_INPUT_HISTORY,
+    cmd, console_echo_enabled, parse_line, set_console_echo, subcommands, Command, Console,
+    ConsoleWriter, FnCommand, HistoryLine, Key, LineKind, SubcommandSet, MAX_HISTORY_LINES,
+    MAX_INPUT_HISTORY,
 };
 
 /// Slide-down animation duration.
@@ -30,16 +31,19 @@ pub const PANEL_HEIGHT_FRACTION: f32 = 0.5;
 /// use loam_egui::ConsoleUi;
 ///
 /// // per frame:
-/// console.ui(&egui_ctx, &mut my_ctx);
+/// console.ui(&egui_ctx);
 /// ```
-pub trait ConsoleUi<Ctx> {
+///
+/// No `Ctx`: the frontend accepts lines, it does not run them. What it accepts
+/// leaves through `Console::drain_pending`.
+pub trait ConsoleUi {
     /// Per-frame entry point: toggle key, binds (when closed), in-panel keys (when
     /// open), animation, and panel render. Call once per frame from the egui pass.
-    fn ui(&mut self, egui_ctx: &egui::Context, ctx: &mut Ctx);
+    fn ui(&mut self, egui_ctx: &egui::Context);
 }
 
-impl<Ctx: 'static> ConsoleUi<Ctx> for Console<Ctx> {
-    fn ui(&mut self, egui_ctx: &egui::Context, ctx: &mut Ctx) {
+impl<Ctx: 'static> ConsoleUi for Console<Ctx> {
+    fn ui(&mut self, egui_ctx: &egui::Context) {
         // Toggle key. `consume_key` strips the Key event, but a printable key also
         // emits a Text event TextEdit reads; strip that too or it leaks into the input.
         let toggle = self.toggle_key();
@@ -69,7 +73,7 @@ impl<Ctx: 'static> ConsoleUi<Ctx> for Console<Ctx> {
                 }
             });
             for line in fired {
-                self.execute(&line, ctx);
+                self.execute(&line);
             }
         }
 
@@ -92,7 +96,7 @@ impl<Ctx: 'static> ConsoleUi<Ctx> for Console<Ctx> {
             progress > 0.0
         };
         if visible {
-            panel::draw(self, egui_ctx, ctx, progress);
+            panel::draw(self, egui_ctx, progress);
         }
     }
 }

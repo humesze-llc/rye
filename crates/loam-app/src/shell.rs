@@ -31,6 +31,7 @@ use loam_egui::{cmd, Console};
 use loam_render::device::RenderDevice;
 
 use crate::args::Args;
+use crate::command::{CommandCtx, CommandLine};
 use crate::{egui, App, AssetEvent, FrameCtx, RenderCtx, SetupCtx, ShaderDb};
 
 /// One hostable scene. Constructed through [`SceneEntry::build`] rather than
@@ -44,6 +45,16 @@ pub trait Scene {
     /// rebuilds them against the Space this scene loaded them with. Scenes with
     /// no shaders of their own keep the no-op default.
     fn apply_shader_events(&mut self, _events: &[AssetEvent], _shader_db: &mut ShaderDb) {}
+    /// Apply one queued command, before the tick it is stamped for. A scene with
+    /// a console dispatches the parsed line against its own registry here; the
+    /// default refuses, for the reason [`App::apply_command`] does.
+    fn apply_command(
+        &mut self,
+        cmd: &CommandLine,
+        _ctx: &mut CommandCtx<'_>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("no command target for `{}`", cmd.name)
+    }
     /// Contributions to the shared menu bar, rendered after the Demo menu. A
     /// scene with nothing to add keeps the no-op default.
     fn menus(&mut self, _ui: &mut egui::Ui) {}
@@ -327,6 +338,12 @@ impl<R: SceneRegistry> App for SceneShell<R> {
         for scene in scenes.iter_mut().flatten() {
             scene.apply_shader_events(events, shader_db);
         }
+    }
+
+    /// Only the active scene. A command names whatever the scene it was typed
+    /// against names, and an inactive scene's slot may not even be built.
+    fn apply_command(&mut self, cmd: &CommandLine, ctx: &mut CommandCtx<'_>) -> Result<()> {
+        self.active_scene().apply_command(cmd, ctx)
     }
 
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
@@ -633,7 +650,7 @@ mod tests {
     /// which scene the shell is rendering.
     fn marked_slug(console: &mut Console<()>) -> String {
         console.clear_history();
-        console.execute("scene", &mut ());
+        crate::command::run_on_console(console, "scene", &mut ());
         console
             .history()
             .iter()
@@ -665,13 +682,13 @@ mod tests {
                 })
             };
 
-            console.execute("scene second", &mut ());
+            crate::command::run_on_console(&mut console, "scene second", &mut ());
             active = drain(&mut slots, active);
             assert_eq!(active, 1, "the queued switch must become active");
             assert_eq!(marked_slug(&mut console), "second");
             assert_eq!(builds.get(), 1);
 
-            console.execute("scene first", &mut ());
+            crate::command::run_on_console(&mut console, "scene first", &mut ());
             active = drain(&mut slots, active);
             assert_eq!(active, 0, "switching back must return to the boot scene");
             assert_eq!(marked_slug(&mut console), "first");
@@ -689,7 +706,7 @@ mod tests {
             let mut console = Console::<()>::new();
             register_command::<(), Fixture>(&mut console);
 
-            console.execute("scene nope", &mut ());
+            crate::command::run_on_console(&mut console, "scene nope", &mut ());
             let active = drain_pending(&mut slots, 0, REGISTRY, |_| {
                 unreachable!("an unknown slug must not reach a builder")
             });
@@ -749,7 +766,7 @@ mod tests {
             let mut console = Console::<()>::new();
             register_command::<(), Fixture>(&mut console);
 
-            console.execute("scene third", &mut ());
+            crate::command::run_on_console(&mut console, "scene third", &mut ());
             let active = drain_pending(&mut slots, 0, REGISTRY, |_| Err(anyhow!("no device")));
             assert_eq!(active, 0);
             assert_eq!(marked_slug(&mut console), "first");

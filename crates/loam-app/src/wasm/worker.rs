@@ -740,6 +740,12 @@ impl<A: App + 'static> WorkerRunner<A> {
         };
         self.last_update_at = Some(now);
 
+        // Command queue, drained immediately before the ticks and stamped with
+        // the index they start from. Same placement as the windowed runner, for
+        // the reason the two share `drive_fixed_ticks`: a divergence here would
+        // give one platform a different sim-time position for the same command.
+        crate::command::apply_drained(&mut self.app, &self.rd, self.tick_index);
+
         // Fixed-timestep ticks via the shared `drive_fixed_ticks`. The
         // accumulator logic matches the windowed runner; the rate is hardcoded
         // at 60Hz here and diverges from any `RunConfig::fixed_hz` a demo set,

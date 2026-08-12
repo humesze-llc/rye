@@ -87,7 +87,7 @@ mod tests {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut c = build_console();
         let mut ctx = ();
-        c.execute("fps 30", &mut ctx);
+        crate::command::run_on_console(&mut c, "fps 30", &mut ctx);
         let target = frame_pacing::target_fps();
         assert!(
             (target - 30.0).abs() < 0.1,
@@ -101,7 +101,7 @@ mod tests {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut c = build_console();
         let mut ctx = ();
-        c.execute("fps unlimited", &mut ctx);
+        crate::command::run_on_console(&mut c, "fps unlimited", &mut ctx);
         assert_eq!(frame_pacing::target_fps(), 0.0);
         assert!(frame_pacing::target_period().is_none());
         frame_pacing::set_target_fps(60.0);
@@ -112,7 +112,7 @@ mod tests {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut c = build_console();
         let mut ctx = ();
-        c.execute("fps off", &mut ctx);
+        crate::command::run_on_console(&mut c, "fps off", &mut ctx);
         assert_eq!(frame_pacing::target_fps(), 0.0);
         frame_pacing::set_target_fps(60.0);
     }
@@ -122,7 +122,7 @@ mod tests {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut c = build_console();
         let mut ctx = ();
-        c.execute("fps 0", &mut ctx);
+        crate::command::run_on_console(&mut c, "fps 0", &mut ctx);
         assert_eq!(frame_pacing::target_fps(), 0.0);
         frame_pacing::set_target_fps(60.0);
     }
@@ -135,7 +135,7 @@ mod tests {
         let before = frame_pacing::target_fps();
         // Past the MAX_ACCEPTED_FPS guard; the handler prints a usage line
         // but does not poke the atomic.
-        c.execute("fps 100000", &mut ctx);
+        crate::command::run_on_console(&mut c, "fps 100000", &mut ctx);
         let after = frame_pacing::target_fps();
         assert_eq!(before, after, "out-of-range input should be a no-op");
         frame_pacing::set_target_fps(60.0);

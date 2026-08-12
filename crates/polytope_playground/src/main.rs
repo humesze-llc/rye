@@ -852,10 +852,10 @@ impl Demo {
 // Scene wrapper: Demo + Console<Demo>
 // ---------------------------------------------------------------------------
 //
-// A wrapper, not a `console` field on `Demo`: `Console::ui` takes
-// `(&mut self, &mut Ctx)`, so co-locating both would need a simultaneous
-// `&mut self.console` + `&mut self` borrow. Separate fields give the
-// dispatch a clean two-field borrow.
+// A wrapper, not a `console` field on `Demo`: `Scene::apply_command` dispatches
+// `&mut self.console` against `&mut self.demo`, so co-locating both would need
+// a simultaneous whole-`self` borrow. Separate fields give the dispatch a clean
+// two-field split.
 
 pub(crate) struct RotateScene {
     demo: Demo,
@@ -872,8 +872,9 @@ pub(crate) struct RotateScene {
     /// consumed by `record` later in the same frame.
     hud_seat: hud::HudSeat,
     /// `--script=<path>` playhead, dropped once it has asked the runner to
-    /// exit. It drives this scene's console only: switching scenes mid-script
-    /// drops the driver with the scene, and the run then never ends itself.
+    /// exit. It submits to the runner's queue, so its lines reach whichever
+    /// scene is active at the drain; switching scenes mid-script drops the
+    /// driver with the scene, and the run then never ends itself.
     script: Option<ScriptDriver>,
 }
 
@@ -969,11 +970,21 @@ impl loam_app::shell::Scene for RotateScene {
         self.demo.menu_contents(ui);
     }
 
+    fn apply_command(
+        &mut self,
+        cmd: &loam_app::command::CommandLine,
+        _ctx: &mut loam_app::command::CommandCtx<'_>,
+    ) -> Result<()> {
+        // The registry is unchanged; only when it runs moved. Unknown verbs
+        // report through the scrollback here, where the user can see them.
+        self.console
+            .dispatch(&cmd.name, &cmd.arg_refs(), &mut self.demo);
+        Ok(())
+    }
+
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
-        // Ahead of the demo's own update so a scripted command lands in the
-        // same frame's simulation and UI as the frame index it names.
         if let Some(driver) = self.script.as_mut() {
-            if driver.advance(&mut self.console, &mut self.demo) == ScriptStatus::Finished {
+            if driver.advance() == ScriptStatus::Finished {
                 self.script = None;
                 loam_app::script::request_exit();
             }
@@ -986,10 +997,14 @@ impl loam_app::shell::Scene for RotateScene {
         // the only panel, so this is the free region the readout seats in.
         self.hud_seat = hud::hud_seat(ctx.available_rect(), ctx.pixels_per_point());
         self.demo.ui(ctx, frame);
-        // Pump pending tracing events into the scrollback before rendering it,
-        // so mirrored log lines show this frame.
+        // Pump pending tracing events and this frame's applied-command output
+        // into the scrollback before rendering it, so both show this frame.
         loam_app::log::pump_into(&mut self.console);
-        self.console.ui(ctx, &mut self.demo);
+        loam_app::command::pump_into(&mut self.console);
+        self.console.ui(ctx);
+        // After the console's UI, so a line typed this frame reaches the queue
+        // in time for the next frame's drain rather than the one after.
+        loam_app::command::forward_pending(&mut self.console);
         // Stash for next frame's hotkey gating, captured after the console
         // renders so a freshly-focused input registers true.
         self.last_egui_keyboard = ctx.wants_keyboard_input();

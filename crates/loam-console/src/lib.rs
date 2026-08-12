@@ -10,6 +10,13 @@
 //! into [`Key`], calls the [`Console`] frontend hooks to move the console's
 //! state, and paints [`Console::history`] and the input line. `loam-egui` is the
 //! frontend in this workspace.
+//!
+//! Accepting a line and running it are two steps, split across two calls.
+//! [`Console::execute`] echoes, records input history, runs built-ins, and parks
+//! everything else; the host drains that with [`Console::drain_pending`], puts it
+//! wherever it orders application-wide mutations, and calls [`Console::dispatch`]
+//! when that point arrives. The split is why neither `execute` nor the frontend
+//! needs `&mut Ctx`: only `dispatch` does.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
@@ -129,6 +136,13 @@ impl ConsoleWriter {
     /// bubble unrecoverable errors via `Result` instead.
     pub fn error(&mut self, text: impl Into<String>) {
         self.lines.push(HistoryLine::error(text));
+    }
+
+    /// Take what a command wrote, for a caller that owns the scrollback it is
+    /// headed for. `Console::dispatch` drains its own writer in place; this is
+    /// for a host running a command outside any console.
+    pub fn take_lines(&mut self) -> Vec<HistoryLine> {
+        std::mem::take(&mut self.lines)
     }
 }
 
@@ -689,7 +703,8 @@ impl<Ctx: 'static> Command<Ctx> for SubcommandSet<Ctx> {
 /// console.bind(Key::F9, "capture.toggle");
 ///
 /// // per frame, through the frontend's entry point (loam_egui::ConsoleUi):
-/// console.ui(&egui_ctx, &mut my_ctx);
+/// console.ui(&egui_ctx);
+/// for line in console.drain_pending() { /* hand to the host's command queue */ }
 /// ```
 ///
 /// The methods grouped under `Frontend hooks` below are the surface a frontend
@@ -723,6 +738,11 @@ pub struct Console<Ctx> {
     /// One-frame flag set when code outside the text field mutates [`Self::input`]
     /// (tab-complete, history nav); the frontend then snaps the cursor to the tail.
     pending_cursor_to_end: bool,
+    /// Registry lines [`Self::execute`] accepted but has not dispatched. The host
+    /// hands them to whatever owns the application-wide command queue; the
+    /// registry runs later, from [`Self::dispatch`]. Nothing here has touched
+    /// `Ctx` yet, which is the whole reason the split exists.
+    pending: Vec<String>,
 }
 
 struct TabState {
@@ -782,6 +802,7 @@ impl<Ctx: 'static> Console<Ctx> {
             detached: false,
             user_defocused: false,
             pending_cursor_to_end: false,
+            pending: Vec::new(),
         }
     }
 
@@ -906,10 +927,10 @@ impl<Ctx: 'static> Console<Ctx> {
         &self.status
     }
 
-    /// Run the current input line and clear it.
-    pub fn submit(&mut self, ctx: &mut Ctx) {
+    /// Accept the current input line and clear it. See [`Console::execute`].
+    pub fn submit(&mut self) {
         let line = std::mem::take(&mut self.input);
-        self.execute(&line, ctx);
+        self.execute(&line);
     }
 
     /// Empty the scrollback.
@@ -1177,9 +1198,16 @@ impl<Ctx: 'static> Console<Ctx> {
         }
     }
 
-    /// Execute a command line: echo, look up, run, drain output. Built-ins
-    /// short-circuit before registry lookup.
-    pub fn execute(&mut self, line: &str, ctx: &mut Ctx) {
+    /// Accept a command line: echo, record input history, and either run a
+    /// built-in on the spot or park the line for [`Console::drain_pending`].
+    ///
+    /// Registry commands do not run here. They are the ones that take `&mut Ctx`,
+    /// so they are the ones whose position in simulation time matters; the host
+    /// forwards them to its own queue and calls [`Console::dispatch`] at the one
+    /// point per frame it drains. Built-ins (`help`, `clear`, `detach`, `dock`)
+    /// take no `Ctx` and mutate the console rather than the app, so deferring
+    /// them would buy nothing and cost a frame of echo latency.
+    pub fn execute(&mut self, line: &str) {
         let line = line.trim();
         if line.is_empty() {
             return;
@@ -1207,10 +1235,25 @@ impl<Ctx: 'static> Console<Ctx> {
             return;
         }
 
-        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.pending.push(line.to_string());
+    }
+
+    /// Take the registry lines [`Console::execute`] accepted since the last call,
+    /// in submission order. The host forwards these to its command queue; several
+    /// bound keys firing in one frame keep the `binds` iteration order through
+    /// here unchanged.
+    pub fn drain_pending(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// Run a parsed command against the registry and drain its output into the
+    /// scrollback. The mutation half of the split, called by the host once its
+    /// queue reaches the point it applies mutations at. An unregistered name
+    /// reports here, which is where the user can see it.
+    pub fn dispatch(&mut self, name: &str, args: &[&str], ctx: &mut Ctx) {
         let mut writer = ConsoleWriter::new();
-        let result = match self.commands.get_mut(&name) {
-            Some(cmd) => cmd.run(&arg_refs, ctx, &mut writer),
+        let result = match self.commands.get_mut(name) {
+            Some(cmd) => cmd.run(args, ctx, &mut writer),
             None => {
                 self.push_history(HistoryLine::error(format!(
                     "no command '{name}'. try: help"
@@ -1353,7 +1396,10 @@ impl Builtin {
 /// Split a line into `(command_name, args)` or `None` if empty. Quote-aware:
 /// double quotes honor `\"` / `\\` escapes, single quotes are literal (shell
 /// convention). Unterminated quotes consume to end-of-line for interactive typing.
-fn parse_line(line: &str) -> Option<(String, Vec<String>)> {
+///
+/// Public so a host queueing command lines tokenizes them with this grammar and
+/// not a second one.
+pub fn parse_line(line: &str) -> Option<(String, Vec<String>)> {
     let mut tokens = tokenize(line);
     if tokens.is_empty() {
         return None;
@@ -1444,6 +1490,30 @@ mod tests {
     use super::*;
 
     type Ctx = u32;
+
+    /// Accept a line and immediately dispatch whatever it queued, standing in for
+    /// the host that normally owns the gap. Tests about what a command does are
+    /// not tests about when it runs; the ones that are call `execute` and
+    /// `drain_pending` themselves.
+    fn run<C: 'static>(console: &mut Console<C>, line: &str, ctx: &mut C) {
+        console.execute(line);
+        drain_and_dispatch(console, ctx);
+    }
+
+    fn submit_and_run<C: 'static>(console: &mut Console<C>, ctx: &mut C) {
+        console.submit();
+        drain_and_dispatch(console, ctx);
+    }
+
+    fn drain_and_dispatch<C: 'static>(console: &mut Console<C>, ctx: &mut C) {
+        for line in console.drain_pending() {
+            let Some((name, args)) = parse_line(&line) else {
+                continue;
+            };
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            console.dispatch(&name, &arg_refs, ctx);
+        }
+    }
 
     fn echo_cmd() -> impl Command<Ctx> {
         cmd("echo", "echo args back", |args, _ctx, out| {
@@ -1626,7 +1696,7 @@ mod tests {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
-        c.execute("echo hello world", &mut ctx);
+        run(&mut c, "echo hello world", &mut ctx);
 
         // Invariant: one Input then one Output line; Input echoes the typed text,
         // Output carries the joined args. Exact prompt prefix is not pinned.
@@ -1651,7 +1721,7 @@ mod tests {
         let mut c = Console::<Ctx>::new();
         c.register(add_cmd());
         let mut ctx: Ctx = 10;
-        c.execute("add 5 3", &mut ctx);
+        run(&mut c, "add 5 3", &mut ctx);
         assert_eq!(ctx, 18);
     }
 
@@ -1659,7 +1729,7 @@ mod tests {
     fn unknown_command_produces_error_line() {
         let mut c = Console::<Ctx>::new();
         let mut ctx: Ctx = 0;
-        c.execute("nope", &mut ctx);
+        run(&mut c, "nope", &mut ctx);
         let last = c.history.back().unwrap();
         assert_eq!(last.kind, LineKind::Error);
         assert!(last.text.contains("nope"));
@@ -1670,7 +1740,7 @@ mod tests {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
-        c.execute("help", &mut ctx);
+        run(&mut c, "help", &mut ctx);
         let texts: Vec<&str> = c.history.iter().map(|l| l.text.as_str()).collect();
         assert!(texts.iter().any(|t| t.contains("commands:")));
         assert!(texts.iter().any(|t| t.contains("echo")));
@@ -1683,7 +1753,7 @@ mod tests {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
-        c.execute("help echo", &mut ctx);
+        run(&mut c, "help echo", &mut ctx);
         let last = c.history.back().unwrap();
         assert_eq!(last.kind, LineKind::Output);
         assert!(last.text.contains("echo"));
@@ -1695,10 +1765,10 @@ mod tests {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
-        c.execute("echo a", &mut ctx);
-        c.execute("echo b", &mut ctx);
+        run(&mut c, "echo a", &mut ctx);
+        run(&mut c, "echo b", &mut ctx);
         assert!(!c.history.is_empty());
-        c.execute("clear", &mut ctx);
+        run(&mut c, "clear", &mut ctx);
         assert!(c.history.is_empty());
     }
 
@@ -1707,9 +1777,9 @@ mod tests {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
-        c.execute("echo a", &mut ctx);
-        c.execute("echo a", &mut ctx);
-        c.execute("echo b", &mut ctx);
+        run(&mut c, "echo a", &mut ctx);
+        run(&mut c, "echo a", &mut ctx);
+        run(&mut c, "echo b", &mut ctx);
         let h: Vec<&str> = c.input_history.iter().map(String::as_str).collect();
         assert_eq!(h, vec!["echo a", "echo b"]);
     }
@@ -1720,7 +1790,7 @@ mod tests {
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
         for i in 0..(MAX_INPUT_HISTORY + 50) {
-            c.execute(&format!("echo n{i}"), &mut ctx);
+            run(&mut c, &format!("echo n{i}"), &mut ctx);
         }
         assert_eq!(c.input_history.len(), MAX_INPUT_HISTORY);
         assert!(c.input_history.front().unwrap().starts_with("echo n50"));
@@ -1733,7 +1803,7 @@ mod tests {
         let mut ctx: Ctx = 0;
         // Each execute pushes 2 lines (input + output); push enough to overflow.
         for i in 0..(MAX_HISTORY_LINES + 100) {
-            c.execute(&format!("echo {i}"), &mut ctx);
+            run(&mut c, &format!("echo {i}"), &mut ctx);
         }
         assert_eq!(c.history.len(), MAX_HISTORY_LINES);
     }
@@ -1743,8 +1813,8 @@ mod tests {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
-        c.execute("echo first", &mut ctx);
-        c.execute("echo second", &mut ctx);
+        run(&mut c, "echo first", &mut ctx);
+        run(&mut c, "echo second", &mut ctx);
 
         c.history_prev();
         assert_eq!(c.input, "echo second");
@@ -1854,12 +1924,12 @@ mod tests {
     fn builtin_detach_command_flips_state_and_emits_system_line() {
         let mut c = Console::<Ctx>::new();
         let mut ctx: Ctx = 0;
-        c.execute("detach", &mut ctx);
+        run(&mut c, "detach", &mut ctx);
         assert!(c.is_detached());
         let last = c.history.back().unwrap();
         assert_eq!(last.kind, LineKind::System);
         assert!(last.text.contains("detached"));
-        c.execute("dock", &mut ctx);
+        run(&mut c, "dock", &mut ctx);
         assert!(!c.is_detached());
         let last = c.history.back().unwrap();
         assert_eq!(last.kind, LineKind::System);
@@ -1870,7 +1940,7 @@ mod tests {
     fn builtin_help_lists_detach_and_dock() {
         let mut c = Console::<Ctx>::new();
         let mut ctx: Ctx = 0;
-        c.execute("help", &mut ctx);
+        run(&mut c, "help", &mut ctx);
         let texts: Vec<&str> = c.history.iter().map(|l| l.text.as_str()).collect();
         assert!(texts.iter().any(|t| t.contains("detach")));
         assert!(texts.iter().any(|t| t.contains("dock")));
@@ -1889,7 +1959,7 @@ mod tests {
         let mut c = Console::<Ctx>::new();
         c.register(cmd("fail", "always fails", |_, _, _| anyhow::bail!("nope")));
         let mut ctx: Ctx = 0;
-        c.execute("fail", &mut ctx);
+        run(&mut c, "fail", &mut ctx);
         let last = c.history.back().unwrap();
         assert_eq!(last.kind, LineKind::Error);
         assert!(last.text.contains("nope"));
@@ -1905,7 +1975,7 @@ mod tests {
         c.register(add_cmd());
         let mut ctx: Ctx = 1;
         *c.input_mut() = "add 4".into();
-        c.submit(&mut ctx);
+        submit_and_run(&mut c, &mut ctx);
         assert_eq!(ctx, 5);
         assert!(c.input.is_empty());
     }
@@ -1916,7 +1986,7 @@ mod tests {
         let mut c = Console::<Ctx>::new();
         let mut ctx: Ctx = 0;
         *c.input_mut() = "   ".into();
-        c.submit(&mut ctx);
+        submit_and_run(&mut c, &mut ctx);
         assert!(c.history.is_empty());
         assert!(c.input_history.is_empty());
     }
@@ -1932,7 +2002,7 @@ mod tests {
 
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
-        c.execute("echo a", &mut ctx);
+        run(&mut c, "echo a", &mut ctx);
         c.history_prev();
         assert!(c.take_pending_cursor_to_end());
         assert!(!c.take_pending_cursor_to_end());
@@ -1964,7 +2034,7 @@ mod tests {
         c.register(cmd::<Ctx, _>("capture.start", "x", |_, _, _| Ok(())));
         c.register(cmd::<Ctx, _>("capture.stop", "x", |_, _, _| Ok(())));
         let mut ctx: Ctx = 0;
-        c.execute("capture.stop", &mut ctx);
+        run(&mut c, "capture.stop", &mut ctx);
         c.history_prev();
         c.input = "capture.s".into();
         c.tab_complete();
@@ -1982,7 +2052,7 @@ mod tests {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
-        c.execute("echo a", &mut ctx);
+        run(&mut c, "echo a", &mut ctx);
         c.clear_history();
         assert!(c.history.is_empty());
         assert_eq!(c.input_history.len(), 1);
@@ -2036,13 +2106,13 @@ mod tests {
         con.register(sample_subset());
         let mut ctx: SubCtx = (0, String::new());
 
-        con.execute("tests axes on", &mut ctx);
+        run(&mut con, "tests axes on", &mut ctx);
         assert_eq!(ctx, (1, "axes=true".into()));
 
-        con.execute("tests cube off", &mut ctx);
+        run(&mut con, "tests cube off", &mut ctx);
         assert_eq!(ctx, (0, "cube=false".into()));
 
-        con.execute("tests polytope tesseract", &mut ctx);
+        run(&mut con, "tests polytope tesseract", &mut ctx);
         assert_eq!(ctx.1, "polytope=tesseract");
     }
 
@@ -2052,11 +2122,11 @@ mod tests {
         con.register(sample_subset());
         let mut ctx: SubCtx = (0, String::new());
         for alias in &["on", "true", "1"] {
-            con.execute(&format!("tests axes {alias}"), &mut ctx);
+            run(&mut con, &format!("tests axes {alias}"), &mut ctx);
             assert_eq!(ctx.1, "axes=true", "alias `{alias}`");
         }
         for alias in &["off", "false", "0"] {
-            con.execute(&format!("tests axes {alias}"), &mut ctx);
+            run(&mut con, &format!("tests axes {alias}"), &mut ctx);
             assert_eq!(ctx.1, "axes=false", "alias `{alias}`");
         }
     }
@@ -2066,7 +2136,7 @@ mod tests {
         let mut con = Console::<SubCtx>::new();
         con.register(sample_subset());
         let mut ctx: SubCtx = (0, String::new());
-        con.execute("tests xyzzy on", &mut ctx);
+        run(&mut con, "tests xyzzy on", &mut ctx);
         let last = con.history.back().unwrap();
         assert_eq!(last.kind, LineKind::Error);
         assert!(
@@ -2083,10 +2153,10 @@ mod tests {
         con.register(sample_subset());
         let mut ctx: SubCtx = (0, String::new());
         // First bare invocation: 0 != 1 -> on.
-        con.execute("tests axes", &mut ctx);
+        run(&mut con, "tests axes", &mut ctx);
         assert_eq!(ctx, (1, "axes=true".into()));
         // Second bare invocation: 1 == 1 -> off.
-        con.execute("tests axes", &mut ctx);
+        run(&mut con, "tests axes", &mut ctx);
         assert_eq!(ctx, (0, "axes=false".into()));
     }
 
@@ -2096,7 +2166,7 @@ mod tests {
         let mut con = Console::<SubCtx>::new();
         con.register(sample_subset());
         let mut ctx: SubCtx = (0, String::new());
-        con.execute("tests polytope", &mut ctx);
+        run(&mut con, "tests polytope", &mut ctx);
         assert_eq!(ctx.1, "polytope=<bare>");
     }
 
@@ -2109,7 +2179,7 @@ mod tests {
             Ok(())
         }));
         let mut ctx: SubCtx = (0, String::new());
-        con.execute("tests", &mut ctx);
+        run(&mut con, "tests", &mut ctx);
         assert_eq!(ctx.1, "bare!");
     }
 
@@ -2119,7 +2189,7 @@ mod tests {
         let mut con = Console::<SubCtx>::new();
         con.register(sample_subset());
         let mut ctx: SubCtx = (0, String::new());
-        con.execute("tests", &mut ctx);
+        run(&mut con, "tests", &mut ctx);
         let last = con.history.back().unwrap();
         assert_eq!(last.kind, LineKind::Error);
         assert!(last.text.contains("subcommands"), "got: {}", last.text);
@@ -2219,9 +2289,9 @@ mod tests {
         con.register(custom_subset());
         let mut ctx: CustomCtx = Vec::new();
 
-        con.execute("capture png post", &mut ctx);
-        con.execute("capture gif both fps=30 palette=global", &mut ctx);
-        con.execute("capture stop", &mut ctx);
+        run(&mut con, "capture png post", &mut ctx);
+        run(&mut con, "capture gif both fps=30 palette=global", &mut ctx);
+        run(&mut con, "capture stop", &mut ctx);
 
         assert_eq!(
             ctx,
@@ -2346,7 +2416,7 @@ mod tests {
             Ok(())
         }));
         let mut ctx: Ctx = Vec::new();
-        con.execute(r#"echoargs "5 cell" off"#, &mut ctx);
+        run(&mut con, r#"echoargs "5 cell" off"#, &mut ctx);
         assert_eq!(ctx, vec!["5 cell".to_string(), "off".to_string()]);
     }
 
@@ -2367,7 +2437,7 @@ mod tests {
         con.register(cmd("zebra", "fast horse", |_, _, _| Ok(())));
         con.register(cmd("alpha", "first letter", |_, _, _| Ok(())));
         let mut ctx: Ctx = 0;
-        con.execute("help", &mut ctx);
+        run(&mut con, "help", &mut ctx);
         let texts: Vec<&str> = con.history.iter().map(|h| h.text.as_str()).collect();
         let i_alpha = texts.iter().position(|t| t.contains("alpha")).unwrap();
         let i_clear = texts.iter().position(|t| t.contains("clear")).unwrap();
@@ -2384,7 +2454,7 @@ mod tests {
         let mut ctx: Ctx = 0;
         con.push_history(HistoryLine::output("first"));
         con.push_history(HistoryLine::output("second"));
-        con.execute("clear", &mut ctx);
+        run(&mut con, "clear", &mut ctx);
         assert!(con.history.is_empty());
     }
 
@@ -2394,9 +2464,52 @@ mod tests {
         let mut con = Console::<Ctx>::new();
         let mut ctx: Ctx = 0;
         assert!(!con.detached);
-        con.execute("detach", &mut ctx);
+        run(&mut con, "detach", &mut ctx);
         assert!(con.detached);
-        con.execute("dock", &mut ctx);
+        run(&mut con, "dock", &mut ctx);
         assert!(!con.detached);
+    }
+
+    /// The line drawn by the existing types: a registry command takes `&mut Ctx`
+    /// and therefore waits for the host's application point; a built-in takes
+    /// none, mutates the console, and must act on the frame it was typed.
+    #[test]
+    fn builtins_run_on_the_typed_frame_and_registry_commands_wait() {
+        let mut c = Console::<Ctx>::new();
+        c.register(add_cmd());
+        let mut ctx: Ctx = 0;
+
+        c.execute("add 5");
+        assert_eq!(ctx, 0, "a registry command must not run inside execute");
+        c.execute("clear");
+        assert!(c.history.is_empty(), "clear must act on the typed frame");
+
+        assert_eq!(
+            c.drain_pending(),
+            ["add 5"],
+            "only the registry line queued"
+        );
+        assert_eq!(ctx, 0, "draining alone does not dispatch");
+
+        c.execute("add 5");
+        drain_and_dispatch(&mut c, &mut ctx);
+        assert_eq!(ctx, 5);
+    }
+
+    /// Several bound keys can fire in one frame, and `binds` is a `BTreeMap` so
+    /// that they fire in a fixed order. The pending buffer has to carry that
+    /// order through to the host unchanged, or the fixed order buys nothing.
+    #[test]
+    fn submission_order_survives_the_pending_buffer() {
+        let mut c = Console::<Ctx>::new();
+        c.register(echo_cmd());
+        for line in ["echo a", "echo b", "echo a", "echo c"] {
+            c.execute(line);
+        }
+        assert_eq!(c.drain_pending(), ["echo a", "echo b", "echo a", "echo c"]);
+        assert!(
+            c.drain_pending().is_empty(),
+            "a drained line must not be handed out twice"
+        );
     }
 }

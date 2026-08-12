@@ -10,11 +10,6 @@
 //! - [`world_to_screen`]: egui coordinates for
 //!   [`loam_camera::Camera::pixels_from_world`], which anchors a label to a
 //!   point in whatever [`Space`](loam_math::Space) the scene lives in.
-//! - [`BottomOverlay`]: bottom-anchored HUD panel with flicker-free animated
-//!   resize, avoiding the single-frame jump egui's [`Area`](egui::Area)
-//!   produces on a large content-size change.
-//! - [`LinearIndicator`]: read-only scrub bar showing where a value sits in a
-//!   1D range.
 //! - [`ConsoleUi`]: the egui frontend for [`Console`], whose registry,
 //!   scrollback, completion and dispatch live in `loam-console` and carry no
 //!   egui types.
@@ -32,9 +27,7 @@ pub mod console;
 pub mod dnd;
 mod floating;
 mod integration;
-mod linear_indicator;
 pub mod media;
-mod overlay;
 mod slider_edit;
 mod world;
 
@@ -48,8 +41,6 @@ pub use floating::{
     FloatingPanelBuilder,
 };
 pub use integration::UiIntegration;
-pub use linear_indicator::LinearIndicator;
-pub use overlay::BottomOverlay;
 pub use slider_edit::{slider_with_edit, SliderInteraction};
 pub use world::world_to_screen;
 

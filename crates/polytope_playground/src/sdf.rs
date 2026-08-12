@@ -43,8 +43,7 @@
 //! Two known egui frictions are answered rather than inherited: values are
 //! drawn through [`loam_egui::slider_with_edit`], whose fixed-width value cell
 //! keeps a column of sliders from jittering as digits change, and the deferral
-//! here is a command-queue property rather than the playground's historical
-//! two-pass-overlay workaround.
+//! here is a command-queue property rather than a UI-layout workaround.
 
 use std::borrow::Cow;
 

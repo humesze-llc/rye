@@ -1,8 +1,8 @@
 //! Cross-cutting overlay UI: this scene's Edit / View contributions to the
-//! shell-owned menu bar, the help window, the `BottomOverlay` (rotation
-//! tabs, mode-specific body dispatcher, always-visible w/t sliders, rate
-//! row), and the deferred-mutation drain that fires after the overlay's
-//! two-pass measure-then-render finishes.
+//! shell-owned menu bar, the help window, the bottom-anchored controls
+//! overlay (rotation tabs, mode-specific body dispatcher, always-visible
+//! w/t sliders, rate row), and the deferred-mutation drain that fires once
+//! the overlay closure has returned.
 //!
 //! The mode-specific bodies (active / composer / filmstrip / shapes)
 //! and the formula popup live in their own modules; this file owns the
@@ -101,7 +101,7 @@ impl Demo {
 
     /// View tab row: Shapes (side-by-side row), Single (one subject, full
     /// projection stack), Filmstrip (one shape across w-slices). Staged into
-    /// `pending_view_mode` for the `BottomOverlay` two-pass reason.
+    /// `pending_view_mode`; see [`DeferredAction`] for why.
     pub(crate) fn render_view_tab_row(&mut self, ui: &mut egui::Ui) {
         let mut staged = self.view_mode;
         ui.horizontal(|ui| {
@@ -129,7 +129,8 @@ impl Demo {
     }
 
     /// Rotation-mode tabs: which source drives `omega`. Staged into
-    /// `self.pending_mode` so both `BottomOverlay` passes see the same height.
+    /// `self.pending_mode` so the switch lands between frames, not partway
+    /// through one; see [`DeferredAction`].
     pub(crate) fn render_rotation_tab_row(&mut self, ui: &mut egui::Ui) {
         let mut staged = self.rotation_mode;
         ui.horizontal(|ui| {
@@ -636,8 +637,9 @@ impl Demo {
                 self.render_rate_row(ui);
             });
 
-        // Apply deferred changes AFTER the overlay renders, so both BottomOverlay
-        // passes saw the same content this frame.
+        // Drain only once the overlay closure has returned: applying mid-render
+        // would lay out the rest of the frame against the new state while the
+        // rows already emitted used the old.
         if let Some(new_mode) = self.pending_mode.take() {
             self.rotation_mode = new_mode;
         }

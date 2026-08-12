@@ -38,7 +38,7 @@ const PHYSICS_DT: f32 = 1.0 / 60.0;
 /// a number with nothing behind it.
 const BODY_MASS: f32 = 1.0;
 
-/// Largest per-step displacement the Râ´ step still resolves against a thin
+/// Largest per-step displacement the R⁴ step still resolves against a thin
 /// static wall, as measured by the tunneling gate in `loam_physics::world`
 /// (`RECORDED_R4`, scanned over 64 launch alignments). The bound is geometric
 /// (`wall_half_thickness + body_radius` for the fixture that recorded it), so
@@ -58,7 +58,7 @@ const TUNNELING_MARGIN: f32 = 0.9;
 /// in flight cannot sum past it.
 pub(crate) const MAX_THROW_SPEED: f32 = TUNNELING_MARGIN * MAX_PER_STEP_DISPLACEMENT / PHYSICS_DT;
 
-/// Per-step displacement the Râ´ narrowphase still resolves BODY against BODY
+/// Per-step displacement the R⁴ narrowphase still resolves BODY against BODY
 /// at [`crate::consts::BODY_SIZE`]. The chamber holds no static geometry, so
 /// this, not the wall figure above, is the band a spinning body's rim has to
 /// stay inside. It is the 8-cell pair's number rather than the sphere pair's,
@@ -66,7 +66,7 @@ pub(crate) const MAX_THROW_SPEED: f32 = TUNNELING_MARGIN * MAX_PER_STEP_DISPLACE
 /// axis where a bounding ball presents twice the circumradius, and the tighter
 /// of the two is what a ceiling is worth deriving against.
 ///
-/// A floor, not a two-sided pin, in the same sense as the Râ´ tunneling gate's
+/// A floor, not a two-sided pin, in the same sense as the R⁴ tunneling gate's
 /// own constants: `the_body_tunneling_band_is_one_the_narrowphase_resolves`
 /// fires when a pair resolves LESS than this, and a scan that finds more
 /// reach should raise the number rather than fail. That test now scans every
@@ -77,9 +77,9 @@ const BODY_TUNNELING_BAND: f32 = 1.4075;
 
 /// Angular speed ceiling for a thrown body, derived against the same budget as
 /// [`MAX_THROW_SPEED`] and in the same units. The fastest material point on a
-/// body of radius `R` covers `(|v| + |Ï‰|Â·R) Â· PHYSICS_DT` per step, and the
-/// linear ceiling already spends `MAX_THROW_SPEED Â· PHYSICS_DT` of that, so
-/// the rotation gets what is left of `TUNNELING_MARGIN Â· BODY_TUNNELING_BAND`:
+/// body of radius `R` covers `(|v| + |ω|·R) · PHYSICS_DT` per step, and the
+/// linear ceiling already spends `MAX_THROW_SPEED · PHYSICS_DT` of that, so
+/// the rotation gets what is left of `TUNNELING_MARGIN · BODY_TUNNELING_BAND`:
 /// 97.0 rad/s at `R = BODY_SIZE`. Without it, a full-scale flick landing at
 /// the bounding sphere's rim turns its whole impulse into spin at a rate the
 /// body's inertia sets and the clamp on linear speed cannot see; at a quarter
@@ -103,7 +103,7 @@ const FULL_SCALE_DRAG_PIXELS: f32 = 240.0;
 /// a thrown body would otherwise never re-enter the exact-zero fixpoint
 /// [`PlaygroundPhysics::at_rest`] tests for, so the step's skip would never
 /// re-engage and the body would leave the chamber for good. Travel from a
-/// throw is bounded by `speed Â· TAU`, which at [`MAX_THROW_SPEED`] is 4.9
+/// throw is bounded by `speed · TAU`, which at [`MAX_THROW_SPEED`] is 4.9
 /// units: under the width of a full eight-slot row, so a flick stays in frame.
 const VELOCITY_DECAY_TAU: f32 = 0.6;
 
@@ -120,7 +120,7 @@ const REST_ANGULAR_SPEED: f32 = 0.02;
 /// plane, speed is linear in drag length and saturates at
 /// [`FULL_SCALE_DRAG_PIXELS`] pixels = [`MAX_THROW_SPEED`]**. Window
 /// coordinates are y-down, so the vertical term negates `up`; the impulse is
-/// `m Â· speed Â· direction` because [`loam_physics::RigidBody::apply_impulse`]
+/// `m · speed · direction` because [`loam_physics::RigidBody::apply_impulse`]
 /// divides by the same mass.
 ///
 /// The result stays in the `w = 0` slice the row lives on: a flick with a `w`
@@ -149,7 +149,7 @@ pub(crate) fn ndc_from_pixels(pixels: Vec2, viewport: (u32, u32)) -> Vec2 {
 /// `None` when it misses. A ray starting inside returns the exit distance, so
 /// a click from within a body still picks it.
 ///
-/// Ericson, *Real-Time Collision Detection* (2005), Â§5.3.2; `ray.direction` is
+/// Ericson, *Real-Time Collision Detection* (2005), §5.3.2; `ray.direction` is
 /// unit, which is what drops the quadratic's leading coefficient.
 fn ray_sphere_distance(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
     let offset = ray.origin - centre;
@@ -188,7 +188,7 @@ pub(crate) struct BodyPose {
 }
 
 impl BodyPose {
-    /// The RÂ³ translation the raster paths apply AFTER projection, so a
+    /// The R³ translation the raster paths apply AFTER projection, so a
     /// Perspective4D divide never scales the body's x-position.
     pub(crate) fn position_r3(&self) -> Vec3 {
         self.position.truncate()
@@ -199,7 +199,7 @@ impl BodyPose {
     /// world `w_slice` cutting the body where physics put it instead of always
     /// through its centre; it is exactly zero for a body on the layout.
     ///
-    /// Precondition of the wireframe's SÂ³ arc path (`blend > 0` in
+    /// Precondition of the wireframe's S³ arc path (`blend > 0` in
     /// [`crate::wireframe_geom::push_blended_edge`]): `position.w == 0`. That
     /// path reads each endpoint's `length()` as its circumradius, which holds
     /// only while the frame is origin-centred; the `w` offset moves the body
@@ -349,7 +349,7 @@ impl PlaygroundPhysics {
 
     /// Advance `ticks` fixed steps, skipped entirely while at rest. The skip
     /// is load-bearing rather than an optimization: `surface scale` past
-    /// `BODY_X_SPACING / (2 Â· BODY_SIZE)` overlaps neighbouring bounding
+    /// `BODY_X_SPACING / (2 · BODY_SIZE)` overlaps neighbouring bounding
     /// spheres, and solving that overlap would push a row nobody threw off its
     /// layout.
     pub(crate) fn step(&mut self, ticks: usize) {
@@ -416,8 +416,8 @@ impl PlaygroundPhysics {
     /// already in motion cannot sum past either.
     ///
     /// Clamping `Bivector4::magnitude` is conservative for a double rotation:
-    /// it is `sqrt(Î¸â‚Â² + Î¸â‚‚Â²)` while the fastest material point turns at
-    /// `max(Î¸â‚, Î¸â‚‚)`, so an isoclinic spin is held to `1/sqrt(2)` of the rim
+    /// it is `sqrt(θ₁² + θ₂²)` while the fastest material point turns at
+    /// `max(θ₁, θ₂)`, so an isoclinic spin is held to `1/sqrt(2)` of the rim
     /// speed a simple one gets. The alternative is the invariant
     /// decomposition per throw, which buys nothing a user could perceive.
     fn clamp_to_tunneling_budget(&mut self, slot: usize) {
@@ -455,7 +455,7 @@ impl PlaygroundPhysics {
     }
 
     /// Carry `canonical` into `slot`'s live body frame (writing `out`) and
-    /// return the RÂ³ translate the raster paths apply AFTER projection. `out`
+    /// return the R³ translate the raster paths apply AFTER projection. `out`
     /// is cleared and refilled so a caller's scratch keeps its capacity.
     ///
     /// The single seam between the world and the raster passes: points,
@@ -604,7 +604,7 @@ mod tests {
     const RADIUS: f32 = crate::consts::BODY_SIZE;
 
     /// The four polychora that collide as their own hull, with the closed-form
-    /// `I/(mÂ·rÂ²)` each carries. Every test that sweeps "the shapes the swap
+    /// `I/(m·r²)` each carries. Every test that sweeps "the shapes the swap
     /// reaches" iterates this, so adding a fifth cannot leave one behind.
     const HULL_SHAPES: [(Polytope4, f32); 4] = [
         (Polytope4::Pentatope, 1.0 / 12.0),
@@ -672,7 +672,7 @@ mod tests {
     }
 
     /// Overlapping bounding spheres, which `surface scale` past
-    /// `BODY_X_SPACING / (2 Â· BODY_SIZE)` produces, must not push a row nobody
+    /// `BODY_X_SPACING / (2 · BODY_SIZE)` produces, must not push a row nobody
     /// threw off its layout. Pins the at-rest skip in [`PlaygroundPhysics::step`]:
     /// without it the contact solver separates the row on its own.
     #[test]
@@ -739,14 +739,14 @@ mod tests {
     /// bodies, and only the bodies that were thrown.
     ///
     /// The closed form is the geometric sum of the per-step decay: `damp` runs
-    /// after each `world.step`, so step `k` integrates `vâ‚€Â·decayáµ` and
-    /// `x_n = xâ‚€ + dtÂ·vâ‚€Â·(1 âˆ’ decayâ¿)/(1 âˆ’ decay)`.
+    /// after each `world.step`, so step `k` integrates `v₀·decayᵏ` and
+    /// `x_n = x₀ + dt·v₀·(1 − decayⁿ)/(1 − decay)`.
     #[test]
     fn impulse_drives_the_thrown_slot_and_only_that_slot() {
         let slots = 3;
         let ticks = 30;
         let mut physics = PlaygroundPhysics::new(slots, RADIUS);
-        // Thrown along +w: the one axis with no RÂ³ analogue, and one that
+        // Thrown along +w: the one axis with no R³ analogue, and one that
         // cannot bring the body into contact with its neighbours.
         let impulse = Vec4::new(0.0, 0.0, 0.0, 2.0);
         physics.world.bodies[1].apply_impulse(impulse);
@@ -794,7 +794,7 @@ mod tests {
             "off-centre impulse produced no rotation"
         );
 
-        // The impulse's lever `âˆ§` force lands in the xw plane, so the spin
+        // The impulse's lever `∧` force lands in the xw plane, so the spin
         // must share an index with it: absolutely orthogonal rotors commute
         // and could not tell the two composition orders apart.
         let spin = rotor_at(Plane4::Xy, 0.9);
@@ -999,7 +999,7 @@ mod tests {
     }
 
     /// The lever the contact's NORMAL impulse turns body 0 through:
-    /// `apply_contact_impulse` applies `Ï‰ += Iâ»Â¹Â·(ra âˆ§ directionÂ·magnitude)`,
+    /// `apply_contact_impulse` applies `ω += I⁻¹·(ra ∧ direction·magnitude)`,
     /// so this wedge is what decides whether a hit can spin a body at all.
     fn normal_impulse_lever(physics: &PlaygroundPhysics) -> Option<f32> {
         let (a, b) = (&physics.world.bodies[0], &physics.world.bodies[1]);
@@ -1009,7 +1009,7 @@ mod tests {
 
     /// Acceptance criterion 1, as the closed form rather than as a
     /// measurement. `sphere_sphere_r4` puts the contact point on the line of
-    /// centres and the normal along it, so `ra âˆ§ normal` vanishes at EVERY
+    /// centres and the normal along it, so `ra ∧ normal` vanishes at EVERY
     /// offset and no normal impulse can ever spin a ball here; only friction
     /// can. A hull contact lands on a facet, edge or vertex that the line of
     /// centres misses, and carries a real lever.
@@ -1052,7 +1052,7 @@ mod tests {
         }
     }
 
-    /// Peak `|Ï‰|` reached by the STRUCK body when slot 0 is flicked at full
+    /// Peak `|ω|` reached by the STRUCK body when slot 0 is flicked at full
     /// scale down the row into slot 1. Both bodies carry the same collider and
     /// the same spin, which is what the chamber holds.
     fn peak_struck_spin(shape: RaymarchShape, spin: Rotor4) -> f32 {
@@ -1090,7 +1090,7 @@ mod tests {
             let peak = peak_struck_spin(RaymarchShape::Polytope(polytope), spin);
             assert!(
                 peak > 0.5,
-                "{polytope:?} left the body it struck at |Ï‰| = {peak}"
+                "{polytope:?} left the body it struck at |ω| = {peak}"
             );
         }
         for shape in [
@@ -1115,7 +1115,7 @@ mod tests {
     /// assertion at the canonical pose would be false for two of the four.
     ///
     /// This BREAKS the `position.w == 0` precondition that
-    /// [`BodyPose::body_local`]'s SÂ³ arc path documents; the invariant was
+    /// [`BodyPose::body_local`]'s S³ arc path documents; the invariant was
     /// dormant only while nothing could throw a body off the slice.
     #[test]
     fn a_hull_collision_pushes_the_struck_body_off_the_w_zero_slice() {
@@ -1244,7 +1244,7 @@ mod tests {
         let layout = Vec4::from_array(body_position(1, slots));
         // The +w lever puts the torque in the xw plane. The push is mostly +w,
         // the axis on which the body cannot reach a neighbour, with enough +x
-        // to move its RÂ³ translate off the layout as well; 0.16 of travel over
+        // to move its R³ translate off the layout as well; 0.16 of travel over
         // these ticks against a 0.4 surface gap keeps the row a clean control
         // group.
         physics.world.bodies[1].apply_impulse_at_point(
@@ -1259,7 +1259,7 @@ mod tests {
     /// [`PlaygroundPhysics::body_frame`] is the seam every raster pass reads
     /// its per-body geometry through, so it must report the LIVE pose: the
     /// composed rotor and the body's own `w` in the frame vertices, the body's
-    /// live centre in the RÂ³ translate. Reverting it to the authored
+    /// live centre in the R³ translate. Reverting it to the authored
     /// `size * spin.apply(v)` over the static layout, which is what unwiring a
     /// raster pass from physics means, fails here.
     #[test]
@@ -1287,7 +1287,7 @@ mod tests {
         assert_ne!(
             origin,
             Vec4::from_array(body_position(1, slots)).truncate(),
-            "RÂ³ translate still reads the static layout"
+            "R³ translate still reads the static layout"
         );
         for (i, v) in canonical.iter().enumerate() {
             assert_eq!(
@@ -1344,13 +1344,13 @@ mod tests {
     // ---- the flick ------------------------------------------------------
 
     /// Camera basis for the drag tests: the demo's boot framing looks down
-    /// âˆ’Z, so screen right is +X and screen up is +Y.
+    /// −Z, so screen right is +X and screen up is +Y.
     const RIGHT: Vec3 = Vec3::X;
     const UP: Vec3 = Vec3::Y;
 
     /// The contract every throw is sized against: whatever the drag, the
     /// resulting per-step displacement stays inside the tunneling bound the
-    /// physics gate recorded for Râ´. Sweeps drags an order of magnitude past
+    /// physics gate recorded for R⁴. Sweeps drags an order of magnitude past
     /// full scale and stacks flicks on a body already at the ceiling, which
     /// is the case a clamp on the IMPULSE rather than on the velocity misses.
     #[test]
@@ -1391,7 +1391,7 @@ mod tests {
     /// Fire a body along +x at a static twin of itself at the origin, at
     /// `displacement` per step from a start `phase` further back, and report
     /// whether the narrowphase produced a contact at any point in the flight.
-    /// The body-versus-body form of the Râ´ tunneling gate in
+    /// The body-versus-body form of the R⁴ tunneling gate in
     /// `loam_physics::world`, whose fixture is a sphere against a thin wall.
     fn contact_is_detected(collider: Collider, displacement: f32, phase: f32) -> bool {
         // Clear of the widest overlap band either collider presents, in front

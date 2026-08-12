@@ -1020,8 +1020,7 @@ impl Demo {
         self.sdf_upload_pending = true;
         let n = self.render_row().len();
         let size = self.effective_body_size();
-        self.physics.sync(n, size);
-        self.spins.sync(n);
+        self.sync_physics_row();
         self.spins.record_rotors(&mut self.uploaded_rotors);
         let mut scratch = std::mem::take(&mut self.body_uniform_scratch);
         scratch.clear();
@@ -1039,6 +1038,23 @@ impl Demo {
         }
         self.node.set_bodies(&scratch);
         self.body_uniform_scratch = scratch;
+    }
+
+    /// Reconcile the physics world with the rendered row: slot count, and the
+    /// collider and inertia each slot's shape and live UI spin imply.
+    ///
+    /// Called from `Demo::update` AHEAD of the physics step, so a tick
+    /// collides the shape the frame draws rather than the previous frame's
+    /// (up to 0.088 of rim lag at `rate_scale` 4). [`Self::rebuild_bodies`]
+    /// runs it again at every row and size edit, where it is the only path
+    /// that reaches a slot-count change; the cheap exit in
+    /// [`PlaygroundPhysics::sync`] makes the second call of a frame free.
+    pub(crate) fn sync_physics_row(&mut self) {
+        let size = self.effective_body_size();
+        let row = render_row_entries(self.view_mode, &self.row, &self.strip_subject);
+        // Ahead of the physics sync, which reads one rotor per rendered slot.
+        self.spins.sync(row.len());
+        self.physics.sync(row, &self.spins, size);
     }
 
     /// Compact `exp(B · 0.30·t)` form for whichever mode drives the spin, where `B`

@@ -10,6 +10,7 @@
 use glam::Vec4;
 
 use loam_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat, Rotor};
+use loam_shape::polytope::Polytope4;
 
 use crate::body::RigidBody;
 use crate::collider::{Collider, ColliderKind};
@@ -235,7 +236,11 @@ fn polytope4_bounding_radius(local_vertices: &[Vec4]) -> f32 {
 
 /// Maximum vertex count for any 4D polytope collider. Exceeding it silently
 /// truncates vertices and corrupts collisions, so callers debug-assert.
-pub(crate) const MAX_POLYTOPE4_VERTICES: usize = 32;
+///
+/// Public because the choice of collider is the caller's: a consumer holding a
+/// vertex list longer than this has to pick another collider rather than hand
+/// one over and be truncated into a corrupt hull in release.
+pub const MAX_POLYTOPE4_VERTICES: usize = 32;
 
 /// Transform body-local vertices to world space into the caller's stack buffer,
 /// returning the populated prefix. Hot path; allocation-free by contract.
@@ -391,6 +396,46 @@ pub fn ball4_inertia(mass: f32, radius: f32) -> f32 {
     mass * radius * radius / 3.0
 }
 
+/// Isotropic moment of a uniform-density regular polychoron about any 2-plane
+/// through its centroid, at circumradius `circumradius`. `None` for the
+/// 120-cell and the 600-cell, whose second moments are not derived here; the
+/// bounding ball is within 12% of both.
+///
+/// Exact, not the bounding-sphere approximation [`polytope_body_r4`] carries.
+/// Each of these symmetry groups acts irreducibly on R⁴, so Schur's lemma
+/// forces the second-moment matrix `M_ij = <x_i·x_j>` to `μ·I₄` (Serre,
+/// *Linear Representations of Finite Groups* (1977), §2.2), and an isotropic
+/// `M` is precisely what the scalar [`PhysicsSpace::Inertia`] slot represents
+/// without loss: the moment about a coordinate 2-plane is
+/// `m·(<x_i²> + <x_j²>) = m·<|x|²>/2` for every plane alike.
+///
+/// `<|x|²>` at unit circumradius, and where each value comes from:
+/// - 5-cell, `1/6`. The Dirichlet second moment of a `d`-simplex is
+///   `Σᵢ(vᵢ−c)(vᵢ−c)ᵀ/((d+1)(d+2))` (Lasserre and Avrachenkov 2001, *Amer.
+///   Math. Monthly* 108(2), §3), whose trace at `d = 4`, `c = 0`, `|vᵢ| = 1`
+///   is `5/30`.
+/// - 8-cell, `1/3`. Four independent uniform coordinates of half-width `1/2`,
+///   each contributing `1/12`.
+/// - 16-cell, `4/15`. The same simplex formula on one orthant simplex
+///   (vertices `0`, `eᵢ`) gives `<xᵢ²> = 2/((d+1)(d+2)) = 1/15`.
+/// - 24-cell, `13/30`. Cone decomposition over its 24 octahedral facets: for a
+///   pyramid with apex at the centroid and base in `{x·n = h}`, the `t·b`
+///   parametrisation's `t⁵` and `t³` moments give
+///   `<|x|²> = (2/3)·(h² + <|b_⊥|²>)`. At inradius `h = 1` the 24-cell is
+///   `{|x|_∞ ≤ 1} ∩ {|x|_1 ≤ 2}` with circumradius `√2`, each facet is the
+///   octahedron `{|x|_1 ≤ 1}` with `<|b_⊥|²> = 3·2/((3+1)(3+2)) = 3/10`, so
+///   `<|x|²> = (2/3)·(13/10) = 13/15` and `(13/15)/(√2)² = 13/30`.
+pub fn regular_polytope4_inertia(shape: Polytope4, mass: f32, circumradius: f32) -> Option<f32> {
+    let mean_radius_sq = match shape {
+        Polytope4::Pentatope => 1.0 / 6.0,
+        Polytope4::Tesseract => 1.0 / 3.0,
+        Polytope4::Cell16 => 4.0 / 15.0,
+        Polytope4::Cell24 => 13.0 / 30.0,
+        Polytope4::Cell120 | Polytope4::Cell600 => return None,
+    };
+    Some(0.5 * mass * circumradius * circumradius * mean_radius_sq)
+}
+
 /// Dynamic sphere body in R⁴.
 pub fn sphere_body_r4(
     position: Vec4,
@@ -475,6 +520,151 @@ mod tests {
         let three_d = crate::euclidean_r3::sphere_inertia(1.0, 1.0);
         let four_d = ball4_inertia(1.0, 1.0);
         assert!(four_d < three_d);
+    }
+
+    /// The four closed forms, as stated at the use site, and the ordering they
+    /// have to obey: mass further from the centroid is a larger moment, so the
+    /// simplex is the most concentrated and the ball the least. A constant
+    /// retyped onto the wrong arm of the match breaks the ordering.
+    #[test]
+    fn regular_polytope4_inertia_matches_the_stated_closed_forms() {
+        let (m, r) = (2.5_f32, 0.7_f32);
+        let mr2 = m * r * r;
+        let cases = [
+            (Polytope4::Pentatope, mr2 / 12.0),
+            (Polytope4::Tesseract, mr2 / 6.0),
+            (Polytope4::Cell16, 2.0 * mr2 / 15.0),
+            (Polytope4::Cell24, 13.0 * mr2 / 60.0),
+        ];
+        for (shape, expected) in cases {
+            assert_close(
+                regular_polytope4_inertia(shape, m, r).expect("closed form"),
+                expected,
+                1e-6,
+            );
+        }
+        // Scales as `m·r²`, which is what makes the playground's `surface
+        // scale` multiplier safe to pass straight through.
+        assert_close(
+            regular_polytope4_inertia(Polytope4::Cell24, 2.0 * m, 3.0 * r).expect("closed form"),
+            2.0 * 9.0 * 13.0 * mr2 / 60.0,
+            1e-5,
+        );
+
+        let moments: Vec<f32> = cases
+            .iter()
+            .map(|(shape, _)| regular_polytope4_inertia(*shape, m, r).unwrap())
+            .chain(std::iter::once(ball4_inertia(m, r)))
+            .collect();
+        // Pentatope, tesseract, 16-cell, 24-cell, ball in the declaration
+        // order above, sorted by how far the solid pushes its mass out.
+        let ordered = [moments[0], moments[2], moments[1], moments[3], moments[4]];
+        assert!(
+            ordered.windows(2).all(|w| w[0] < w[1]),
+            "moments out of order: {ordered:?}"
+        );
+
+        for shape in [Polytope4::Cell120, Polytope4::Cell600] {
+            assert_eq!(regular_polytope4_inertia(shape, m, r), None);
+        }
+    }
+
+    /// SplitMix64 (Steele, Lea and Flood 2014, *OOPSLA*, §4). Present only so
+    /// the estimator below is reproducible bit-for-bit from its seed.
+    fn splitmix64(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// `<|x|²>` over the uniform solid `shape` at unit circumradius, by
+    /// rejection sampling the enclosing cube against the shape's own facet
+    /// half-spaces. Cell centroids point along the outward facet normals with
+    /// length equal to the inradius, so `x·c ≤ |c|²` is membership.
+    ///
+    /// f64 throughout and a seeded integer generator, so the estimate is the
+    /// same number on every run and every machine.
+    fn sampled_mean_radius_sq(shape: Polytope4, trials: u32, seed: u64) -> (f64, u32) {
+        let planes: Vec<(glam::DVec4, f64)> = shape
+            .cell_centers()
+            .iter()
+            .map(|c| {
+                let c = glam::DVec4::new(c.x as f64, c.y as f64, c.z as f64, c.w as f64);
+                (c, c.length_squared())
+            })
+            .collect();
+        let mut state = seed;
+        let mut hits = 0_u32;
+        let mut total = 0.0_f64;
+        let coordinate = |state: &mut u64| {
+            let bits = splitmix64(state) >> 11;
+            (bits as f64) / ((1_u64 << 53) as f64) * 2.0 - 1.0
+        };
+        for _ in 0..trials {
+            let x = glam::DVec4::new(
+                coordinate(&mut state),
+                coordinate(&mut state),
+                coordinate(&mut state),
+                coordinate(&mut state),
+            );
+            if planes.iter().any(|(c, cc)| x.dot(*c) > *cc) {
+                continue;
+            }
+            hits += 1;
+            total += x.length_squared();
+        }
+        (total / hits as f64, hits)
+    }
+
+    /// The constants are properties of the hulls, not four numbers that happen
+    /// to sit in a match arm: each shape's sampled second moment lands on its
+    /// own closed form and nearer to it than to any of the other three, or to
+    /// the 4-ball's `2/3` that [`ball4_inertia`] would have charged.
+    ///
+    /// This is the check the 24-cell's `13/30` needed: the derivation at the
+    /// use site identifies the solid with `{|x|_∞ ≤ 1} ∩ {|x|_1 ≤ 2}` and
+    /// cones over an octahedral facet, and neither step is visible in the
+    /// arithmetic. The sampler goes through `cell_centers()` instead.
+    #[test]
+    fn the_polytope4_second_moments_are_the_hulls_own() {
+        const TRIALS: u32 = 1 << 19;
+        let expected = [
+            (Polytope4::Pentatope, 1.0 / 6.0),
+            (Polytope4::Tesseract, 1.0 / 3.0),
+            (Polytope4::Cell16, 4.0 / 15.0),
+            (Polytope4::Cell24, 13.0 / 30.0),
+        ];
+        for (shape, closed_form) in expected {
+            let (measured, hits) = sampled_mean_radius_sq(shape, TRIALS, 0x51ED_5EED);
+            assert!(hits > 2000, "{shape:?} accepted only {hits} samples");
+            // 6% of the value, against a sampler whose standard error is under
+            // 2% at the thinnest shape's acceptance rate. The nearest rival
+            // constant is 20% away at the tightest pair.
+            let tolerance = 0.06 * closed_form;
+            assert!(
+                (measured - closed_form).abs() < tolerance,
+                "{shape:?} sampled <|x|²> = {measured} over {hits} samples, \
+                 not the {closed_form} the closed form claims"
+            );
+            // The 4-ball's `2/3` is in the rival set because it is exactly
+            // what `ball4_inertia` was charging these bodies before.
+            let rivals = expected
+                .iter()
+                .map(|(shape, value)| (format!("{shape:?}"), *value))
+                .chain(std::iter::once(("4-ball".to_string(), 2.0 / 3.0)));
+            for (rival, other) in rivals {
+                if rival == format!("{shape:?}") {
+                    continue;
+                }
+                assert!(
+                    (measured - closed_form).abs() < (measured - other).abs(),
+                    "{shape:?} sampled {measured}, nearer {rival}'s {other} than \
+                     its own {closed_form}"
+                );
+            }
+        }
     }
 
     /// `polytope_body_r4` inertia agrees with `ball4_inertia` at unit circumradius.

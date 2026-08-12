@@ -18,9 +18,14 @@ use glam::{Vec2, Vec3, Vec4};
 use loam_app::Input;
 use loam_camera::Ray;
 use loam_math::{Bivector4, EuclideanR4, Rotor, Rotor4};
-use loam_physics::euclidean_r4::{ball4_inertia, register_default_narrowphase, sphere_body_r4};
+use loam_physics::euclidean_r4::{
+    ball4_inertia, register_default_narrowphase, regular_polytope4_inertia, sphere_body_r4,
+};
 use loam_physics::{Collider, World};
+use loam_render::raymarch::RaymarchShape;
 
+use crate::catalog::ShapeEntry;
+use crate::spins::SlotSpins;
 use crate::state::{body_position, CameraMode, Demo};
 
 /// Physics tick, matching the app's fixed 60 Hz sim tick. The world advances
@@ -28,9 +33,10 @@ use crate::state::{body_position, CameraMode, Demo};
 /// time, so a trajectory is reproducible across frame rates.
 const PHYSICS_DT: f32 = 1.0 / 60.0;
 
-/// Uniform body mass. Row members differ in vertex count, which is not a
-/// quantity the bounding-sphere collider prices, so a per-shape mass would be
-/// a number with nothing behind it.
+/// Uniform body mass. Density is unmodelled, so the four hull colliders do
+/// not carry the volume ratios their solids have: a 5-cell massing the same
+/// as a 24-cell is the chamber's choice, not an oversight. A per-shape mass
+/// would have to pick a density, and nothing in the demo sets one.
 const BODY_MASS: f32 = 1.0;
 
 /// Largest per-step displacement the R⁴ step still resolves against a thin
@@ -61,10 +67,20 @@ pub(crate) const MAX_THROW_SPEED: f32 = TUNNELING_MARGIN * MAX_PER_STEP_DISPLACE
 /// axis where a bounding ball presents twice the circumradius, and the tighter
 /// of the two is what a ceiling is worth deriving against.
 ///
-/// A floor, not a two-sided pin, in the same sense as the R⁴ tunneling gate's
-/// own constants: `the_body_tunneling_band_is_one_the_narrowphase_resolves`
-/// fires when a pair resolves LESS than this, and a scan that finds more
-/// reach should raise the number rather than fail.
+/// `the_body_tunneling_band_is_one_the_narrowphase_resolves` scans every
+/// collider the row can install, rather than the two the number was set from,
+/// and still finds a contact at this displacement per step at all sixteen
+/// launch alignments it samples.
+///
+/// What it is NOT is a lower bound on the overlap window. Scanning centre
+/// separation at 0.0025 puts the tightest same-collider window across ball and
+/// hulls at the 8-cell's 1.395 at the unrotated pose, under this number, so a
+/// step of exactly one band can in principle fall either side of an 8-cell
+/// pair. What keeps [`MAX_ANGULAR_SPEED`] sound is that a body only ever
+/// spends `TUNNELING_MARGIN` of the band, 1.2668, which clears that window and
+/// clears the 1.335 the tightest mixed-collider pair in the same scan
+/// presented. Tightening the band onto the measured window is the honest form
+/// and costs angular ceiling, so it is a decision, not a repair.
 const BODY_TUNNELING_BAND: f32 = 1.4075;
 
 /// Angular speed ceiling for a thrown body, derived against the same budget as
@@ -115,10 +131,11 @@ const REST_ANGULAR_SPEED: f32 = 0.02;
 /// `m · speed · direction` because [`loam_physics::RigidBody::apply_impulse`]
 /// divides by the same mass.
 ///
-/// The result stays in the `w = 0` slice the row lives on. A flick with a `w`
+/// The result stays in the `w = 0` slice the row lives on: a flick with a `w`
 /// component would be the more 4D gesture, but it has no drag axis to come
-/// from and it would move bodies off the slice, which the stereographic arc
-/// path documented on [`BodyPose::body_local`] assumes it can rely on.
+/// from. Keeping the throw on the slice no longer keeps the BODIES on it,
+/// because a hull contact moves one off (see [`BodyPose::body_local`]); it is
+/// now only a statement about the gesture.
 pub(crate) fn throw_impulse(drag_pixels: Vec2, right: Vec3, up: Vec3) -> Vec4 {
     // `right` and `up` are orthonormal, so this has length `drag_pixels`
     // and a zero drag is the only input `try_normalize` has to reject.
@@ -195,23 +212,45 @@ impl BodyPose {
     /// path reads each endpoint's `length()` as its circumradius, which holds
     /// only while the frame is origin-centred; the `w` offset moves the body
     /// off the origin, so the endpoints stop sharing a radius and the interior
-    /// bows onto a sphere the body is not on. Dormant until something throws a
-    /// body off the slice, and the fix is to arc in the body's own centred
-    /// frame rather than to drop the offset (the section cut needs it).
+    /// bows onto a sphere the body is not on.
+    ///
+    /// Live, not dormant. A hull contact drives the struck body off the slice
+    /// on its own, with no `w` in the throw:
+    /// `a_hull_collision_pushes_the_struck_body_off_the_w_zero_slice` measures
+    /// up to 0.33 of `w`, near half a body radius. It reaches only the
+    /// curved-blend wireframe, and only after a collision; the fix is to arc
+    /// in the body's own centred frame rather than to drop the offset, which
+    /// the section cut needs.
     pub(crate) fn body_local(&self, canonical: Vec4, size: f32) -> Vec4 {
         size * self.rotor.apply(canonical) + Vec4::W * self.position.w
     }
 }
 
+/// What a slot's collider was last built from. Together with the body size
+/// these are the whole input of [`PlaygroundPhysics::sync`], so a row whose
+/// spin is paused re-derives nothing.
+#[derive(Copy, Clone, PartialEq)]
+struct SyncedSlot {
+    shape: RaymarchShape,
+    spin: Rotor4,
+}
+
 pub(crate) struct PlaygroundPhysics {
     pub(crate) world: World<EuclideanR4>,
+    /// Per-slot inputs the live colliders were built from; see [`SyncedSlot`].
+    synced: Vec<SyncedSlot>,
+    synced_size: f32,
 }
 
 impl PlaygroundPhysics {
     pub(crate) fn new(slots: usize, radius: f32) -> Self {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
-        let mut physics = Self { world };
+        let mut physics = Self {
+            world,
+            synced: Vec::new(),
+            synced_size: radius,
+        };
         physics.respawn(slots, radius);
         physics
     }
@@ -229,6 +268,7 @@ impl PlaygroundPhysics {
             self.world.bodies.despawn(id);
         }
         self.world.manifolds.clear();
+        self.synced.clear();
         for slot in 0..slots {
             let position = Vec4::from_array(body_position(slot, slots));
             self.world
@@ -236,18 +276,70 @@ impl PlaygroundPhysics {
         }
     }
 
-    /// Reconcile with a row of `slots` bodies. A slot-count change respawns
-    /// the row, because the layout position is a function of the count and so
-    /// every body moves. A same-count call only refreshes the collider, which
-    /// is what makes this safe to run on any frame: a throw in flight survives.
-    pub(crate) fn sync(&mut self, slots: usize, radius: f32) {
-        if self.world.bodies.len() != slots {
-            self.respawn(slots, radius);
+    /// Reconcile with the rendered `row`. A slot-count change respawns the
+    /// row, because the layout position is a function of the count and so
+    /// every body moves. Otherwise only the collider and its inertia are
+    /// refreshed, which is what makes this safe to run on any frame: a throw
+    /// in flight survives.
+    ///
+    /// The polychora that fit under the narrowphase's vertex cap collide as
+    /// their own hull, with the slot's UI spin BAKED into the vertex list
+    /// rather than carried as a second rotor. `world_vertices4_into` applies
+    /// `body.orientation.rotation` alone, so baking is what makes the
+    /// collider the shape on screen: the narrowphase reconstructs
+    /// [`composed_rotor`] to f32 rounding. What the solver still does not see
+    /// is that the spin is MOVING the rim; that velocity is unmodelled, and
+    /// at the default rate it is 16% of [`MAX_THROW_SPEED`].
+    ///
+    /// Everything else, the two polychora that overflow the cap and the four
+    /// smooth solids, keeps the bounding ball. See
+    /// [`ShapeEntry::collider_polytope`] and
+    /// [`loam_physics::euclidean_r4::regular_polytope4_inertia`].
+    pub(crate) fn sync(&mut self, row: &[ShapeEntry], spins: &SlotSpins, size: f32) {
+        if self.world.bodies.len() != row.len() {
+            self.respawn(row.len(), size);
+        }
+        let unchanged = self.synced_size == size
+            && self.synced.len() == row.len()
+            && (self.synced.iter().enumerate()).all(|(slot, synced)| {
+                synced.shape == row[slot].shape && synced.spin == spins.rotor(slot)
+            });
+        if unchanged {
             return;
         }
-        for body in self.world.bodies.iter_mut() {
-            body.collider = Collider::sphere_at_origin(radius);
-            body.inertia = ball4_inertia(body.mass, radius);
+        self.synced_size = size;
+        self.synced.clear();
+        for (slot, entry) in row.iter().enumerate() {
+            let spin = spins.rotor(slot);
+            self.synced.push(SyncedSlot {
+                shape: entry.shape,
+                spin,
+            });
+            let body = &mut self.world.bodies[slot];
+            // One gate, not two: a shape earns a hull only if its vertex list
+            // fits the narrowphase cap AND its uniform-solid moment is
+            // derived, and the same two polychora fail both.
+            let hull = entry
+                .collider_polytope()
+                .and_then(|p| regular_polytope4_inertia(p, body.mass, size).map(|i| (p, i)));
+            let Some((polytope, inertia)) = hull else {
+                body.collider = Collider::sphere_at_origin(size);
+                body.inertia = ball4_inertia(body.mass, size);
+                continue;
+            };
+            // Take the vertex buffer out and refill it rather than assigning a
+            // fresh `Vec`: the spin rewrites it on every animating frame and
+            // the count is fixed per shape, so `clear` keeps an allocation a
+            // new one would repeat once per body per frame.
+            let mut vertices =
+                match std::mem::replace(&mut body.collider, Collider::sphere_at_origin(size)) {
+                    Collider::ConvexPolytope4D { vertices } => vertices,
+                    _ => Vec::new(),
+                };
+            vertices.clear();
+            vertices.extend((polytope.topology().vertices.iter()).map(|v| size * spin.apply(*v)));
+            body.collider = Collider::ConvexPolytope4D { vertices };
+            body.inertia = inertia;
         }
     }
 
@@ -519,8 +611,57 @@ mod tests {
 
     const RADIUS: f32 = crate::consts::BODY_SIZE;
 
+    /// The four polychora that collide as their own hull, with the closed-form
+    /// `I/(m·r²)` each carries. Every test that sweeps "the shapes the swap
+    /// reaches" iterates this, so adding a fifth cannot leave one behind.
+    const HULL_SHAPES: [(Polytope4, f32); 4] = [
+        (Polytope4::Pentatope, 1.0 / 12.0),
+        (Polytope4::Tesseract, 1.0 / 6.0),
+        (Polytope4::Cell16, 2.0 / 15.0),
+        (Polytope4::Cell24, 13.0 / 60.0),
+    ];
+
     fn rotor_at(plane: Plane4, angle: f32) -> Rotor4 {
         (plane.unit_bivector() * angle).exp().normalize()
+    }
+
+    /// A row of `slots` copies of one catalog entry, which is what the chamber
+    /// holds after `shapes=x,x,...`.
+    fn row_of(shape: RaymarchShape, slots: usize) -> Vec<ShapeEntry> {
+        let entry = *crate::catalog::SHAPE_CATALOG
+            .iter()
+            .find(|e| e.shape == shape)
+            .expect("every RaymarchShape has a catalog entry");
+        vec![entry; slots]
+    }
+
+    /// A chamber holding `slots` copies of `shape`, synced through the real
+    /// [`PlaygroundPhysics::sync`] at a row-wide UI spin, which is the only
+    /// path that installs a collider.
+    fn synced_row(
+        shape: RaymarchShape,
+        slots: usize,
+        size: f32,
+        spin: Rotor4,
+    ) -> (PlaygroundPhysics, Vec<ShapeEntry>, SlotSpins) {
+        let row = row_of(shape, slots);
+        let spins = SlotSpins::uniform(slots, spin);
+        let mut physics = PlaygroundPhysics::new(slots, size);
+        physics.sync(&row, &spins, size);
+        (physics, row, spins)
+    }
+
+    /// Spins the collider sweeps run under: the unrotated pose plus generic
+    /// rotors in a coordinate plane, a `w`-mixing plane, and two planes at
+    /// once. The row's UI spin is an arbitrary [`Rotor4`], so a property that
+    /// only holds at identity is not a property of the chamber.
+    fn sweep_spins() -> [Rotor4; 4] {
+        [
+            Rotor4::IDENTITY,
+            rotor_at(Plane4::Xz, 1.1),
+            rotor_at(Plane4::Xw, 0.6),
+            rotor_at(Plane4::Xy, 0.7) * rotor_at(Plane4::Zw, 0.4),
+        ]
     }
 
     /// A world nothing has thrown holds the static layout exactly, however
@@ -679,25 +820,427 @@ mod tests {
     /// path call it every frame without cancelling a throw.
     #[test]
     fn sync_respawns_only_when_the_slot_count_changes() {
-        let mut physics = PlaygroundPhysics::new(3, RADIUS);
+        let shape = RaymarchShape::Polytope(Polytope4::Tesseract);
+        let (mut physics, row, spins) = synced_row(shape, 3, RADIUS, Rotor4::IDENTITY);
         physics.world.bodies[0].apply_impulse(Vec4::new(0.0, 0.0, 0.0, 1.0));
         physics.step(10);
         let in_flight = physics.pose(0, 3, Rotor4::IDENTITY).position;
 
-        physics.sync(3, RADIUS);
+        physics.sync(&row, &spins, RADIUS);
         assert_eq!(
             physics.pose(0, 3, Rotor4::IDENTITY).position,
             in_flight,
             "same-count sync cancelled a throw"
         );
 
-        physics.sync(4, RADIUS);
+        physics.sync(
+            &row_of(shape, 4),
+            &SlotSpins::uniform(4, Rotor4::IDENTITY),
+            RADIUS,
+        );
         assert!(physics.at_rest(), "respawn left motion behind");
         for slot in 0..4 {
             assert_eq!(
                 physics.pose(slot, 4, Rotor4::IDENTITY).position.to_array(),
                 body_position(slot, 4)
             );
+        }
+    }
+
+    // ---- the collider swap ----------------------------------------------
+
+    /// Which catalog entries end up colliding as their own hull, stated over
+    /// the WHOLE catalog so a shape added later cannot slip in unclassified.
+    /// The 120-cell and 600-cell are the interesting rejections: the
+    /// narrowphase truncates past `MAX_POLYTOPE4_VERTICES` in release, which
+    /// is a corrupt hull rather than a coarse one.
+    #[test]
+    fn exactly_the_polychora_under_the_vertex_cap_collide_as_their_own_hull() {
+        for entry in crate::catalog::SHAPE_CATALOG {
+            let (physics, ..) = synced_row(entry.shape, 1, RADIUS, Rotor4::IDENTITY);
+            let expected_hull = HULL_SHAPES
+                .iter()
+                .any(|(p, _)| entry.shape == RaymarchShape::Polytope(*p));
+            let got_hull = matches!(
+                physics.world.bodies[0].collider,
+                Collider::ConvexPolytope4D { .. }
+            );
+            assert_eq!(
+                got_hull, expected_hull,
+                "{} collided as {:?}",
+                entry.label, physics.world.bodies[0].collider
+            );
+            if let Collider::ConvexPolytope4D { vertices } = &physics.world.bodies[0].collider {
+                assert!(
+                    vertices.len() <= loam_physics::euclidean_r4::MAX_POLYTOPE4_VERTICES,
+                    "{} handed the narrowphase {} vertices",
+                    entry.label,
+                    vertices.len()
+                );
+            }
+        }
+    }
+
+    /// A hull body carries the uniform solid's exact moment and everything
+    /// else the bounding ball's, at the LIVE `surface scale` rather than at
+    /// the authored size. The exact moments are all strictly under the ball's,
+    /// which is the whole reason to carry them: `ball4_inertia` makes a 5-cell
+    /// four times too sluggish for the same torque.
+    #[test]
+    fn hull_bodies_carry_the_exact_moment_and_everything_else_the_bounding_ball() {
+        for size in [RADIUS, 0.4, 1.3] {
+            let ball = ball4_inertia(BODY_MASS, size);
+            for (polytope, moment_over_mr2) in HULL_SHAPES {
+                let (physics, ..) =
+                    synced_row(RaymarchShape::Polytope(polytope), 1, size, Rotor4::IDENTITY);
+                let inertia = physics.world.bodies[0].inertia;
+                let expected = BODY_MASS * size * size * moment_over_mr2;
+                assert!(
+                    (inertia - expected).abs() < 1e-6 * expected.max(1.0),
+                    "{polytope:?} at size {size} carries {inertia}, not {expected}"
+                );
+                assert!(inertia < ball, "{polytope:?} is no lighter than the ball");
+            }
+            for shape in [
+                RaymarchShape::Polytope(Polytope4::Cell120),
+                RaymarchShape::Polytope(Polytope4::Cell600),
+                RaymarchShape::ThreeSphere,
+                RaymarchShape::CliffordTorus,
+            ] {
+                let (physics, ..) = synced_row(shape, 1, size, Rotor4::IDENTITY);
+                assert_eq!(physics.world.bodies[0].inertia, ball, "{shape:?}");
+            }
+        }
+    }
+
+    /// The collider IS the drawn shape. The narrowphase applies
+    /// `body.orientation.rotation` alone, so the UI spin has to be baked into
+    /// the vertex list; baked, the narrowphase reconstructs the same world
+    /// point [`BodyPose::body_local`] hands the render paths. Colliding the
+    /// canonical shape instead, which is the cheaper thing to write, leaves a
+    /// body stopping short of a neighbour or sinking into it by up to half its
+    /// own width, and fails here.
+    #[test]
+    fn the_hull_collider_is_the_shape_the_row_draws_under_its_ui_spin() {
+        let orientation = rotor_at(Plane4::Yw, 0.8);
+        for spin in sweep_spins() {
+            for (polytope, _) in HULL_SHAPES {
+                let (mut physics, ..) =
+                    synced_row(RaymarchShape::Polytope(polytope), 1, RADIUS, spin);
+                physics.world.bodies[0].orientation.rotation = orientation;
+                let pose = physics.pose(0, 1, spin);
+                let Collider::ConvexPolytope4D { vertices } = &physics.world.bodies[0].collider
+                else {
+                    panic!("{polytope:?} lost its hull");
+                };
+                let canonical = polytope.topology().vertices;
+                assert_eq!(vertices.len(), canonical.len());
+                for (local, v) in vertices.iter().zip(canonical) {
+                    // What `world_vertices4_into` will do to the stored vertex.
+                    let collided = orientation.apply(*local);
+                    let drawn = pose.body_local(*v, RADIUS);
+                    assert!(
+                        (collided - drawn).length() < 1e-5,
+                        "{polytope:?} collides at {collided} and draws at {drawn}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Two perf contracts of the per-frame sync, as behaviour. The vertex
+    /// buffer is refilled rather than replaced, so an animating row does not
+    /// allocate once per body per frame; and an unchanged `(row, size, spin)`
+    /// re-derives nothing, which is what lets `sync` run twice a frame.
+    #[test]
+    fn a_spinning_row_refills_its_hull_in_place_and_skips_an_unchanged_one() {
+        let shape = RaymarchShape::Polytope(Polytope4::Cell24);
+        let (mut physics, row, _) = synced_row(shape, 2, RADIUS, Rotor4::IDENTITY);
+        let buffer_at = |physics: &PlaygroundPhysics, slot: usize| {
+            let Collider::ConvexPolytope4D { vertices } = &physics.world.bodies[slot].collider
+            else {
+                panic!("slot {slot} lost its hull");
+            };
+            (vertices.as_ptr(), vertices.capacity())
+        };
+        let before = [buffer_at(&physics, 0), buffer_at(&physics, 1)];
+        for step in 1..200 {
+            let spins = SlotSpins::uniform(2, rotor_at(Plane4::Xw, step as f32 * 0.03));
+            physics.sync(&row, &spins, RADIUS);
+        }
+        assert_eq!(
+            [buffer_at(&physics, 0), buffer_at(&physics, 1)],
+            before,
+            "the spin reallocated a hull vertex buffer"
+        );
+
+        // A hand-set inertia survives a sync whose inputs did not move, and
+        // only that: the exit is on the inputs, not on a dirty flag nothing
+        // clears.
+        let spins = SlotSpins::uniform(2, rotor_at(Plane4::Xw, 199.0 * 0.03));
+        physics.world.bodies[0].inertia = 0.0;
+        physics.sync(&row, &spins, RADIUS);
+        assert_eq!(
+            physics.world.bodies[0].inertia, 0.0,
+            "unchanged row resynced"
+        );
+        physics.sync(&row, &spins, RADIUS * 1.5);
+        assert!(
+            physics.world.bodies[0].inertia > 0.0,
+            "a size edit was skipped"
+        );
+    }
+
+    /// Two synced bodies of `shape`, body 1 placed `separation` along `+x`
+    /// from body 0 and `lateral` along `+y`. The geometry every contact pin
+    /// below varies.
+    fn facing_pair(
+        shape: RaymarchShape,
+        spin: Rotor4,
+        separation: f32,
+        lateral: f32,
+    ) -> PlaygroundPhysics {
+        let (mut physics, ..) = synced_row(shape, 2, RADIUS, spin);
+        let origin = physics.world.bodies[0].position;
+        physics.world.bodies[1].position = origin + Vec4::new(separation, lateral, 0.0, 0.0);
+        physics
+    }
+
+    /// The lever the contact's NORMAL impulse turns body 0 through:
+    /// `apply_contact_impulse` applies `ω += I⁻¹·(ra ∧ direction·magnitude)`,
+    /// so this wedge is what decides whether a hit can spin a body at all.
+    fn normal_impulse_lever(physics: &PlaygroundPhysics) -> Option<f32> {
+        let (a, b) = (&physics.world.bodies[0], &physics.world.bodies[1]);
+        let contact = physics.world.narrowphase.test(a, b, &EuclideanR4)?;
+        Some(Bivector4::wedge(contact.point - a.position, contact.normal).magnitude())
+    }
+
+    /// Acceptance criterion 1, as the closed form rather than as a
+    /// measurement. `sphere_sphere_r4` puts the contact point on the line of
+    /// centres and the normal along it, so `ra ∧ normal` vanishes at EVERY
+    /// offset and no normal impulse can ever spin a ball here; only friction
+    /// can. A hull contact lands on a facet, edge or vertex that the line of
+    /// centres misses, and carries a real lever.
+    ///
+    /// The sphere bound is 1e-6 rather than exact zero because the normal is
+    /// `log/len`: the two products in each wedge component round differently
+    /// once the separation is off-axis. The hull levers are four orders of
+    /// magnitude above that, so the pin discriminates from both sides.
+    #[test]
+    fn only_the_hull_pair_puts_a_lever_on_its_normal_impulse() {
+        const SEPARATION: f32 = RADIUS;
+        for lateral in [0.0_f32, 0.1, 0.3, 0.5, 0.7] {
+            let ball = facing_pair(
+                RaymarchShape::ThreeSphere,
+                Rotor4::IDENTITY,
+                SEPARATION,
+                lateral,
+            );
+            let lever = normal_impulse_lever(&ball).expect("overlapping balls");
+            assert!(
+                lever < 1e-6,
+                "a ball pair offset by {lateral} carried a lever of {lever}"
+            );
+        }
+
+        for (polytope, _) in HULL_SHAPES {
+            let shape = RaymarchShape::Polytope(polytope);
+            let mut best = 0.0_f32;
+            for spin in sweep_spins() {
+                for lateral in [0.0_f32, 0.1, 0.3, 0.5] {
+                    let pair = facing_pair(shape, spin, SEPARATION, lateral);
+                    best = best.max(normal_impulse_lever(&pair).unwrap_or(0.0));
+                }
+            }
+            assert!(
+                best > 1e-2,
+                "{polytope:?} never produced a normal impulse with a lever \
+                 (best {best}), so its contacts cannot spin a body either"
+            );
+        }
+    }
+
+    /// Peak `|ω|` reached by the STRUCK body when slot 0 is flicked at full
+    /// scale down the row into slot 1. Both bodies carry the same collider and
+    /// the same spin, which is what the chamber holds.
+    fn peak_struck_spin(shape: RaymarchShape, spin: Rotor4) -> f32 {
+        let (mut physics, ..) = synced_row(shape, 2, RADIUS, spin);
+        physics.throw(
+            0,
+            throw_impulse(Vec2::new(FULL_SCALE_DRAG_PIXELS, 0.0), RIGHT, UP),
+        );
+        let mut peak = 0.0_f32;
+        for _ in 0..120 {
+            physics.step(1);
+            peak = peak.max(physics.world.bodies[1].angular_velocity.magnitude());
+        }
+        peak
+    }
+
+    /// Acceptance criterion 1 end to end: the same head-on flick that leaves a
+    /// ball pair at EXACTLY zero angular velocity sets every hull tumbling.
+    ///
+    /// Head-on is the case that isolates the collider: the relative velocity
+    /// at a ball contact is purely normal, so the friction solve returns early
+    /// and the only channel left is the normal impulse's lever, which a ball
+    /// does not have. The 120-cell is in the control group because it keeps
+    /// the ball, which is the fidelity split this node deliberately ships.
+    ///
+    /// The identity pose is excluded for a reason the design note measured:
+    /// two identically oriented mirror-symmetric hulls hit face-on along a
+    /// symmetry axis produce a contact normal through both centres and
+    /// therefore exactly zero torque, correctly. The property is off-axis
+    /// contact, not "a collision".
+    #[test]
+    fn a_head_on_hull_collision_spins_the_struck_body_where_a_ball_pair_cannot() {
+        let spin = rotor_at(Plane4::Xz, 1.1);
+        for (polytope, _) in HULL_SHAPES {
+            let peak = peak_struck_spin(RaymarchShape::Polytope(polytope), spin);
+            assert!(
+                peak > 0.5,
+                "{polytope:?} left the body it struck at |ω| = {peak}"
+            );
+        }
+        for shape in [
+            RaymarchShape::ThreeSphere,
+            RaymarchShape::Polytope(Polytope4::Cell120),
+        ] {
+            assert_eq!(
+                peak_struck_spin(shape, spin),
+                0.0,
+                "{shape:?} keeps the ball collider, which has no lever to spin on"
+            );
+        }
+    }
+
+    /// Acceptance criterion 2: a throw that stays on the `w = 0` slice, which
+    /// is the only throw [`throw_impulse`] can produce, drives the struck body
+    /// OFF that slice through the hull contact alone.
+    ///
+    /// Stated over the row's live spin rather than for a named shape at a
+    /// named pose: the 8-cell and 24-cell at identity leak exactly zero, for
+    /// the same mirror symmetry that kills their torque, so a per-shape
+    /// assertion at the canonical pose would be false for two of the four.
+    ///
+    /// This BREAKS the `position.w == 0` precondition that
+    /// [`BodyPose::body_local`]'s S³ arc path documents; the invariant was
+    /// dormant only while nothing could throw a body off the slice.
+    #[test]
+    fn a_hull_collision_pushes_the_struck_body_off_the_w_zero_slice() {
+        for (polytope, _) in HULL_SHAPES {
+            let shape = RaymarchShape::Polytope(polytope);
+            let mut leaked = 0.0_f32;
+            for spin in sweep_spins() {
+                let (mut physics, ..) = synced_row(shape, 2, RADIUS, spin);
+                physics.throw(
+                    0,
+                    throw_impulse(Vec2::new(FULL_SCALE_DRAG_PIXELS, 0.0), RIGHT, UP),
+                );
+                assert_eq!(
+                    physics.world.bodies[0].velocity.w, 0.0,
+                    "the throw itself left the slice"
+                );
+                for _ in 0..120 {
+                    physics.step(1);
+                    leaked = leaked.max(physics.world.bodies[1].position.w.abs());
+                }
+            }
+            assert!(
+                leaked > 1e-3,
+                "no spin in the sweep moved a struck {polytope:?} off the \
+                 slice (best |w| = {leaked})"
+            );
+        }
+
+        // The control: a ball pair cannot leave the slice, which is why the
+        // arc path's precondition held before the swap.
+        let (mut physics, ..) = synced_row(RaymarchShape::ThreeSphere, 2, RADIUS, Rotor4::IDENTITY);
+        physics.throw(
+            0,
+            throw_impulse(Vec2::new(FULL_SCALE_DRAG_PIXELS, 0.0), RIGHT, UP),
+        );
+        physics.step(120);
+        assert_eq!(physics.world.bodies[1].position.w, 0.0);
+    }
+
+    /// Full width the pair presents along `+x` at this spin: the largest
+    /// separation at which the narrowphase still reports a contact. Scanned
+    /// rather than derived, because the support radius of a hull along a fixed
+    /// axis is a function of the spin, and every shape in the sweep presents a
+    /// different one.
+    fn contact_width(shape: RaymarchShape, spin: Rotor4) -> f32 {
+        const RUNG: f32 = 0.005;
+        let mut width = 0.0_f32;
+        let mut separation = RUNG;
+        while separation < 4.0 * RADIUS {
+            if normal_impulse_lever(&facing_pair(shape, spin, separation, 0.0)).is_some() {
+                width = separation;
+            }
+            separation += RUNG;
+        }
+        width
+    }
+
+    /// Acceptance criterion 3: hulls left overlapping and disturbed reach the
+    /// exact-zero fixpoint [`PlaygroundPhysics::at_rest`] tests for, inside a
+    /// bounded step count, and stay there. Credit goes to
+    /// [`PlaygroundPhysics::damp`] as much as to the solver: exponential decay
+    /// plus the [`REST_SPEED`] snap is what makes an exact fixpoint reachable.
+    ///
+    /// Overlap is 25% of the width each pair actually presents rather than a
+    /// fixed distance, so the 5-cell (which can present a tenth of the
+    /// 24-cell's width) is loaded comparably instead of trivially or
+    /// catastrophically.
+    ///
+    /// Non-vacuity is pinned twice over, because both halves are easy to lose:
+    /// the run has to start OUT of the fixpoint, and the pair has to actually
+    /// produce a contact rather than come to rest because it never touched.
+    /// The third assertion is the hazard the swap raises: an overlap the step
+    /// resolves by pushing one hull THROUGH the other reaches the fixpoint
+    /// just as happily, and reads as a pair that swapped places.
+    #[test]
+    fn overlapped_hulls_reach_the_at_rest_fixpoint_in_a_bounded_step_count() {
+        const BUDGET: usize = 400;
+        for (polytope, _) in HULL_SHAPES {
+            let shape = RaymarchShape::Polytope(polytope);
+            for spin in sweep_spins() {
+                let width = contact_width(shape, spin);
+                let mut physics = facing_pair(shape, spin, 0.75 * width, 0.0);
+                physics.throw(1, throw_impulse(Vec2::new(15.0, 0.0), RIGHT, UP));
+                assert!(!physics.at_rest(), "the fixture started in the fixpoint");
+
+                let mut touched = false;
+                let mut settled = None;
+                for step in 0..BUDGET {
+                    physics.step(1);
+                    touched |= !physics.world.manifolds.is_empty();
+                    if physics.at_rest() {
+                        settled = Some(step);
+                        break;
+                    }
+                }
+                let settled = settled.unwrap_or_else(|| {
+                    panic!("{polytope:?} at {spin:?} never came to rest in {BUDGET} steps")
+                });
+                assert!(touched, "{polytope:?} settled without ever contacting");
+
+                let separation =
+                    (physics.world.bodies[1].position - physics.world.bodies[0].position).x;
+                assert!(
+                    separation >= width,
+                    "{polytope:?} came to rest {separation} apart, inside the {width} \
+                     it presents: the overlap resolved by passing one hull through \
+                     the other rather than by separating them"
+                );
+
+                let resting: Vec<Vec4> = physics.world.bodies.iter().map(|b| b.position).collect();
+                physics.step(600);
+                let after: Vec<Vec4> = physics.world.bodies.iter().map(|b| b.position).collect();
+                assert_eq!(
+                    resting, after,
+                    "{polytope:?} kept drifting after reaching rest at step {settled}"
+                );
+            }
         }
     }
 
@@ -889,28 +1432,38 @@ mod tests {
 
     /// [`BODY_TUNNELING_BAND`] is a floor on reach the narrowphase actually
     /// has, not a number copied into a constant: at exactly that displacement
-    /// per step a pair still meets at every launch alignment. Measured for the
-    /// sphere pair the row carries and for an 8-cell pair at the same
-    /// circumradius, which is the tighter of the two and the one the band is
-    /// set from. A band widened past what the step resolves would let
-    /// [`MAX_ANGULAR_SPEED`] license a spin that tunnels.
+    /// per step a pair still meets at every launch alignment. A band widened
+    /// past what the step resolves would let [`MAX_ANGULAR_SPEED`] license a
+    /// spin that tunnels.
+    ///
+    /// Re-measured against the colliders the row now carries, rather than
+    /// carried over from the pair it was derived against: every shape that
+    /// collides as its own hull, at every spin in the sweep, taken from the
+    /// real [`PlaygroundPhysics::sync`] so a change to the vertex scaling or
+    /// to the spin baking moves this number too. The band was set from the
+    /// 8-cell, which the sweep re-confirms is still the tightest of the five.
+    ///
+    /// Both bodies carry the same collider, which is NOT what the row imposes:
+    /// `shapes=` mixes polychora across slots and each slot carries its own
+    /// rotor ([`crate::spins::SlotSpins`]), so a mixed or counter-oriented
+    /// pair presents a narrower window than anything swept here. What covers
+    /// those is the margin on [`BODY_TUNNELING_BAND`], not this scan.
     #[test]
     fn the_body_tunneling_band_is_one_the_narrowphase_resolves() {
-        let tesseract: Vec<Vec4> = Polytope4::Tesseract
-            .topology()
-            .vertices
-            .iter()
-            .map(|v| *v * RADIUS)
-            .collect();
-        for (pair, collider) in [
-            ("sphere", Collider::sphere_at_origin(RADIUS)),
-            (
-                "8-cell",
-                Collider::ConvexPolytope4D {
-                    vertices: tesseract,
-                },
-            ),
-        ] {
+        let mut cases = vec![(
+            "ball, any spin".to_string(),
+            Collider::sphere_at_origin(RADIUS),
+        )];
+        for (polytope, _) in HULL_SHAPES {
+            for (i, spin) in sweep_spins().into_iter().enumerate() {
+                let (physics, ..) = synced_row(RaymarchShape::Polytope(polytope), 1, RADIUS, spin);
+                cases.push((
+                    format!("{polytope:?} at sweep spin {i}"),
+                    physics.world.bodies[0].collider.clone(),
+                ));
+            }
+        }
+        for (pair, collider) in cases {
             for phase in 0..LAUNCH_PHASES {
                 let offset = BODY_TUNNELING_BAND * phase as f32 / LAUNCH_PHASES as f32;
                 assert!(

@@ -18,6 +18,11 @@ impl SceneRegistry for Playground {
             label: "Polychora on S³",
             build: |ctx| Ok(Box::new(crate::s3::S3Scene::new(ctx)?)),
         },
+        SceneEntry {
+            slug: "sdf",
+            label: "SDF editor",
+            build: |ctx| Ok(Box::new(crate::sdf::SdfScene::new(ctx)?)),
+        },
     ];
 }
 
@@ -54,5 +59,17 @@ mod tests {
             .expect("`?scene=s3` must resolve");
         assert_ne!(index, 0);
         assert_eq!(Playground::SCENES[0].slug, "rotate", "boot scene unchanged");
+    }
+
+    /// The editor answers to `--scene=sdf` / `?scene=sdf` and does not sit at
+    /// index 0, which doubles as the unknown-slug fallback: a cold boot should
+    /// land on the demo, not on an authoring tool.
+    #[test]
+    fn the_sdf_editor_is_registered_by_slug_away_from_the_fallback_index() {
+        let index = Playground::SCENES
+            .iter()
+            .position(|entry| entry.slug == "sdf")
+            .expect("`?scene=sdf` must resolve");
+        assert_ne!(index, 0);
     }
 }

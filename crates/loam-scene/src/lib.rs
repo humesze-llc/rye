@@ -9,7 +9,10 @@
 //!
 //! A scene is data as well as code: [`load`] deserializes [`Scene`] and
 //! [`Scene4`] from RON files, checking what the emit contract below asserts on
-//! so file input fails as an error rather than in the emitter.
+//! so file input fails as an error rather than in the emitter. [`edit`] is the
+//! mutating half, a reified [`SceneEdit`] plus the one function that applies
+//! it, holding the same constant checks so an authored tree is always a
+//! loadable one.
 //!
 //! Emit contract, shared by the 3D and 4D paths: every baked constant goes
 //! through `literal::wgsl_f32`, which is shortest-round-trip and always
@@ -28,6 +31,7 @@
 //! different scalar fields and parity is a measured bound, not an identity.
 
 pub mod combinator;
+pub mod edit;
 mod literal;
 pub mod load;
 pub mod primitive;
@@ -35,6 +39,7 @@ pub mod primitive4;
 pub mod scene;
 pub mod scene4;
 
+pub use edit::{EditError, NodePath, SceneEdit};
 pub use load::SceneLoadError;
 pub use loam_shape::Shape;
 pub use primitive::Primitive;

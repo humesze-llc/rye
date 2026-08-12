@@ -464,7 +464,7 @@ impl Demo {
         // the shapes, so a press that lands on one is a rotation gesture, not
         // a throw. It also reads `left_was_down` before `update_throw`
         // refreshes it, which is why it runs ahead of that call.
-        let pointer_free = self.throw_enabled(ctx.ui_has_focus);
+        let pointer_free = self.throw_enabled(ctx.ui_capture.pointer);
         let gimbaling = self.update_gimbal(pointer_free, &ctx.input, viewport);
         // Before the physics step, so the frame a flick is released on also
         // integrates it and `body_upload_needed` sees a moving world.
@@ -551,13 +551,13 @@ impl Demo {
             self.rebuild_bodies();
         }
 
-        // Gate the orbit on `!ui_has_focus` so dragging the egui slider
+        // Gate the orbit on `!ui_capture.pointer` so dragging the egui slider
         // doesn't also rotate the camera. In the 2D grid filmstrip, lift the
         // orbit target to body height so the polytope re-centres in each cell
         // (at y = 0 it sits near the horizon, crowding the cell bottom).
         let lift_orbit = self.view_mode == ViewMode::Filmstrip && self.strip_w && self.strip_t;
         self.orbit.target.y = if lift_orbit { BODY_Y } else { 0.0 };
-        if !ctx.ui_has_focus {
+        if !ctx.ui_capture.pointer {
             match self.camera_mode {
                 CameraMode::Orbit => {
                     // A flick or a held gimbal ring owns the left button for
@@ -876,10 +876,6 @@ pub(crate) struct RotateScene {
     /// another Space is never recompiled against `Demo`'s.
     shader_owner: ShaderOwner,
     console: Console<Demo>,
-    /// Last frame's `egui::Context::wants_keyboard_input()`. Key events
-    /// arrive before `ui`, so this one-frame-stale value gates demo hotkeys
-    /// (Space / R / arrows): when egui holds keyboard focus they must not fire.
-    last_egui_keyboard: bool,
     text_hud: hud::TextHud,
     /// Readout placement, taken from egui's chrome-free rect in `ui` and
     /// consumed by `record` later in the same frame.
@@ -949,7 +945,6 @@ impl RotateScene {
             demo: Demo::new(ctx)?,
             shader_owner: ctx.shader_db.new_owner(),
             console: Self::build_console(),
-            last_egui_keyboard: false,
             text_hud: hud::TextHud::new(ctx.rd)?,
             hud_seat: hud::HudSeat::default(),
             script: load_script(&Args::current())?,
@@ -1040,9 +1035,6 @@ impl loam_app::shell::Scene for RotateScene {
         // After the console's UI, so a line typed this frame reaches the queue
         // in time for the next frame's drain rather than the one after.
         loam_app::command::forward_pending(&mut self.console);
-        // Stash for next frame's hotkey gating, captured after the console
-        // renders so a freshly-focused input registers true.
-        self.last_egui_keyboard = ctx.wants_keyboard_input();
     }
 
     fn on_key(
@@ -1053,7 +1045,7 @@ impl loam_app::shell::Scene for RotateScene {
     ) {
         // Suppress demo keybinds while egui captures the keyboard (a focused
         // TextEdit), so typing `reset` doesn't also fire the R hotkey.
-        if !self.last_egui_keyboard {
+        if !ctx.ui_capture.keyboard {
             self.demo.on_key(code, state, ctx);
         }
     }

@@ -447,7 +447,6 @@ pub(crate) struct SdfScene {
     /// recomputed from the panel constant, so the march is centred in the
     /// region the user can actually see.
     region: [u32; 4],
-    last_egui_keyboard: bool,
 }
 
 impl SdfScene {
@@ -479,7 +478,6 @@ impl SdfScene {
             add: AddChoice::default(),
             pending: Vec::new(),
             region: [0; 4],
-            last_egui_keyboard: false,
         })
     }
 
@@ -551,7 +549,7 @@ impl loam_app::shell::Scene for SdfScene {
 
         let viewport = self.viewport(ctx.rd);
         self.camera.aspect = viewport.width as f32 / viewport.height.max(1) as f32;
-        if !ctx.ui_has_focus {
+        if !ctx.ui_capture.pointer {
             self.orbit
                 .advance(ctx.input, &mut self.camera, &EuclideanR3, ctx.dt);
         }
@@ -625,18 +623,17 @@ impl loam_app::shell::Scene for SdfScene {
         loam_app::command::pump_into(&mut self.console);
         self.console.ui(ctx);
         loam_app::command::forward_pending(&mut self.console);
-        self.last_egui_keyboard = ctx.wants_keyboard_input();
     }
 
     fn on_key(
         &mut self,
         code: winit::keyboard::KeyCode,
         state: winit::event::ElementState,
-        _ctx: &mut FrameCtx<'_>,
+        ctx: &mut FrameCtx<'_>,
     ) {
         use winit::event::ElementState;
         use winit::keyboard::KeyCode;
-        if self.last_egui_keyboard || state != ElementState::Pressed {
+        if ctx.ui_capture.keyboard || state != ElementState::Pressed {
             return;
         }
         if code == KeyCode::KeyR {

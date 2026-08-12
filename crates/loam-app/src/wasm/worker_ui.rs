@@ -27,10 +27,6 @@ pub struct WorkerUi {
     width_px: u32,
     height_px: u32,
     pixels_per_point: f32,
-    /// `wants_pointer_input || wants_keyboard_input` from the last frame.
-    /// Fed to the App via `FrameCtx::ui_has_focus` so gameplay code skips
-    /// events egui consumed.
-    pub wants_input: bool,
 }
 
 impl WorkerUi {
@@ -58,7 +54,6 @@ impl WorkerUi {
             width_px,
             height_px,
             pixels_per_point,
-            wants_input: false,
         }
     }
 
@@ -152,8 +147,8 @@ impl WorkerUi {
         egui::pos2(x, y)
     }
 
-    /// Begin a frame from accumulated raw input; returns the Context for
-    /// the App's `ui` method.
+    /// Begin a frame from accumulated raw input; returns the Context the
+    /// worker reads [`loam_egui::UiCapture`] from and hands to `App::ui`.
     pub fn begin_frame(&mut self) -> &egui::Context {
         let raw_input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -185,7 +180,6 @@ impl WorkerUi {
         view: &wgpu::TextureView,
     ) {
         let full_output = self.ctx.end_pass();
-        self.wants_input = self.ctx.wants_pointer_input() || self.ctx.wants_keyboard_input();
 
         let primitives = self
             .ctx

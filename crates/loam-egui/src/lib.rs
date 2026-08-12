@@ -7,6 +7,9 @@
 //! ## Surface
 //!
 //! - [`UiIntegration`]: per-app egui state, owned by `loam_app::Runner`.
+//! - [`UiCapture`]: what egui is consuming this frame, split by input
+//!   device because the two answers are measured at different points in
+//!   egui's pass.
 //! - [`world_to_screen`]: egui coordinates for
 //!   [`loam_camera::Camera::pixels_from_world`], which anchors a label to a
 //!   point in whatever [`Space`](loam_math::Space) the scene lives in.
@@ -18,11 +21,12 @@
 //!
 //! ## Input gating
 //!
-//! Gameplay code reading WASD or mouse delta should gate on
-//! `frame.ui_has_focus()` so typing into a settings field doesn't also fire
-//! movement.
+//! Gameplay code gates on [`UiCapture`], reached through
+//! `loam_app::FrameCtx::ui_capture`: mouselook and picking on
+//! `capture.pointer`, hotkeys on `capture.keyboard`.
 
 mod bivector_matrix;
+mod capture;
 pub mod console;
 pub mod dnd;
 mod floating;
@@ -32,6 +36,7 @@ mod slider_edit;
 mod world;
 
 pub use bivector_matrix::{bivector_matrix, cell_text as bivector_matrix_cell_text};
+pub use capture::UiCapture;
 pub use console::{
     cmd, console_echo_enabled, parse_line, render_line, set_console_echo, subcommands, Command,
     Console, ConsoleUi, ConsoleWriter, HistoryLine, Key, LineKind, SubcommandSet,

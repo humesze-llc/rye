@@ -235,7 +235,7 @@ impl Freecam {
         // Position runs regardless of grab: on wasm `cursor_grabbed` is
         // permanently false, so gating WASD on it would freeze browser
         // translation. Native UI focus is handled by the demo's upstream
-        // `if !ctx.ui_has_focus` gate.
+        // `if !ctx.ui_capture.pointer` gate.
         let mut delta = camera.forward * input.move_forward
             + camera.right * input.move_right
             + Vec3::Y * input.move_up;

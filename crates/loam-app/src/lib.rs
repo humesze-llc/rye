@@ -96,7 +96,7 @@ pub use loam_asset::AssetEvent;
 pub use loam_camera::{
     Camera, CameraController, CameraView, FirstPersonController, OrbitController,
 };
-pub use loam_egui::{egui, world_to_screen};
+pub use loam_egui::{egui, world_to_screen, UiCapture};
 pub use loam_input::FrameInput as Input;
 pub use loam_shader::{ShaderDb, ShaderOwner};
 
@@ -197,7 +197,7 @@ pub trait App: Sized + 'static {
     }
 
     /// Build this frame's egui UI, after [`App::update`]; painted as a 2D overlay.
-    /// Gate gameplay input on [`FrameCtx::ui_has_focus`] so typing into a field
+    /// Gate gameplay input on [`FrameCtx::ui_capture`] so typing into a field
     /// doesn't also fire WASD. For a label following a 3D object, use
     /// [`world_to_screen`] to place an `egui::Area`.
     ///
@@ -341,11 +341,11 @@ pub struct FrameCtx<'a> {
     /// actual elapsed time, so a 50fps frame gets dt ≈ 0.02 and a stutter-frame
     /// at 15fps gets dt ≈ 0.066.
     pub dt: f32,
-    /// `true` if egui is consuming pointer or keyboard input this frame (a widget is
-    /// hovered, focused, or accepting text). Gameplay code should gate movement /
-    /// mouselook on `!ctx.ui_has_focus` so typing into a settings field doesn't also
-    /// fire WASD or rotate the camera.
-    pub ui_has_focus: bool,
+    /// What egui is consuming this frame, per input device. Gate mouselook,
+    /// orbit and picking on `!ctx.ui_capture.pointer`; gate hotkeys on
+    /// `!ctx.ui_capture.keyboard`. The two are not interchangeable, and
+    /// [`UiCapture`] says why.
+    pub ui_capture: UiCapture,
     /// Phantom for forward-compat: future fields here mustn't silently break code that
     /// pattern-matches on the struct.
     _non_exhaustive: PhantomData<()>,
@@ -806,6 +806,11 @@ struct Runner<A: App> {
     ui: Option<UiIntegration>,
     app: Option<A>,
 
+    /// Read at each frame's `begin_frame`. Window events fire between
+    /// frames, with no pass of their own to query, so `on_event` / `on_key`
+    /// and the Esc-exit gate all serve this frame's value.
+    ui_capture: UiCapture,
+
     /// Wasm32-only: present while the spawned device-acquisition future is in flight;
     /// taken on completion. `None` after the first successful poll (or before `resumed`
     /// has fired). See `PendingInit` for the design rationale.
@@ -868,6 +873,7 @@ impl<A: App> Runner<A> {
             watcher: None,
             ui: None,
             app: None,
+            ui_capture: UiCapture::default(),
             #[cfg(target_arch = "wasm32")]
             pending_init: None,
             minimized: false,
@@ -1146,7 +1152,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
                 if self.config.esc_exits
                     && event.state == ElementState::Pressed
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape))
-                    && !self.ui.as_ref().is_some_and(|u| u.ui_has_focus()) =>
+                    && !self.ui_capture.keyboard =>
             {
                 elwt.exit();
                 return;
@@ -1220,9 +1226,9 @@ impl<A: App> ApplicationHandler for Runner<A> {
         let now = self.time();
         let fps = self.fps;
         let tick = self.tick_index;
+        let ui_capture = self.ui_capture;
         if let Some(app) = self.app.as_mut() {
             if let Some(rd) = self.rd.as_ref() {
-                let ui_has_focus = self.ui.as_ref().is_some_and(|u| u.ui_has_focus());
                 let mut ctx = FrameCtx {
                     rd,
                     input: FrameInput::default(),
@@ -1235,7 +1241,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
                     // value; apps that integrate continuous state should do that work
                     // in `update`, not `on_event`.
                     dt: 0.0,
-                    ui_has_focus,
+                    ui_capture,
                     _non_exhaustive: PhantomData,
                 };
                 app.on_event(&ev, &mut ctx);
@@ -1293,6 +1299,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
 /// and `gpu-total` is device time recorded out of band.
 pub(crate) const FRAME_LOOP_SECTIONS: &[&str] = &[
     "sim-ticks",
+    "ui-begin",
     "app-update",
     "app-ui",
     "hot-reload",
@@ -1472,13 +1479,20 @@ impl<A: App> Runner<A> {
             0
         };
 
-        // 3. Per-frame update with drained input + UI build.
-        // egui's focus reading reflects the *previous* frame's state
-        // (egui hasn't run yet for this frame). That one-frame
-        // staleness is fine: focus changes one frame at a time, and
-        // `App::update` needs to know "should I gate gameplay input"
-        // before this frame's UI runs.
-        let ui_has_focus = self.ui.as_ref().is_some_and(|u| u.ui_has_focus());
+        // 3. Open the egui pass before `App::update` so this frame's input
+        // is hit-tested against the last build's layout, rather than gating
+        // gameplay on a capture computed before the input existed. Only the
+        // pass opens here; the build still runs after `update`, so a widget
+        // showing this frame's state still shows this frame's state.
+        let egui_ctx = if let Some(ui) = self.ui.as_mut() {
+            let _scope = loam_time::frame_trace::scope("ui-begin");
+            let ctx = ui.begin_frame(win.as_ref()).clone();
+            self.ui_capture = UiCapture::read(&ctx);
+            Some(ctx)
+        } else {
+            None
+        };
+        let ui_capture = self.ui_capture;
         let input = self.input.take_frame();
 
         // Compute dt (wall-clock seconds since previous update). First frame after
@@ -1501,7 +1515,7 @@ impl<A: App> Runner<A> {
                 n_ticks,
                 tick: self.tick_index,
                 dt,
-                ui_has_focus,
+                ui_capture,
                 _non_exhaustive: PhantomData,
             };
             {
@@ -1509,12 +1523,12 @@ impl<A: App> Runner<A> {
                 app.update(&mut fctx);
             }
 
-            // Build this frame's UI. egui captures the widgets;
-            // `paint` later renders them after `App::render`.
-            if let Some(ui) = self.ui.as_mut() {
+            // Build this frame's UI into the pass opened above. egui
+            // captures the widgets; `paint` later renders them after
+            // `App::render`.
+            if let Some(egui_ctx) = egui_ctx.as_ref() {
                 let _scope = loam_time::frame_trace::scope("app-ui");
-                let egui_ctx = ui.begin_frame(win.as_ref()).clone();
-                app.ui(&egui_ctx, &mut fctx);
+                app.ui(egui_ctx, &mut fctx);
             }
         }
 

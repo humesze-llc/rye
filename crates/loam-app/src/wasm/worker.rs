@@ -27,7 +27,7 @@ use super::input_queue::{self, InputMessage};
 use super::messages;
 use super::modifier_sync::{ModifierFlags, ModifierSync};
 use super::worker_ui::WorkerUi;
-use crate::{App, FrameCtx, RenderCtx, SetupCtx};
+use crate::{App, FrameCtx, RenderCtx, SetupCtx, UiCapture};
 use loam_asset::AssetWatcher;
 use loam_input::InputState;
 use loam_render::device::RenderDevice;
@@ -423,6 +423,9 @@ struct WorkerRunner<A: App + 'static> {
     /// Worker-side egui integration (parallel to loam-egui's UiIntegration
     /// but without the winit dependency).
     ui: WorkerUi,
+    /// Read at each frame's `begin_frame`. Input messages are applied
+    /// outside the pass, so the `on_key` path serves this frame's value.
+    ui_capture: UiCapture,
     /// Pixel dimensions kept separately so egui gets `size_in_pixels`
     /// without a round-trip through RenderDevice.
     width_px: u32,
@@ -508,6 +511,7 @@ impl<A: App + 'static> WorkerRunner<A> {
             input: InputState::default(),
             modifier_sync: ModifierSync::default(),
             ui,
+            ui_capture: UiCapture::default(),
             width_px,
             height_px,
             device_pixel_ratio,
@@ -642,7 +646,6 @@ impl<A: App + 'static> WorkerRunner<A> {
                     // Route to `App::on_key` so hotkeys work like native.
                     // `App::on_event` can't run here: winit's `KeyEvent` has
                     // a `pub(crate)` field we can't construct.
-                    let ui_has_focus = self.ui.wants_input;
                     let mut fctx = FrameCtx {
                         rd: &self.rd,
                         input: loam_input::FrameInput::default(),
@@ -651,7 +654,7 @@ impl<A: App + 'static> WorkerRunner<A> {
                         n_ticks: 0,
                         tick: self.tick_index,
                         dt: 0.0,
-                        ui_has_focus,
+                        ui_capture: self.ui_capture,
                         _non_exhaustive: PhantomData,
                     };
                     self.app.on_key(code, state, &mut fctx);
@@ -759,12 +762,22 @@ impl<A: App + 'static> WorkerRunner<A> {
             &self.jobs,
         );
 
+        // Open the egui pass ahead of `App::update`, matching the windowed
+        // runner: this frame's input is hit-tested against the last build's
+        // layout instead of gating gameplay on a capture that predates it.
+        // The build still runs after `update`, and `paint` after the scene
+        // render below.
+        let egui_ctx = {
+            let _scope = loam_time::frame_trace::scope("ui-begin");
+            let ctx = self.ui.begin_frame().clone();
+            self.ui_capture = UiCapture::read(&ctx);
+            ctx
+        };
+
         // `take_frame` drains the accumulated FrameInput and resets per-tick
         // deltas (mouse motion + scroll).
         let input = self.input.take_frame();
-        let ui_has_focus = self.ui.wants_input;
         {
-            let _scope = loam_time::frame_trace::scope("app-update");
             let mut fctx = FrameCtx {
                 rd: &self.rd,
                 input,
@@ -773,14 +786,13 @@ impl<A: App + 'static> WorkerRunner<A> {
                 n_ticks,
                 tick: self.tick_index,
                 dt,
-                ui_has_focus,
+                ui_capture: self.ui_capture,
                 _non_exhaustive: PhantomData,
             };
-            self.app.update(&mut fctx);
-
-            // egui begin_frame -> App::ui -> paint after the scene render
-            // below, matching the windowed runner.
-            let egui_ctx = self.ui.begin_frame().clone();
+            {
+                let _scope = loam_time::frame_trace::scope("app-update");
+                self.app.update(&mut fctx);
+            }
             let _scope = loam_time::frame_trace::scope("app-ui");
             self.app.ui(&egui_ctx, &mut fctx);
         }

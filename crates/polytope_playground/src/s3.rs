@@ -196,9 +196,6 @@ pub(crate) struct S3Scene {
     rate: f32,
     spin: bool,
     curved: bool,
-    /// Last frame's egui keyboard capture, for the same one-frame-stale
-    /// hotkey gate the rotate scene uses.
-    last_egui_keyboard: bool,
 }
 
 impl S3Scene {
@@ -232,7 +229,6 @@ impl S3Scene {
             rate: DEFAULT_RATE,
             spin: true,
             curved: true,
-            last_egui_keyboard: false,
         })
     }
 
@@ -309,7 +305,7 @@ impl loam_app::shell::Scene for S3Scene {
         }
         let cfg = &ctx.rd.surface_bundle.config;
         self.camera.aspect = cfg.width as f32 / cfg.height.max(1) as f32;
-        if !ctx.ui_has_focus {
+        if !ctx.ui_capture.pointer {
             self.orbit
                 .advance(ctx.input, &mut self.camera, &EuclideanR3, ctx.dt);
         }
@@ -321,18 +317,17 @@ impl loam_app::shell::Scene for S3Scene {
         loam_app::command::pump_into(&mut self.console);
         self.console.ui(ctx);
         loam_app::command::forward_pending(&mut self.console);
-        self.last_egui_keyboard = ctx.wants_keyboard_input();
     }
 
     fn on_key(
         &mut self,
         code: winit::keyboard::KeyCode,
         state: winit::event::ElementState,
-        _ctx: &mut FrameCtx<'_>,
+        ctx: &mut FrameCtx<'_>,
     ) {
         use winit::event::ElementState;
         use winit::keyboard::KeyCode;
-        if self.last_egui_keyboard || state != ElementState::Pressed {
+        if ctx.ui_capture.keyboard || state != ElementState::Pressed {
             return;
         }
         match code {

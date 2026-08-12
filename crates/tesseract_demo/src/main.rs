@@ -253,7 +253,7 @@ impl App for TesseractApp {
         use winit::keyboard::KeyCode;
         // Don't fire app hotkeys while an egui widget (e.g. the console) has
         // keyboard focus, or typing `trace` would also toggle pause via `KeyT`.
-        if ctx.ui_has_focus {
+        if ctx.ui_capture.keyboard {
             return;
         }
         // Alt needs both edges (the freecam preset interprets press + release per

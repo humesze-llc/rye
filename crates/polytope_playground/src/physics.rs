@@ -569,8 +569,8 @@ impl Demo {
     /// Whether the flick gesture may run this frame. Orbit is the only camera
     /// mode with a free cursor, and egui owning the pointer means the press
     /// belongs to a widget.
-    pub(crate) fn throw_enabled(&self, ui_has_focus: bool) -> bool {
-        !ui_has_focus && self.camera_mode == CameraMode::Orbit
+    pub(crate) fn throw_enabled(&self, pointer_capture: bool) -> bool {
+        !pointer_capture && self.camera_mode == CameraMode::Orbit
     }
 
     /// Throw `slot` as if a flick had dragged `drag_pixels`, and report the

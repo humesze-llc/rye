@@ -17,8 +17,6 @@ pub struct UiIntegration {
     renderer: Renderer,
     /// Pixels-per-point cached at the most recent `begin_frame`.
     pixels_per_point: f32,
-    /// Last frame's `wants_pointer_input || wants_keyboard_input`.
-    last_focus: bool,
 }
 
 impl UiIntegration {
@@ -62,7 +60,6 @@ impl UiIntegration {
             winit_state,
             renderer,
             pixels_per_point,
-            last_focus: false,
         }
     }
 
@@ -158,7 +155,10 @@ impl UiIntegration {
         queue.submit(Some(encoder.finish()));
     }
 
-    /// Drain accumulated input and start a fresh egui frame.
+    /// Drain accumulated input and start a fresh egui frame. The runner
+    /// calls this ahead of `App::update` and reads [`crate::UiCapture`] from
+    /// the returned context: the hit test behind the pointer clock is
+    /// refreshed here, not in [`Self::paint`].
     pub fn begin_frame(&mut self, window: &Window) -> &egui::Context {
         let raw_input = self.winit_state.take_egui_input(window);
         self.pixels_per_point = window.scale_factor() as f32;
@@ -193,7 +193,6 @@ impl UiIntegration {
         viewport: (u32, u32),
     ) {
         let full_output = self.ctx.end_pass();
-        self.last_focus = self.ctx.wants_pointer_input() || self.ctx.wants_keyboard_input();
 
         // Forward platform output (cursor changes, clipboard, open-link).
         self.winit_state
@@ -239,11 +238,5 @@ impl UiIntegration {
         for id in &full_output.textures_delta.free {
             self.renderer.free_texture(id);
         }
-    }
-
-    /// `true` if egui wants pointer or keyboard input; gate gameplay input on
-    /// `!ui_has_focus()`.
-    pub fn ui_has_focus(&self) -> bool {
-        self.last_focus
     }
 }

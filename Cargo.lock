@@ -1535,6 +1535,10 @@ dependencies = [
 name = "loam-time"
 version = "0.1.0"
 dependencies = [
+ "glam",
+ "loam-math",
+ "ron",
+ "serde",
  "thiserror 1.0.69",
  "tracing",
  "web-time",

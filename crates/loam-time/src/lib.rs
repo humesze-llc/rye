@@ -34,11 +34,20 @@
 //! }
 //! ```
 
+//! ## The presentation clock
+//!
+//! [`director`] is the other side of the determinism boundary: authored
+//! keyframes sampled at an integer frame index, for playback and capture
+//! rather than simulation. It is held to same-binary-same-frames, not to the
+//! sim's same-bits, and must never write simulation state.
+
 pub mod alloc;
+pub mod director;
 mod fixed_timestep;
 pub mod frame_trace;
 pub mod jobs;
 pub mod replay;
 
+pub use director::{Director, Drive, Playhead, Timeline, TimelineError, Track};
 pub use fixed_timestep::{FixedTimestep, DEFAULT_MAX_CATCH_UP};
 pub use replay::{Checkpoint, StateHash, Tape, TapeError, TAPE_FORMAT_VERSION};

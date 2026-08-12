@@ -1165,6 +1165,7 @@ mod blended_edge_tests {
             &mut mesh,
             a,
             b,
+            Vec4::ZERO,
             WHITE,
             WHITE,
             1.0,
@@ -1191,6 +1192,7 @@ mod blended_edge_tests {
             &mut mesh,
             a,
             b,
+            Vec4::ZERO,
             WHITE,
             WHITE,
             1.0,
@@ -1217,6 +1219,7 @@ mod blended_edge_tests {
             &mut arc,
             a,
             b,
+            Vec4::ZERO,
             WHITE,
             WHITE,
             1.0,
@@ -1251,6 +1254,7 @@ mod blended_edge_tests {
                 &mut mesh,
                 a,
                 b,
+                Vec4::ZERO,
                 WHITE,
                 WHITE,
                 1.0,
@@ -1272,6 +1276,49 @@ mod blended_edge_tests {
             half < full,
             "half-blend {half} should be under full arc {full}"
         );
+    }
+
+    /// The arc is taken about `arc_center`, so an off-centre body frame (what
+    /// `BodyPose::body_local` produces once physics pushes a body off the
+    /// `w = 0` slice) still bows onto the sphere its endpoints share. Read
+    /// through drop-w, where the whole arc of this fixture lies at `w = LIFT`:
+    /// every emitted point must sit at `RADIUS` from the centre's R³ image.
+    /// About the frame origin the samples land on the sphere of radius
+    /// `sqrt(RADIUS² + LIFT²)` instead, whose R³ image pulls the midpoint
+    /// ~0.055 inward here.
+    #[test]
+    fn the_arc_bows_onto_the_circumsphere_about_the_arc_center() {
+        const RADIUS: f32 = 0.5;
+        const LIFT: f32 = 0.3;
+        let center = Vec4::W * LIFT;
+        let a = Vec4::new(RADIUS, 0.0, 0.0, 0.0) + center;
+        let b = Vec4::new(0.0, RADIUS, 0.0, 0.0) + center;
+        let mut mesh = LineMesh::<3>::default();
+        let mut scratch = Vec::new();
+        push_blended_edge(
+            &mut mesh,
+            a,
+            b,
+            center,
+            WHITE,
+            WHITE,
+            1.0,
+            1.0,
+            &flat_drop_w(),
+            Vec3::ZERO,
+            &mut scratch,
+            STEREOGRAPHIC_VIEW_RADIUS,
+        );
+        assert_eq!(mesh.segments.len(), SPACE_TESSELLATION_SAMPLES);
+        for (k, (p0, p1)) in mesh.segments.iter().enumerate() {
+            for p in [Vec3::from_array(*p0), Vec3::from_array(*p1)] {
+                assert!(
+                    (p.length() - RADIUS).abs() < 1e-5,
+                    "sample {k} sits at {} from the lifted body's centre, not {RADIUS}",
+                    p.length()
+                );
+            }
+        }
     }
 
     /// A non-trivial Perspective4D projection; focal distance sits outside the
@@ -1301,6 +1348,7 @@ mod blended_edge_tests {
             &mut mesh,
             a,
             b,
+            Vec4::ZERO,
             WHITE,
             WHITE,
             1.0,
@@ -1338,6 +1386,7 @@ mod blended_edge_tests {
                 &mut mesh,
                 a,
                 b,
+                Vec4::ZERO,
                 WHITE,
                 WHITE,
                 1.0,
@@ -2355,6 +2404,7 @@ mod section_cap_projection_tests {
             &mut mesh,
             a,
             b,
+            Vec4::ZERO,
             white,
             white,
             1.0,
@@ -2396,6 +2446,7 @@ mod section_cap_projection_tests {
             &mut mesh,
             a,
             b,
+            Vec4::ZERO,
             white,
             white,
             1.0,
@@ -2435,6 +2486,7 @@ mod section_cap_projection_tests {
             &mut mesh,
             a,
             b,
+            Vec4::ZERO,
             white,
             white,
             1.0,
@@ -2670,6 +2722,7 @@ mod section_cap_projection_tests {
             &mut mesh,
             a,
             b,
+            Vec4::ZERO,
             white,
             white,
             1.0,
@@ -2892,6 +2945,7 @@ mod section_cap_projection_tests {
             &mut mesh,
             a,
             b,
+            Vec4::ZERO,
             white,
             white,
             0.5,
@@ -2909,6 +2963,7 @@ mod section_cap_projection_tests {
             &mut mesh,
             a,
             b,
+            Vec4::ZERO,
             white,
             white,
             0.5,

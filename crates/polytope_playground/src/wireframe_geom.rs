@@ -198,9 +198,10 @@ pub(crate) fn project_to_world(
         + body_pos_r3
 }
 
-/// Smallest endpoint radius with a well-defined direction on the circumsphere;
-/// below this the slerp has no axis and falls back to the flat chord. No real
-/// vertex is this close to center; the guard only blocks a divide-by-zero.
+/// Smallest endpoint distance from the arc centre with a well-defined direction
+/// on the circumsphere; below this the slerp has no axis and falls back to the
+/// flat chord. No real vertex is this close to its body's centre; the guard only
+/// blocks a divide-by-zero.
 pub(crate) const MIN_EDGE_RADIUS: f32 = 1e-6;
 
 /// Wireframe Hyperslice band test: does `[interval_min, interval_max]` intersect
@@ -469,13 +470,23 @@ pub(crate) fn retain_in_radius_triangles(
 /// S³ great-circle arc by `blend` (0 = chord, 1 = arc; derived from the
 /// projection via [`crate::state::default_edge_blend`]).
 ///
-/// `a` / `b` are the body-local 4D endpoints. Both curves share them (the
-/// vertices sit on the circumsphere), so the morph only bows the interior onto
-/// the sphere. `blend == 0` renders the R3 chord between projected endpoints
-/// (under stereographic, a comparison overlay; the faithful arc is `blend == 1`);
-/// `blend > 0` subdivides into [`SPACE_TESSELLATION_SAMPLES`] with a per-sample
-/// chord/arc blend and a linear color gradient. `slerp_scratch` is a
-/// caller-owned reused buffer, cleared on entry.
+/// `a` / `b` are the body-local 4D endpoints and `arc_center` is the centre of
+/// the circumsphere they sit on, in that same frame. Both curves share the
+/// endpoints (the vertices sit on the circumsphere), so the morph only bows the
+/// interior onto the sphere. `blend == 0` renders the R3 chord between projected
+/// endpoints (under stereographic, a comparison overlay; the faithful arc is
+/// `blend == 1`); `blend > 0` subdivides into [`SPACE_TESSELLATION_SAMPLES`]
+/// with a per-sample chord/arc blend and a linear color gradient.
+/// `slerp_scratch` is a caller-owned reused buffer, cleared on entry.
+///
+/// An off-centre body frame is HANDLED, not refused: the arc is taken about
+/// `arc_center` and carried back, so a body a hull contact has pushed off the
+/// `w = 0` slice (whose frame then carries
+/// [`crate::physics::BodyPose::body_local`]'s `w` offset) bows onto the
+/// circumsphere it is actually on. Reading `a.length()` as the circumradius
+/// instead bows onto a sphere through the frame origin, which the body's
+/// vertices stop sharing the moment `position.w` is nonzero. Pass `Vec4::ZERO`
+/// for an origin-centred frame, where the two forms agree.
 ///
 /// Each sample is a direct `flat.lerp(sphere, blend)` in ambient R⁴, not a
 /// metric (`BlendedSpace::exp_target`) geodesic. The wireframe only needs the
@@ -488,6 +499,7 @@ pub(crate) fn push_blended_edge(
     mesh: &mut LineMesh<3>,
     a: Vec4,
     b: Vec4,
+    arc_center: Vec4,
     color_a: [f32; 4],
     color_b: [f32; 4],
     width: f32,
@@ -534,8 +546,10 @@ pub(crate) fn push_blended_edge(
         return;
     }
 
-    let radius_a = a.length();
-    let radius_b = b.length();
+    let offset_a = a - arc_center;
+    let offset_b = b - arc_center;
+    let radius_a = offset_a.length();
+    let radius_b = offset_b.length();
     if radius_a < MIN_EDGE_RADIUS || radius_b < MIN_EDGE_RADIUS {
         // Vertex at the body center: no slerp axis, so degrade to the flat chord
         // (never reached for regular polytopes; guards degenerate input).
@@ -575,9 +589,10 @@ pub(crate) fn push_blended_edge(
 
     let samples = SPACE_TESSELLATION_SAMPLES;
     let clip_radius = stereographic_clip_radius(projection, view_radius);
-    // Unit endpoints on S³; the per-sample radius lerp below restores body scale.
-    let p0u = a / radius_a;
-    let p1u = b / radius_b;
+    // Unit endpoints on S³, centred: the per-sample radius lerp below restores
+    // body scale and `arc_center` carries the arc back to the body's frame.
+    let p0u = offset_a / radius_a;
+    let p1u = offset_b / radius_b;
     slerp_scratch.clear();
     <loam_math::SphericalS3Embedded as loam_math::RasterizableSpace<4>>::tessellate_segment(
         p0u,
@@ -599,7 +614,7 @@ pub(crate) fn push_blended_edge(
         let s = k as f32 / samples as f32;
         let flat = a.lerp(b, s);
         let radius = radius_a + (radius_b - radius_a) * s;
-        let sphere = radius * arc_pt;
+        let sphere = arc_center + radius * arc_pt;
         let proj = stereographic_view_point(flat.lerp(sphere, blend), projection);
         let world = (proj + body_pos_r3).to_array();
         let c = [

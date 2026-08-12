@@ -971,6 +971,11 @@ pub(crate) fn build_wireframe_meshes(
         // keeps its apparent x-position stable when Perspective4D scales
         // (x, y, z) by `focal / (focal - w)`.
         let body_pos_r3 = frame.body_local(slot, topo.vertices, frame.body_size, local_vertices);
+        // Centre of the circumsphere the arc path bows onto: where the body's
+        // own origin lands in that frame, which is the `w` offset once physics
+        // has pushed the body off the slice. Taken from `body_local` itself so
+        // the arc cannot drift from the vertices it joins.
+        let arc_center = frame.pose(slot).body_local(Vec4::ZERO, frame.body_size);
 
         // Cross-section perimeter outlines, one per enabled layer.
         // `polytope_section_perimeter_append` fills the body-local drop-w
@@ -1151,6 +1156,7 @@ pub(crate) fn build_wireframe_meshes(
                 parent_lines,
                 a,
                 b,
+                arc_center,
                 color_a,
                 color_b,
                 style.width_px,
@@ -2109,6 +2115,55 @@ mod tests {
         assert_ne!(
             off_slice.cross_caps, rest.cross_caps,
             "the cap did not move with the slice, so the pin above is vacuous"
+        );
+    }
+
+    /// The S³ arcs bow onto the circumsphere of the body PHYSICS put there,
+    /// which a hull contact moves off the `w = 0` slice
+    /// (`a_hull_collision_pushes_the_struck_body_off_the_w_zero_slice`).
+    /// Drop-w hides a lift along `+w`, so the lifted body's arcs are the at-rest
+    /// body's arcs; an arc taken about the body FRAME's origin instead bows onto
+    /// a sphere of radius `sqrt(BODY_SIZE² + lift²)` and drags every interior
+    /// sample off the body by orders more than the translate tolerance.
+    #[test]
+    fn arcs_bow_onto_the_circumsphere_of_a_body_off_the_slice() {
+        let (lifted, lift) = thrown_along_w();
+        let spin = rotor_at(Plane4::Xz, 0.5);
+        let at_rest = PlaygroundPhysics::new(1, BODY_SIZE);
+        let mut style = slice_colored_style();
+        style.space_blend = 1.0;
+        let build_at = |physics, w_slice| {
+            build_row(
+                &frame_of(
+                    physics,
+                    ROW_16,
+                    spin,
+                    Projection::Identity,
+                    w_slice,
+                    CAMERA_DISTANCE,
+                ),
+                &style,
+            )
+        };
+
+        let live = build_at(&lifted, SLICE_W + lift);
+        let rest = build_at(&at_rest, SLICE_W);
+        assert_eq!(
+            live.edges.len(),
+            Polytope4::Cell16.topology().edges.len() * SPACE_TESSELLATION_SAMPLES * 2,
+            "blend 1 did not subdivide the edges, so the arc path is not under test"
+        );
+        // The lift is along +w alone, so the R³ image never moved.
+        live.assert_carried_from(&rest, Vec3::ZERO);
+
+        // The fixture's lift has to be big enough to see: about the frame
+        // origin it inflates the sphere the endpoints share by far more than
+        // the pin's tolerance.
+        let origin_centred = (BODY_SIZE * BODY_SIZE + lift * lift).sqrt();
+        assert!(
+            origin_centred - BODY_SIZE > 100.0 * TRANSLATE_TOL,
+            "lift {lift} inflates the origin-centred sphere by only {}",
+            origin_centred - BODY_SIZE
         );
     }
 

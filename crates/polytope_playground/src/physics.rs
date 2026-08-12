@@ -207,20 +207,12 @@ impl BodyPose {
     /// world `w_slice` cutting the body where physics put it instead of always
     /// through its centre; it is exactly zero for a body on the layout.
     ///
-    /// Precondition of the wireframe's S³ arc path (`blend > 0` in
-    /// [`crate::wireframe_geom::push_blended_edge`]): `position.w == 0`. That
-    /// path reads each endpoint's `length()` as its circumradius, which holds
-    /// only while the frame is origin-centred; the `w` offset moves the body
-    /// off the origin, so the endpoints stop sharing a radius and the interior
-    /// bows onto a sphere the body is not on.
-    ///
-    /// Live, not dormant. A hull contact drives the struck body off the slice
-    /// on its own, with no `w` in the throw:
-    /// `a_hull_collision_pushes_the_struck_body_off_the_w_zero_slice` measures
-    /// up to 0.33 of `w`, near half a body radius. It reaches only the
-    /// curved-blend wireframe, and only after a collision; the fix is to arc
-    /// in the body's own centred frame rather than to drop the offset, which
-    /// the section cut needs.
+    /// The `w` offset moves the frame off the origin, so the body's vertices
+    /// stop sharing a radius about it. The wireframe's S³ arc path
+    /// ([`crate::wireframe_geom::push_blended_edge`]) takes no precondition on
+    /// that: it arcs in the body's own centred frame, about the point
+    /// `body_local(Vec4::ZERO, size)` returns. No caller may read an endpoint's
+    /// `length()` as its circumradius.
     pub(crate) fn body_local(&self, canonical: Vec4, size: f32) -> Vec4 {
         size * self.rotor.apply(canonical) + Vec4::W * self.position.w
     }
@@ -1122,9 +1114,9 @@ mod tests {
     /// the same mirror symmetry that kills their torque, so a per-shape
     /// assertion at the canonical pose would be false for two of the four.
     ///
-    /// This BREAKS the `position.w == 0` precondition that
-    /// [`BodyPose::body_local`]'s S³ arc path documents; the invariant was
-    /// dormant only while nothing could throw a body off the slice.
+    /// This is what makes an off-slice body frame reachable, which the
+    /// wireframe's arc path handles by arcing about
+    /// [`BodyPose::body_local`]'s own centre.
     #[test]
     fn a_hull_collision_pushes_the_struck_body_off_the_w_zero_slice() {
         for (polytope, _) in HULL_SHAPES {
@@ -1152,8 +1144,8 @@ mod tests {
             );
         }
 
-        // The control: a ball pair cannot leave the slice, which is why the
-        // arc path's precondition held before the swap.
+        // The control: a ball pair cannot leave the slice, which is why an
+        // off-slice body frame was unreachable before the swap.
         let (mut physics, ..) = synced_row(RaymarchShape::ThreeSphere, 2, RADIUS, Rotor4::IDENTITY);
         physics.throw(
             0,

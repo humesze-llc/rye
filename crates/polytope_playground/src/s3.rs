@@ -142,6 +142,9 @@ fn build_wireframe(
             mesh,
             a,
             b,
+            // This scene has no bodies: the posed vertices are points of the
+            // ambient S³ itself, so the arc centre is the origin.
+            Vec4::ZERO,
             // Unit circumradius, so `w` spans exactly [-1, 1].
             w_depth_color(a.w, 1.0),
             w_depth_color(b.w, 1.0),

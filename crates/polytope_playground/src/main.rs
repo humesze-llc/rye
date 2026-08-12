@@ -551,31 +551,34 @@ impl Demo {
             self.rebuild_bodies();
         }
 
-        // Gate the orbit on `!ui_capture.pointer` so dragging the egui slider
-        // doesn't also rotate the camera. In the 2D grid filmstrip, lift the
-        // orbit target to body height so the polytope re-centres in each cell
-        // (at y = 0 it sits near the horizon, crowding the cell bottom).
+        // Gate each camera on the clocks it reads, so dragging the egui
+        // slider doesn't also rotate the camera. In the 2D grid filmstrip,
+        // lift the orbit target to body height so the polytope re-centres in
+        // each cell (at y = 0 it sits near the horizon, crowding the cell
+        // bottom).
         let lift_orbit = self.view_mode == ViewMode::Filmstrip && self.strip_w && self.strip_t;
         self.orbit.target.y = if lift_orbit { BODY_Y } else { 0.0 };
-        if !ctx.ui_capture.pointer {
-            match self.camera_mode {
-                CameraMode::Orbit => {
-                    // A flick or a held gimbal ring owns the left button for
-                    // the whole drag, so the orbit must not read it as a
-                    // look-around. Masking the button rather than skipping
-                    // `advance` keeps scroll-zoom and the frame rebuild live
-                    // while aiming.
-                    let mut input = ctx.input;
-                    input.left_mouse_down &= !(aiming || gimbaling);
-                    self.orbit
-                        .advance(input, &mut self.camera, &EuclideanR3, dt_secs);
-                }
-                CameraMode::FreeRoam => {
-                    // Handles look + WASD + cursor-grab gating internally;
-                    // no-ops while the cursor is released (Alt-toggled).
-                    self.freecam.advance(ctx.input, &mut self.camera, dt_secs);
-                }
+        match self.camera_mode {
+            CameraMode::Orbit if !ctx.ui_capture.pointer => {
+                // A flick or a held gimbal ring owns the left button for
+                // the whole drag, so the orbit must not read it as a
+                // look-around. Masking the button rather than skipping
+                // `advance` keeps scroll-zoom and the frame rebuild live
+                // while aiming.
+                let mut input = ctx.input;
+                input.left_mouse_down &= !(aiming || gimbaling);
+                self.orbit
+                    .advance(input, &mut self.camera, &EuclideanR3, dt_secs);
             }
+            // Both clocks, because `advance` folds WASD translation in with
+            // the mouse look: a focused text field must not walk the camera
+            // the way a hovered widget must not turn it.
+            CameraMode::FreeRoam if !(ctx.ui_capture.pointer || ctx.ui_capture.keyboard) => {
+                // Handles look + WASD + cursor-grab gating internally;
+                // no-ops while the cursor is released (Alt-toggled).
+                self.freecam.advance(ctx.input, &mut self.camera, dt_secs);
+            }
+            _ => {}
         }
         let view = self.camera.view();
 

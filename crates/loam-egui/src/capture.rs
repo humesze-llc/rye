@@ -60,6 +60,7 @@ mod tests {
 
     const SCREEN: egui::Vec2 = egui::vec2(800.0, 600.0);
     const PANEL_BLANK: egui::Pos2 = egui::pos2(400.0, 8.0);
+    const FIELD: egui::Pos2 = egui::pos2(120.0, 10.0);
     const OPEN_SCENE: egui::Pos2 = egui::pos2(200.0, 400.0);
     const WINDOW_POS: egui::Pos2 = egui::pos2(400.0, 300.0);
     const IN_WINDOW: egui::Pos2 = egui::pos2(430.0, 320.0);
@@ -205,6 +206,18 @@ mod tests {
         let (capture, stale) = host.hover(egui::pos2(PANEL_BLANK.x + 30.0, PANEL_BLANK.y));
         assert!(capture.pointer);
         assert!(!stale);
+    }
+
+    /// The `is_using_pointer` term: a slider drag swept off its widget is
+    /// still egui's, so the hit test alone would hand the camera a press
+    /// the user is spending on a widget.
+    #[test]
+    fn pointer_capture_follows_a_drag_off_the_widget_it_started_on() {
+        let mut host = Host::new();
+        host.hover(FIELD);
+        host.press(FIELD);
+        let (capture, _) = host.hover(OPEN_SCENE);
+        assert!(capture.pointer);
     }
 
     /// Nothing under the pointer, nothing focused: gameplay owns the frame.

@@ -9,7 +9,14 @@
 //!
 //! No new command language and no second dispatch path: a script line is
 //! submitted exactly as a typed line is, tokenized by the same grammar, and
-//! applied at the runner's one drain point.
+//! applied at the runner's one drain point. Console built-ins included; a
+//! scripted `clear` reaches the same handler a typed one does, and the line is
+//! echoed into the scrollback by whichever site runs it, so an unattended run
+//! leaves the same record a session at the prompt would.
+//!
+//! One difference, and it is in timing only: a built-in typed at the prompt runs
+//! inside `Console::execute` on the frame it was typed, where a scripted one
+//! waits for the drain like every other queued line.
 //!
 //! ## Timebase
 //!
@@ -342,6 +349,52 @@ mod tests {
         assert_eq!(
             play(script, 4),
             [(0, "nonesuch".to_string()), (1, "mark after".to_string())]
+        );
+    }
+
+    /// Criterion: a scripted line reaches the same handler a typed one does,
+    /// and the run leaves a record of what it issued. Drives the leg the
+    /// runner's drain hands to a scene: the driver submits, the queue serves a
+    /// parsed line, and the console the scene owns runs it. A built-in and a
+    /// name nothing claims ride together, because "does what the typed line
+    /// does" and "fails loudly" are the same requirement read twice.
+    #[test]
+    fn a_scripted_builtin_runs_and_the_scrollback_records_every_line() {
+        let _held = command::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = command::drain(0);
+        let mut console = loam_egui::Console::<()>::new();
+        let mut driver = ScriptDriver::new(Script::parse("0 detach\n1 nonesuch\n").unwrap());
+        for _ in 0..2 {
+            let frame = driver.frame();
+            driver.advance();
+            for stamped in command::drain(frame) {
+                console.dispatch(&stamped.command.name, &stamped.command.arg_refs(), &mut ());
+            }
+        }
+
+        assert!(
+            console.is_detached(),
+            "a scripted built-in has to do what the typed one does"
+        );
+        let scrollback: Vec<&str> = console
+            .history()
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect();
+        assert!(
+            scrollback.iter().any(|t| t.contains("> detach")),
+            "{scrollback:?}"
+        );
+        assert!(
+            scrollback.iter().any(|t| t.contains("> nonesuch")),
+            "{scrollback:?}"
+        );
+        assert!(
+            scrollback
+                .iter()
+                .any(|t| t.contains("no command 'nonesuch'")),
+            "a name nothing claims has to fail loudly rather than vanish: \
+             {scrollback:?}"
         );
     }
 

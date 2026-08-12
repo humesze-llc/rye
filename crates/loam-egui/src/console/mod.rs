@@ -14,9 +14,9 @@ mod key;
 mod panel;
 
 pub use loam_console::{
-    cmd, console_echo_enabled, parse_line, set_console_echo, subcommands, Command, Console,
-    ConsoleWriter, FnCommand, HistoryLine, Key, LineKind, SubcommandSet, MAX_HISTORY_LINES,
-    MAX_INPUT_HISTORY,
+    cmd, console_echo_enabled, parse_line, render_line, set_console_echo, subcommands, Command,
+    Console, ConsoleWriter, FnCommand, HistoryLine, Key, LineKind, SubcommandSet,
+    MAX_HISTORY_LINES, MAX_INPUT_HISTORY,
 };
 
 /// Slide-down animation duration.

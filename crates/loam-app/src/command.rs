@@ -17,8 +17,9 @@
 //! bound key, a menu item and a `--script` line are the same caller. The console
 //! keeps its typed registry and becomes a producer: `Console::execute` parks a
 //! registry line, the host forwards it here, and `Console::dispatch` runs it from
-//! inside the App hook. Console built-ins (`help`, `clear`, `detach`, `dock`)
-//! take no `Ctx` and never enter the queue.
+//! inside the App hook. A console built-in typed at the prompt takes the short
+//! path and never enters the queue; one named by any other producer arrives here
+//! like everything else and `Console::dispatch` resolves it.
 //!
 //! ## Where a drained line goes
 //!
@@ -29,7 +30,10 @@
 //!
 //! Output produced at the drain has no console in scope (the runner does not own
 //! one), so it lands in a buffer the host pumps into its scrollback, the same
-//! shape [`crate::log`] uses for mirrored tracing events.
+//! shape [`crate::log`] uses for mirrored tracing events. The echo of the line
+//! itself is written by whatever runs it, which is how it stays ahead of that
+//! line's output: a target holding a console writes both straight to it, and the
+//! engine-verb branch writes both into this buffer.
 
 use std::sync::Mutex;
 
@@ -141,12 +145,23 @@ fn apply_engine_verb(command: &CommandLine, out: &mut ConsoleWriter) -> bool {
     }
 }
 
+/// The scrollback record of a line, written by whatever ran it so it lands
+/// ahead of that line's own output. `Console::dispatch` writes its own; this is
+/// for the engine-verb branch, which runs with no console in scope.
+fn echo_line(command: &CommandLine) -> HistoryLine {
+    HistoryLine::input(format!(
+        "> {}",
+        loam_egui::render_line(&command.name, &command.arg_refs())
+    ))
+}
+
 /// Drain and apply. The single application point; both runners call this
 /// immediately before their `drive_fixed_ticks`.
 pub(crate) fn apply_drained<A: App>(app: &mut A, rd: &RenderDevice, tick: u64) {
     for stamped in drain(tick) {
         let mut writer = ConsoleWriter::new();
-        let result = if apply_engine_verb(&stamped.command, &mut writer) {
+        let claimed = apply_engine_verb(&stamped.command, &mut writer);
+        let result = if claimed {
             Ok(())
         } else {
             let mut ctx = CommandCtx {
@@ -157,6 +172,9 @@ pub(crate) fn apply_drained<A: App>(app: &mut A, rd: &RenderDevice, tick: u64) {
             app.apply_command(&stamped.command, &mut ctx)
         };
         let mut lines = writer.take_lines();
+        if claimed {
+            lines.insert(0, echo_line(&stamped.command));
+        }
         // An `Err` from one command must not strand the ones behind it: the loop
         // records and continues, so a bad line cannot wedge the surface. It also
         // reaches tracing, because a `--script` run is unattended and a
@@ -302,6 +320,20 @@ mod tests {
             None,
             "an unclaimed verb must leave engine state alone"
         );
+    }
+
+    /// An engine verb runs with no console in scope, so the branch that claims
+    /// it owes the scrollback the record `Console::dispatch` writes for
+    /// everything else; a scripted `vsync` would otherwise leave no trace of
+    /// having run. The echo has to be the line, quoting intact, and it has to
+    /// be an `Input` line so the frontend colors it as one. `apply_drained`
+    /// itself needs a `RenderDevice` and is out of reach headless, so this
+    /// pins the record it pushes.
+    #[test]
+    fn an_engine_verb_is_recorded_as_the_line_that_ran() {
+        let echo = echo_line(&CommandLine::parse(r#"vsync "a b""#).expect("tokens"));
+        assert_eq!(echo.kind, loam_egui::LineKind::Input);
+        assert_eq!(echo.text, r#"> vsync "a b""#);
     }
 
     /// Shipped code of `source`: comments dropped, because the prose names the

@@ -12,11 +12,15 @@
 //! frontend in this workspace.
 //!
 //! Accepting a line and running it are two steps, split across two calls.
-//! [`Console::execute`] echoes, records input history, runs built-ins, and parks
+//! [`Console::execute`] records input history, runs built-ins, and parks
 //! everything else; the host drains that with [`Console::drain_pending`], puts it
 //! wherever it orders application-wide mutations, and calls [`Console::dispatch`]
 //! when that point arrives. The split is why neither `execute` nor the frontend
 //! needs `&mut Ctx`: only `dispatch` does.
+//!
+//! `dispatch` resolves built-ins as well, because the host's queue also carries
+//! lines from producers that hold no console. Whichever of the two runs a line
+//! echoes it first, so the echo always precedes that line's own output.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
@@ -819,10 +823,12 @@ impl<Ctx: 'static> Console<Ctx> {
         self.commands.insert(name, Box::new(command));
     }
 
-    /// True if a command with this name is registered. `help` and `clear` are built in
-    /// and always return true.
+    /// True if this name reaches a handler: a registered command, or one of the
+    /// built-ins. Off the `Builtin` enum rather than a second name list, so a
+    /// caller pre-checking a line (a script validator, say) agrees with what
+    /// `execute` and `dispatch` will actually do with it.
     pub fn has_command(&self, name: &str) -> bool {
-        name == "help" || name == "clear" || self.commands.contains_key(name)
+        Builtin::from_name(name).is_some() || self.commands.contains_key(name)
     }
 
     /// Bind `key` (no modifiers) to run `command_line` when the console is closed.
@@ -1198,8 +1204,8 @@ impl<Ctx: 'static> Console<Ctx> {
         }
     }
 
-    /// Accept a command line: echo, record input history, and either run a
-    /// built-in on the spot or park the line for [`Console::drain_pending`].
+    /// Accept a command line: record input history, then either run a built-in
+    /// on the spot or park the line for [`Console::drain_pending`].
     ///
     /// Registry commands do not run here. They are the ones that take `&mut Ctx`,
     /// so they are the ones whose position in simulation time matters; the host
@@ -1207,12 +1213,17 @@ impl<Ctx: 'static> Console<Ctx> {
     /// point per frame it drains. Built-ins (`help`, `clear`, `detach`, `dock`)
     /// take no `Ctx` and mutate the console rather than the app, so deferring
     /// them would buy nothing and cost a frame of echo latency.
+    ///
+    /// The echo goes wherever the line runs, which is what keeps it ahead of
+    /// that line's own output: here for a built-in, in [`Console::dispatch`] for
+    /// everything else. Echoing a parked line here instead would print it twice
+    /// for a typed line and not at all for one the queue delivered from
+    /// somewhere other than a console.
     pub fn execute(&mut self, line: &str) {
         let line = line.trim();
         if line.is_empty() {
             return;
         }
-        self.push_history(HistoryLine::input(format!("> {line}")));
 
         // Input history (skip consecutive duplicates).
         if self.input_history.back().map(String::as_str) != Some(line) {
@@ -1229,8 +1240,10 @@ impl<Ctx: 'static> Console<Ctx> {
         };
 
         // Built-ins first, off the `Builtin` enum (single source of truth for name +
-        // help across `execute`, `builtin_help`, `all_command_names`).
+        // help across `execute`, `dispatch`, `has_command`, `builtin_help`,
+        // `all_command_names`).
         if let Some(builtin) = Builtin::from_name(&name) {
+            self.push_history(HistoryLine::input(format!("> {line}")));
             self.run_builtin(builtin, args.first().map(String::as_str));
             return;
         }
@@ -1246,11 +1259,24 @@ impl<Ctx: 'static> Console<Ctx> {
         std::mem::take(&mut self.pending)
     }
 
-    /// Run a parsed command against the registry and drain its output into the
-    /// scrollback. The mutation half of the split, called by the host once its
-    /// queue reaches the point it applies mutations at. An unregistered name
-    /// reports here, which is where the user can see it.
+    /// Echo a parsed command, run it, and drain its output into the scrollback.
+    /// The mutation half of the split, called by the host once its queue reaches
+    /// the point it applies mutations at. An unregistered name reports here,
+    /// which is where the user can see it.
+    ///
+    /// Built-ins resolve here too. The queue carries lines from producers that
+    /// hold no console (`--script`, a bound key routed through the host, a menu
+    /// item), and a built-in name arriving that way has to reach the same
+    /// handler a typed one does or it reports as unregistered and the line
+    /// silently does nothing. A typed built-in never reaches here: `execute`
+    /// runs it without parking it.
     pub fn dispatch(&mut self, name: &str, args: &[&str], ctx: &mut Ctx) {
+        self.push_history(HistoryLine::input(format!("> {}", render_line(name, args))));
+        if let Some(builtin) = Builtin::from_name(name) {
+            self.run_builtin(builtin, args.first().copied());
+            return;
+        }
+
         let mut writer = ConsoleWriter::new();
         let result = match self.commands.get_mut(name) {
             Some(cmd) => cmd.run(args, ctx, &mut writer),
@@ -1406,6 +1432,44 @@ pub fn parse_line(line: &str) -> Option<(String, Vec<String>)> {
     }
     let name = tokens.remove(0);
     Some((name, tokens))
+}
+
+/// Inverse of [`parse_line`]: a name and its args joined back into one line
+/// that re-tokenizes to the same invocation. A token is quoted only when the
+/// grammar would otherwise split or swallow it.
+///
+/// Public because a host that runs a command with no console in scope still
+/// owes the user a record of what ran, and a bare `join(" ")` there would
+/// print a quoted argument as several.
+pub fn render_line(name: &str, args: &[&str]) -> String {
+    let mut line = quote_token(name);
+    for arg in args {
+        line.push(' ');
+        line.push_str(&quote_token(arg));
+    }
+    line
+}
+
+/// A bare backslash needs no quoting: outside quotes [`tokenize`] takes it
+/// literally, and escaping it would round-trip to two.
+fn quote_token(token: &str) -> String {
+    let bare = !token.is_empty()
+        && !token
+            .chars()
+            .any(|c| c.is_whitespace() || c == '"' || c == '\'');
+    if bare {
+        return token.to_string();
+    }
+    let mut quoted = String::with_capacity(token.len() + 2);
+    quoted.push('"');
+    for c in token.chars() {
+        if c == '"' || c == '\\' {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// Quote-aware token splitter. See [`parse_line`] for the grammar.
@@ -2494,6 +2558,102 @@ mod tests {
         c.execute("add 5");
         drain_and_dispatch(&mut c, &mut ctx);
         assert_eq!(ctx, 5);
+    }
+
+    /// The queue carries lines from producers that hold no console, so a name
+    /// only `execute` resolves is a line that reaches `dispatch`, reports as
+    /// unregistered, and changes nothing. Compares whole scrollbacks rather
+    /// than one flag apiece: the echo is part of what the two entry points owe
+    /// equally.
+    #[test]
+    fn a_builtin_does_the_same_thing_from_either_entry_point() {
+        for line in ["clear", "detach", "dock", "help", "help echo"] {
+            let mut typed = Console::<Ctx>::new();
+            let mut queued = Console::<Ctx>::new();
+            for console in [&mut typed, &mut queued] {
+                console.register(echo_cmd());
+                console.push_history(HistoryLine::output("earlier output"));
+            }
+
+            typed.execute(line);
+            let (name, args) = parse_line(line).expect("the fixture lines tokenize");
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            queued.dispatch(&name, &arg_refs, &mut 0);
+
+            assert_eq!(typed.detached, queued.detached, "`{line}`");
+            let rendered = |c: &Console<Ctx>| -> Vec<(LineKind, String)> {
+                c.history.iter().map(|l| (l.kind, l.text.clone())).collect()
+            };
+            assert_eq!(rendered(&typed), rendered(&queued), "`{line}`");
+            assert!(
+                !queued.history.iter().any(|l| l.kind == LineKind::Error),
+                "`{line}` reported as unregistered: {:?}",
+                rendered(&queued)
+            );
+        }
+    }
+
+    /// One echo per line, at the site that runs it, ahead of that line's own
+    /// output. Two echoes would double every scripted line in the scrollback;
+    /// none would leave an unattended run with no record of what it issued.
+    #[test]
+    fn a_line_is_echoed_exactly_once_ahead_of_its_own_output() {
+        let mut c = Console::<Ctx>::new();
+        c.register(echo_cmd());
+        let mut ctx: Ctx = 0;
+
+        c.execute("echo hi");
+        assert!(
+            c.history.is_empty(),
+            "a parked line has not run, so nothing is owed to the scrollback yet"
+        );
+        drain_and_dispatch(&mut c, &mut ctx);
+        let kinds: Vec<LineKind> = c.history.iter().map(|l| l.kind).collect();
+        assert_eq!(kinds, [LineKind::Input, LineKind::Output]);
+        assert!(c.history[0].text.contains("echo hi"), "{:?}", c.history[0]);
+
+        // A queued line no registry claims still says so, once, after its echo.
+        c.clear_history();
+        c.dispatch("nonesuch", &[], &mut ctx);
+        let kinds: Vec<LineKind> = c.history.iter().map(|l| l.kind).collect();
+        assert_eq!(kinds, [LineKind::Input, LineKind::Error]);
+    }
+
+    /// The echo is rebuilt from a name and args, so it has to survive the
+    /// grammar it is printed in: what the scrollback shows must tokenize back
+    /// to the invocation that produced it, or a quoted argument reads as
+    /// several and the line cannot be copied back to the prompt.
+    #[test]
+    fn a_rendered_line_reparses_to_the_invocation_it_came_from() {
+        let cases: [(&str, &[&str]); 7] = [
+            ("clear", &[]),
+            ("echo", &["a", "b"]),
+            ("load", &["5 cell", "fast"]),
+            ("mark", &["#ff8800"]),
+            ("say", &[r#"a "quoted" word"#]),
+            ("say", &["it's"]),
+            ("say", &["", "back\\slash"]),
+        ];
+        for (name, args) in cases {
+            let rendered = render_line(name, args);
+            let (back_name, back_args) = parse_line(&rendered)
+                .unwrap_or_else(|| panic!("`{rendered}` tokenizes to nothing"));
+            let back_args: Vec<&str> = back_args.iter().map(String::as_str).collect();
+            assert_eq!(back_name, name, "`{rendered}`");
+            assert_eq!(back_args, args, "`{rendered}`");
+        }
+    }
+
+    /// A caller that pre-checks a line (the playground validates its shipped
+    /// scripts this way) has to agree with what `execute` and `dispatch` will
+    /// do with the name, and the enum is the only list that stays in step.
+    #[test]
+    fn has_command_answers_for_every_builtin() {
+        let c = Console::<Ctx>::new();
+        for b in Builtin::ALL {
+            assert!(c.has_command(b.name()), "`{}` is a built-in", b.name());
+        }
+        assert!(!c.has_command("nonesuch"));
     }
 
     /// Several bound keys can fire in one frame, and `binds` is a `BTreeMap` so

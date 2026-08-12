@@ -16,8 +16,9 @@ use loam_shape::polytope::Polytope4;
 
 use crate::catalog::ShapeEntry;
 use crate::consts::{BASE_ROTATION_RATE, BODY_SIZE, BODY_X_SPACING, BODY_Y, T_SLIDER_INITIAL};
+use crate::director::Playback;
 use crate::physics::{BodyPose, PlaygroundPhysics, ThrowDrag};
-use crate::spins::SlotSpins;
+use crate::spins::{is_directed, SlotSpins};
 
 // Projection modes live in `projections.rs`; re-export so `impl Demo`, the test
 // module, and the other playground modules keep importing them from `state`.
@@ -674,6 +675,10 @@ pub(crate) struct Demo {
     /// controls are aimed at. Each slot holds its own baselines, plane mask
     /// and composed rotor; see [`crate::spins`].
     pub(crate) spins: SlotSpins,
+    /// `--director=<path>` playback, absent on an ordinary run. While it is
+    /// loaded it owns the slice offset and the slots its timeline names, and
+    /// those channels stop answering to `rot_time`; see [`crate::director`].
+    pub(crate) playback: Option<Playback>,
     pub(crate) rate_scale: f32,
     /// Accumulated rotating time (advances only while `rotate`; resets on **R**).
     pub(crate) rot_time: f32,
@@ -847,12 +852,19 @@ impl Demo {
     /// a single authored seq, and there is only one of it: applying it to every
     /// slot would be the row-wide spin per-slot rotation exists to remove, so it
     /// drives the selected slot alone and the rest hold their pose.
+    ///
+    /// Slots a loaded timeline names are skipped in both modes. This is the
+    /// choke point every scrub reaches, so the suppression sits here rather
+    /// than at each slider.
     pub(crate) fn recompose_spins_at(&mut self, t: f32) {
+        let directed = self.playback.as_ref().map_or(&[][..], Playback::directed);
         match self.rotation_mode {
-            RotationMode::Active => self.spins.recompose_active(t),
+            RotationMode::Active => self.spins.recompose_active(t, directed),
             RotationMode::Composer => {
-                let rotor = (self.omega_animation() * t).exp().normalize();
-                self.spins.selected_spin_mut().rotor = rotor;
+                if !is_directed(directed, self.spins.selected()) {
+                    let rotor = (self.omega_animation() * t).exp().normalize();
+                    self.spins.selected_spin_mut().rotor = rotor;
+                }
             }
         }
     }
@@ -1089,6 +1101,11 @@ impl Demo {
         self.rate_scale = 1.0;
         self.spins.reset();
         self.rot_time = 0.0;
+        // A loaded timeline is the other half of `rot_time`, so the reset that
+        // zeroes one has to rewind the other or half the row would restart.
+        if let Some(playback) = &mut self.playback {
+            playback.rewind();
+        }
         self.t_slider_max = T_SLIDER_INITIAL;
         // Honest-slice baseline: drop-w cross-section on, reprojected cap off.
         self.cross_section = SectionLayer::CROSS_SECTION_DEFAULT;
@@ -1922,7 +1939,7 @@ mod tests {
         spins.selected_spin_mut().active = [true, false, false, false, false, false];
         spins.select_picked(Some(1));
         spins.selected_spin_mut().active = [false, false, false, false, false, true];
-        spins.recompose_active(1.7);
+        spins.recompose_active(1.7, &[]);
 
         let uniform = |slot: usize| {
             sdf_body_uniform(

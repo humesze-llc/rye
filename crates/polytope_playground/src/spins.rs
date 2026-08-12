@@ -14,6 +14,13 @@ use loam_math::Rotor4;
 
 use crate::state::{active_plane_angle, compose_active_rotor};
 
+/// Whether `directed` hands `slot` to a writer other than the UI spin. A mask
+/// shorter than the row leaves its tail to the spin, which is what a timeline
+/// naming only the leading slots means.
+pub(crate) fn is_directed(directed: &[bool], slot: usize) -> bool {
+    directed.get(slot).copied().unwrap_or(false)
+}
+
 /// Planes a fresh slot spins in: xw only, the most characteristic 4D
 /// rotation, so the play button shows motion before any checkbox is toggled.
 /// Every slot starts here, so the row still boots in unison and stays
@@ -141,12 +148,34 @@ impl SlotSpins {
         }
     }
 
-    /// Recompose every slot's rotor from its own baselines and mask at time
-    /// `t`. Active mode's orientation is an absolute function of `t`, so this
-    /// runs every frame; two slots whose masks differ diverge here.
-    pub(crate) fn recompose_active(&mut self, t: f32) {
-        for slot in &mut self.slots {
-            slot.rotor = slot.active_rotor_at(t);
+    /// Recompose each slot's rotor from its own baselines and mask at time
+    /// `t`, skipping every slot `directed` hands to another writer. Active
+    /// mode's orientation is an absolute function of `t`, so this runs every
+    /// frame; two slots whose masks differ diverge here.
+    ///
+    /// The mask is a parameter rather than a field because it is the whole
+    /// suppression: `t` is the UI spin's wall clock, a directed slot is on the
+    /// director's frame index, and a slot recomposed here after the director
+    /// wrote it is the two-clock defect with extra steps.
+    pub(crate) fn recompose_active(&mut self, t: f32, directed: &[bool]) {
+        for (slot, spin) in self.slots.iter_mut().enumerate() {
+            if !is_directed(directed, slot) {
+                spin.rotor = spin.active_rotor_at(t);
+            }
+        }
+    }
+
+    /// Whether any slot is still the UI spin's to write.
+    pub(crate) fn any_unowned(&self, directed: &[bool]) -> bool {
+        (0..self.slots.len()).any(|slot| !is_directed(directed, slot))
+    }
+
+    /// Write one slot's rotor from outside the UI spin. Out-of-range slots are
+    /// ignored on the same terms [`Self::select_picked`] ignores them: a row
+    /// edit can retire the slot a timeline names.
+    pub(crate) fn set_rotor(&mut self, slot: usize, rotor: Rotor4) {
+        if let Some(spin) = self.slots.get_mut(slot) {
+            spin.rotor = rotor;
         }
     }
 
@@ -222,7 +251,7 @@ mod tests {
         let mut max_separation = 0.0_f32;
         for step in 0..=STEPS {
             let t = step as f32 * DT;
-            spins.recompose_active(t);
+            spins.recompose_active(t, &[]);
             for slot in 0..2 {
                 let norm_squared = spins.rotor(slot).norm_squared();
                 assert!(
@@ -245,10 +274,37 @@ mod tests {
     fn slots_with_identical_masks_never_separate() {
         let mut spins = SlotSpins::new(3);
         for step in 0..600 {
-            spins.recompose_active(step as f32 / 60.0);
+            spins.recompose_active(step as f32 / 60.0, &[]);
             assert_eq!(spins.rotor(0), spins.rotor(1));
             assert_eq!(spins.rotor(0), spins.rotor(2));
         }
+    }
+
+    /// A directed slot is skipped by the UI clock and keeps whatever its other
+    /// writer put there, while its neighbours recompose as usual. A mask
+    /// shorter than the row leaves its tail to the clock, so a timeline
+    /// authored against a shorter row cannot silently freeze the new slots.
+    #[test]
+    fn a_directed_slot_is_skipped_by_the_ui_clock_and_its_neighbours_are_not() {
+        let mut spins = SlotSpins::new(3);
+        let held = compose_active_rotor(&[0.9, 0.0, 0.0, 0.0, 0.0, 0.0], &[false; 6], 0.0);
+        spins.set_rotor(1, held);
+
+        spins.recompose_active(2.5, &[false, true]);
+        assert_eq!(spins.rotor(1), held, "the directed slot was recomposed");
+        assert_ne!(spins.rotor(0), Rotor4::IDENTITY, "slot 0 was skipped");
+        assert_eq!(
+            spins.rotor(2),
+            spins.rotor(0),
+            "the mask tail is the clock's"
+        );
+
+        assert!(spins.any_unowned(&[false, true]));
+        assert!(spins.any_unowned(&[true, true]), "slot 2 is past the mask");
+        assert!(!spins.any_unowned(&[true; 3]));
+        // Out-of-range writes are dropped, not panics: a row edit can retire
+        // the slot a timeline names.
+        spins.set_rotor(9, Rotor4::IDENTITY);
     }
 
     /// A slot with an empty mask holds its baseline while the clock runs, so
@@ -261,9 +317,9 @@ mod tests {
         spins.slots[0].base_angles[5] = 0.8;
         let parked = spins.slots[0].active_rotor_at(0.0);
 
-        spins.recompose_active(0.0);
+        spins.recompose_active(0.0, &[]);
         let spinning_at_zero = spins.rotor(1);
-        spins.recompose_active(4.0);
+        spins.recompose_active(4.0, &[]);
         assert_eq!(spins.rotor(0), parked, "the parked slot moved");
         assert_ne!(
             spins.rotor(1),
@@ -293,7 +349,7 @@ mod tests {
 
             // The edit the controls make lands on the picked slot only.
             spins.selected_spin_mut().base_angles[Plane4::Zw as usize] = 0.5 + target as f32;
-            spins.recompose_active(0.0);
+            spins.recompose_active(0.0, &[]);
             for slot in 0..SLOTS {
                 let touched = spins.slots[slot].base_angles[Plane4::Zw as usize] != 0.0;
                 assert_eq!(
@@ -347,11 +403,11 @@ mod tests {
         let mut spins = SlotSpins::new(2);
         spins.slots[0].base_angles = [0.4, -0.2, 1.1, 0.0, 0.3, -0.9];
         spins.slots[1].base_angles = [1.0; 6];
-        spins.recompose_active(2.0);
+        spins.recompose_active(2.0, &[]);
 
         spins.clear_orientation();
         // At t = 0 the masks contribute nothing, so a cleared row is identity.
-        spins.recompose_active(0.0);
+        spins.recompose_active(0.0, &[]);
         for slot in 0..2 {
             assert_eq!(spins.rotor(slot), Rotor4::IDENTITY, "slot {slot} came back");
         }
@@ -370,7 +426,7 @@ mod tests {
         spins.select_picked(Some(2));
         spins.selected_spin_mut().active = [true; 6];
         spins.slots[0].base_angles[3] = 2.0;
-        spins.recompose_active(1.0);
+        spins.recompose_active(1.0, &[]);
 
         spins.reset();
         assert_eq!(spins.selected(), 0);
@@ -391,7 +447,7 @@ mod tests {
 
         for slot in 0..4 {
             spins.slots[slot].base_angles[1] = 0.3;
-            spins.recompose_active(0.0);
+            spins.recompose_active(0.0, &[]);
             assert!(
                 spins.rotors_differ_from(&uploaded),
                 "rotating slot {slot} alone left the upload gate closed"

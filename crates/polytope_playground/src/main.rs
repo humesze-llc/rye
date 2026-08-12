@@ -46,6 +46,9 @@
 //! - `script=path` (native): run a file of `<frame> <console command>` lines
 //!   against the rotate scene's console and exit when it ends. See
 //!   [`loam_app::script`] and `console-scripts/impulse-bars.script`.
+//! - `director=path` (native): play an authored RON timeline over the row.
+//!   It takes the slice offset and the slots it names off the wall clock for
+//!   the run; see [`crate::director`] and `timelines/row-sweep.ron`.
 
 use anyhow::{anyhow, Result};
 use glam::{Mat4, Vec2, Vec3, Vec4};
@@ -59,7 +62,7 @@ use loam_app::{
 };
 use loam_egui::{Console, ConsoleUi};
 use loam_math::WPlane;
-use loam_math::{Bivector, EuclideanR3, Rotor, Rotor4};
+use loam_math::{Bivector4, EuclideanR3, Rotor, Rotor4};
 use loam_render::{
     device::RenderDevice,
     raymarch::{
@@ -86,6 +89,7 @@ mod color;
 mod composer;
 mod console;
 mod consts;
+mod director;
 mod filmstrip;
 mod hud;
 mod hypergimbal;
@@ -109,8 +113,12 @@ use consts::SPACE_TESSELLATION_SAMPLES;
 use consts::{
     BODY_SIZE, BODY_Y, HYPERSLICE_MIN_THICKNESS, T_SCRUB_RATE, T_SLIDER_INITIAL, W_SCRUB_RATE,
 };
+use director::Playback;
+#[cfg(test)]
+use loam_math::Bivector;
 #[cfg(test)]
 use loam_shape::polytope::Polytope4;
+use loam_time::Director;
 use physics::PlaygroundPhysics;
 use state::{
     set_if_changed, CameraMode, Demo, RotationMode, RowFrame, SurfaceMode, ViewMode,
@@ -395,6 +403,7 @@ impl Demo {
             slider_right_held: false,
             rotate: false,
             spins: spins::SlotSpins::new(row_len),
+            playback: load_director(&Args::current(), row_len)?,
             rate_scale: 1.0,
             rot_time: 0.0,
             t_slider_max: T_SLIDER_INITIAL,
@@ -460,8 +469,15 @@ impl Demo {
 
         // Slice scrub (w axis). Clamp to the surface-scaled range so the
         // keyboard scrub matches the slider bounds after `surface scale`.
+        // Suppressed while a timeline owns the channel: the director rewrites
+        // `w_slice` below on every frame it plays, so a scrub against it would
+        // be a second writer whose value never survives to a render.
         let dir = (self.slider_up_held as i32 - self.slider_down_held as i32) as f32;
-        if dir != 0.0 {
+        let host_owns_w = !self
+            .playback
+            .as_ref()
+            .is_some_and(director::Playback::owns_w_slice);
+        if dir != 0.0 && host_owns_w {
             let w_range = self.effective_w_range();
             self.w_slice = (self.w_slice + dir * W_SCRUB_RATE * dt_secs).clamp(-w_range, w_range);
         }
@@ -483,41 +499,40 @@ impl Demo {
             self.recompose_spins_at(self.rot_time);
         }
 
-        // 4D rotation animation. Every slot advances on the same clock but
-        // from its OWN baselines and plane mask, so a row whose slots were
-        // never edited stays slice-comparable and one the user aimed at
-        // diverges. See [`Demo::recompose_spins_at`].
-        if self.rotate {
-            let dt_animation = dt_secs * self.rate_scale;
-            self.rot_time += dt_animation;
-            // Grow the t-slider max past `rot_time`, capped at 1e6 s (~12 days
-            // at ×1) so a huge `rate_scale` or long run can't run it away.
-            const T_SLIDER_CAP: f32 = 1.0e6;
-            if self.rot_time > self.t_slider_max {
-                let new_max = (self.rot_time * 2.0).min(T_SLIDER_CAP);
-                self.t_slider_max = new_max;
-                if self.rot_time > T_SLIDER_CAP {
-                    self.rot_time = T_SLIDER_CAP;
-                }
-            }
-        }
-        // Recompose the row's rotors each frame: Active rebuilds every slot
-        // from `rot_time`, Composer integrates the omega-bivector into the
-        // selected slot's rotor directly.
-        match self.rotation_mode {
-            RotationMode::Active => {
-                self.spins.recompose_active(self.rot_time);
-            }
-            RotationMode::Composer => {
-                if self.rotate {
-                    let dt_animation = dt_secs * self.rate_scale;
-                    let omega = self.omega_animation() * dt_animation;
-                    if omega.magnitude_squared() > 0.0 {
-                        let delta = omega.exp();
-                        let spin = self.spins.selected_spin_mut();
-                        spin.rotor = (delta * spin.rotor).normalize();
-                    }
-                }
+        // 4D rotation animation, with one writer per slot. The UI spin
+        // advances every slot on the same clock but from its OWN baselines and
+        // plane mask, so a row whose slots were never edited stays
+        // slice-comparable and one the user aimed at diverges; a loaded
+        // timeline takes the slots it names off that clock for the whole run.
+        // See [`director::step_row_rotation`].
+        let dt_animation = if self.rotate {
+            dt_secs * self.rate_scale
+        } else {
+            0.0
+        };
+        // Active is the default mode and reads no omega, so the seq walk stays
+        // off its per-frame path.
+        let omega = match self.rotation_mode {
+            RotationMode::Active => Bivector4::ZERO,
+            RotationMode::Composer => self.omega_animation(),
+        };
+        director::step_row_rotation(
+            self.playback.as_mut(),
+            &mut self.spins,
+            &mut self.w_slice,
+            &mut self.rot_time,
+            dt_animation,
+            self.rotation_mode,
+            omega,
+        );
+        // Grow the t-slider max past `rot_time`, capped at 1e6 s (~12 days
+        // at ×1) so a huge `rate_scale` or long run can't run it away.
+        const T_SLIDER_CAP: f32 = 1.0e6;
+        if self.rot_time > self.t_slider_max {
+            let new_max = (self.rot_time * 2.0).min(T_SLIDER_CAP);
+            self.t_slider_max = new_max;
+            if self.rot_time > T_SLIDER_CAP {
+                self.rot_time = T_SLIDER_CAP;
             }
         }
         // Rigid bodies advance on the tick count, not on `dt_secs`, so a
@@ -937,6 +952,28 @@ impl RotateScene {
             script: load_script(&Args::current())?,
         })
     }
+}
+
+/// Build the `--director=<path>` playback over a row of `slots`, or `None`
+/// when the flag is absent.
+///
+/// A bad path, a malformed timeline, or one the row cannot host fails setup:
+/// a run that booted and quietly ignored the flag is indistinguishable from a
+/// timeline that animates nothing.
+fn load_director(args: &Args, slots: usize) -> Result<Option<Playback>> {
+    if args.has_bare_flag("director") {
+        return Err(anyhow!(
+            "--director needs its path attached: --director=path/to/timeline.ron"
+        ));
+    }
+    let Some(path) = args.get("director") else {
+        return Ok(None);
+    };
+    let text =
+        std::fs::read_to_string(path).map_err(|e| anyhow!("reading timeline `{path}`: {e}"))?;
+    let director =
+        Director::from_ron(&text).map_err(|e| anyhow!("parsing timeline `{path}`: {e}"))?;
+    Ok(Some(Playback::new(director, slots)?))
 }
 
 /// Build the `--script=<path>` playhead, or `None` when the flag is absent.
@@ -1479,6 +1516,71 @@ mod script_arg_tests {
         let args = Args::from_pairs([("script", "no-such-directory-for-a-script/x.script")]);
         let err = load_script(&args).expect_err("missing file");
         assert!(format!("{err:#}").contains("x.script"), "{err:#}");
+    }
+}
+
+#[cfg(test)]
+mod director_arg_tests {
+    use super::*;
+
+    /// The default row the shipped timeline is authored against.
+    const DEFAULT_SLOTS: usize = 4;
+
+    /// No `director=` key leaves the whole row on the UI clock, which is what
+    /// every ordinary run is.
+    #[test]
+    fn no_director_argument_leaves_the_row_on_the_ui_clock() {
+        assert!(load_director(&Args::default(), DEFAULT_SLOTS)
+            .unwrap()
+            .is_none());
+    }
+
+    /// The timeline committed beside the crate is the shipped binary's only
+    /// authored input, so it has to load through the real path the flag takes
+    /// and name a strict subset of the default row: a timeline that owned
+    /// every slot would leave nothing to show the UI spin against.
+    #[test]
+    fn the_shipped_timeline_loads_through_the_flag_and_leaves_the_row_its_tail() {
+        let args = Args::from_pairs([("director", "timelines/row-sweep.ron")]);
+        let playback = load_director(&args, DEFAULT_SLOTS)
+            .expect("the committed timeline loads")
+            .expect("the flag yields a playback");
+        assert_eq!(playback.directed(), [true, false, false, false]);
+        assert!(playback.owns_w_slice());
+    }
+
+    /// The same diagnosis `--script` gets: the space-separated form drops the
+    /// path as a positional, and without this the run boots undirected and
+    /// looks like the timeline did nothing.
+    #[test]
+    fn the_space_separated_director_form_is_diagnosed_rather_than_ignored() {
+        let args = Args::from_argv(["--director", "timelines/row-sweep.ron"]);
+        let err =
+            load_director(&args, DEFAULT_SLOTS).expect_err("a bare --director is not a default");
+        assert!(format!("{err:#}").contains("--director="), "{err:#}");
+    }
+
+    /// A path that does not resolve fails setup rather than booting a row the
+    /// caller did not ask for.
+    #[test]
+    fn an_unreadable_timeline_path_fails_setup() {
+        let args = Args::from_pairs([("director", "no-such-directory-for-a-timeline/x.ron")]);
+        let err = load_director(&args, DEFAULT_SLOTS).expect_err("missing file");
+        assert!(format!("{err:#}").contains("x.ron"), "{err:#}");
+    }
+
+    /// A timeline naming a slot the booted row does not have is an authoring
+    /// fault, and the row length is a runtime argument, so it can only be
+    /// caught here.
+    #[test]
+    fn a_timeline_the_booted_row_cannot_host_fails_setup() {
+        let args = Args::from_pairs([("director", "timelines/row-sweep.ron")]);
+        assert!(
+            load_director(&args, 1).is_ok(),
+            "slot 0 fits a one-slot row"
+        );
+        let err = load_director(&args, 0).expect_err("no slot 0 in an empty row");
+        assert!(format!("{err:#}").contains("0-slot row"), "{err:#}");
     }
 }
 

@@ -8,9 +8,14 @@
 //! collider path emits instead, at the pitch in the first column. `margin` is
 //! the cover's outward bound in em.
 //!
-//! The second table is the price: a settled scene of the word's boxes as static
-//! bodies with dynamic 4D spheres resting on them, timed per fixed step against
-//! a 60 Hz frame.
+//! The second table is the dynamic path. A rigid body carries one collider, so
+//! a letter that moves is a single convex prism instead of a cover: `sides` is
+//! its ring, `verts` the 4D hull, and `hull/cover` the area it adds over the
+//! cover it encloses, which is what filling the counters costs.
+//!
+//! The third measurement is the price: a settled scene of the word's boxes as
+//! static bodies with dynamic 4D spheres resting on them, timed per fixed step
+//! against a 60 Hz frame.
 
 use std::time::Instant;
 
@@ -19,6 +24,7 @@ use glam::Vec4;
 use loam_math::EuclideanR4;
 use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
 use loam_physics::{Gravity, RigidBody, World};
+use loam_shape::Shape;
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 
 const WORD: &str = "LOAM";
@@ -97,6 +103,33 @@ fn main() {
     }
 
     let letters = layout_word(&font, WORD, &GlyphParams::default()).expect("layout");
+
+    println!();
+    println!("dynamic letters at the default pitch");
+    println!("letter  boxes  sides  verts  hull/cover");
+    for letter in &letters {
+        let Some((_, Shape::ConvexPolytope4D { vertices })) = letter.rigid_hull_4d() else {
+            continue;
+        };
+        let cover = letter.collider_cover().expect("cover");
+        println!(
+            "{:>6} {:6} {:6} {:6} {:11.2}",
+            letter.ch(),
+            letter.collider_count(),
+            letter.rigid_hull_sides(),
+            vertices.len(),
+            hull_area(letter) / cover.volume(),
+        );
+    }
+    println!(
+        "{WORD}: {} dynamic bodies against {} static boxes",
+        letters.iter().filter(|l| !l.is_blank()).count(),
+        letters
+            .iter()
+            .map(GlyphSolid::collider_count)
+            .sum::<usize>(),
+    );
+
     let (bodies, micros) = time_word(&letters);
     let frame = 1.0e6 / FIXED_HZ as f64;
     println!();
@@ -105,6 +138,24 @@ fn main() {
         bodies - BALLS,
         100.0 * micros / frame,
     );
+}
+
+/// Cross-section area of a letter's dynamic hull. The first `sides` vertices of
+/// the 4D prism are the ring itself, in order, so the shoelace formula reads
+/// straight off them.
+fn hull_area(letter: &GlyphSolid) -> f32 {
+    let Some((_, Shape::ConvexPolytope4D { vertices })) = letter.rigid_hull_4d() else {
+        return 0.0;
+    };
+    let n = letter.rigid_hull_sides();
+    let doubled: f32 = (0..n)
+        .map(|i| {
+            let a = vertices[i];
+            let b = vertices[(i + 1) % n];
+            a.x * b.y - b.x * a.y
+        })
+        .sum();
+    0.5 * doubled
 }
 
 /// Settle the word's colliders under a rain of spheres, then time the steady

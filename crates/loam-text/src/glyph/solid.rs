@@ -22,6 +22,14 @@
 //! tracks silhouette complexity rather than interior area, and its error is a
 //! bounded outward margin rather than a lost stem, which is what lets the
 //! collider pitch be coarsened independently of legibility.
+//!
+//! **Collision, moving.** The cover is a set of bodies, not a body, and
+//! `loam-physics` gives a rigid body one collider with no local offset, so a
+//! letter that moves gets a third decomposition: [`GlyphSolid::rigid_hull_4d`],
+//! one convex prism per letter over the hull of the cover. Convexity is the
+//! price of rigidity and it is paid where it shows least, since a falling
+//! letter is judged on its silhouette and its rest pose rather than on whether
+//! something can pass through its counter.
 
 use glam::{Vec2, Vec3, Vec4};
 use loam_shape::{
@@ -29,6 +37,7 @@ use loam_shape::{
 };
 
 use super::field::DistanceField2D;
+use super::hull::{centroid, convex_hull, reduce_sides, MAX_HULL_SIDES};
 use super::{GlyphParams, BLANK_DISTANCE};
 
 /// [`DistanceField2D::sample`] is 1-Lipschitz per axis, hence only
@@ -96,6 +105,9 @@ pub struct GlyphSolid {
     field: Option<DistanceField2D>,
     pieces: Vec<Piece>,
     cover: Option<Isovolume<2>>,
+    /// Counter-clockwise convex ring the dynamic body collides with; empty for
+    /// a blank.
+    hull: Vec<Vec2>,
 }
 
 impl GlyphSolid {
@@ -111,6 +123,7 @@ impl GlyphSolid {
         let cover = field
             .as_ref()
             .map(|field| extract_cover(field, collider_cell));
+        let hull = cover.as_ref().map(rigid_ring).unwrap_or_default();
         Self {
             ch,
             pen_origin,
@@ -123,6 +136,7 @@ impl GlyphSolid {
             field,
             pieces,
             cover,
+            hull,
         }
     }
 
@@ -218,14 +232,14 @@ impl GlyphSolid {
     ///
     /// # Static bodies only
     ///
-    /// Spawn these fixed. `loam-physics` gives a rigid body exactly one
-    /// collider and no per-collider local offset, so a letter made dynamic is
-    /// as many independent bodies as it has boxes and they separate on the
-    /// first impulse. Two changes there, not here, lift that: a compound shape
-    /// carrying per-part offsets, and a narrowphase emitting more than one
-    /// contact per pair. The second is needed even for a hand-authored
-    /// one-hull letter, since with a single contact a flat box hands the
-    /// solver one of its tied deepest corners each step and never settles.
+    /// Spawn these fixed, and reach for [`Self::rigid_hull_4d`] when the letter
+    /// has to move. `loam-physics` gives a rigid body exactly one collider and
+    /// no per-collider local offset, so a letter made dynamic is as many
+    /// independent bodies as it has boxes; the cover's boxes overlap by
+    /// construction, so those bodies start interpenetrating and drive each
+    /// other apart on the first step rather than merely drifting. Lifting that
+    /// is a compound shape carrying per-part offsets, in `loam-physics` and
+    /// not here.
     pub fn colliders_4d(&self) -> Vec<(Vec4, Shape)> {
         let Some(cover) = &self.cover else {
             return Vec::new();
@@ -259,6 +273,73 @@ impl GlyphSolid {
             })
             .collect()
     }
+
+    /// Sides of the convex ring [`Self::rigid_hull_4d`] is built on; zero for a
+    /// blank. The 4D hull carries four vertices per side.
+    pub fn rigid_hull_sides(&self) -> usize {
+        self.hull.len()
+    }
+
+    /// The single convex 4D collider a *dynamic* letter gets, as
+    /// `(centre, hull)`, or `None` for a blank.
+    ///
+    /// One body per letter, against [`Self::collider_count`] for the static
+    /// path. The hull is the prism `ring x [-depth/2, depth/2] x slab`, where
+    /// `ring` is the convex hull of [`Self::collider_cover`] simplified to at
+    /// most eight sides, so the vertex count is at most 32 and fits the 4D
+    /// narrowphase's fixed polytope buffer.
+    ///
+    /// `centre` is the prism's centre of mass, i.e. the ring's area centroid in
+    /// `xy` and the mid-planes of the depth and the slab; pose is extrinsic per
+    /// the [`Shape`] contract, so the returned vertices are about the origin
+    /// and a body built from the pair spins about the right point.
+    ///
+    /// # What convexity costs
+    ///
+    /// Counters and notches fill: a body dropped down the middle of a moving
+    /// `O` lands on it. That is the whole difference from
+    /// [`Self::colliders_4d`], which keeps them open and cannot move. Both
+    /// enclose the letter, so neither lets anything through the ink.
+    pub fn rigid_hull_4d(&self) -> Option<(Vec4, Shape)> {
+        if self.hull.is_empty() {
+            return None;
+        }
+        let centre_2d = centroid(&self.hull);
+        let centre = Vec4::new(centre_2d.x, centre_2d.y, 0.0, self.slab_center);
+        let mut vertices = Vec::with_capacity(4 * self.hull.len());
+        for sw in [-1.0f32, 1.0] {
+            for sz in [-1.0f32, 1.0] {
+                for p in &self.hull {
+                    let offset = *p - centre_2d;
+                    vertices.push(Vec4::new(
+                        offset.x,
+                        offset.y,
+                        sz * self.half_depth,
+                        sw * self.slab_half,
+                    ));
+                }
+            }
+        }
+        Some((centre, Shape::ConvexPolytope4D { vertices }))
+    }
+}
+
+/// Convex ring enclosing a cover, at most [`MAX_HULL_SIDES`] long. Hulling the
+/// box corners rather than the marked cells costs four points per box and needs
+/// no access to the occupancy grid.
+fn rigid_ring(cover: &Isovolume<2>) -> Vec<Vec2> {
+    let mut corners = Vec::with_capacity(4 * cover.piece_count());
+    for index in 0..cover.piece_count() {
+        let (lo, hi) = cover.piece_bounds(index);
+        for y in [lo[1], hi[1]] {
+            for x in [lo[0], hi[0]] {
+                corners.push(Vec2::new(x, y));
+            }
+        }
+    }
+    let mut ring = convex_hull(corners);
+    reduce_sides(&mut ring, MAX_HULL_SIDES);
+    ring
 }
 
 /// Cover the letter's cross-section with axis-aligned boxes on a grid of the
@@ -493,6 +574,8 @@ fn double_signed_area(ring: &[Vec2]) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use glam::Vec4Swizzles;
+
     use super::super::outline::Contour;
     use super::*;
 
@@ -557,6 +640,18 @@ mod tests {
     /// separation is what the two-pitch design is for; an axis-aligned fixture
     /// covers in one box at every resolution and shows nothing.
     fn diamond_solid(half: f32, cells: u32, collider_cells: u32) -> GlyphSolid {
+        diamond_hull_solid(half, cells, collider_cells, 0.4, (-0.2, 0.2))
+    }
+
+    /// The diamond again, with the depth and slab the prism tests need to tell
+    /// the two interval axes apart.
+    fn diamond_hull_solid(
+        half: f32,
+        cells: u32,
+        collider_cells: u32,
+        depth: f32,
+        slab: (f32, f32),
+    ) -> GlyphSolid {
         let contour = Contour {
             points: vec![
                 Vec2::new(-half, 0.0),
@@ -570,7 +665,7 @@ mod tests {
             'X',
             Vec2::ZERO,
             2.0 * half,
-            &fixture_params(2.0 * half, collider_cells, 0.4, (-0.2, 0.2)),
+            &fixture_params(2.0 * half, collider_cells, depth, slab),
             Some(field),
         )
     }
@@ -925,6 +1020,130 @@ mod tests {
             clear > 0,
             "only {clear} cell centres clear of the threshold"
         );
+    }
+
+    /// The dynamic collider's shape contract: one origin-centred prism whose
+    /// extrinsic centre is its centre of mass, spanning the depth and the slab
+    /// exactly. A hull centred anywhere else spins about the wrong point under
+    /// an off-centre contact.
+    #[test]
+    fn the_rigid_hull_is_one_origin_centred_prism_about_its_centre_of_mass() {
+        let slab = (-0.75, 0.25);
+        let depth = 0.6;
+        let solid = diamond_hull_solid(1.0, 48, 16, depth, slab);
+        let sides = solid.rigid_hull_sides();
+        let (centre, shape) = solid.rigid_hull_4d().expect("hull");
+        let Shape::ConvexPolytope4D { vertices } = shape else {
+            panic!("hull is not 4D convex");
+        };
+        assert_eq!(vertices.len(), 4 * sides);
+        assert!(vertices.len() <= 32);
+
+        // Origin-centred on the centre of mass, which for a ring is its area
+        // centroid and not its vertex mean: greedy reduction leaves an uneven
+        // vertex spacing that a mean would follow and a centroid must not.
+        let local: Vec<Vec2> = vertices[..sides].iter().map(|v| v.xy()).collect();
+        let local_centroid = centroid(&local);
+        assert!(
+            local_centroid.length() < 1e-5,
+            "hull is not centred on its centre of mass: {local_centroid}"
+        );
+        assert_eq!(centre.z, 0.0);
+        assert!((centre.w - 0.5 * (slab.0 + slab.1)).abs() < 1e-6);
+        // A diamond about the origin has its centroid there, up to the cover's
+        // own outward margin.
+        assert!(centre.xy().length() < solid.collider_margin());
+
+        for v in &vertices {
+            assert!((v.z.abs() - 0.5 * depth).abs() < 1e-6);
+            assert!((v.w.abs() - 0.5 * (slab.1 - slab.0)).abs() < 1e-6);
+        }
+        // The ring is repeated once per `(z, w)` corner, in one order.
+        for k in 0..sides {
+            for copy in 1..4 {
+                assert_eq!(vertices[copy * sides + k].xy(), vertices[k].xy());
+            }
+        }
+    }
+
+    /// The soundness property: the hull contains the cover it replaces, so a
+    /// dynamic letter never lets a body reach ink the static one would stop.
+    #[test]
+    fn the_rigid_hull_contains_the_whole_cover() {
+        let solid = diamond_hull_solid(1.0, 48, 16, 0.4, (-0.2, 0.2));
+        let cover = solid.collider_cover().expect("cover");
+        let ring = &solid.hull;
+        let n = ring.len();
+        for index in 0..cover.piece_count() {
+            let (lo, hi) = cover.piece_bounds(index);
+            for y in [lo[1], hi[1]] {
+                for x in [lo[0], hi[0]] {
+                    let p = Vec2::new(x, y);
+                    for k in 0..n {
+                        let a = ring[k];
+                        let b = ring[(k + 1) % n];
+                        assert!(
+                            (b - a).perp_dot(p - a) >= -1e-5,
+                            "box corner {p} lies outside hull edge {k}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// What the dynamic path gives up, stated rather than implied: a counter
+    /// the cover keeps open is filled by the hull. Convexity is the price of
+    /// one collider per body, and a reader comparing the two emitters has to be
+    /// able to see it fail here if it ever stops being true.
+    #[test]
+    fn the_rigid_hull_fills_a_counter_the_cover_keeps_open() {
+        let solid = annulus_solid(1.0, 0.6, 48, 16);
+        let cover = solid.collider_cover().expect("cover");
+        assert!(!cover.contains([0.0, 0.0]), "fixture counter is not open");
+
+        let ring = &solid.hull;
+        let n = ring.len();
+        let covered = (0..n).all(|k| {
+            let a = ring[k];
+            let b = ring[(k + 1) % n];
+            (b - a).perp_dot(-a) >= 0.0
+        });
+        assert!(covered, "the hull left the annulus centre outside");
+    }
+
+    /// A blank has no ring and therefore no dynamic body, matching the static
+    /// emitter rather than returning a degenerate prism.
+    #[test]
+    fn a_blank_emits_no_rigid_hull() {
+        let blank = GlyphSolid::new(
+            ' ',
+            Vec2::ZERO,
+            0.25,
+            &fixture_params(1.0, 20, 0.5, (0.0, 1.0)),
+            None,
+        );
+        assert_eq!(blank.rigid_hull_sides(), 0);
+        assert!(blank.rigid_hull_4d().is_none());
+    }
+
+    /// The hull is a fixed-order construction over a fixed-order cover, so two
+    /// bakes of one letter emit the same vertices in the same order. A dynamic
+    /// letter whose collider reordered would break replay.
+    #[test]
+    fn rigid_hull_emission_is_reproducible() {
+        let build = || diamond_hull_solid(1.0, 48, 16, 0.4, (-0.2, 0.2)).rigid_hull_4d();
+        let (Some((ca, sa)), Some((cb, sb))) = (build(), build()) else {
+            panic!("hull is absent")
+        };
+        assert_eq!(ca, cb);
+        let (Shape::ConvexPolytope4D { vertices: va }, Shape::ConvexPolytope4D { vertices: vb }) =
+            (sa, sb)
+        else {
+            unreachable!()
+        };
+        assert!(va.len() > 4);
+        assert_eq!(va, vb);
     }
 
     /// The cover is a pure fixed-order scan over the baked field, so two bakes

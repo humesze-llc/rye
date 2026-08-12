@@ -2,12 +2,14 @@
 //!
 //! One pass per letter: `ab_glyph` outline curves are flattened to closed
 //! contours, the contours are baked into a 2D signed distance field, and the
-//! field is decomposed twice, once per role, each result extruded along `z` and
-//! embedded in a `w` slab. Render geometry is a clip of the field into convex
-//! cross-section pieces, reaching a [`loam_shape::TriangleMesh`] through
-//! [`loam_shape::Visualizable`]. Colliders are a [`loam_shape::Isovolume`]
-//! cover at [`GlyphParams::collider_resolution`], emitted as convex
-//! [`loam_shape::Shape::ConvexPolytope4D`] boxes.
+//! field is decomposed three ways, one per role, each result extruded along
+//! `z` and embedded in a `w` slab. Render geometry is a clip of the field into
+//! convex cross-section pieces, reaching a [`loam_shape::TriangleMesh`] through
+//! [`loam_shape::Visualizable`]. Static colliders are a
+//! [`loam_shape::Isovolume`] cover at [`GlyphParams::collider_resolution`],
+//! emitted as convex [`loam_shape::Shape::ConvexPolytope4D`] boxes. A letter
+//! that moves is one convex body instead, [`GlyphSolid::rigid_hull_4d`],
+//! because a rigid body carries one collider.
 //!
 //! Unlike [`crate::TextRenderer`]'s HUD path, which skips characters it cannot
 //! draw so a per-frame overlay never fails, this pipeline is a build-time step
@@ -30,11 +32,14 @@
 //!     let mesh = Visualizable::<3>::to_triangles(letter);
 //!     // `(centre, hull)` pairs, one static body each.
 //!     let colliders = letter.colliders_4d();
+//!     // One dynamic body for the whole letter, convex.
+//!     let falling = letter.rigid_hull_4d();
 //! }
 //! # Ok(()) }
 //! ```
 
 mod field;
+mod hull;
 mod outline;
 mod solid;
 

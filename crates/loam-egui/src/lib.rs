@@ -7,8 +7,9 @@
 //! ## Surface
 //!
 //! - [`UiIntegration`]: per-app egui state, owned by `loam_app::Runner`.
-//! - [`world_to_screen`]: project a world-space point to screen pixels via a
-//!   camera + viewport (an egui label that follows a 3D object).
+//! - [`world_to_screen`]: egui coordinates for
+//!   [`loam_camera::Camera::pixels_from_world`], which anchors a label to a
+//!   point in whatever [`Space`](loam_math::Space) the scene lives in.
 //! - [`BottomOverlay`]: bottom-anchored HUD panel with flicker-free animated
 //!   resize, avoiding the single-frame jump egui's [`Area`](egui::Area)
 //!   produces on a large content-size change.

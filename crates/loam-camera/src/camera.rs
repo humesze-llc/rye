@@ -133,6 +133,55 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
         }
     }
 
+    /// Where `world` lands in normalised device coordinates, y up: the
+    /// inverse of [`Self::ray_from_ndc`]. `None` when the point is outside
+    /// the frustum, which is a caller anchoring UI to it drawing nothing.
+    ///
+    /// An image in a curved Space is formed by the geodesics through the eye
+    /// (Gunn, *Discrete Groups and Visualization of Three-Dimensional
+    /// Manifolds*, SIGGRAPH 1993, §3), which is the ray `ray_from_ndc`
+    /// builds and the raymarch preludes walk with `Space::exp`. The geodesic
+    /// reaching `world` leaves along `Space::log(position, world)`, so that
+    /// vector stands where the straight offset `world - position` would in
+    /// the flat case; the two coincide when the chart is flat.
+    ///
+    /// Only its direction matters: the frame components enter as a ratio, so
+    /// the embedding scale factor a conformal model's `log` carries cancels.
+    /// `near` and `far` clip its forward component, the same
+    /// embedding-frame depth the primary ray advances in.
+    pub fn ndc_from_world(&self, world: Vec3, space: &S) -> Option<Vec2> {
+        let to_target = space.log(self.position, world);
+        let depth = to_target.dot(self.forward);
+        // `near` is a public field a caller may zero to mean "no near clip";
+        // the sign test then still rejects depth == 0 before it divides.
+        if depth <= 0.0 || depth < self.near || depth > self.far {
+            return None;
+        }
+        let tan_half_fov_y = (self.fov_y * 0.5).tan();
+        let ndc = Vec2::new(
+            to_target.dot(self.right) / (depth * self.aspect * tan_half_fov_y),
+            to_target.dot(self.up) / (depth * tan_half_fov_y),
+        );
+        // Also the NaN gate: a non-finite log fails both bounds.
+        (ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0).then_some(ndc)
+    }
+
+    /// [`Self::ndc_from_world`] in window pixels, top-left origin and y down.
+    /// `viewport` is `(width, height)` in those same pixels and sets the
+    /// scale only: the framing comes from `self.aspect`, so a caller whose
+    /// viewport ratio has drifted from it gets the camera's framing, not the
+    /// window's.
+    pub fn pixels_from_world(&self, world: Vec3, viewport: (u32, u32), space: &S) -> Option<Vec2> {
+        if viewport.0 == 0 || viewport.1 == 0 {
+            return None;
+        }
+        let ndc = self.ndc_from_world(world, space)?;
+        Some(Vec2::new(
+            (ndc.x * 0.5 + 0.5) * viewport.0 as f32,
+            (1.0 - (ndc.y * 0.5 + 0.5)) * viewport.1 as f32,
+        ))
+    }
+
     /// Move along the geodesic from `v * dt`, parallel-transporting the
     /// frame so it stays orthonormal at the new point. Identity on the
     /// basis in flat space; a holonomy rotation in H³ / S³.
@@ -165,10 +214,56 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loam_math::EuclideanR3;
+    use glam::{Mat4, Vec4, Vec4Swizzles};
+    use loam_math::{EuclideanR3, HyperbolicH3, SphericalS3};
 
     fn close(a: Vec3, b: Vec3, tol: f32) {
         assert!((a - b).length() < tol, "expected {a:?} ≈ {b:?}");
+    }
+
+    /// The pipeline the flat callers projected through before
+    /// [`Camera::ndc_from_world`] existed. `camera.aspect` stands in for the
+    /// ratio the old free function derived from its viewport argument.
+    fn matrix_clip(camera: &Camera<EuclideanR3>, world: Vec3) -> Vec4 {
+        let view = Mat4::look_to_rh(camera.position, camera.forward, camera.up);
+        let proj = Mat4::perspective_rh(camera.fov_y, camera.aspect, camera.near, camera.far);
+        proj * view * world.extend(1.0)
+    }
+
+    /// Every visible sample is on the geodesic the renderer would march down
+    /// its own pixel: unproject the NDC, walk `exp` for the length of the
+    /// log, arrive at the point. Pinned against the Space's own exp/log, not
+    /// against a second implementation of the projection.
+    fn assert_anchors_sit_on_their_own_geodesic<S>(space: &S, eye: Vec3, samples: &[Vec3], tol: f32)
+    where
+        S: Space<Point = Vec3, Vector = Vec3>,
+    {
+        let mut camera = Camera::<S>::looking_at(eye, Vec3::ZERO, Vec3::Y, space);
+        camera.fov_y = 70_f32.to_radians();
+        camera.aspect = 16.0 / 9.0;
+        // The frustum depth is in embedding units, which a conformal chart
+        // shrinks near the boundary; keep the clip out of this test's way.
+        camera.near = 1e-5;
+        let mut visible = 0;
+        for &world in samples {
+            let Some(ndc) = camera.ndc_from_world(world, space) else {
+                continue;
+            };
+            let ray = camera.ray_from_ndc(ndc);
+            let travel = space.log(camera.position, world).length();
+            let arrival = space.exp(ray.origin, ray.direction * travel);
+            let miss = space.distance(arrival, world);
+            assert!(
+                miss < tol,
+                "{world:?} at ndc {ndc:?}: its own pixel's geodesic misses it by {miss}"
+            );
+            visible += 1;
+        }
+        assert!(
+            visible >= samples.len() / 2,
+            "only {visible} of {} samples were in view; the test proves little",
+            samples.len()
+        );
     }
 
     #[test]
@@ -323,5 +418,184 @@ mod tests {
         );
         assert!(cam.forward.is_finite() && cam.right.is_finite() && cam.up.is_finite());
         assert!((cam.right.length() - 1.0).abs() < 1e-6);
+    }
+
+    /// In E³ the geodesic projection is the view-projection pipeline it
+    /// replaces: the same pixel wherever both produce one, and the same
+    /// rejection wherever either does not. Pins the screen position of every
+    /// world-anchored widget across the move off `Mat4::perspective_rh`. The
+    /// second frustum is the one the playground's callouts and throw aim ran
+    /// through before the move.
+    #[test]
+    fn flat_projection_agrees_with_the_view_projection_matrix() {
+        let viewport = (1600_u32, 900_u32);
+        let (vw, vh) = (viewport.0 as f32, viewport.1 as f32);
+        let (mut on_screen, mut clipped) = (0_u32, 0_u32);
+
+        for (position, target, fov_y_degrees, near, far) in [
+            (
+                Vec3::new(0.0, 0.0, 6.0),
+                Vec3::ZERO,
+                55_f32,
+                0.05_f32,
+                100.0_f32,
+            ),
+            (
+                Vec3::new(-4.0, 2.5, 3.0),
+                Vec3::new(0.5, -0.5, 0.0),
+                60.0,
+                0.1,
+                100.0,
+            ),
+            (
+                Vec3::new(1.0, -3.0, -5.0),
+                Vec3::new(-2.0, 1.0, 2.0),
+                60.0,
+                0.1,
+                12.0,
+            ),
+        ] {
+            let mut camera =
+                Camera::<EuclideanR3>::looking_at(position, target, Vec3::Y, &EuclideanR3);
+            camera.fov_y = fov_y_degrees.to_radians();
+            camera.near = near;
+            camera.far = far;
+            camera.aspect = vw / vh;
+
+            for xi in -4..=4 {
+                for yi in -4..=4 {
+                    for zi in -4..=4 {
+                        let world =
+                            Vec3::new(xi as f32 * 1.7, yi as f32 * 1.3, zi as f32 * 2.1) + target;
+                        let clip = matrix_clip(&camera, world);
+                        let ndc = clip.xyz() / clip.w;
+                        // A sample astride a clip plane is decided by float op
+                        // order, and the two forms multiply in different
+                        // orders by construction. Disagreement there is not
+                        // the behaviour under test.
+                        let astride_a_clip_plane = clip.w.abs() < 1e-3
+                            || (ndc.x.abs() - 1.0).abs() < 1e-3
+                            || (ndc.y.abs() - 1.0).abs() < 1e-3
+                            || ndc.z.abs() < 1e-3
+                            || (ndc.z - 1.0).abs() < 1e-3;
+                        if astride_a_clip_plane {
+                            continue;
+                        }
+
+                        let expected = (clip.w > 0.0
+                            && ndc.x.abs() <= 1.0
+                            && ndc.y.abs() <= 1.0
+                            && (0.0..=1.0).contains(&ndc.z))
+                        .then(|| {
+                            Vec2::new((ndc.x * 0.5 + 0.5) * vw, (1.0 - (ndc.y * 0.5 + 0.5)) * vh)
+                        });
+                        let actual = camera.pixels_from_world(world, viewport, &EuclideanR3);
+
+                        match (expected, actual) {
+                            (Some(expected), Some(actual)) => {
+                                on_screen += 1;
+                                assert!(
+                                    (actual - expected).length() < 1e-2,
+                                    "{world:?}: {actual:?} px, matrix says {expected:?}"
+                                );
+                            }
+                            (None, None) => clipped += 1,
+                            (expected, actual) => panic!(
+                                "{world:?}: visibility disagrees, matrix {expected:?} vs {actual:?}"
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            on_screen > 100 && clipped > 100,
+            "{on_screen} on screen, {clipped} clipped: the grid missed a case"
+        );
+    }
+
+    /// Both curvature signs anchor on their own geodesics. The eye is off the
+    /// chart origin in each, where the geodesic through a point and the chord
+    /// to it part company.
+    #[test]
+    fn curved_projection_lands_on_the_geodesic_through_its_own_pixel() {
+        let ball_samples: Vec<Vec3> = (-2..=2)
+            .flat_map(|x| {
+                (-2..=2).flat_map(move |y| {
+                    (-2..=2).map(move |z: i32| {
+                        Vec3::new(x as f32 * 0.17, y as f32 * 0.17, z as f32 * 0.17)
+                    })
+                })
+            })
+            .collect();
+
+        assert_anchors_sit_on_their_own_geodesic(
+            &HyperbolicH3,
+            Vec3::new(0.28, 0.12, 0.44),
+            &ball_samples,
+            1e-3,
+        );
+        assert_anchors_sit_on_their_own_geodesic(
+            &SphericalS3,
+            Vec3::new(0.28, 0.12, 0.44),
+            &ball_samples,
+            1e-3,
+        );
+    }
+
+    /// The `log` is load-bearing, not decoration: from an off-origin eye in
+    /// H³ the geodesic leaves along a direction the chord does not share, so
+    /// the anchor moves a visible fraction of the screen. A revert to
+    /// `world - position` passes every flat test and fails this one.
+    #[test]
+    fn curved_projection_departs_from_the_flat_chord_formula() {
+        let space = HyperbolicH3;
+        let mut camera = Camera::<HyperbolicH3>::looking_at(
+            Vec3::new(0.45, 0.15, 0.35),
+            Vec3::ZERO,
+            Vec3::Y,
+            &space,
+        );
+        camera.fov_y = 70_f32.to_radians();
+        camera.aspect = 16.0 / 9.0;
+        camera.near = 1e-5;
+
+        let world = Vec3::new(-0.30, 0.26, -0.18);
+        let geodesic = camera
+            .ndc_from_world(world, &space)
+            .expect("sample is in view");
+
+        let chord = world - camera.position;
+        let tan_half_fov_y = (camera.fov_y * 0.5).tan();
+        let depth = chord.dot(camera.forward);
+        let flat = Vec2::new(
+            chord.dot(camera.right) / (depth * camera.aspect * tan_half_fov_y),
+            chord.dot(camera.up) / (depth * tan_half_fov_y),
+        );
+
+        let separation = (geodesic - flat).length();
+        assert!(
+            separation > 0.05,
+            "geodesic {geodesic:?} and chord {flat:?} agree to {separation} NDC"
+        );
+    }
+
+    /// A zero-area viewport yields no anchor. Without the guard every visible
+    /// point collapses onto pixel 0 of the degenerate axis, which reads as a
+    /// widget parked in the corner rather than as nothing to draw.
+    #[test]
+    fn degenerate_viewport_has_no_screen_position() {
+        let camera = Camera::<EuclideanR3>::at_origin();
+        let world = Vec3::new(0.0, 0.0, -5.0);
+        assert!(camera
+            .pixels_from_world(world, (0, 600), &EuclideanR3)
+            .is_none());
+        assert!(camera
+            .pixels_from_world(world, (800, 0), &EuclideanR3)
+            .is_none());
+        assert!(camera
+            .pixels_from_world(world, (800, 600), &EuclideanR3)
+            .is_some());
     }
 }

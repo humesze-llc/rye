@@ -33,9 +33,10 @@ use crate::state::{body_position, CameraMode, Demo};
 /// time, so a trajectory is reproducible across frame rates.
 const PHYSICS_DT: f32 = 1.0 / 60.0;
 
-/// Uniform body mass. Row members differ in vertex count, which is not a
-/// quantity the bounding-sphere collider prices, so a per-shape mass would be
-/// a number with nothing behind it.
+/// Uniform body mass. Density is unmodelled, so the four hull colliders do
+/// not carry the volume ratios their solids have: a 5-cell massing the same
+/// as a 24-cell is the chamber's choice, not an oversight. A per-shape mass
+/// would have to pick a density, and nothing in the demo sets one.
 const BODY_MASS: f32 = 1.0;
 
 /// Largest per-step displacement the R⁴ step still resolves against a thin
@@ -66,13 +67,20 @@ pub(crate) const MAX_THROW_SPEED: f32 = TUNNELING_MARGIN * MAX_PER_STEP_DISPLACE
 /// axis where a bounding ball presents twice the circumradius, and the tighter
 /// of the two is what a ceiling is worth deriving against.
 ///
-/// A floor, not a two-sided pin, in the same sense as the R⁴ tunneling gate's
-/// own constants: `the_body_tunneling_band_is_one_the_narrowphase_resolves`
-/// fires when a pair resolves LESS than this, and a scan that finds more
-/// reach should raise the number rather than fail. That test now scans every
-/// collider the row can install rather than the two it was set from, and the
-/// tightest reach across them is the 8-cell's 1.4875 at the unrotated pose:
-/// the number stands, with the 8-cell still the binding case.
+/// `the_body_tunneling_band_is_one_the_narrowphase_resolves` scans every
+/// collider the row can install, rather than the two the number was set from,
+/// and still finds a contact at this displacement per step at all sixteen
+/// launch alignments it samples.
+///
+/// What it is NOT is a lower bound on the overlap window. Scanning centre
+/// separation at 0.0025 puts the tightest same-collider window across ball and
+/// hulls at the 8-cell's 1.395 at the unrotated pose, under this number, so a
+/// step of exactly one band can in principle fall either side of an 8-cell
+/// pair. What keeps [`MAX_ANGULAR_SPEED`] sound is that a body only ever
+/// spends `TUNNELING_MARGIN` of the band, 1.2668, which clears that window and
+/// clears the 1.335 the tightest mixed-collider pair in the same scan
+/// presented. Tightening the band onto the measured window is the honest form
+/// and costs angular ceiling, so it is a decision, not a repair.
 const BODY_TUNNELING_BAND: f32 = 1.4075;
 
 /// Angular speed ceiling for a thrown body, derived against the same budget as
@@ -1175,9 +1183,9 @@ mod tests {
 
     /// Acceptance criterion 3: hulls left overlapping and disturbed reach the
     /// exact-zero fixpoint [`PlaygroundPhysics::at_rest`] tests for, inside a
-    /// bounded step count, and stay there. Credit goes to [`PlaygroundPhysics::damp`]
-    /// as much as to the solver: exponential decay plus the [`REST_SPEED`] snap
-    /// is what makes an exact fixpoint reachable at all.
+    /// bounded step count, and stay there. Credit goes to
+    /// [`PlaygroundPhysics::damp`] as much as to the solver: exponential decay
+    /// plus the [`REST_SPEED`] snap is what makes an exact fixpoint reachable.
     ///
     /// Overlap is 25% of the width each pair actually presents rather than a
     /// fixed distance, so the 5-cell (which can present a tenth of the
@@ -1435,10 +1443,11 @@ mod tests {
     /// to the spin baking moves this number too. The band was set from the
     /// 8-cell, which the sweep re-confirms is still the tightest of the five.
     ///
-    /// Both bodies carry the same collider, which is the constraint the row
-    /// imposes: every slot shares one spin and starts at identity physics
-    /// orientation. Counter-oriented facet-to-facet, which impacts could
-    /// eventually reach, is a narrower band than this and is not swept here.
+    /// Both bodies carry the same collider, which is NOT what the row imposes:
+    /// `shapes=` mixes polychora across slots and each slot carries its own
+    /// rotor ([`crate::spins::SlotSpins`]), so a mixed or counter-oriented
+    /// pair presents a narrower window than anything swept here. What covers
+    /// those is the margin on [`BODY_TUNNELING_BAND`], not this scan.
     #[test]
     fn the_body_tunneling_band_is_one_the_narrowphase_resolves() {
         let mut cases = vec![(

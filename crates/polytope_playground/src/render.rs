@@ -1175,12 +1175,13 @@ pub(crate) fn build_wireframe_meshes(
 ///
 /// No per-body w-extent layer. It was left out while every body collided as
 /// `Collider::sphere_at_origin` at the row's one radius, which made the extent
-/// `±body_size` on every frame: orientation-invariant, and on a `w = 0` the
-/// chamber was closed under. The four polychora that now collide as their own
-/// hull ([`crate::physics::PlaygroundPhysics::sync`]) break both halves, since
-/// a hull's extent turns with the row's spin and a hull contact drives the
-/// struck body off the slice. The wireframe's `w-depth` colour mode reads out
-/// the rendered hull's w, which is the part that has always had real extent.
+/// `±body_size` on every frame: orientation-invariant, and sitting on a
+/// `w = 0` slice the chamber was closed under. The four polychora that now
+/// collide as their own hull ([`crate::physics::PlaygroundPhysics::sync`])
+/// break both halves, since a hull's extent turns with the row's spin and a
+/// hull contact drives the struck body off the slice. The wireframe's
+/// `w-depth` colour mode reads out the rendered hull's w, which is the part
+/// that has always had real extent.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(crate) struct PhysicsOverlay {
     /// Axis cross at each contact's world point.

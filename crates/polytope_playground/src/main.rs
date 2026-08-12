@@ -91,6 +91,7 @@ mod console;
 mod consts;
 mod director;
 mod filmstrip;
+mod hero;
 mod hud;
 mod hypergimbal;
 mod physics;

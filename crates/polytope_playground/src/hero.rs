@@ -15,7 +15,7 @@
 //! and the handover is a single event rather than a per-frame blend.
 //!
 //! **Which decomposition a letter collides as.** `glyph-collider-isovolume`
-//! scoped [`GlyphSolid::colliders_4d`], the 94-box faithful cover, to STATIC
+//! scoped [`GlyphSolid::colliders_4d`], the faithful box cover, to STATIC
 //! letters, and that scope holds unwidened: falling letters here take
 //! [`GlyphSolid::rigid_hull_4d`], the one convex prism per letter that
 //! `glyph-letter-bodies` built for exactly this. Nothing in the scene needs a
@@ -103,8 +103,8 @@ const SETTLE_TICKS: u32 = 120;
 /// First tick a polychoron can be spawned on.
 const RAIN_START_TICK: u32 = ASSEMBLE_TICKS + SETTLE_TICKS;
 
-/// Length of the whole sequence, in ticks. 9.5 s: the last drop is spawned by
-/// tick 274 and has landed and stopped moving long before the end, so a
+/// Length of the whole sequence, in ticks. 9.5 s: the last drop is spawned at
+/// tick 308 and has landed and stopped moving before the end, so a
 /// capture that runs the sequence out ends on a still frame rather than
 /// mid-motion.
 pub(crate) const SEQUENCE_TICKS: u32 = RAIN_START_TICK + 360;
@@ -1012,9 +1012,11 @@ mod tests {
     const REST_SPREAD: f32 = 0.02;
 
     /// Displacement, in em, that counts as a letter having been knocked aside
-    /// rather than nudged. Measured at this seed: the rain moves `L` 0.77,
-    /// `O` 0.83, `A` 1.57 and `M` 1.99 em, so the criterion has 3x of margin
-    /// on the least-moved letter and the threshold is not the measurement.
+    /// rather than nudged. Measured at this seed by
+    /// `the_quoted_figures_are_the_ones_the_scene_produces`: the rain moves
+    /// `L` 0.770, `O` 0.940, `A` 1.384 and `M` 1.751 em, so the criterion has
+    /// 3x of margin on the least-moved letter and the threshold is not the
+    /// measurement.
     const SCATTER_THRESHOLD: f32 = 0.25;
 
     /// How far below the floor any collider vertex may reach. This is a
@@ -1201,6 +1203,43 @@ mod tests {
     /// displacement is measured from the settled pose at the tick before the
     /// first spawn, so nothing of the landing is counted in it.
     #[test]
+    /// The figures the module comments quote, asserted rather than trusted.
+    /// All three were wrong on arrival: the cover count was carried in from a
+    /// brief that predated the implementation, and the other two were measured
+    /// before a constant moved under them. A comment naming a number the code
+    /// does not produce is a defect here, so the numbers are pinned.
+    #[test]
+    fn the_quoted_figures_are_the_ones_the_scene_produces() {
+        let mut s = scene();
+        s.run_to(RAIN_START_TICK);
+        let settled = letter_positions(&s);
+        let mut last_spawn = RAIN_START_TICK;
+        let mut seen = s.drops().len();
+        while !s.finished() {
+            s.tick();
+            if s.drops().len() > seen {
+                seen = s.drops().len();
+                last_spawn = s.tick_index();
+            }
+        }
+        let scattered = letter_positions(&s);
+        let measured: Vec<f32> = settled
+            .iter()
+            .zip(&scattered)
+            .map(|(b, a)| b.distance(*a))
+            .collect();
+        for (got, want) in measured.iter().zip([0.770f32, 0.940, 1.384, 1.751]) {
+            assert!(
+                (got - want).abs() < 5e-3,
+                "SCATTER_THRESHOLD's doc quotes {want} em; the scene produces {got}"
+            );
+        }
+        assert_eq!(
+            last_spawn, 308,
+            "SEQUENCE_TICKS' doc quotes the last spawn at tick 308"
+        );
+    }
+
     fn the_rain_knocks_at_least_one_letter_past_the_scatter_threshold() {
         let mut scene = scene();
         scene.run_to(RAIN_START_TICK);

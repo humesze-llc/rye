@@ -310,6 +310,10 @@ impl Demo {
 
         let mut camera = Camera::<EuclideanR3>::at_origin();
         camera.position = Vec3::new(0.0, 3.0, 9.0);
+        // Match the near plane the raster passes build their projection
+        // matrices with, so a world-anchored callout vanishes exactly where
+        // the geometry it points at does.
+        camera.near = 0.1;
         let mut orbit: OrbitController<EuclideanR3> = OrbitController::default();
         // Startup framing that fits the whole row; MAX_DISTANCE only widens
         // the scroll-out range, not this initial distance.
@@ -699,19 +703,13 @@ impl Demo {
         };
         let world_pos = row_frame.pose(slot).position_r3();
 
-        let view_dir = self.camera.view();
         let cfg = &frame.rd.surface_bundle.config;
         let ppp = ctx.pixels_per_point();
         let vp_w = (cfg.width as f32 / ppp).round() as u32;
         let vp_h = (cfg.height as f32 / ppp).round() as u32;
-        let Some(screen_pos) = loam_egui::world_to_screen(
-            world_pos,
-            &view_dir,
-            60.0_f32.to_radians(),
-            (vp_w, vp_h),
-            0.1,
-            100.0,
-        ) else {
+        let Some(screen_pos) =
+            loam_egui::world_to_screen(&self.camera, world_pos, (vp_w, vp_h), &EuclideanR3)
+        else {
             return;
         };
 
@@ -753,19 +751,13 @@ impl Demo {
 
         // Reproject world R³ -> screen pixels via the rasterizer's camera;
         // `None` (anchor offscreen) draws nothing.
-        let view_dir = self.camera.view();
         let cfg = &frame.rd.surface_bundle.config;
         let ppp = ctx.pixels_per_point();
         let vp_w = (cfg.width as f32 / ppp).round() as u32;
         let vp_h = (cfg.height as f32 / ppp).round() as u32;
-        let Some(screen_pos) = loam_egui::world_to_screen(
-            world_pos,
-            &view_dir,
-            60.0_f32.to_radians(),
-            (vp_w, vp_h),
-            0.1,
-            100.0,
-        ) else {
+        let Some(screen_pos) =
+            loam_egui::world_to_screen(&self.camera, world_pos, (vp_w, vp_h), &EuclideanR3)
+        else {
             return;
         };
 

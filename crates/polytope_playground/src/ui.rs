@@ -14,7 +14,7 @@ use loam_egui::{
     media::{chevron_button, play_pause_button, rate_toggle, refresh_button},
     slider_with_edit,
 };
-use loam_math::Rotor4;
+use loam_math::{EuclideanR3, Rotor4};
 
 use crate::consts::{CONTROL_H, CONTROL_W, PLAY_PAUSE_W};
 use crate::state::{
@@ -561,14 +561,8 @@ impl Demo {
             .physics
             .pose(drag.slot, slots, Rotor4::IDENTITY)
             .position_r3();
-        let Some(anchor) = loam_egui::world_to_screen(
-            world,
-            &self.camera.view(),
-            60.0_f32.to_radians(),
-            viewport,
-            0.1,
-            100.0,
-        ) else {
+        let Some(anchor) = loam_egui::world_to_screen(&self.camera, world, viewport, &EuclideanR3)
+        else {
             return;
         };
 

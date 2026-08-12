@@ -4,7 +4,11 @@
 //
 // Rotor keys are (cos(theta/2), sin(theta/2)) on the xw component: theta = 0,
 // pi/2, pi. Run it with
-//   cargo run -p polytope_playground -- --director=timelines/row-sweep.ron
+//   cargo run -p polytope_playground --
+//     --director=crates/polytope_playground/timelines/row-sweep.ron
+//
+// The path is resolved against the working directory, not the crate, so
+// the crate-relative form only works from inside crates/polytope_playground.
 (
     fps: 60,
     frames: 241,

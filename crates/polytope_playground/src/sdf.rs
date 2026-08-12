@@ -4,12 +4,16 @@
 //! rebuilds its render node on the frames where an edit landed. Every constant
 //! in the tree is a baked WGSL literal ([`loam_scene::Primitive::to_wgsl`]), so
 //! an edit is a shader compile, and `examples/sdf_edit_latency.rs` is what that
-//! costs: emitting is free at the scale of a frame and the driver's pipeline
-//! build is three orders of magnitude more expensive than it, which puts a
-//! drag frame at roughly one 60Hz frame. The way out is to bind the selected
-//! leaf's constants to `RayMarchUniforms::params` so a drag writes a uniform
-//! instead of a module; that is a second emit mode across `Primitive` and
-//! `Scene`, so it is a node of its own rather than a detail of this one.
+//! costs. Measured on an idle RTX 4090 Laptop over 120 single-parameter edits:
+//! emit p50 0.009ms, shader module 0.352ms, pipeline 0.319ms, total per edit
+//! p50 0.685ms and p95 0.850ms, which is 5% of a 16.7ms frame. Emitting is
+//! free at the scale of a frame and the pipeline build costs about 35x it, not
+//! the three orders of magnitude an earlier run under compile contention
+//! reported. A drag therefore has headroom rather than sitting on the frame
+//! budget. Binding the selected leaf's constants to `RayMarchUniforms::params`
+//! would make a drag write a uniform instead of a module, but on these numbers
+//! it buys margin rather than rescuing the design, so it is a node of its own
+//! and not an urgent one.
 //!
 //! The module assembles WGSL by hand, the way [`crate::Demo::new`] does:
 //! `wgsl_impl` + scene emit + march kernel + the shading fragment below, then

@@ -442,10 +442,11 @@ impl Demo {
             (cfg.width, cfg.height)
         };
 
-        // The picking ray is the only consumer of `camera.aspect`; the
-        // renderer takes the resolution straight from the surface config.
-        // Refreshed here rather than at every resize site because this is the
-        // one place that reads it.
+        // The picking ray and the world-anchored overlays read
+        // `camera.aspect`; the renderer takes the resolution straight from the
+        // surface config. Refreshed here rather than at every resize site
+        // because `update` precedes `ui` in the frame, so both consumers see
+        // this frame's framing.
         self.camera.aspect = viewport.0 as f32 / viewport.1.max(1) as f32;
         // The gimbal gets the left button first: its rings sit in front of
         // the shapes, so a press that lands on one is a rotation gesture, not

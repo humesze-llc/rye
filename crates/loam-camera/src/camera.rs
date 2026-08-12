@@ -152,9 +152,8 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
     pub fn ndc_from_world(&self, world: Vec3, space: &S) -> Option<Vec2> {
         let to_target = space.log(self.position, world);
         let depth = to_target.dot(self.forward);
-        // `near` is a public field a caller may zero to mean "no near clip".
-        // The sign test is then what keeps the point mirrored behind the eye,
-        // whose frame ratios are identical, from being reported as visible.
+        // `near` is a public field a caller may zero to mean "no near clip";
+        // the sign test then still rejects depth == 0 before it divides.
         if depth <= 0.0 || depth < self.near || depth > self.far {
             return None;
         }
@@ -582,7 +581,9 @@ mod tests {
         );
     }
 
-    /// A zero-area viewport yields no anchor rather than a divide by zero.
+    /// A zero-area viewport yields no anchor. Without the guard every visible
+    /// point collapses onto pixel 0 of the degenerate axis, which reads as a
+    /// widget parked in the corner rather than as nothing to draw.
     #[test]
     fn degenerate_viewport_has_no_screen_position() {
         let camera = Camera::<EuclideanR3>::at_origin();

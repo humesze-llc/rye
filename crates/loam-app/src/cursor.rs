@@ -174,9 +174,10 @@ mod tests {
 
     /// The request/take pairs below drive process-global atomics, and cargo
     /// runs tests in one binary on parallel threads, so without this every
-    /// test in this module races every other for the same pending slot. Recover from poisoning rather than
-    /// propagate it, so one failing test reports its own assertion instead
-    /// of poisoning its four siblings into a confusing cascade.
+    /// test in this module races every other for the same pending slot.
+    /// Recover from poisoning rather than propagate it, so one failing test
+    /// reports its own assertion instead of poisoning its four siblings into
+    /// a confusing cascade.
     static CURSOR_GLOBALS: Mutex<()> = Mutex::new(());
 
     fn serialized() -> std::sync::MutexGuard<'static, ()> {

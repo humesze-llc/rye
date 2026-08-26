@@ -1,5 +1,3 @@
-//! Fixed-timestep accumulator.
-
 use std::ops::Range;
 // `web_time::Instant` over `std::time::Instant`: the latter's `now` panics on
 // wasm32; `web_time` backs it with `performance.now()`.
@@ -11,11 +9,6 @@ use web_time::Instant;
 pub const DEFAULT_MAX_CATCH_UP: u32 = 10;
 
 /// Tick-rate accumulator driving a deterministic sim from wall-clock time.
-///
-/// Construct with [`FixedTimestep::new`], then each frame call
-/// [`FixedTimestep::advance`] with the current [`Instant`] and iterate the
-/// returned range to run sim ticks. [`FixedTimestep::alpha`] gives the
-/// render interpolation factor between the last two tick states.
 ///
 /// Tick duration is stored as nanoseconds from the target Hz, so a given
 /// `FixedTimestep::new(hz)` is bit-identical across machines.
@@ -55,12 +48,10 @@ impl FixedTimestep {
         self.tick
     }
 
-    /// Duration of one sim tick.
     pub fn dt(&self) -> Duration {
         self.dt
     }
 
-    /// Duration of one sim tick as f32 seconds, for physics integration.
     pub fn dt_seconds(&self) -> f32 {
         self.dt.as_secs_f32()
     }
@@ -177,11 +168,9 @@ mod tests {
         let mut t = FixedTimestep::new(60).with_max_catch_up(5);
         let b = base();
         t.advance(b);
-        // 100 ticks of wall-clock elapsed; cap should yield exactly 5.
         let range = t.advance(b + t.dt() * 100);
         assert_eq!(range.end - range.start, 5);
         assert_eq!(t.tick(), 5);
-        // Accumulator should have been drained; alpha near zero.
         assert!(t.alpha() < 1e-3);
     }
 

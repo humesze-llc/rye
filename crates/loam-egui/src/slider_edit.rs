@@ -1,5 +1,3 @@
-//! Slider with a side-cell text label that opens a precise edit popup on right-click.
-//!
 //! egui's stock [`Slider`](egui::Slider) renders its value as a variable-width text
 //! inside the slider, which means the slider's visual right edge shifts as the value's
 //! character count changes (e.g., `0.5` -> `12.34`). When several sliders sit in a
@@ -27,9 +25,7 @@ pub struct SliderInteraction {
 }
 
 /// Render a slider with a fixed-width side cell that displays `formatted` and opens a
-/// precise-edit [`DragValue`](egui::DragValue) popup on right-click. Returns a
-/// [`SliderInteraction`] reporting whether the value changed and whether the user was
-/// actively dragging this frame.
+/// precise-edit [`DragValue`](egui::DragValue) popup on right-click.
 ///
 /// `value_cell_w` is the fixed width allocated to the side label cell. Without a fixed
 /// width the cell would resize as the value's character count varies, shifting the
@@ -89,9 +85,6 @@ mod tests {
         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0))
     }
 
-    /// Rendering with no input returns `false` and leaves `value` untouched. Sanity
-    /// check that the widget is invokable and doesn't fire a phantom "changed" on the
-    /// first frame.
     #[test]
     fn no_input_returns_false_and_preserves_value() {
         let ctx = egui::Context::default();
@@ -115,10 +108,6 @@ mod tests {
         assert_eq!(value, 0.5);
     }
 
-    /// The side cell is allocated at exactly `value_cell_w` regardless of how many
-    /// characters `formatted` has. This is the contract callers depend on: the slider's
-    /// right edge stays put as the formatted value's character count changes between
-    /// frames.
     #[test]
     fn side_cell_width_is_fixed() {
         let ctx = egui::Context::default();
@@ -128,8 +117,6 @@ mod tests {
             time: Some(0.0),
             ..Default::default()
         };
-        // Render the same slider with two formatted strings of wildly different widths.
-        // The total widget rect width should be the same.
         for formatted in ["0", "+999.99"] {
             let mut value = 0.5_f32;
             let mut total = 0.0_f32;

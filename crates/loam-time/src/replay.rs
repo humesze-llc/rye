@@ -380,9 +380,6 @@ mod tests {
         assert_ne!(low.finish(), flipped.finish());
     }
 
-    /// The mixer carries no framing, so the recorded and the replaying run must
-    /// agree on the word layout for their digests to mean the same thing. Pinned
-    /// so the absence is a documented property rather than a surprise.
     #[test]
     fn hash_is_a_function_of_the_byte_stream_and_not_of_the_word_widths() {
         let mut split = StateHash::new();
@@ -524,10 +521,6 @@ mod tests {
         ));
     }
 
-    /// The tick count is itself 64 bits, so widening the word width is not
-    /// enough: the product overflows the widened arithmetic too, and an
-    /// overflow here is a panic in a debug build and a plausible length in a
-    /// release one.
     #[test]
     fn a_header_declaring_more_ticks_than_a_byte_count_can_express_is_rejected() {
         let mut bytes = recorded().encode();

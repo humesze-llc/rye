@@ -1,13 +1,6 @@
 //! [`CameraController`] is the input-driven logic that mutates a [`Camera`] each frame.
 //! Camera is data, controller is logic; they live in separate types so a game can swap
 //! controllers without reconstructing the camera state.
-//!
-//! ## Concrete controllers shipped here
-//!
-//! - [`OrbitController`]: spherical-coordinate orbit around a target. The current
-//!   default for SDF-rendering demos.
-//! - [`FirstPersonController`]: yaw/pitch free-look from a user-controlled position.
-//!   Pairs naturally with `loam_player::PlayerState` for WASD-style movement.
 
 use std::f32::consts::FRAC_PI_2;
 use std::marker::PhantomData;
@@ -21,10 +14,8 @@ use crate::Camera;
 const ORBIT_RADIANS_PER_PIXEL: f32 = 0.006;
 const ZOOM_LOG_STEP: f32 = 0.12;
 const MIN_DISTANCE: f32 = 1.5;
-// Zoom-out ceiling, raised from the original 8 so a caller can pull back to
-// frame a larger 4D shape (e.g. the polytope_playground 120-cell). Held at 20
-// rather than further out because the scene fog washes out geometry beyond
-// roughly that range, so additional zoom buys nothing.
+// Held at 20 rather than further out because the scene fog washes out
+// geometry beyond roughly that range, so additional zoom buys nothing.
 const MAX_DISTANCE: f32 = 20.0;
 const INITIAL_HEIGHT: f32 = 0.6;
 const INITIAL_RADIUS: f32 = 3.5;
@@ -45,10 +36,6 @@ pub trait CameraController<S: Space> {
     /// use it; orbit ignores it).
     fn advance(&mut self, input: FrameInput, camera: &mut Camera<S>, space: &S, dt: f32);
 }
-
-// ---------------------------------------------------------------------------
-// OrbitController
-// ---------------------------------------------------------------------------
 
 /// Spherical-coordinate orbit camera that circles a target point. Left-drag orbits;
 /// scroll zooms.
@@ -95,14 +82,12 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> OrbitController<S> {
         }
     }
 
-    /// Snap to a fixed orbit position. Used by capture / movie mode.
     pub fn set_orbit(&mut self, distance: f32, pitch: f32) {
         self.distance = distance.clamp(MIN_DISTANCE, MAX_DISTANCE);
         self.pitch = pitch.clamp(MIN_ORBIT_PITCH, MAX_ORBIT_PITCH);
         self.yaw = 0.0;
     }
 
-    /// Advance yaw by `delta` radians; used by auto-rotate mode.
     pub fn rotate_yaw(&mut self, delta: f32) {
         self.yaw += delta;
     }
@@ -141,13 +126,10 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for OrbitControl
                 .clamp(MIN_DISTANCE, MAX_DISTANCE);
         }
 
-        // Orbit-direction tangent vector at `target`.
         let back_at_target = self.back_at_target();
         let right_at_target = self.right_at_target();
         let up_at_target = self.up_at_target();
 
-        // Camera position is `target` exp'd along that direction
-        // by `distance` units.
         let cam_pos = space.exp(self.target, back_at_target * self.distance);
 
         // Parallel-transport the basis from target to camera, then normalise. In flat
@@ -176,10 +158,6 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for OrbitControl
         camera.forward = -cam_back;
     }
 }
-
-// ---------------------------------------------------------------------------
-// FirstPersonController
-// ---------------------------------------------------------------------------
 
 /// Free-look first-person controller. The caller owns the position (typically
 /// `loam_player::PlayerState`'s `position`); this controller only manages the look
@@ -231,9 +209,7 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for FirstPersonC
         let pitch_q = Quat::from_rotation_x(self.pitch);
         let rot = yaw_q * pitch_q;
         // The basis is in T_position M; for the closed-form Spaces currently supported,
-        // we treat the canonical xyz as the local frame. Honest geodesic transport
-        // between frames (parallel-transport along the polyline the camera traversed)
-        // belongs in a dedicated controller; not implemented yet.
+        // we treat the canonical xyz as the local frame.
         camera.right = rot * Vec3::X;
         camera.up = rot * Vec3::Y;
         camera.forward = rot * -Vec3::Z;
@@ -260,7 +236,6 @@ mod tests {
         // yaw quaternion or a swapped basis axis shows up here and not in the
         // position, which is symmetric under that swap.
         close(camera.right, Vec3::new(0.0, 0.0, -1.0), 1e-5);
-        // Frame is orthonormal.
         assert!((camera.right.length() - 1.0).abs() < 1e-5);
         assert!((camera.up.length() - 1.0).abs() < 1e-5);
         assert!((camera.forward.length() - 1.0).abs() < 1e-5);
@@ -283,7 +258,6 @@ mod tests {
             0.0,
         );
         assert_ne!(before, camera.position);
-        // Frame stays unit-length after orbit.
         assert!((camera.forward.length() - 1.0).abs() < 1e-5);
     }
 
@@ -323,11 +297,6 @@ mod tests {
         assert!((camera.up.length() - 1.0).abs() < 1e-5);
     }
 
-    /// `OrbitController<S>` should produce valid, finite, unit-length frames in any 3D
-    /// Space. This pins that the generic impl actually works against `HyperbolicH3` and
-    /// `SphericalS3`, not just the closed-form-flat path. Catches regressions in
-    /// `Space::exp` / `parallel_transport_along` that would surface as NaN frames or
-    /// out-of-domain points.
     #[test]
     fn orbit_in_hyperbolic_h3_produces_valid_frame() {
         use loam_math::HyperbolicH3;
@@ -337,7 +306,6 @@ mod tests {
         // default 3.5 would push the camera outside the model.
         ctrl.distance = 0.4;
         ctrl.advance(FrameInput::default(), &mut camera, &HyperbolicH3, 0.0);
-        // Position is inside the Poincaré ball.
         assert!(
             camera.position.length() < 1.0,
             "camera escaped the Poincaré ball: {:?}",
@@ -366,10 +334,6 @@ mod tests {
         assert!((camera.forward.length() - 1.0).abs() < 1e-3);
     }
 
-    /// `OrbitController` against `BlendedSpace<E3, H3, LinearBlendX>` exercises the
-    /// variable-metric `parallel_transport_along` path the closed-form Spaces never hit.
-    /// Pin: targeting the H³-side of a transition zone, the orbit produces a finite,
-    /// ≈-orthonormal frame inside the Poincaré ball.
     #[test]
     fn orbit_in_blended_e3_h3_produces_valid_frame() {
         use loam_math::{BlendedSpace, EuclideanR3, HyperbolicH3, LinearBlendX};
@@ -390,23 +354,6 @@ mod tests {
         assert!((camera.forward.length() - 1.0).abs() < 1e-2);
     }
 
-    /// Per-Space `OrbitController::advance` timing. `#[ignore]` by default, run on
-    /// demand via
-    ///
-    /// ```text
-    /// cargo test --release --package loam-camera \
-    ///     -- --ignored --nocapture orbit_advance_perf
-    /// ```
-    ///
-    /// to print median timings for E³ / H³ / S³. Smoke-test for the design-doc claim
-    /// that the controller's hot path is sub-microsecond per call (the framework calls
-    /// it once per frame, so anything close to a microsecond is "free" relative to a
-    /// 16 ms frame budget). Catches accidental quadratic-blowups in `Space::exp` /
-    /// `parallel_transport_along` impls.
-    ///
-    /// Not a CI gate: `cargo test --release` is heavy and the timing numbers are
-    /// machine-dependent. Run when changing camera or Space hot-path code; eyeball the
-    /// output.
     #[test]
     #[ignore]
     fn orbit_advance_perf() {
@@ -422,7 +369,6 @@ mod tests {
             let mut camera = Camera::<S>::at_origin();
             let mut ctrl: OrbitController<S> = OrbitController::around(Vec3::ZERO);
             ctrl.distance = distance;
-            // Warm-up.
             for _ in 0..1_000 {
                 ctrl.advance(FrameInput::default(), &mut camera, space, 0.0);
             }

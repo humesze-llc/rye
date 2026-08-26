@@ -111,8 +111,6 @@ mod tests {
         assert_close(player.yaw, -0.2);
     }
 
-    /// W+D travels `speed`, not `sqrt(2) * speed`: the diagonal tangent must
-    /// be normalized so diagonal motion isn't faster than axis-aligned.
     #[test]
     fn advance_diagonal_input_speed_matches_axis_aligned_speed() {
         let mut player: PlayerState<EuclideanR3> = PlayerState::new(Vec3::ZERO);
@@ -162,8 +160,6 @@ mod tests {
         assert_close(player.position.z, 0.0);
     }
 
-    /// W in H³ from the origin must stay strictly inside the Poincaré ball
-    /// (`|p| < 1`); the geodesic step is shorter than the Euclidean one.
     #[test]
     fn advance_in_hyperbolic_h3_stays_inside_ball() {
         use loam_math::HyperbolicH3;
@@ -188,8 +184,6 @@ mod tests {
         assert!(player.position.z < 0.0);
     }
 
-    /// Same shape in S³: position must stay inside the unit-3-sphere embedding (`|p| < 1`)
-    /// and motion direction is consistent with the −Z forward convention.
     #[test]
     fn advance_in_spherical_s3_stays_inside_embedding() {
         use loam_math::SphericalS3;

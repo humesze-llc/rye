@@ -1,6 +1,3 @@
-//! What egui is consuming, on the two clocks an immediate-mode pass can
-//! answer.
-
 /// egui's claim on this frame's input, read once per frame between
 /// `egui::Context::begin_pass` and the build.
 ///
@@ -65,8 +62,6 @@ mod tests {
     const WINDOW_POS: egui::Pos2 = egui::pos2(400.0, 300.0);
     const IN_WINDOW: egui::Pos2 = egui::pos2(430.0, 320.0);
 
-    /// A menu bar with a button and a text field, plus a floating window:
-    /// the shapes every demo in this workspace actually puts on screen.
     fn build(ctx: &egui::Context, text: &mut String) {
         egui::TopBottomPanel::top("bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -171,10 +166,6 @@ mod tests {
         }
     }
 
-    /// The gate the runner reorder exists for: a press that lands on a
-    /// widget the same frame the pointer arrives must not also reach
-    /// gameplay. The bool this replaces cannot report it, because it was
-    /// computed before the pointer moved.
     #[test]
     fn pointer_capture_reports_a_press_on_the_frame_the_pointer_arrives() {
         let mut host = Host::new();
@@ -184,8 +175,6 @@ mod tests {
         assert!(!stale);
     }
 
-    /// Hover with no button held is capture too: the next scroll or press
-    /// belongs to the widget, not the camera.
     #[test]
     fn pointer_capture_covers_a_hovered_panel_without_claiming_the_keyboard() {
         let mut host = Host::new();
@@ -195,9 +184,6 @@ mod tests {
         assert!(!capture.keyboard);
     }
 
-    /// A drag that began on a panel keeps the pointer for its duration.
-    /// `wants_pointer_input` drops its hover term while a button is down,
-    /// which is why the stale bool goes false mid-drag.
     #[test]
     fn pointer_capture_survives_a_drag_held_over_a_panel() {
         let mut host = Host::new();
@@ -208,9 +194,6 @@ mod tests {
         assert!(!stale);
     }
 
-    /// The `is_using_pointer` term: a slider drag swept off its widget is
-    /// still egui's, so the hit test alone would hand the camera a press
-    /// the user is spending on a widget.
     #[test]
     fn pointer_capture_follows_a_drag_off_the_widget_it_started_on() {
         let mut host = Host::new();
@@ -220,7 +203,6 @@ mod tests {
         assert!(capture.pointer);
     }
 
-    /// Nothing under the pointer, nothing focused: gameplay owns the frame.
     #[test]
     fn capture_is_clear_over_open_scene() {
         let mut host = Host::new();
@@ -229,8 +211,6 @@ mod tests {
         assert_eq!(capture, UiCapture::default());
     }
 
-    /// The playground's throw defect: a focused text field must not stop a
-    /// click landing in open scene. One bool cannot express this.
     #[test]
     fn a_focused_field_claims_the_keyboard_without_claiming_the_pointer() {
         let mut host = Host::new();
@@ -240,9 +220,6 @@ mod tests {
         assert!(!capture.pointer);
     }
 
-    /// The keyboard clock, pinned as documented: focus is granted during the
-    /// build, so the click that focuses a field reports keyboard capture on
-    /// the following frame, not its own.
     #[test]
     fn keyboard_capture_trails_the_click_that_focuses_a_field_by_one_build() {
         let mut host = Host::new();
@@ -252,9 +229,6 @@ mod tests {
         assert!(next.keyboard);
     }
 
-    /// Escape is the one focus edge `begin_pass` resolves, so the frame that
-    /// presses it is already free for gameplay. The stale bool still reads
-    /// captured there, which is what made Esc-to-exit need a second press.
     #[test]
     fn escape_clears_keyboard_capture_on_the_frame_it_is_pressed() {
         let mut host = Host::new();

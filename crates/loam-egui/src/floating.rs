@@ -1,18 +1,6 @@
-//! Engine-level wrappers for free-floating UI containers (windows, callouts),
-//! wrapping raw `egui` containers with the conventions Loam demos share so look +
-//! feel stays consistent.
-//!
-//! - [`floating_panel`]: settings-modal pattern; a draggable, collapsible window
-//!   opened by an external toggle and closed via the title-bar X.
-//! - [`sticky_menu`]: a dropdown that stays open while toggles inside it are clicked.
-//! - [`callout`]: tutorial-annotation pattern; a caller-projected 3D world anchor,
-//!   a leader line, and a draggable panel, all in screen-space overlays.
-
 use egui::{Context, Id, Painter, Pos2, Rect, Stroke, Ui, Window};
 
-/// Builder for [`floating_panel`]. Use it when the panel needs to be resizable,
-/// wider than the settings default, or positioned away from centre; otherwise the
-/// [`floating_panel`] free function covers the default shape.
+/// Builder for [`floating_panel`].
 #[must_use = "FloatingPanelBuilder does nothing until `.show()` is called"]
 pub struct FloatingPanelBuilder<'a> {
     ctx: &'a Context,
@@ -85,21 +73,10 @@ impl<'a> FloatingPanelBuilder<'a> {
 }
 
 /// Floating, draggable, collapsible settings panel: title-bar X, default width hint,
-/// centre placement on first display, non-resizable. For other shapes use
-/// [`floating_panel_builder`].
+/// centre placement on first display, non-resizable.
 ///
 /// `open` doubles as toggle state: the helper clears it on close-X, and the closure
 /// runs only while `*open == true`.
-///
-/// ```ignore
-/// loam_egui::floating_panel(
-///     ctx, "polytope-playground-render", "Render",
-///     &mut self.show_render_panel, |ui| {
-///     ui.label("Surface");
-///     ui.radio_value(&mut self.surface_mode, SurfaceMode::Raster, "Raster");
-///     // ...
-/// });
-/// ```
 ///
 /// Returns `None` when closed (closure not invoked), `Some(R)` when open.
 pub fn floating_panel<R>(
@@ -112,20 +89,7 @@ pub fn floating_panel<R>(
     floating_panel_builder(ctx, id, title, open).show(content)
 }
 
-/// Builder entry point for floating panels needing non-default config. Returns a
-/// [`FloatingPanelBuilder`]; chain config setters then `.show(|ui| { ... })`.
-///
-/// ```ignore
-/// loam_egui::floating_panel_builder(ctx, "playground-about", "About", &mut self.show_help)
-///     .resizable(true)
-///     .default_size(560.0, 460.0)
-///     .default_pos(egui::pos2(80.0, 80.0))
-///     .show(|ui| {
-///         egui::ScrollArea::vertical().show(ui, |ui| {
-///             // help text
-///         });
-///     });
-/// ```
+/// Builder entry point for floating panels needing non-default config.
 pub fn floating_panel_builder<'a>(
     ctx: &'a Context,
     id: &'a str,
@@ -149,14 +113,6 @@ pub fn floating_panel_builder<'a>(
 /// clicked, closing only on click-outside or `Esc`. Use instead of
 /// `egui::menu_button`, which closes on every interactive click and makes
 /// multi-checkbox menus unusable.
-///
-/// ```ignore
-/// loam_egui::sticky_menu(ui, "View", |ui| {
-///     ui.checkbox(&mut self.show_controls, "Rotation controls");
-///     ui.checkbox(&mut self.show_formula, "Formula popup");
-///     ui.checkbox(&mut self.example_callout.open, "Example callout");
-/// });
-/// ```
 ///
 /// One-shot entries that should close on click call
 /// `ui.memory_mut(|m| m.close_popup())` from inside the content closure.
@@ -185,7 +141,6 @@ pub struct CalloutState {
 }
 
 impl CalloutState {
-    /// A callout that starts open at the given screen position.
     pub fn open_at(window_pos: Pos2) -> Self {
         Self {
             window_pos,
@@ -229,7 +184,6 @@ pub fn callout(
         .show(ctx, content);
     state.open = local_open;
 
-    // Persist the (possibly dragged) window rect for next frame's position.
     let window_rect: Option<Rect> = window_response.as_ref().map(|r| r.response.rect);
     if let Some(rect) = window_rect {
         state.window_pos = rect.min;

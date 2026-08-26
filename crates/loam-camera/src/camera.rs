@@ -1,15 +1,9 @@
-//! Space-generic camera state: a position on the manifold plus an
-//! orthonormal frame in its tangent space.
-//!
 //! [`Camera<S>`] stores a `position: S::Point` and three tangent basis
 //! vectors (`right`, `up`, `forward`); the frame is the orientation,
 //! there is no separate rotation field. This orthonormal-frame-bundle
 //! form avoids the per-Space convention questions of the `Iso` types:
 //! [`loam_math::Space::parallel_transport_along`] moves the frame
 //! correctly for any Space.
-//!
-//! [`Camera::view`] yields a [`CameraView`] for direct shader upload,
-//! available where `S::Point` and `S::Vector` are both `glam::Vec3`.
 
 use glam::{Vec2, Vec3};
 use loam_math::Space;
@@ -313,9 +307,6 @@ mod tests {
         close(cam.view().position, Vec3::new(2.5, 0.0, 0.0), 1e-6);
     }
 
-    /// `translate` in H³ keeps the position in the Poincaré ball and the
-    /// basis finite + ≈orthonormal. Catches NaN drift in `Space::exp` /
-    /// `parallel_transport_along` for `HyperbolicH3`.
     #[test]
     fn translate_in_hyperbolic_h3_stays_in_ball_and_orthonormal() {
         use loam_math::HyperbolicH3;
@@ -338,8 +329,6 @@ mod tests {
         assert!(cam.up.dot(cam.forward).abs() < 1e-3);
     }
 
-    /// The centre of the screen looks where the camera looks, from where
-    /// the camera is, for any fov and any aspect.
     #[test]
     fn centre_ndc_ray_is_camera_position_and_forward() {
         for (fov_y_degrees, aspect) in [(60.0_f32, 1.0_f32), (30.0, 16.0 / 9.0), (95.0, 0.5)] {
@@ -357,11 +346,6 @@ mod tests {
         }
     }
 
-    /// Edge rays sit on the frustum half-angles: the vertical one is
-    /// `fov_y/2` whatever the aspect, the horizontal one satisfies
-    /// `tan θ = aspect · tan(fov_y/2)`. Catches a dropped `aspect`, an
-    /// `aspect` applied to the vertical axis, and `fov_y` used where
-    /// `fov_y/2` belongs.
     #[test]
     fn edge_ndc_half_angles_track_fov_y_and_aspect() {
         for aspect in [16.0_f32 / 9.0, 1.0, 9.0 / 16.0] {
@@ -392,8 +376,6 @@ mod tests {
         }
     }
 
-    /// `looking_at` with `position == target` has `log = 0`, no defined
-    /// forward; the fallback must stay finite and orthonormal.
     #[test]
     fn looking_at_collapsed_target_falls_back_to_finite_frame() {
         let cam = Camera::<EuclideanR3>::looking_at(Vec3::ZERO, Vec3::ZERO, Vec3::Y, &EuclideanR3);
@@ -404,14 +386,10 @@ mod tests {
         assert!((cam.up.length() - 1.0).abs() < 1e-6);
     }
 
-    /// `looking_at` with `forward` parallel to `world_up` makes
-    /// `forward × world_up = 0`; the fallback `right` keeps the frame
-    /// finite.
     #[test]
     fn looking_at_world_up_parallel_to_forward_falls_back() {
         let cam = Camera::<EuclideanR3>::looking_at(
             Vec3::new(0.0, 0.0, 0.0),
-            // Look straight up, parallel to world_up +Y.
             Vec3::new(0.0, 1.0, 0.0),
             Vec3::Y,
             &EuclideanR3,
@@ -420,12 +398,6 @@ mod tests {
         assert!((cam.right.length() - 1.0).abs() < 1e-6);
     }
 
-    /// In E³ the geodesic projection is the view-projection pipeline it
-    /// replaces: the same pixel wherever both produce one, and the same
-    /// rejection wherever either does not. Pins the screen position of every
-    /// world-anchored widget across the move off `Mat4::perspective_rh`. The
-    /// second frustum is the one the playground's callouts and throw aim ran
-    /// through before the move.
     #[test]
     fn flat_projection_agrees_with_the_view_projection_matrix() {
         let viewport = (1600_u32, 900_u32);
@@ -515,9 +487,6 @@ mod tests {
         );
     }
 
-    /// Both curvature signs anchor on their own geodesics. The eye is off the
-    /// chart origin in each, where the geodesic through a point and the chord
-    /// to it part company.
     #[test]
     fn curved_projection_lands_on_the_geodesic_through_its_own_pixel() {
         let ball_samples: Vec<Vec3> = (-2..=2)
@@ -544,10 +513,6 @@ mod tests {
         );
     }
 
-    /// The `log` is load-bearing, not decoration: from an off-origin eye in
-    /// H³ the geodesic leaves along a direction the chord does not share, so
-    /// the anchor moves a visible fraction of the screen. A revert to
-    /// `world - position` passes every flat test and fails this one.
     #[test]
     fn curved_projection_departs_from_the_flat_chord_formula() {
         let space = HyperbolicH3;
@@ -581,9 +546,6 @@ mod tests {
         );
     }
 
-    /// A zero-area viewport yields no anchor. Without the guard every visible
-    /// point collapses onto pixel 0 of the degenerate axis, which reads as a
-    /// widget parked in the corner rather than as nothing to draw.
     #[test]
     fn degenerate_viewport_has_no_screen_position() {
         let camera = Camera::<EuclideanR3>::at_origin();

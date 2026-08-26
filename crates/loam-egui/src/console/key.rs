@@ -1,9 +1,3 @@
-//! Translation from the console's own [`Key`] vocabulary to egui's.
-//!
-//! The table is total and injective: every console key names exactly one egui
-//! key, so a bind can never fire off a different physical key than the one it
-//! was registered for.
-
 use loam_console::Key;
 
 pub(super) fn to_egui(key: Key) -> egui::Key {
@@ -84,8 +78,7 @@ pub(super) fn to_egui(key: Key) -> egui::Key {
 
 /// Printable text the OS produces for a key, used to strip the matching
 /// `egui::Event::Text` after consuming the Key event so the toggle char doesn't
-/// leak into the input. Only plausible toggle keys are covered; others return
-/// `None`.
+/// leak into the input.
 pub(super) fn key_text(key: Key) -> Option<&'static str> {
     match key {
         Key::Backtick => Some("`"),
@@ -98,8 +91,6 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// Distinct console keys map to distinct egui keys. A collision would make
-    /// one bind fire on another bind's key.
     #[test]
     fn to_egui_is_injective_over_every_console_key() {
         let mut seen: HashSet<egui::Key> = HashSet::new();
@@ -113,8 +104,6 @@ mod tests {
         assert_eq!(seen.len(), Key::ALL.len());
     }
 
-    /// Names match across the two vocabularies, which is what makes the table
-    /// auditable by eye. Debug formatting is the only shared handle on the name.
     #[test]
     fn to_egui_preserves_the_key_name() {
         for key in Key::ALL {

@@ -15,10 +15,6 @@ fn expected_pixel(ndc: Vec2, viewport: Vec2) -> Vec2 {
     )
 }
 
-/// Unprojection inverts projection: every point along the ray through an NDC
-/// coordinate projects back to that coordinate's pixel, at any depth. An
-/// off-axis pose plus one landscape and one portrait viewport leave no room
-/// for a swapped `right`/`up`, a transposed `aspect`, or a flipped y.
 #[test]
 fn ray_from_ndc_round_trips_through_pixels_from_world() {
     for viewport in [(1600_u32, 900_u32), (720, 1280)] {
@@ -58,10 +54,6 @@ fn ray_from_ndc_round_trips_through_pixels_from_world() {
     }
 }
 
-/// The round trip holds at every azimuth. One fixed pose can leave a frame
-/// error invisible whenever the erroneous and correct bases happen to agree
-/// on the sampled axis; orbiting through eight yaws puts every sign
-/// combination of the world axes into `right` and `forward`.
 #[test]
 fn round_trip_holds_across_camera_orientations() {
     let viewport = (1280_u32, 720_u32);
@@ -97,10 +89,6 @@ fn round_trip_holds_across_camera_orientations() {
     }
 }
 
-/// The same round trip in H³, where the ray is a geodesic and the point is
-/// reached by `exp` rather than by addition. A projection that read the
-/// chord would land the anchor on a different pixel from the one the
-/// renderer marched to reach the point.
 #[test]
 fn round_trip_holds_in_hyperbolic_h3() {
     let space = HyperbolicH3;

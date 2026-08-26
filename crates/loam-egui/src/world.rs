@@ -1,6 +1,5 @@
-//! egui coordinates for [`loam_camera::Camera::pixels_from_world`]. The
-//! projection is Space-generic and lives in `loam-camera` so an editor can
-//! anchor to it without taking on egui; this is only the type adapter.
+//! The projection is Space-generic and lives in `loam-camera` so an editor
+//! can anchor to it without taking on egui; this is only the type adapter.
 
 use glam::Vec3;
 use loam_camera::Camera;
@@ -27,9 +26,6 @@ mod tests {
     use super::*;
     use loam_math::EuclideanR3;
 
-    /// egui's `Pos2` carries the camera's pixels in the order the camera
-    /// produced them. The whole content of this module is that mapping, so a
-    /// transposed x/y is the only defect it can have.
     #[test]
     fn screen_position_carries_the_camera_pixels_unswapped() {
         let viewport = (800_u32, 600_u32);
@@ -51,8 +47,6 @@ mod tests {
         assert_eq!((screen.x, screen.y), (pixels.x, pixels.y));
     }
 
-    /// Invisible in the camera stays invisible in egui: no anchor rather than
-    /// a widget pinned to a clamped edge.
     #[test]
     fn a_point_behind_the_eye_has_no_screen_position() {
         let camera = Camera::<EuclideanR3>::at_origin();

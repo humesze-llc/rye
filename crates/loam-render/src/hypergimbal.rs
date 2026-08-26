@@ -387,10 +387,6 @@ mod tests {
         );
     }
 
-    /// The pole choice is load-bearing: a pole inside a rotation plane sends
-    /// that plane's ring to a straight line. `(1,1,1,1)/2` sits off all six
-    /// coordinate great circles, and by symmetry the six rings come out
-    /// congruent, which is what makes every plane equally grabbable.
     #[test]
     fn all_six_rings_are_finite_and_congruent() {
         let rings = WIDGET.rings();
@@ -417,7 +413,6 @@ mod tests {
             assert_close(ring.v.length(), 1.0, 1e-5, "v unit");
             assert_close(ring.u.dot(ring.v), 0.0, 1e-5, "u ⟂ v");
         }
-        // Six distinct planes, six distinct circle planes.
         for (i, first) in rings.iter().enumerate() {
             for second in &rings[i + 1..] {
                 assert!(
@@ -430,11 +425,6 @@ mod tests {
         }
     }
 
-    /// The three Hopf links are legible as three antipodal ring pairs: the
-    /// centres of `(xy, zw)`, `(xz, yw)` and `(xw, yz)` land on `±x̂`, `±ŷ`
-    /// and `±ẑ` of the image. This is the image frame's whole justification,
-    /// and it also keeps every ring plane off an image axis, where the
-    /// default camera would see it edge-on.
     #[test]
     fn dual_plane_pairs_sit_at_antipodal_ring_centres() {
         let offset = |plane| (WIDGET.ring(plane).center - WIDGET.center) / WIDGET.scale;
@@ -461,9 +451,6 @@ mod tests {
         }
     }
 
-    /// The closed-form circle is the stereographic image of the great
-    /// circle, not an approximation of it: every sampled `p(θ)` projects
-    /// onto the ring, and `ring_angle` recovers where.
     #[test]
     fn ring_is_the_projected_great_circle() {
         for plane in Plane4::ALL {
@@ -488,11 +475,6 @@ mod tests {
         }
     }
 
-    /// The ring-angle-to-arc-angle map: reading the ring angle of a projected point and
-    /// running it back through `arc_angle` returns the great-circle
-    /// parameter the point came from. This is the drag-to-angle map's core,
-    /// pinned against the projection itself rather than against a second
-    /// copy of the formula.
     #[test]
     fn arc_angle_inverts_the_projection_along_each_ring() {
         for plane in Plane4::ALL {
@@ -511,13 +493,6 @@ mod tests {
         }
     }
 
-    /// Acceptance: a drag on a ring yields the rotor that ring's plane
-    /// predicts. The drag endpoints are the projected images of two points
-    /// on the great circle `Δθ` apart, and the rotor must both equal
-    /// `exp(Δθ·ê_P)` and actually carry the grabbed point to the released
-    /// one. Every one of the six planes is exercised, at several grab
-    /// points, so a plane wired to the wrong bivector or the wrong sign
-    /// fails here.
     #[test]
     fn drag_yields_the_rotation_its_plane_predicts() {
         for plane in Plane4::ALL {
@@ -554,12 +529,6 @@ mod tests {
         }
     }
 
-    /// Every plane is reachable by pointing at its ring, and reachable over
-    /// a usable arc rather than at one lucky pixel. Rings cross, so a ray
-    /// aimed at ring `P` legitimately picks whatever ring is in front at
-    /// that spot; what has to hold is that a large share of `P`'s own
-    /// circumference selects `P`. A plane wired to a duplicate ring, or a
-    /// ring the depth sort always buries, fails here.
     #[test]
     fn every_plane_is_pickable_over_most_of_its_arc() {
         // Off-axis eye so no ring is seen edge-on and no two rings line up.
@@ -582,8 +551,6 @@ mod tests {
         }
     }
 
-    /// A drag that does not move requests no rotation, and reversing a drag
-    /// reverses its angle. Catches a dropped wrap and a swapped operand.
     #[test]
     fn drag_angle_is_zero_at_rest_and_odd_under_reversal() {
         for plane in Plane4::ALL {
@@ -600,8 +567,6 @@ mod tests {
         }
     }
 
-    /// A drag wrapping past the ring's `χ = ±π` seam takes the short way
-    /// round rather than jumping a full turn.
     #[test]
     fn drag_across_the_seam_takes_the_short_way() {
         for plane in Plane4::ALL {
@@ -616,8 +581,6 @@ mod tests {
         }
     }
 
-    /// Drag rotors stay on the Spin(4) unit sphere for any drag, including
-    /// ones near the half-turn where the wrap changes branch.
     #[test]
     fn drag_rotors_stay_unit_norm() {
         for plane in Plane4::ALL {
@@ -630,8 +593,6 @@ mod tests {
         }
     }
 
-    /// Edge-on and behind-the-eye rays are rejected rather than answered
-    /// with a hit the drag cannot track.
     #[test]
     fn grazing_and_backward_rays_miss_the_ring_plane() {
         let ring = WIDGET.ring(Plane4::Xy);
@@ -654,8 +615,6 @@ mod tests {
         );
     }
 
-    /// A ray through the widget's empty middle picks nothing; a pick is a
-    /// deliberate act, not a fallback to the nearest ring.
     #[test]
     fn a_ray_missing_every_ring_picks_nothing() {
         let eye = WIDGET.center + Vec3::new(0.0, 0.0, 40.0);
@@ -665,8 +624,6 @@ mod tests {
             .is_none());
     }
 
-    /// The mesh is a well-formed `LineMesh`, appends rather than replaces,
-    /// and every emitted endpoint lies on the ring it belongs to.
     #[test]
     fn line_mesh_is_well_formed_and_on_the_rings() {
         let style = RingStyle {
@@ -696,14 +653,11 @@ mod tests {
                 "chord endpoint {radius} outside the ring's reach"
             );
         }
-        // Consecutive chords are joined: the run closes on itself.
         let first = mesh.segments[1].0;
         let last = mesh.segments[style.segments].1;
         assert!((Vec3::from_array(first) - Vec3::from_array(last)).length() < 1e-4);
     }
 
-    /// The pole itself has no image; the projection says so instead of
-    /// returning an infinity downstream code would silently draw.
     #[test]
     fn the_pole_has_no_image() {
         assert!(WIDGET.project(POLE).is_none());
@@ -711,8 +665,6 @@ mod tests {
         assert!(WIDGET.project(-POLE).is_some());
     }
 
-    /// Same inputs, same bits: the ring build has no accumulated or
-    /// order-dependent state.
     #[test]
     fn ring_geometry_is_bit_reproducible() {
         for plane in Plane4::ALL {

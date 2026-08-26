@@ -12,9 +12,6 @@
 //! expects. Scene texels read back linear either way, by sampler decode or by
 //! storage; egui-painted texels do not on the no-sibling arm, where egui-wgpu
 //! writes encoded values that this pass then encodes twice.
-//!
-//! Cost: one fullscreen-triangle pass per frame, single-digit microseconds
-//! at 1080p; negligible vs. the polytope SDF raymarch.
 
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
@@ -38,8 +35,7 @@ pub struct CompositeNode {
 }
 
 impl CompositeNode {
-    /// Build a composite node that writes to `target_format`. Reused for the
-    /// device's lifetime.
+    /// Reused for the device's lifetime.
     pub fn new(device: &Device, target_format: TextureFormat) -> Self {
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("loam-render::composite::shader"),
@@ -142,8 +138,7 @@ impl CompositeNode {
         self.bind_group = Some(bg);
     }
 
-    /// Read the bound scene texture and write gamma-encoded RGBA to
-    /// `target_view`. No-op before the first `set_scene_view`.
+    /// No-op before the first `set_scene_view`.
     pub fn run(&self, encoder: &mut CommandEncoder, target_view: &TextureView) {
         let Some(bind_group) = self.bind_group.as_ref() else {
             return;

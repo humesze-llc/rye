@@ -99,12 +99,6 @@ fn assemble(space_wgsl: &str, scene_wgsl: &str, user_wgsl: &str) -> String {
     format!("{space_wgsl}\n{scene_wgsl}\n{user_wgsl}")
 }
 
-/// The uniform buffer is the 96 bytes `UNIFORMS_WGSL` lays out: four 16-byte
-/// vec3 slots (the last packing `fov_y_tan`), one holding resolution/time/tick,
-/// then `params`. The offsets are the mirror's, assigned by std140 in WGSL
-/// declaration order, so reordering the Rust fields lands here too; size alone
-/// would not, and a swapped `camera_right`/`camera_up` draws every frame with
-/// the axes exchanged.
 #[test]
 fn uniforms_match_the_wgsl_mirror_layout() {
     use std::mem::offset_of;
@@ -120,9 +114,6 @@ fn uniforms_match_the_wgsl_mirror_layout() {
     assert_eq!(offset_of!(RayMarchUniforms, params), 80);
 }
 
-/// `execute_panel` is the multi-panel draw entry point on both nodes and has no
-/// caller in the workspace. It needs a `RenderDevice`, which needs a real
-/// surface, so the coercion pins the signature where a call cannot.
 #[test]
 fn panel_draw_entry_points_keep_their_signature() {
     type ExecutePanel<N> =
@@ -131,8 +122,6 @@ fn panel_draw_entry_points_keep_their_signature() {
     let _: ExecutePanel<GeodesicRayMarchNode> = GeodesicRayMarchNode::execute_panel;
 }
 
-/// Space prelude + `Scene::to_wgsl` + geodesic kernel + a shader carrying the
-/// entry points `RayMarchNode::new` names is a valid WGSL module.
 #[test]
 fn geodesic_chain_assembles_into_valid_wgsl() {
     let scene_wgsl = probe_scene().to_wgsl(&EuclideanR3);
@@ -144,8 +133,6 @@ fn geodesic_chain_assembles_into_valid_wgsl() {
     validate_wgsl(&source).expect("geodesic raymarch chain should validate");
 }
 
-/// The same chain without the kernel: `Scene::to_wgsl` alone has to satisfy a
-/// user shader that calls `loam_scene_sdf`.
 #[test]
 fn scene_chain_assembles_into_valid_wgsl() {
     let scene_wgsl = probe_scene().to_wgsl(&EuclideanR3);
@@ -223,10 +210,6 @@ async fn request_device() -> Result<(wgpu::Device, wgpu::Queue), String> {
         .map_err(|e| format!("request_device failed: {e}"))
 }
 
-/// The real chain end to end: `ShaderDb` reads the shader off disk, assembles
-/// it against the Space and the scene emit, and both nodes build a pipeline
-/// from the resulting module. Ignored by default because it needs an adapter;
-/// the `gpu_probe` suffix is what CI's software-adapter job selects on.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn both_nodes_build_from_a_real_shader_db_gpu_probe() {

@@ -725,9 +725,6 @@ mod tests {
         }
     }
 
-    /// The UI pipeline is built once against `ui_format` and draws into the
-    /// single view it is handed, so a plan whose formats disagree fails
-    /// pipeline/attachment validation at paint.
     #[test]
     fn ui_format_matches_every_view_the_ui_pass_renders_into() {
         for surface in SURFACES {
@@ -747,15 +744,6 @@ mod tests {
         }
     }
 
-    /// A multisample resolve averages samples in the encoding its views name,
-    /// so both ends of the scene resolve take the target's own sRGB format and
-    /// the gamma twin stays the UI pass's alone. Routing the scene through it
-    /// would average sRGB-encoded values, darkening every antialiased edge.
-    ///
-    /// The source end is pinned structurally: the attachment registers no
-    /// reinterpretation, so `create_view` cannot produce a gamma view of it.
-    /// The destination end is the `begin_frame` view, which requests the
-    /// texture's own format.
     #[test]
     fn scene_msaa_resolve_runs_through_the_srgb_view_pair() {
         assert_eq!(
@@ -793,10 +781,6 @@ mod tests {
         }
     }
 
-    /// The composite path resolves nothing: its consumers paint into the
-    /// single-sampled offscreen texture and attach no resolve target, which is
-    /// sound only while a non-sRGB surface can never negotiate a multisampled
-    /// attachment, whatever the caller requested.
     #[test]
     fn composite_path_never_requests_multisampling() {
         for surface in SURFACES {
@@ -812,10 +796,6 @@ mod tests {
         }
     }
 
-    /// The guard lives in `ui_target_formats`, but wgpu only ever sees the
-    /// descriptors. A descriptor that recomputes the non-sRGB twin itself
-    /// registers a view format the adapter may reject outright, which is the
-    /// failure the guard exists to prevent.
     #[test]
     fn descriptors_register_only_the_sanctioned_reinterpretation() {
         for surface in SURFACES {
@@ -838,11 +818,6 @@ mod tests {
         }
     }
 
-    /// `create_view` rejects a format absent from the target's `view_formats`,
-    /// so the UI view must request exactly what the swapchain registered: the
-    /// reinterpretation where one was sanctioned, and nothing where none was.
-    /// Both arms are asserted, since a descriptor that stopped requesting
-    /// anything would still satisfy a check that only inspects `Some`.
     #[test]
     fn ui_view_requests_match_their_target_registration_in_both_arms() {
         for surface in SURFACES {

@@ -514,16 +514,6 @@ mod tests {
         0.02 * WIDGET.scale
     }
 
-    /// Acceptance, half one: all ten handles are reachable by pointing at
-    /// them, and over a usable stretch rather than at one lucky pixel.
-    ///
-    /// Handles cross on screen, so a ray aimed at one legitimately picks
-    /// whatever is in front at that spot; what must hold is that a large
-    /// share of a handle's own extent selects it. A shaft beats a ring by
-    /// rule, so the shaft bar is every point of its arrowhead, which is the
-    /// whole of what it offers to a grab. The ring bar is half its
-    /// circumference, which is what four arrowheads outside the shell leave
-    /// untouched.
     #[test]
     fn every_ring_and_every_shaft_is_reachable_by_pointing_at_it() {
         const SAMPLES: usize = 72;
@@ -558,13 +548,6 @@ mod tests {
         }
     }
 
-    /// Acceptance, half two: a drag on a w-coupled ring produces a rotor
-    /// whose log lies in that ring's plane and nowhere else, and a drag on
-    /// the `w` shaft moves `position.w` and nothing else.
-    ///
-    /// The rotor is checked through `log` rather than against a second copy
-    /// of `exp`, so a plane wired to the wrong bivector cannot agree with
-    /// the pin by construction.
     #[test]
     fn a_w_handle_drag_stays_in_its_own_plane_or_on_its_own_axis() {
         for plane in [Plane4::Xw, Plane4::Yw, Plane4::Zw] {
@@ -624,11 +607,6 @@ mod tests {
         }
     }
 
-    /// The three pure-3D rings turn the subject inside the 3D the user is
-    /// already looking at (their rotors fix `ê₄`), and the three w-coupled
-    /// ones do not. This is the mechanism behind the discoverability split
-    /// in the module docs, and the reason the second group needs a label
-    /// while the first teaches itself.
     #[test]
     fn pure_3d_rings_fix_the_w_axis_and_w_rings_move_it() {
         for (plane, fixes_w) in [
@@ -649,10 +627,6 @@ mod tests {
         }
     }
 
-    /// The `w` shaft's direction is the one the module docs claim: unit,
-    /// equiangular to the three scene axes, further from every one of them
-    /// than any other unit vector is, and in no coordinate plane. Flipping
-    /// it to the near diagonal, or nudging it onto an axis, fails here.
     #[test]
     fn the_w_shaft_is_the_direction_furthest_from_every_scene_axis() {
         let w = Axis4::W.shaft_direction();
@@ -662,7 +636,6 @@ mod tests {
             assert!((w.dot(axis) + INV_SQRT_3).abs() < 1e-6, "not equiangular");
             assert!(w.dot(axis).abs() > 1e-3, "w lies in a coordinate plane");
         }
-        // No other unit direction pushes the worst-case alignment lower.
         let worst = |d: Vec3| {
             scene
                 .iter()
@@ -683,10 +656,6 @@ mod tests {
         }
     }
 
-    /// A shaft drag is the cursor's slide along the arrow, one world unit
-    /// per world unit: pressing at one point of the shaft and releasing at
-    /// another asks for exactly the distance between them, whatever the
-    /// viewing angle. Catches a sign flip and a dropped `1/sin` term.
     #[test]
     fn a_shaft_drag_asks_for_the_distance_the_cursor_slid_along_it() {
         for axis in Axis4::ALL {
@@ -719,14 +688,8 @@ mod tests {
         }
     }
 
-    /// A press that has not moved asks for nothing, and reversing a drag
-    /// reverses what it asks for. Runs over all ten handles, so a handle
-    /// that accumulated frame to frame instead of measuring from its anchor
-    /// fails here.
     #[test]
     fn no_handle_drifts_while_held_still_and_every_drag_is_odd_under_reversal() {
-        /// Delta a press at `from` and a release at `to` asks for, both
-        /// aimed through the real ray path.
         fn drag(handle: Handle, from: Vec3, to: Vec3) -> TransformDelta {
             let (origin, direction) = ray_to(from);
             let held = HandleDrag::press(handle, origin, direction).expect("press reaches it");
@@ -767,9 +730,6 @@ mod tests {
         }
     }
 
-    /// Grazing and backward rays are refused rather than answered with a
-    /// slide the drag cannot track. The shaft's floor is on the same
-    /// conditioning as the ring plane's, so a ray along the arrow misses it.
     #[test]
     fn grazing_and_backward_rays_miss_the_shaft() {
         let shaft = WIDGET.shaft(Axis4::X);
@@ -794,10 +754,6 @@ mod tests {
         );
     }
 
-    /// A pick is a deliberate act: a ray through the widget's empty middle,
-    /// and one past everything, reach nothing. Without this the nearest
-    /// handle would be a fallback and a click on the subject would grab a
-    /// shaft.
     #[test]
     fn a_ray_reaching_no_handle_picks_nothing() {
         let eye = WIDGET.center + Vec3::Z * 40.0;
@@ -812,10 +768,6 @@ mod tests {
             .is_none());
     }
 
-    /// Every arrowhead lies wholly outside the ring shell, and no stem
-    /// starts at the hub. The layout claim the pick bar in the reachability
-    /// test rests on: a head cannot be drawn over a ring, so giving it the
-    /// pick costs the rings only where they pass behind it on screen.
     #[test]
     fn arrowheads_clear_the_ring_shell_and_the_hub_stays_empty() {
         let shell = RING_REACH * WIDGET.scale;
@@ -837,8 +789,6 @@ mod tests {
                 "a ring reaches {reach}, past {shell}"
             );
         }
-        // Four distinct directions, no two parallel: a duplicated shaft
-        // would make one axis unreachable.
         let shafts = WIDGET.shafts();
         for (i, first) in shafts.iter().enumerate() {
             for second in &shafts[i + 1..] {
@@ -852,9 +802,6 @@ mod tests {
         }
     }
 
-    /// The mesh is a well-formed `LineMesh`, appends rather than replaces,
-    /// and carries one run per handle. Every shaft endpoint lies on its own
-    /// arrow, so a barb built from a stale frame shows up here.
     #[test]
     fn line_mesh_is_well_formed_and_on_the_handles() {
         let style = GizmoStyle {
@@ -897,8 +844,6 @@ mod tests {
         }
     }
 
-    /// Same inputs, same bits: the handle build carries no accumulated or
-    /// order-dependent state.
     #[test]
     fn handle_geometry_is_bit_reproducible() {
         assert_eq!(WIDGET.shafts(), WIDGET.shafts());
@@ -908,8 +853,6 @@ mod tests {
         }
     }
 
-    /// Labels and index order are the serialization contract an editor
-    /// writes handles out under, so they are pinned rather than assumed.
     #[test]
     fn axis_labels_and_indices_match_the_vec4_component_order() {
         assert_eq!(

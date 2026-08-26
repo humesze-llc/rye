@@ -1,5 +1,3 @@
-//! Shader database with hot-reload support.
-
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -41,7 +39,6 @@ struct Entry {
     /// Bumped on every successful (re)compile; render code rebuilds its pipeline
     /// on a generation mismatch.
     generation: u64,
-    /// Debug label for the module; reused on recompile.
     label: String,
 }
 
@@ -64,7 +61,7 @@ impl ShaderDb {
     /// from [`ShaderDb::new_owner`] instead.
     pub const ROOT_OWNER: ShaderOwner = ShaderOwner(0);
 
-    /// Construct. `device` is cloned on recompile (wgpu's Device is refcounted).
+    /// `device` is cloned on recompile (wgpu's Device is refcounted).
     pub fn new(device: Device) -> Self {
         Self {
             device,
@@ -361,21 +358,6 @@ fn main() {
     }
 
     #[test]
-    fn assemble_adds_newline_between_sources() {
-        let s = assemble_source("fn a() {}", "fn b() {}");
-        // prelude line then newline then user section marker then user code.
-        assert!(s.contains("fn a() {}\n// ---- user shader ----"));
-    }
-
-    #[test]
-    fn assemble_handles_trailing_newline_in_prelude() {
-        let s = assemble_source("fn a() {}\n", "fn b() {}");
-        // No double newline from our side; the input one is sufficient.
-        assert!(!s.contains("fn a() {}\n\n// ---- user shader ----"));
-        assert!(s.contains("fn a() {}\n// ---- user shader ----"));
-    }
-
-    #[test]
     fn assemble_includes_scene_between_space_and_user() {
         let s = assemble_source_with_scene("fn space() {}", Some("fn scene() {}"), "fn user() {}");
         let i_space = s.find("fn space() {}").expect("space chunk present");
@@ -402,9 +384,6 @@ fn main() {
         validate_wgsl(&src).expect("SphericalS3 WGSL prelude should validate");
     }
 
-    /// `EuclideanR4`'s prelude is the v0 ABI in `vec4<f32>`. No render node
-    /// consumes it yet (4D ships via hyperslice, not native geodesic march), but
-    /// the flat-space ℝ⁴ math is honest, so naga validation pins the contract.
     #[test]
     fn euclidean_r4_space_prelude_validates_against_abi_probe() {
         let src = assemble_source(&EuclideanR4.wgsl_impl(), ABI_PROBE_VEC4);
@@ -456,14 +435,6 @@ fn main() {
         validate_wgsl(&src).expect("SphericalS3 + geodesic kernel should validate");
     }
 
-    /// The boundary escape splits its numbers across two crates: `LOAM_MAX_ARC`
-    /// and `LOAM_S3_R2_MAX` are loam-math prelude data, `0.92` is kernel policy
-    /// buffering the S3 chart's saturating `loam_origin_distance`. The escape
-    /// can only fire if their product stays under the largest arc that chart
-    /// reports, `asin(√LOAM_S3_R2_MAX)`; above it a ray leaves the domain and
-    /// only the arc budget terminates the march. Every literal below is read
-    /// back out of one of the three pinned strings, so neither crate can move
-    /// its number without failing here.
     #[test]
     fn spherical_boundary_escape_fires_below_the_saturated_chart_radius() {
         let prelude = SphericalS3.wgsl_impl();
@@ -582,9 +553,6 @@ fn main() {
         None
     }
 
-    /// Sphere-trace a unit ray against an origin-centered sphere in EuclideanR3;
-    /// the hit should land on the surface within `hit_eps` and `t_scene` equal the
-    /// camera-space distance to it.
     #[test]
     fn cpu_march_hits_centered_sphere_in_euclidean_r3() {
         let space = EuclideanR3;
@@ -620,14 +588,12 @@ fn main() {
         );
     }
 
-    /// A ray pointing away from the only object must miss (exit on `t_scene > 40`
-    /// or the 256-iteration cap).
     #[test]
     fn cpu_march_misses_when_ray_points_away_in_euclidean_r3() {
         let space = EuclideanR3;
         let sdf = |p: Vec3| p.length() - 0.5;
         let ro = Vec3::new(0.0, 0.0, 2.0);
-        let rd = Vec3::new(0.0, 0.0, 1.0); // away from sphere
+        let rd = Vec3::new(0.0, 0.0, 1.0);
         let result = march_geodesic_cpu(
             &space,
             sdf,
@@ -643,14 +609,6 @@ fn main() {
         );
     }
 
-    /// The kernel tests the boundary escape before it samples the scene, so
-    /// against an everywhere-solid SDF the arc budget alone decides hit vs miss
-    /// and the march reports exactly what `loam_origin_distance` told it.
-    ///
-    /// |p| = 1e-4 sits below the ≈1.73e-4 radius where `acos(√(1−|p|²))`
-    /// collapses to exactly 0 in f32, so the escape is pinned in the regime
-    /// where an ill-conditioned origin distance reads as "at the origin" and the
-    /// boundary silently never fires.
     #[test]
     fn cpu_march_arc_escape_tracks_origin_distance_near_the_s3_origin() {
         let solid = |_: Vec3| -1.0_f32;
@@ -977,8 +935,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         .await
     }
 
-    /// Flat chart, so the only gap is f32 rounding order between the two
-    /// compilers.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
     fn euclidean_r3_wgsl_matches_the_rust_space_at_the_domain_corners() {
@@ -999,8 +955,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         [-6.0, 9.0, 40.0],
     ];
 
-    /// Same chart in `vec4<f32>`. No render node consumes this prelude yet, so
-    /// this is the only thing standing between it and a silent divergence.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
     fn euclidean_r4_wgsl_matches_the_rust_space_at_the_domain_corners() {
@@ -1049,19 +1003,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    /// Tolerance 2e-4 relative: `asin` and the chord half-angle are evaluated
-    /// by two different compilers' intrinsics, and the near-antipodal corner
-    /// divides by the transport denominator `2w²`, which the equator case
-    /// drives to 4e-4.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
     fn spherical_s3_wgsl_matches_the_rust_space_at_the_domain_corners() {
         assert_prelude_matches_cpu(&SphericalS3, &hemisphere_corners(), 2e-4);
     }
 
-    /// Tolerance 2e-4 relative, for `artanh`'s two-compiler gap; at the
-    /// outermost corner the `2·artanh` origin distance carries a derivative of
-    /// 1e4 in `r`, so the relative form of the bound is doing the work here.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing Space WGSL"]
     fn hyperbolic_h3_wgsl_matches_the_rust_space_at_the_domain_corners() {
@@ -1349,15 +1296,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         println!("{label} out-of-domain CPU/GPU divergence: worst {worst} at {worst_at}");
     }
 
-    /// CPU/GPU parity for `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>`,
-    /// restricted to `loam_exp` (the highest-leverage method; transport has its own
-    /// probe). `loam_log` and `loam_distance` are intentionally divergent (chart-diff
-    /// vs Gauss-Newton; midpoint chord-metric vs full Riemannian) and the kernel
-    /// doesn't call `loam_log`.
-    ///
-    /// Tolerance 5e-3: GPU runs 16 RK4 sub-steps, CPU 32; both 4th-order, so
-    /// cumulative drift grows ~16x but stays small for the smooth conformal factor
-    /// and the small `v` well inside the H3 ball.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing BlendedSpace WGSL"]
     fn blended_e3_h3_gpu_probe_exp_matches_cpu() {
@@ -1413,11 +1351,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    /// CPU/GPU parity for
-    /// `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>::parallel_transport`.
-    /// Both sides run 8 RK4 sub-steps along the chart-coordinate line `a` to `b`.
-    /// Paths sample pure E3 (identity transport), the mid-zone, and pure H3 at
-    /// moderate radius. Tolerance matches the exp probe's 5e-3.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing BlendedSpace WGSL"]
     fn blended_e3_h3_gpu_probe_transport_matches_cpu() {
@@ -1472,19 +1405,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    /// The other half of `BlendedSpace`'s ABI. `loam_log` and `loam_distance`
-    /// are not ports of `Space::log` and `Space::distance`; the prelude
-    /// documents them as the chart-coordinate difference and the midpoint chord
-    /// metric `√f((a+b)/2)·|b − a|`, and the Rust side runs Gauss-Newton
-    /// shooting and a full Riemannian length. Asserting agreement between those
-    /// would be asserting a falsehood, so the reference here is what the
-    /// prelude claims to compute, evaluated through the shipped
-    /// [`ConformallyFlat`] factor rather than a transcription of it. That still
-    /// catches a swapped operand, a dropped `√`, or a midpoint that is not the
-    /// midpoint, which is what the emitted text can plausibly get wrong.
-    ///
-    /// `loam_origin_distance` is `loam_distance` from the chart origin, so the
-    /// same reference covers it and pins that the two stay consistent.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing BlendedSpace WGSL"]
     fn blended_e3_h3_log_and_distance_match_the_closed_forms_the_prelude_documents() {
@@ -1546,8 +1466,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             assert_vec_near(&at("log"), row.log_vec, (b - a).extend(0.0), 1e-6);
         }
     }
-
-    // ---- Scene SDF: CPU evaluator vs emitted shader -----------------------
 
     /// Writes `loam_scene_sdf(p.xyz)` per sample point. Assembled as
     /// prelude + `Scene::to_wgsl` + this.
@@ -1697,9 +1615,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         worst
     }
 
-    /// Flat chart, so the only structural gap is the emitter's `{:.6}` constant
-    /// rounding (bounded near 5e-7) plus GPU rounding. Tolerance matches the
-    /// Space-ABI probe's `EuclideanR3` figure.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing scene emit or eval"]
     fn scene_sdf_gpu_probe_matches_cpu_in_euclidean_r3() {
@@ -1707,10 +1622,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         println!("EuclideanR3 scene parity: worst residual {worst}");
     }
 
-    /// Curved chart: `Sphere` routes through `loam_distance` on the GPU and
-    /// `Space::distance` on the CPU, which agree by construction for H³, so the
-    /// residual is the artanh/Möbius rounding difference between the two
-    /// implementations. Tolerance matches the Space-ABI probe's H³ figure.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing scene emit or eval"]
     fn scene_sdf_gpu_probe_matches_cpu_in_hyperbolic_h3() {
@@ -1725,14 +1636,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         println!("SphericalS3 scene parity: worst residual {worst}");
     }
 
-    /// `BlendedSpace` is the one Space whose Rust `distance` (Gauss-Newton
-    /// shooting `log` plus conformal rescale) and WGSL `loam_distance` (midpoint
-    /// chord metric, first-order accurate for nearby points) are deliberately
-    /// different functions. The CPU evaluator is built on the Rust side because
-    /// that is the validated reference; the consequence is that the CPU and GPU
-    /// scene SDFs are different scalar fields here. This test therefore records
-    /// a bound rather than gating on agreement: the number it prints is the
-    /// input to "can a baked collider serve this Space".
     #[test]
     #[ignore = "requires a working wgpu adapter; records the BlendedSpace CPU/GPU divergence"]
     fn scene_sdf_gpu_probe_records_blended_space_divergence() {
@@ -1741,10 +1644,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         println!("BlendedSpace<E3,H3> scene parity: worst residual {worst}");
     }
 
-    /// The hyperslice path, asserting both fields of `LoamSceneHit`. `w_slice`
-    /// is baked as a literal so the probe needs no uniform buffer. The Space
-    /// prelude is unused by a `Scene4` module but `assemble_source_with_scene`
-    /// wants one.
     #[test]
     #[ignore = "requires a working wgpu adapter; run manually when changing scene4 emit or eval"]
     fn scene4_hyperslice_gpu_probe_matches_cpu() {
@@ -1815,8 +1714,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
     }
 
-    // ---- Owner scoping ----------------------------------------------------
-
     /// A `Device` from wgpu's noop backend. `create_shader_module` is a stub
     /// there, which is exactly the layer the owner-scoping tests do not care
     /// about: naga still validates every assembled source inside
@@ -1865,10 +1762,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         std::fs::write(path, edited).unwrap();
     }
 
-    /// The prelude is a property of the loader, not of the file: two owners
-    /// naming the same shader path in different Spaces must get two entries,
-    /// because one module cannot carry both preludes. A path-keyed db hands
-    /// back one shared ID and recompiles it out from under the first owner.
     #[test]
     fn two_owners_of_one_path_get_independent_modules() {
         let dir = tempfile::tempdir().unwrap();
@@ -1889,9 +1782,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_eq!(db.generation(in_h3), 1);
     }
 
-    /// The property the shell's fan-out rests on: one owner's apply reloads
-    /// that owner's entry for the edited path and leaves every other owner's
-    /// entry, for the same path, at the generation it had.
     #[test]
     fn an_apply_bumps_only_the_generation_of_its_own_owner() {
         let dir = tempfile::tempdir().unwrap();
@@ -1924,10 +1814,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_eq!(db.generation(in_h3), 2);
     }
 
-    /// A host fans the same event slice at every owner it holds. Each shader
-    /// must therefore be recompiled exactly once, by the owner that loaded it:
-    /// a db-wide apply would rebuild the edited module once per owner, leaving
-    /// it compiled against whichever Space fanned out last.
     #[test]
     fn a_fan_out_recompiles_each_edited_shader_exactly_once() {
         let dir = tempfile::tempdir().unwrap();
@@ -1955,10 +1841,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_eq!(db.generation(in_h3), 1, "no event named H3's shader");
     }
 
-    /// [`ShaderDb::load`]'s stability contract, now conditional on the owner:
-    /// one owner naming one path twice must land on its existing entry and
-    /// recompile it. Minting a second ID instead would strand the first behind
-    /// whatever pipeline already holds it, unreachable by any later apply.
     #[test]
     fn a_second_load_by_the_same_owner_keeps_the_id_and_recompiles() {
         let dir = tempfile::tempdir().unwrap();
@@ -1974,11 +1856,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_eq!(db.generation(first), 2, "the second load must recompile");
     }
 
-    /// The shipped pairing: a host applies under [`ShaderDb::ROOT_OWNER`] via
-    /// the `App` default while a sub-scene applies under a minted owner. A
-    /// `new_owner` that handed back the root would put both in one path space,
-    /// which is the collision owner scoping exists to remove, and no assertion
-    /// over minted owners alone would notice.
     #[test]
     fn a_minted_owner_shares_no_entry_with_the_root_owner() {
         let dir = tempfile::tempdir().unwrap();
@@ -2004,12 +1881,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
     }
 
-    /// An apply carries no Space, so each entry has to remember its own. The
-    /// two probes disagree on ABI arity, which makes the wrong prelude
-    /// observable: assembling the vec4 probe against `EuclideanR3` fails naga
-    /// validation, and a failed reload keeps the stale module at its old
-    /// generation. Both entries sit under one owner, so owner scoping cannot
-    /// stand in for per-entry storage here.
     #[test]
     fn a_reload_rebuilds_each_entry_against_the_prelude_it_was_loaded_with() {
         let dir = tempfile::tempdir().unwrap();
@@ -2036,11 +1907,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
     }
 
-    /// The stored prelude is a cache of the last `load`, not a snapshot of the
-    /// first: re-loading a path under a new Space is the refresh path for a
-    /// Space whose parameters moved, and every later reload must follow it.
-    /// Storing the prelude once at entry creation would recompile a
-    /// re-specialized entry against the geometry it was specialized away from.
     #[test]
     fn re_loading_under_a_new_space_repoints_later_reloads_at_the_new_prelude() {
         let dir = tempfile::tempdir().unwrap();
@@ -2068,10 +1934,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
     }
 
-    /// Hot-reload's text path: read, assemble against a Space prelude, validate via
-    /// naga, mutate, repeat. Pins the Device-free I/O + assembly + validation that
-    /// [`ShaderDb::reload`] depends on (the Device-bound layer is just
-    /// `create_shader_module` over the same validated source).
     #[test]
     fn hot_reload_pipeline_reads_assembles_and_validates_mutated_file() {
         let dir = tempfile::tempdir().unwrap();

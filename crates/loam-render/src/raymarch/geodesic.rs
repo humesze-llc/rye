@@ -1,5 +1,3 @@
-//! [`GeodesicRayMarchNode`]: semantic wrapper for curved-space ray march.
-
 use anyhow::Result;
 use wgpu::*;
 

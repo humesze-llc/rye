@@ -1,29 +1,3 @@
-//! Point rasterizer pipeline. Antialiased screen-space discs composed on top of an existing
-//! color attachment. Each input point is quad-expanded in the vertex shader into a billboarded
-//! square; the fragment shader smoothsteps coverage from disc center to the AA edge.
-//!
-//! Lives next to [`crate::line_raster::LineRasterNode`] and [`crate::triangle_raster`] and is
-//! constructed standalone in the same way.
-//!
-//! ## Pipeline shape
-//!
-//! - **Vertex buffer**: 4 sprite-corner indices (`0u32`, `1`, `2`, `3`). Static, shared across
-//!   all points.
-//! - **Index buffer**: `[0u32, 1, 2, 2, 1, 3]`. Static, two triangles per quad.
-//! - **Instance buffer**: per-point `PointInstance` data (position, color, radius in pixels).
-//!   `PointInstance` is module-private; consumers go through [`PointRasterNode::upload`]
-//!   which converts a [`loam_shape::PointMesh`] into instance records internally.
-//! - **Uniform buffer**: [`PointRasterUniforms`] (view-projection matrix + viewport size). Same
-//!   shape as [`crate::line_raster::LineRasterUniforms`]; kept as a distinct type so the two
-//!   pipelines can diverge later without binary churn.
-//!
-//! ## Depth
-//!
-//! Same [`crate::DepthMode`] options as the other rasterizers (`Off`, `ReadWrite`, `ReadOnly`).
-//! `LessEqual` is the depth-compare convention, matching `LineRasterNode`: points draw on top
-//! of co-located polygons (e.g., a vertex marker sitting on a triangle's corner) rather than
-//! being z-fought into invisibility.
-
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
 use loam_math::{Projection, RasterizableSpace};
@@ -41,18 +15,12 @@ use wgpu::{
     VertexState, VertexStepMode,
 };
 
-/// Embedded WGSL source. Naga-validated in tests to catch ABI drift between the Rust-side
-/// vertex layout and the shader's `@location` declarations.
 const POINT_RASTER_WGSL: &str = include_str!("point_raster.wgsl");
 
-/// Camera uniform handed to the point shader. Identical layout to
-/// [`crate::line_raster::LineRasterUniforms`] (both pipelines need pixel-to-NDC conversion);
-/// declared separately so a future divergence in either pipeline's uniform shape doesn't break
-/// the other.
+/// Camera uniform handed to the point shader.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct PointRasterUniforms {
-    /// World-to-clip transform. Bit-identical to whatever the rest of the frame uses.
     pub view_projection: [[f32; 4]; 4],
     /// Render target size in pixels. Used by the vertex shader to convert pixel radii into NDC
     /// offsets.
@@ -71,16 +39,13 @@ impl Default for PointRasterUniforms {
     }
 }
 
-/// Per-instance point data uploaded to the GPU. One [`PointInstance`] per visible point; the
-/// vertex shader expands each into a screen-space quad. Layout matches the `@location(1..=3)`
-/// attribute slots in `point_raster.wgsl`.
+/// Layout matches the `@location(1..=3)` attribute slots in `point_raster.wgsl`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
 struct PointInstance {
-    /// World-space (post-projection-to-R³) position. The disc center is rendered here.
+    /// World-space (post-projection-to-R³) position.
     pos: [f32; 3],
-    /// Screen-space pixel radius. AA falloff adds ~1 px beyond this; tuning the radius tunes
-    /// the visible disc size in pixels.
+    /// Screen-space pixel radius. AA falloff adds ~1 px beyond this.
     radius_px: f32,
     /// RGBA linear color, alpha-multiplied with the AA disc coverage.
     color: [f32; 4],
@@ -94,12 +59,8 @@ pub struct PointRasterNode {
     uniform_buf: Buffer,
     bind_group: BindGroup,
 
-    /// Static corner-index buffer (always `[0u32, 1, 2, 3]`). Per-vertex input to the shader.
     corner_buf: Buffer,
-    /// Static index buffer (`[0u32, 1, 2, 2, 1, 3]`, two triangles per quad).
     index_buf: Buffer,
-    /// Per-instance buffer (one [`PointInstance`] per point). Grows on demand via
-    /// [`Self::upload`].
     instance_buf: Buffer,
     /// Number of points currently uploaded; `0` means [`Self::record`] is a no-op.
     instance_count: u32,
@@ -112,8 +73,6 @@ pub struct PointRasterNode {
 }
 
 impl PointRasterNode {
-    /// Construct the pipeline.
-    ///
     /// - `surface_format` must match the color attachment at draw time.
     /// - `depth`: see [`crate::DepthMode`]. Determines whether the pipeline
     ///   reads depth, reads + writes depth, or skips it entirely. `LessEqual`
@@ -167,7 +126,6 @@ impl PointRasterNode {
             push_constant_ranges: &[],
         });
 
-        // Per-vertex layout: one u32 per corner-index vertex.
         let corner_attrs = [VertexAttribute {
             format: VertexFormat::Uint32,
             offset: 0,
@@ -178,7 +136,6 @@ impl PointRasterNode {
             step_mode: VertexStepMode::Vertex,
             attributes: &corner_attrs,
         };
-        // Per-instance layout: position (offset 0), radius_px (offset 12), color (offset 16).
         let instance_attrs = [
             VertexAttribute {
                 format: VertexFormat::Float32x3,
@@ -435,9 +392,6 @@ impl PointRasterNode {
 mod tests {
     use super::*;
 
-    /// Embedded WGSL parses and validates against naga. Mirrors the line_raster validation
-    /// test; catches drift between the Rust-side instance layout and the shader's `@location`
-    /// declarations.
     #[test]
     fn point_raster_wgsl_validates() {
         let module = naga::front::wgsl::parse_str(POINT_RASTER_WGSL)
@@ -449,16 +403,11 @@ mod tests {
             .expect("point_raster WGSL must validate");
     }
 
-    /// `PointRasterUniforms` is exactly 80 bytes (one mat4x4 + vec2 + 8 bytes pad), 16-byte-
-    /// aligned. Drift here means the GPU reads the wrong bytes for the view-projection
-    /// matrix or viewport size.
     #[test]
     fn uniforms_size_matches_wgsl() {
         assert_eq!(std::mem::size_of::<PointRasterUniforms>(), 80);
     }
 
-    /// `PointInstance` is 32 bytes (12 position + 4 radius + 16 color). Layout offsets in the
-    /// per-instance vertex layout descriptor must match this struct exactly.
     #[test]
     fn instance_size_matches_layout() {
         assert_eq!(std::mem::size_of::<PointInstance>(), 32);

@@ -30,8 +30,6 @@ fn raster_draw_entry_points_record_into_the_callers_encoder() {
     let _: RecordRaster<TriangleRasterNode> = TriangleRasterNode::record;
 }
 
-/// The SDF pass is the one the playground draws every frame, and it takes the
-/// viewport by value rather than by option: it always covers a rect.
 #[test]
 fn hyperslice_viewport_draw_records_into_the_callers_encoder() {
     type RecordInViewport = fn(

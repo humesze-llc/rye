@@ -3,16 +3,6 @@
 //! rotation + Perspective4D projection runs on the GPU. Eliminating the
 //! per-frame instance upload also halves wasm JS-interop pressure (each
 //! `queue.write_buffer` spawns short-lived JS proxies).
-//!
-//! Contrast [`crate::LineRasterNode`], the R³ dynamic-upload variant that
-//! re-uploads segments every frame; right for already-projected meshes that
-//! change frame-to-frame, wrong for rotating a fixed polytope.
-//!
-//! Per-frame: upload the mesh ONCE via `Self::upload_mesh`, then each frame
-//! `Self::set_transform` writes a single 144-byte uniform (rotor matrix +
-//! view*proj + viewport + focal_distance) and `Self::record` draws it. Pipeline
-//! shape matches [`crate::LineRasterNode`] (quad expansion + AA); the vertex
-//! stage adds a rotor matrix + Perspective4D projection ahead of view*proj.
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
@@ -90,8 +80,6 @@ pub struct LineRasterStaticR4Node {
 }
 
 impl LineRasterStaticR4Node {
-    /// Construct the pipeline.
-    ///
     /// `surface_format`, `depth`, and `sample_count` mirror
     /// [`crate::LineRasterNode::new`]; the pipeline-state knobs that have to
     /// match the attachments at draw time. See those docs for the contract.
@@ -404,7 +392,7 @@ impl LineRasterStaticR4Node {
         rp.draw_indexed(0..6, 0, 0..self.instance_count);
     }
 
-    /// Number of segments currently uploaded. Useful for tests + debug logs.
+    /// Number of segments currently uploaded.
     pub fn instance_count(&self) -> u32 {
         self.instance_count
     }
@@ -423,15 +411,11 @@ mod tests {
 
     #[test]
     fn instance_size_matches_r3_node() {
-        // Same 80 bytes as the R³ node's `LineInstance` so a future unified
-        // pipeline could share the layout.
         assert_eq!(std::mem::size_of::<LineInstance4D>(), 80);
     }
 
     #[test]
     fn shader_wgsl_validates() {
-        // Catches WGSL syntax + naga validation errors at test time rather than
-        // as a black canvas at runtime pipeline creation.
         let module = naga::front::wgsl::parse_str(SHADER_WGSL)
             .unwrap_or_else(|e| panic!("line_raster_static_r4 WGSL parse failed:\n{e}"));
         let flags = naga::valid::ValidationFlags::all();

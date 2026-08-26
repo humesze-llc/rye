@@ -88,8 +88,6 @@ fn probe_source() -> String {
     )
 }
 
-/// The prelude is a shader ABI: the marcher calls these names, and a rename is
-/// a black screen. Runs in the default `cargo test`, no adapter needed.
 #[test]
 fn the_emitted_prelude_validates_and_exports_the_names_a_marcher_calls() {
     let source = probe_source();
@@ -105,16 +103,6 @@ fn the_emitted_prelude_validates_and_exports_the_names_a_marcher_calls() {
     }
 }
 
-/// GPU and CPU must agree about the quotient, not merely each be
-/// self-consistent.
-///
-/// Two bounds, because the two regimes differ in kind. A shader compiler may
-/// contract the multiply-adds forming the rotation, which costs an ulp of a
-/// coordinate; away from a wedge wall an ulp is an ulp. On a wall it decides
-/// which of two equidistant representatives comes back, and the two are lifts
-/// of the same point, which the quotient calls equal. Bounding only the
-/// quotient distance would pass a prelude that had drifted a whole wedge
-/// everywhere, so the lift is bounded too, and only outside the wall band.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn the_emitted_prelude_wraps_and_measures_as_the_rust_impl_does_gpu_probe() {

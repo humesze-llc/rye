@@ -92,9 +92,6 @@ fn assemble_probe_source() -> String {
     )
 }
 
-/// The kernel is generic over the Space prelude, so a quotient prelude has to
-/// satisfy it with no kernel edit at all. This is the headless half of that
-/// claim and runs in the default `cargo test`.
 #[test]
 fn the_unmodified_geodesic_kernel_accepts_the_quotient_prelude() {
     let source = assemble_probe_source();
@@ -105,8 +102,6 @@ fn the_unmodified_geodesic_kernel_accepts_the_quotient_prelude() {
     assert!(source.contains("fn loam_torus_wrap("));
     assert!(source.contains("fn loam_scene_sdf("));
 }
-
-// ---- GPU probes ------------------------------------------------------------
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -268,19 +263,6 @@ fn wrap_probe(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-/// The prelude is not a second opinion about the geometry: it is the same
-/// arithmetic, expression for expression, including the lattice-index
-/// correction that keeps a representative from landing outside the domain. If
-/// the two halves drift, the simulation walks through one world and the shader
-/// draws another, and nothing in either half fails on its own.
-///
-/// Two bounds, because the two regimes differ in kind. The shader compiler may
-/// contract or reassociate the multiply-add that forms the residual, which
-/// costs an ulp of the cell scale. Away from the faces an ulp is an ulp. On a
-/// face it decides the `>=` that picks the representative, so the prelude can
-/// come back one cell over: a different lift of the same point, which the
-/// quotient calls equal. Bounding only the quotient distance would pass a
-/// prelude that had drifted a whole cell everywhere, so both are asserted.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn the_emitted_prelude_wraps_to_the_same_quotient_point_as_the_rust_impl_gpu_probe() {
@@ -358,10 +340,6 @@ fn the_emitted_prelude_wraps_to_the_same_quotient_point_as_the_rust_impl_gpu_pro
     );
 }
 
-/// Acceptance: the geodesic and the ray continuation agree. The marcher takes
-/// hundreds of wrapped steps and never holds a covering coordinate; the
-/// straight line in the cover is a different computation entirely. They land on
-/// the same point of the quotient.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn marched_position_agrees_with_the_covering_ray_gpu_probe() {
@@ -390,11 +368,6 @@ fn marched_position_agrees_with_the_covering_ray_gpu_probe() {
     assert!(worst < 1e-4, "worst covering-ray disagreement was {worst}");
 }
 
-/// Acceptance: walking through a face returns you through the opposite one.
-/// Stated so it cannot be satisfied by a coincidence at one face: translating
-/// every ray origin by a full lattice vector along each axis in turn must
-/// leave every hit distance in the fan unchanged, which is exactly the
-/// statement that the deck group acts trivially on what you see.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn translating_by_a_lattice_vector_leaves_the_view_unchanged_gpu_probe() {

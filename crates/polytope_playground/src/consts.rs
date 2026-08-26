@@ -1,5 +1,3 @@
-//! Demo-wide layout, sizing, and animation constants.
-
 /// Max shapes per row via the runtime "Add" button; CLI `--shapes`
 /// can still spawn up to `MAX_BODIES` at startup.
 pub(crate) const MAX_ROW_LEN: usize = 8;

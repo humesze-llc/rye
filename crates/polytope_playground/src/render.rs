@@ -1,6 +1,3 @@
-//! GPU rendering for `Demo`: the wireframe overlay, point cloud, and the
-//! rasterized section-face passes.
-//!
 //! Each pass splits in two: a CPU mesh build over the frame's
 //! [`state::RowFrame`], written as a free function so it runs (and is pinned)
 //! without a device, and the upload + record half that needs one.
@@ -51,8 +48,6 @@ impl Demo {
             for (col_idx, col_vp) in col_vps.into_iter().enumerate() {
                 let row_vps = col_vp.split_vertical(rows as u32);
                 for (row_idx, cell_vp) in row_vps.into_iter().enumerate() {
-                    // (w_offset, t_offset) for this cell, by which axis carries
-                    // which dimension.
                     let (w_idx, w_n, t_idx, t_n) = if w_on_cols {
                         (col_idx, cols, row_idx, rows)
                     } else {
@@ -202,8 +197,6 @@ impl Demo {
         });
     }
 
-    /// Build the point sprites mesh ([`build_points_mesh`]), upload it, and
-    /// record the point-disc raster pass.
     fn record_points(
         &mut self,
         rd: &RenderDevice,
@@ -426,9 +419,6 @@ impl Demo {
         (self.camera.position - self.orbit.target).length()
     }
 
-    /// Build the section-perimeter and parent-wireframe overlay meshes
-    /// ([`build_wireframe_meshes`]), upload them, and record the raster passes
-    /// over the SDF render.
     fn record_wireframe_overlay(
         &mut self,
         rd: &RenderDevice,
@@ -482,7 +472,6 @@ impl Demo {
         self.section_cap_scratch = section_scratch;
         self.body_perimeter_scratch = body_perimeter;
 
-        // Upload (no-op when a mesh is empty).
         self.section_edges.upload::<EuclideanR3, 3>(
             &rd.device,
             &rd.queue,
@@ -1170,10 +1159,6 @@ pub(crate) fn build_wireframe_meshes(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Physics debug overlay
-// ---------------------------------------------------------------------------
-
 /// Which of the solver's quantities the debug overlay draws. Four independent
 /// switches rather than one master: the overlay exists to isolate a suspect
 /// quantity, and a contact cloud drawn over the normals hides exactly the
@@ -1439,11 +1424,6 @@ mod tests {
     use loam_render::raymarch::RaymarchShape;
     use loam_shape::polytope::Polytope4;
 
-    /// The shared depth attachment is ensured and cleared on exactly the frames
-    /// a pass reads it. Skipping a frame that reads it leaves the previous
-    /// frame's depth standing and occludes caps against stale geometry;
-    /// clearing a frame that does not read it is the render pass this predicate
-    /// exists to elide.
     #[test]
     fn shared_depth_is_cleared_exactly_when_a_pass_reads_it() {
         for wireframe_enabled in [false, true] {
@@ -1455,13 +1435,6 @@ mod tests {
         }
     }
 
-    /// Two visible section layers merge into one pass exactly when they draw
-    /// through the same node. That is the whole guard against uploading one
-    /// `TriangleRasterNode` twice in a frame: the frame's queue writes all land
-    /// before its single command buffer, so a second upload would feed BOTH
-    /// passes and the honest cross-section would render as the projected cap.
-    /// Merging when the nodes differ is the opposite defect, silently moving a
-    /// translucent layer onto the depth-writing pipeline.
     #[test]
     fn section_layers_merge_exactly_when_they_share_a_node() {
         // Straddles the opaque threshold in both directions, plus the invisible
@@ -1487,10 +1460,6 @@ mod tests {
         }
     }
 
-    /// The merge is a concatenation: every triangle of both layers survives,
-    /// the appended indices address the appended vertices, and the destination's
-    /// triangles still come first (draw order is what layers the projected cap
-    /// over the honest cross-section).
     #[test]
     fn appending_a_section_mesh_rebases_its_indices_and_keeps_draw_order() {
         let mesh = |offset: f32, tris: &[[u32; 3]], verts: usize| loam_shape::TriangleMesh::<3> {
@@ -1513,9 +1482,6 @@ mod tests {
         }
     }
 
-    /// The merged mesh a frame with both layers opaque uploads carries exactly
-    /// the triangles the two separate passes carried. A merge that dropped the
-    /// cap, or double-counted the cross-section, shows here as a count.
     #[test]
     fn a_merged_opaque_frame_draws_both_layers_triangles() {
         let physics = PlaygroundPhysics::new(1, BODY_SIZE);
@@ -1926,10 +1892,6 @@ mod tests {
         }
     }
 
-    /// The wireframe overlay wraps the body PHYSICS put there: a thrown,
-    /// tumbling slot's edges and perimeter are the at-rest body under the
-    /// composed rotor, carried to the live centre. Unwiring the pass back to
-    /// the authored spin over the static layout loses both halves.
     #[test]
     fn wireframe_meshes_follow_the_physics_pose() {
         let pair = translated_pair();
@@ -1963,9 +1925,6 @@ mod tests {
         );
     }
 
-    /// Point sprites sit on the body PHYSICS put there, vertices and cell
-    /// centres alike (the centres take a second, inset body frame, so they can
-    /// be unwired independently of the vertices).
     #[test]
     fn point_sprites_follow_the_physics_pose() {
         let pair = translated_pair();
@@ -1989,8 +1948,6 @@ mod tests {
         );
     }
 
-    /// The section caps are cut from the body PHYSICS put there, on both
-    /// layers: same triangles, carried to the live centre.
     #[test]
     fn section_caps_follow_the_physics_pose() {
         let pair = translated_pair();
@@ -2050,10 +2007,6 @@ mod tests {
         );
     }
 
-    /// Every slot renders at its OWN body. A two-slot row of one shape emits
-    /// the same geometry twice, separated by the layout spacing; a builder that
-    /// read slot 0's pose for the whole row collapses the two halves onto each
-    /// other.
     #[test]
     fn each_slot_renders_at_its_own_body() {
         let physics = PlaygroundPhysics::new(2, BODY_SIZE);
@@ -2078,11 +2031,6 @@ mod tests {
         );
     }
 
-    /// A body physics threw off the slice is cut where it now IS. The same body
-    /// lifted to `w = lift` and cut at `w_slice + lift` renders exactly what the
-    /// unmoved body cut at `w_slice` does: `BodyPose::body_local`'s `w` term and
-    /// the frame's own `w_slice` are the two halves of that, and dropping
-    /// either one breaks the equality.
     #[test]
     fn a_body_lifted_off_the_slice_is_cut_where_physics_put_it() {
         let (lifted, lift) = thrown_along_w();
@@ -2118,13 +2066,6 @@ mod tests {
         );
     }
 
-    /// The S³ arcs bow onto the circumsphere of the body PHYSICS put there,
-    /// which a hull contact moves off the `w = 0` slice
-    /// (`a_hull_collision_pushes_the_struck_body_off_the_w_zero_slice`).
-    /// Drop-w hides a lift along `+w`, so the lifted body's arcs are the at-rest
-    /// body's arcs; an arc taken about the body FRAME's origin instead bows onto
-    /// a sphere of radius `sqrt(BODY_SIZE² + lift²)` and drags every interior
-    /// sample off the body by orders more than the translate tolerance.
     #[test]
     fn arcs_bow_onto_the_circumsphere_of_a_body_off_the_slice() {
         let (lifted, lift) = thrown_along_w();
@@ -2167,11 +2108,6 @@ mod tests {
         );
     }
 
-    /// The honest cross-section ignores the active projection; the projected
-    /// cap follows it. Under Perspective4D at a slice off `w = 0` the cap is
-    /// the cross-section scaled about the body centre by
-    /// `focal / (focal - w_slice)`, so swapping the two layers' projections
-    /// swaps which mesh carries the scale.
     #[test]
     fn the_honest_layer_ignores_the_projection_the_cap_scales_by_it() {
         const FOCAL: f32 = 2.0;
@@ -2207,15 +2143,6 @@ mod tests {
         assert_scaled_about(cap, honest, centre, scale, "section perimeter");
     }
 
-    /// The Hyperslice cull keeps exactly the edges some containing cell carries
-    /// across the slab, in edge order. Inverting the predicate keeps the
-    /// complement: a different mesh, not a thinner one.
-    ///
-    /// The spin must tilt w into R³ (`Zw`, not the w-preserving `Xz` the other
-    /// fixtures use): under a w-preserving spin drop-w sends the 16-cell's
-    /// `+e_w` and `-e_w` to the same R³ point, the keep set and its complement
-    /// are congruent, and an inverted predicate emits a mesh this pin cannot
-    /// tell from the right one. The `assert_ne` below holds the fixture to it.
     #[test]
     fn hyperslice_keeps_the_edges_whose_cells_cross_the_slab() {
         const THICKNESS: f32 = 0.2;
@@ -2291,10 +2218,6 @@ mod tests {
         );
     }
 
-    /// `space_blend = 1` renders an edge as the S³ great-circle arc rather than
-    /// the chord: one sub-segment per tessellation sample, and for an edge lying
-    /// in `w = 0` (where drop-w loses nothing) every sample sits on the body's
-    /// circumsphere instead of cutting across it.
     #[test]
     fn space_blend_one_bows_edges_onto_the_circumsphere() {
         let physics = PlaygroundPhysics::new(1, BODY_SIZE);
@@ -2355,11 +2278,6 @@ mod tests {
         }
     }
 
-    /// The near-pole clip radius is a fraction of the LIVE camera distance, so
-    /// pulling the camera in clips the 16-cell harder: no sample survives past
-    /// the radius that distance implies, and the far view keeps samples the
-    /// near view drops. A builder reading a fixed distance clips both views
-    /// identically.
     #[test]
     fn a_nearer_camera_clips_the_16cell_harder() {
         const NEAR: f32 = 4.0;
@@ -2491,15 +2409,6 @@ mod tests {
     #[global_allocator]
     static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
 
-    /// Steady state costs the allocator nothing: with both line meshes and
-    /// every scratch buffer owned by the caller, a second build over the same
-    /// row reaches the allocator zero times. Returning a fresh `LineMesh`, or
-    /// hoisting a `Vec::new` back inside either builder, is tens of thousands
-    /// of pushed elements under this fixture and shows up immediately.
-    ///
-    /// Perimeters are off here so a failure names which half regressed;
-    /// [`the_perimeter_path_reaches_the_allocator_zero_times`] pins the section
-    /// path with both layers on.
     #[test]
     fn a_warm_overlay_frame_reaches_the_allocator_zero_times() {
         // Stereographic at blend 1 is the expensive path: every edge
@@ -2542,10 +2451,6 @@ mod tests {
         );
     }
 
-    /// With both section layers on, a warm frame still reaches the allocator
-    /// zero times: the perimeter comes back through
-    /// `polytope_section_perimeter_append` into caller-owned buffers, so
-    /// nothing on this path owns a mesh or a per-cell `Vec` of its own.
     #[test]
     fn the_perimeter_path_reaches_the_allocator_zero_times() {
         let physics = PlaygroundPhysics::new(1, BODY_SIZE);
@@ -2579,10 +2484,6 @@ mod tests {
         );
     }
 
-    /// The cell-centre memo is keyed by [`Polytope4`]. Keyed by anything
-    /// constant instead, slot 1 draws slot 0's cell table: wrong count, wrong
-    /// positions, no panic, because the sprite buffers stay length-consistent
-    /// with each other. Only a row of two different shapes can see it.
     #[test]
     fn cell_centre_sprites_come_from_each_slots_own_polytope() {
         let physics = PlaygroundPhysics::new(2, BODY_SIZE);
@@ -2615,10 +2516,6 @@ mod tests {
         );
     }
 
-    /// The fill half of the section layers, which `CROSS_SECTION_DEFAULT`
-    /// ships on. Separate from the perimeter pin because the two run through
-    /// different `loam_shape` entry points and each owned its own working set
-    /// until the scratch was threaded through both.
     #[test]
     fn the_fill_path_reaches_the_allocator_zero_times() {
         let physics = PlaygroundPhysics::new(1, BODY_SIZE);
@@ -2675,10 +2572,6 @@ mod tests {
             );
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Physics debug overlay
-    // -----------------------------------------------------------------------
 
     /// Any positive step fills the manifolds from the positions the fixture
     /// wrote, since the integrator runs before the narrowphase and the fixture
@@ -2771,11 +2664,6 @@ mod tests {
         mesh
     }
 
-    /// Every contact in the world gets exactly one normal segment, running from
-    /// the contact point along the stored normal. The count is the shape of the
-    /// mapping; the direction assert is the point of the layer, since a normal
-    /// that renders backwards would misreport the very defect class the overlay
-    /// exists to expose.
     #[test]
     fn every_contact_emits_one_normal_along_the_stored_direction() {
         let physics = contacting_world(2);
@@ -2815,12 +2703,6 @@ mod tests {
         }
     }
 
-    /// The impulse bars carry the accumulated magnitudes, one bar each for
-    /// normal and tangent, drawn against their own direction. A bar whose
-    /// length ignored `impulse_scale`, or read `penetration` instead of the
-    /// accumulator, fails on the doubling. Head-on, so only the normal bar
-    /// carries a sign here; the tangent bar's is pinned by
-    /// [`a_sliding_pair_draws_its_friction_bar_against_the_slide`].
     #[test]
     fn impulse_bar_length_tracks_the_accumulated_impulse() {
         let physics = contacting_world(1);
@@ -2879,11 +2761,6 @@ mod tests {
         }
     }
 
-    /// The friction bar carries the tangent accumulator and runs against the
-    /// slide it brakes. [`impulse_bar_length_tracks_the_accumulated_impulse`]
-    /// is head-on, so every tangent bar there is zero-length and pins neither
-    /// the scale nor the sign: a layer that drew friction along the slide, or
-    /// sized it off the normal accumulator, passes there and fails here.
     #[test]
     fn a_sliding_pair_draws_its_friction_bar_against_the_slide() {
         let mut physics = PlaygroundPhysics::new(2, BODY_SIZE);
@@ -2931,14 +2808,6 @@ mod tests {
         );
     }
 
-    /// The bar length the default scale actually produces, measured rather
-    /// than asserted at the constant. The peak lands well below the throw's
-    /// own momentum because the solver is not elastic: an equal-mass head-on
-    /// pair separates at a fraction of the closing speed, so most of the
-    /// momentum stays with the thrower. Pinning it here is what keeps the
-    /// prose at [`DEFAULT_IMPULSE_SCALE`] from drifting back into quoting
-    /// [`crate::physics::MAX_THROW_SPEED`], whose 8.1 is a speed and not an
-    /// impulse.
     #[test]
     fn a_full_speed_flick_draws_its_bar_at_a_third_of_a_body_radius() {
         let mut physics = PlaygroundPhysics::new(2, BODY_SIZE);
@@ -2968,9 +2837,6 @@ mod tests {
         );
     }
 
-    /// Every body of one island is marked in one colour, and two islands never
-    /// share one. This is the whole claim the layer makes: that the partition
-    /// the solver computed is the partition the eye reads.
     #[test]
     fn one_island_marks_its_bodies_in_one_colour() {
         let physics = contacting_world(2);
@@ -3021,9 +2887,6 @@ mod tests {
         }
     }
 
-    /// A world nothing has touched draws nothing, whatever is switched on. The
-    /// chamber's resting state is the overlay's zero, so a layer that painted
-    /// the static layout would read as a solver that is doing work it is not.
     #[test]
     fn a_world_at_rest_draws_no_physics_overlay() {
         let physics = PlaygroundPhysics::new(4, BODY_SIZE);
@@ -3037,10 +2900,6 @@ mod tests {
         );
     }
 
-    /// Every layer is its own switch: alone, each emits exactly its own
-    /// geometry, and all four together emit each layer's segments and nothing
-    /// besides. A layer wired to another's flag passes a count-only pin whenever
-    /// the counts happen to agree, which is why membership is checked too.
     #[test]
     fn each_overlay_layer_draws_only_its_own_geometry() {
         let physics = contacting_world(2);
@@ -3089,14 +2948,6 @@ mod tests {
         );
     }
 
-    /// A hidden overlay costs one branch: the builder returns before it
-    /// reads a manifold, and the frame's mesh buffer keeps its capacity. Pinned
-    /// against a world that DOES have contacts, so the zero is the early return
-    /// and not an empty world.
-    ///
-    /// [`Demo::record`] gates the whole call on the same predicate, so the
-    /// hidden frame does not reach here at all; this pins the builder in case
-    /// that gate is ever softened.
     #[test]
     fn a_hidden_physics_overlay_reaches_the_allocator_zero_times() {
         let physics = contacting_world(2);
@@ -3124,11 +2975,6 @@ mod tests {
         );
     }
 
-    /// The contact layers run out of the caller's buffer: a warm frame with
-    /// contacts, normals and impulses on reaches the allocator zero times. The
-    /// island layer is excluded on purpose; `World::islands` allocates its
-    /// partition per call, which is documented at the call site and is the one
-    /// layer that pays for a frame.
     #[test]
     fn the_contact_overlay_layers_reach_the_allocator_zero_times() {
         let physics = contacting_world(2);

@@ -1,8 +1,3 @@
-//! Filmstrip view: one polytope sampled across `w`, `t`, or both (a
-//! 2D grid). The grid split lives in
-//! `loam_render::Viewport::split_vertical`; this module owns the
-//! per-cell controls and the axis-label overlay.
-
 use loam_app::egui;
 use loam_render::raymarch::RaymarchShape;
 use loam_shape::polytope::Polytope4;
@@ -12,9 +7,6 @@ use crate::consts::BODY_SIZE;
 use crate::state::Demo;
 
 impl Demo {
-    /// Axis labels around the filmstrip grid: w tags on the w-carrying
-    /// edge, t tags on the t-carrying edge. The cell nearest offset
-    /// zero is highlighted in gold.
     pub(crate) fn render_filmstrip_cell_labels(&mut self, ctx: &egui::Context) {
         let (cols, rows, w_on_cols) = match (self.strip_w, self.strip_t) {
             (true, true) => {
@@ -70,7 +62,6 @@ impl Demo {
             (format!("t={:.2}s", self.rot_time + off), i == 0)
         };
 
-        // Top edge: column labels.
         for i in 0..cols {
             let center_x = screen.left() + (i as f32 + 0.5) * cell_w_px;
             let (text, is_center) = if w_on_cols {
@@ -94,7 +85,6 @@ impl Demo {
                     });
                 });
         }
-        // Left edge: row labels (only when > 1 row).
         if rows > 1 {
             for j in 0..rows {
                 let center_y = screen.top() + (j as f32 + 0.5) * cell_h_px;
@@ -122,7 +112,7 @@ impl Demo {
         }
     }
 
-    /// Single-view body: just the subject picker. Single mode renders
+    /// Single mode renders
     /// one `strip_subject` with no w/t fan, which is why it exists: the
     /// Schlegel boundary-cell stepper's `cell_count()` bound is well-
     /// defined only against one unambiguous polytope.
@@ -152,8 +142,7 @@ impl Demo {
         });
     }
 
-    /// Filmstrip body: catalog subject combo plus per-axis count
-    /// DragValues. Carries its own heavy-shape warning since
+    /// Carries its own heavy-shape warning since
     /// `render_shapes_section`, which usually shows it, is hidden here.
     pub(crate) fn render_filmstrip_body(&mut self, ui: &mut egui::Ui) {
         let heavy = matches!(

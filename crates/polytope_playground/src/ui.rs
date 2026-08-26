@@ -1,13 +1,3 @@
-//! Cross-cutting overlay UI: this scene's Edit / View contributions to the
-//! shell-owned menu bar, the help window, the bottom-anchored controls
-//! overlay (rotation tabs, mode-specific body dispatcher, always-visible
-//! w/t sliders, rate row), and the deferred-mutation drain that fires once
-//! the overlay closure has returned.
-//!
-//! The mode-specific bodies (active / composer / filmstrip / shapes)
-//! and the formula popup live in their own modules; this file owns the
-//! chrome that wraps them.
-
 use loam_app::shell::SceneRegistry;
 use loam_app::{egui, FrameCtx};
 use loam_egui::{
@@ -23,7 +13,6 @@ use crate::state::{
     WireframeProjection,
 };
 
-/// Margin between the controls overlay and the viewport edges.
 const OVERLAY_PAD: f32 = 16.0;
 
 /// Scene roster for the About panel, read off the registry the `scene` command
@@ -45,11 +34,6 @@ pub(crate) fn overlay_seat(ctx: &egui::Context) -> egui::Pos2 {
     egui::pos2(screen.center().x, screen.bottom() - OVERLAY_PAD)
 }
 
-/// Render one [`SectionLayer`]'s controls: a perimeter-outline checkbox and a
-/// fill-alpha slider whose `0` end is the off state. The perimeter draws only in
-/// the wireframe overlay (the fill draws in Raster regardless), so its tooltip
-/// gates on `wireframe_enabled`.
-///
 /// Free function so it can take a `&mut SectionLayer` destructured out of `Demo`
 /// without re-borrowing the whole `Demo`.
 fn section_layer_controls(
@@ -80,9 +64,6 @@ fn section_layer_controls(
 }
 
 impl Demo {
-    /// Expanded section of the bottom overlay: View tabs (Shapes / Single /
-    /// Filmstrip) over Rotation tabs (Active set / Composer). The always-visible
-    /// controls live below this in `render_overlay`.
     pub(crate) fn render_expanded_body(&mut self, ui: &mut egui::Ui) {
         self.render_view_tab_row(ui);
         match self.view_mode {
@@ -99,9 +80,7 @@ impl Demo {
         }
     }
 
-    /// View tab row: Shapes (side-by-side row), Single (one subject, full
-    /// projection stack), Filmstrip (one shape across w-slices). Staged into
-    /// `pending_view_mode`; see [`DeferredAction`] for why.
+    /// Staged into `pending_view_mode`; see [`DeferredAction`] for why.
     pub(crate) fn render_view_tab_row(&mut self, ui: &mut egui::Ui) {
         let mut staged = self.view_mode;
         ui.horizontal(|ui| {
@@ -128,9 +107,8 @@ impl Demo {
         }
     }
 
-    /// Rotation-mode tabs: which source drives `omega`. Staged into
-    /// `self.pending_mode` so the switch lands between frames, not partway
-    /// through one; see [`DeferredAction`].
+    /// Staged into `self.pending_mode` so the switch lands between frames, not
+    /// partway through one; see [`DeferredAction`].
     pub(crate) fn render_rotation_tab_row(&mut self, ui: &mut egui::Ui) {
         let mut staged = self.rotation_mode;
         ui.horizontal(|ui| {
@@ -144,9 +122,6 @@ impl Demo {
         }
     }
 
-    /// Edit / View contributions to the shell's menu bar. The File menu is
-    /// absent until persistence and `Quit` via `ViewportCommand::Close` are
-    /// wired.
     pub(crate) fn menu_contents(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Edit", |ui| {
             if ui
@@ -170,8 +145,6 @@ impl Demo {
             }
         });
         loam_egui::sticky_menu(ui, "View", |ui| {
-            // Sticky toggles: clicking a checkbox does not close the
-            // dropdown, so several flags can be flipped without reopening.
             ui.checkbox(&mut self.show_controls, "Rotation controls (H)");
             ui.checkbox(&mut self.gimbal.enabled, "Transform handles")
                 .on_hover_text(
@@ -184,11 +157,7 @@ impl Demo {
                 );
             ui.checkbox(&mut self.show_formula, "Formula popup");
             ui.checkbox(&mut self.example_callout.open, "Example callout");
-            // Per-projection mode-annotation callouts are unwired (no
-            // toggle, defaults closed); kept in `render_mode_annotation`.
             ui.separator();
-            // One-shot: open About and fold the menu away via
-            // `Popup::close_all` (the non-sticky path).
             if ui.button("About this program").clicked() {
                 self.show_help = true;
                 egui::Popup::close_all(ui.ctx());
@@ -196,10 +165,7 @@ impl Demo {
         });
     }
 
-    /// Floating `Render` settings modal, mirroring the console's `surface`,
-    /// `wireframe`, and `wireframe points` toggles so the modes are discoverable
-    /// without typing commands. Each control writes the same Demo fields the
-    /// console handlers do. Off by default; opened via the gear button.
+    /// Each control writes the same Demo fields the console handlers do.
     pub(crate) fn render_render_panel(&mut self, ctx: &egui::Context) {
         // Snapshot fields the panel mutates so the surface-mode rebuild and
         // Schlegel re-resolve can run AFTER the destructure-borrow's lifetime
@@ -208,8 +174,6 @@ impl Demo {
         let prev_projection = self.wireframe_projection;
         // Before the destructure (which exclusively borrows `self.row`).
         let sdf_disabled = self.sdf_blocked_by_heavy_polychora();
-        // Leading polychoron's cell count for the cell-index clamp; `None`
-        // disables the stepper.
         let schlegel_cell_count = self.schlegel_subject().map(|p| p.cell_count() as u32);
         // Destructure-borrow the panel's fields so the closure stays a plain
         // `FnOnce(&mut Ui)` and does not conflict with `show_render_panel`.
@@ -253,9 +217,6 @@ impl Demo {
                 ui.radio_value(surface_mode, SurfaceMode::Off, "Off");
                 ui.separator();
 
-                // Two overlaid layers: the honest cross-section (drop-w, what the
-                // SDF shows) and the projected cap (reprojected through the active
-                // wireframe projection), each with its own outline + fill alpha.
                 ui.label(egui::RichText::new("Cross-section").strong());
                 section_layer_controls(
                     ui,
@@ -307,10 +268,9 @@ impl Demo {
                             }
                         }
                     });
-                    // Contextual param row: Schlegel's cell-index stepper (clamped
-                    // to the leading polytope's cell count). Dormant: Schlegel is
-                    // omitted from `WireframeProjection::ALL`, so the radio never
-                    // offers it; kept so re-wiring needs no UI change.
+                    // Dormant: Schlegel is omitted from `WireframeProjection::ALL`,
+                    // so the radio never offers it; kept so re-wiring needs no UI
+                    // change.
                     if let WireframeProjection::Schlegel { cell_index } = wireframe_projection {
                         ui.horizontal(|ui| {
                             ui.label("Boundary cell");
@@ -332,10 +292,6 @@ impl Demo {
                             }
                         });
                     }
-                    // Hyperslice cull: thin the edge graph to a w-slab. The
-                    // thickness stepper is enabled whenever the cull runs, which
-                    // includes the Hyperslice projection mode (which turns the cull
-                    // on without the standalone toggle).
                     ui.checkbox(wireframe_hyperslice, "Hyperslice cull (w-slab)");
                     let cull_active =
                         hyperslice_cull_active(*wireframe_hyperslice, *wireframe_projection);
@@ -371,8 +327,7 @@ impl Demo {
                 });
             },
         );
-        // Destructure-borrow ended; `&mut self` is safe again. Rebuild the SDF
-        // body list when the surface mode changed through the panel.
+        // Destructure-borrow ended; `&mut self` is safe again.
         if self.surface_mode != prev_surface {
             self.rebuild_bodies();
         }
@@ -536,9 +491,7 @@ impl Demo {
         });
     }
 
-    /// Aim indicator for a flick in progress: a leader from the picked body to
-    /// the cursor, and the percentage of the speed ceiling the drag has wound
-    /// up. The only reading a user gets of the drag-to-impulse mapping before
+    /// The only reading a user gets of the drag-to-impulse mapping before
     /// committing to it, so the number is the mapping's own `charge`, not a
     /// second estimate of it.
     ///
@@ -591,8 +544,6 @@ impl Demo {
         );
     }
 
-    /// Unified controls overlay. `egui::Window` with `pivot(CENTER_BOTTOM)` so it
-    /// anchors at the bottom edge and grows upward. Always draggable.
     pub(crate) fn render_overlay(&mut self, ctx: &egui::Context) {
         let screen = ctx.content_rect();
         // Cap to roughly the 800x600 layout; full-screen widths stretched the
@@ -676,7 +627,6 @@ impl Demo {
         }
     }
 
-    /// Two sliders (w, t) with fixed-width monospace value labels.
     pub(crate) fn render_slider_strip(&mut self, ui: &mut egui::Ui, _area_w: f32) {
         // Sized for "w +0.000" / "t  7.12s" (8 monospace chars). Larger t values
         // clip the tail; an acceptable trade for killing the deadspace.
@@ -729,13 +679,6 @@ impl Demo {
         }
     }
 
-    /// Always-visible single row directly under the sliders.
-    /// Center-justified play / rate / refresh cluster with the
-    /// right-aligned utility cluster on the same line:
-    ///
-    /// ```text
-    ///                  [<<] [<] [play/pause] [>] [>>] [refresh]    [?] [^]
-    /// ```
     pub(crate) fn render_rate_row(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             const PLAY_GROUP_W: f32 = 215.0;
@@ -802,12 +745,6 @@ impl Demo {
 #[cfg(test)]
 mod about_panel_tests {
     use super::*;
-
-    /// The About panel is the app's only pointer at the console, and under
-    /// `--embed=1` the console is the only switcher, so a scene missing from
-    /// the roster is a scene an embed cannot reach. Reading the registry is
-    /// what keeps that true: a hand-written list would satisfy the slug half
-    /// of this today and drift on the next entry.
     #[test]
     fn the_about_roster_names_every_registered_scene() {
         let roster = scene_roster();

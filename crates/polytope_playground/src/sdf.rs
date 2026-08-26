@@ -1,5 +1,3 @@
-//! `sdf` scene: author a signed-distance scene while it is being rendered.
-//!
 //! The scene owns a live [`loam_scene::Scene`] and re-emits, recompiles and
 //! rebuilds its render node on the frames where an edit landed. Every constant
 //! in the tree is a baked WGSL literal ([`loam_scene::Primitive::to_wgsl`]), so
@@ -39,11 +37,6 @@
 //! between the drag and the drain. The draft resyncs from the tree whenever
 //! the selection moves or an edit lands, so a console `sdf set` shows up under
 //! the cursor.
-//!
-//! Two known egui frictions are answered rather than inherited: values are
-//! drawn through [`loam_egui::slider_with_edit`], whose fixed-width value cell
-//! keeps a column of sliders from jittering as digits change, and the deferral
-//! here is a command-queue property rather than a UI-layout workaround.
 
 use std::borrow::Cow;
 
@@ -278,7 +271,6 @@ impl Draft {
     }
 }
 
-/// What the add row is currently set to build.
 struct AddChoice {
     combinator: Combinator,
     leaf: LeafKind,
@@ -293,7 +285,6 @@ impl Default for AddChoice {
     }
 }
 
-/// One row per node, indented by depth, the variant as the click target.
 /// Writes only the selection.
 fn tree_panel(ui: &mut egui::Ui, scene: &Scene, selected: &mut NodePath) {
     edit::for_each_node(&scene.root, |path, node| {
@@ -674,8 +665,6 @@ mod tests {
         }
     }
 
-    /// The panel is only worth opening if the boot tree has one of everything
-    /// to open it on: four leaves and all four combinators.
     #[test]
     fn the_boot_scene_carries_every_combinator_and_an_editable_leaf_of_each_kind() {
         let scene = boot_scene();
@@ -696,12 +685,6 @@ mod tests {
         }
     }
 
-    /// The property behind "a primitive can be added, moved and removed
-    /// without recompiling the binary": the shader text the editor assembles
-    /// after an arbitrary run of edits is still WGSL a validator accepts. A
-    /// device is not needed to know that, and this is the closest a headless
-    /// test can stand to the compile the scene performs each time an edit
-    /// lands.
     #[test]
     fn the_assembled_shader_stays_valid_wgsl_through_add_move_and_remove() {
         let mut scene = boot_scene();
@@ -753,10 +736,6 @@ mod tests {
         }
     }
 
-    /// Save and load is a real round trip through the file boundary: what the
-    /// editor exports is what `Scene::load` reads back, down to the emitted
-    /// WGSL. `to_ron` is what `sdf save` writes and `Scene::load` what `sdf
-    /// load` calls, so this is the command pair and not a proxy for it.
     #[test]
     fn an_edited_scene_survives_the_save_and_load_the_commands_perform() {
         let mut scene = boot_scene();
@@ -790,10 +769,6 @@ mod tests {
         );
     }
 
-    /// An immediate-mode panel that reports a change on a frame nobody touched
-    /// would submit an edit, bump the generation and recompile the shader
-    /// every frame. Drawn twice, because egui's first frame has no layout to
-    /// hit-test against and would hide a widget that fires on hover.
     #[test]
     fn a_frame_with_no_input_produces_no_edits() {
         let ctx = egui::Context::default();
@@ -816,12 +791,6 @@ mod tests {
         assert_eq!(selected, path("root.0.0.0"), "selection must not drift");
     }
 
-    /// The tree list is the only place a path is discoverable, so a walk that
-    /// skipped a node would hide it from the editor entirely. Asserted as
-    /// height growing by exactly one row pitch per node across three trees
-    /// rather than against a hardcoded pitch, which is an egui style value.
-    /// A panel that drew only leaves, or only interior nodes, is not linear in
-    /// the node count and fails here.
     #[test]
     fn the_tree_panel_grows_by_exactly_one_row_per_node() {
         let ctx = egui::Context::default();
@@ -858,11 +827,6 @@ mod tests {
         );
     }
 
-    /// The panel's rect is a frame behind the swapchain across a resize, so
-    /// the march region has to be clamped rather than trusted: a viewport
-    /// reaching past the attachment is a validation failure that takes the
-    /// process with it. Swept over a shrink in each axis and both, plus the
-    /// pre-first-frame empty rect.
     #[test]
     fn the_march_viewport_never_leaves_the_framebuffer() {
         let stale = [268, 24, 1012, 696];
@@ -892,10 +856,6 @@ mod tests {
         );
     }
 
-    /// The draft is what the sliders write to, so it has to hold the node's
-    /// own values, follow the selection, and follow an edit that landed from
-    /// somewhere else (a console line). Between those it must stay put, which
-    /// is what stops a drag from snapping back on the frame the queue drains.
     #[test]
     fn the_draft_follows_the_selection_and_landed_edits_and_nothing_else() {
         let scene = boot_scene();
@@ -922,10 +882,6 @@ mod tests {
         assert_eq!(draft.values, edit::parameters(node));
     }
 
-    /// Every parameter the panel can draw has a slider range that contains the
-    /// value a freshly inserted leaf starts at. A default outside its own
-    /// range would be clamped to something else the moment the panel drew it,
-    /// which is an edit the user did not make.
     #[test]
     fn every_default_leaf_value_lies_inside_its_slider_range() {
         for kind in LeafKind::ALL {
@@ -951,9 +907,6 @@ mod tests {
         );
     }
 
-    /// The route the module doc claims: a widget's edit and a typed console
-    /// line are the same value, so the panel cannot grow a capability the
-    /// console lacks. Pinned on the spelling the scene actually submits.
     #[test]
     fn every_edit_the_panel_submits_is_a_line_the_console_command_accepts() {
         for edit in [
@@ -982,10 +935,6 @@ mod tests {
         }
     }
 
-    /// A rebuild happens when the tree changed and not otherwise. The compile
-    /// is the expensive half of the loop, so "an edit that changed nothing
-    /// costs nothing" is the property that keeps a held slider from being a
-    /// compile per frame.
     #[test]
     fn the_generation_advances_once_per_landed_edit_and_never_for_a_no_op() {
         let mut editor = Editor {

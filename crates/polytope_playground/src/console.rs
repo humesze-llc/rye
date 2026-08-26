@@ -1,6 +1,3 @@
-//! Console command registration (the `scene`, `wireframe`, `pole`,
-//! `section`, `surface`, `camera`, `floor` commands).
-
 use crate::*;
 
 impl RotateScene {
@@ -96,9 +93,6 @@ impl RotateScene {
                 Ok(())
             },
         ));
-        // Cross-section + parent-wireframe overlay. Bare `wireframe` flips
-        // on/off; subcommands each carry their own value choices for context-
-        // aware tab-completion via [`SubcommandSet`].
         c.register(
             loam_egui::subcommands::<Demo>("wireframe", "wireframe + cross-section overlay")
                 .on_bare(|d| {
@@ -190,7 +184,6 @@ impl RotateScene {
                                 )
                             })?,
                             None => {
-                                // Bare cycles through the canonical order.
                                 let all = WireframeColorMode::ALL;
                                 let i = all
                                     .iter()
@@ -211,7 +204,6 @@ impl RotateScene {
                         // Schlegel is omitted here (it wants its own demo): both
                         // `from_token` and `ALL` exclude it.
                         let next = match args.first().copied() {
-                            // Bare: cycle through ALL in variant order.
                             None => {
                                 let all = WireframeProjection::ALL;
                                 let i = all
@@ -254,13 +246,10 @@ impl RotateScene {
                                     p.x, p.y, p.z, p.w
                                 ));
                             }
-                            // Cell-center default (see STEREOGRAPHIC_DEFAULT_POLE).
                             Some("reset") | Some("default") => {
                                 d.stereographic_pole = state::STEREOGRAPHIC_DEFAULT_POLE;
                                 out.line("stereographic pole: reset to the cell-center default");
                             }
-                            // The textbook `(x, y, z) / (1 - w)` pole, as a named
-                            // shortcut.
                             Some("+w") => {
                                 d.stereographic_pole = Vec4::W;
                                 out.line("stereographic pole: set to +w (textbook map)");
@@ -519,9 +508,6 @@ impl RotateScene {
             ),
         );
 
-        // Polychoral surface renderer: raster (default) / SDF / off. Bare
-        // `surface` is shorthand for "off". `surface scale <N>` rescales the row
-        // by multiplying `BODY_SIZE` (see [`Demo::effective_body_size`]).
         c.register(
             loam_egui::cmd(
                 "surface",
@@ -605,17 +591,6 @@ impl RotateScene {
             ),
         );
 
-        // Section layers: the rasterized cross-section is two overlaid layers in
-        // one viewport, each with its own perimeter outline + fill alpha.
-        //   - `cross`: the honest drop-w slice (NEVER reprojected; the geometry the
-        //     SDF raymarch shows). On by default so selecting Schlegel /
-        //     stereographic never silently distorts the slice.
-        //   - `cap`: the same slice reprojected through the active wireframe
-        //     projection, so it can sit on a Schlegel / stereographic wireframe.
-        //     Off by default.
-        // Alpha `0` is the layer's off state; `(0, 1]` sets a visible fill (below 1
-        // composites through the depth-write-disabled pipeline). Side-by-side /
-        // multi-viewport comparison is deferred to the multi-viewport milestone.
         c.register(
             loam_egui::subcommands::<Demo>(
                 "section",
@@ -653,21 +628,10 @@ impl RotateScene {
             ),
         );
 
-        // Framework-provided capture: `capture png [pre|post|both] [dir]`,
-        // `capture frames [pre|post|both] [dir]`, `capture stop`. Bound to F12 (one-shot)
-        // and F9 (sequence start; use `capture stop` to end). Requests push to a global
-        // queue; the runner drains and processes them at the render-loop's two taps.
         loam_app::capture::register_commands(&mut c);
         loam_app::capture::bind_default_hotkeys(&mut c);
 
-        // Framework-provided log mirror: `log on|off|toggle` toggles whether
-        // `tracing::*` events show up in the console scrollback.
         loam_app::log::register_command(&mut c);
-
-        // Framework-provided frame-timing surface: `trace [summary|last|clear|cap N]`.
-        // The runner is already recording per-section scopes on every redraw; this
-        // command lets the user read them. Surfaces the slowest hot-path sections,
-        // which is the data the pipeline-warming + wireframe-cache decisions read
         // from.
         loam_app::trace::register_command(&mut c);
         loam_app::fps::register_command(&mut c);
@@ -680,18 +644,6 @@ impl RotateScene {
             env!("BUILD_DIRTY"),
         );
 
-        // Demo-side camera mode toggle. Bare `camera` cycles between Orbit
-        // (the default scroll-zoom/drag camera) and FreeRoam (WASD + mouse-
-        // look). Explicit `camera orbit` resets the orbit controller to its
-        // default distance + pitch so the camera returns to a known framing
-        // around the world origin; `camera freecam` seeds the free-roam
-        // position from the camera's current location.
-        //
-        // Freecam tuning subcommands (do NOT change mode):
-        //   `camera freecam speed=<N>`        WASD/Space/Shift units/sec.
-        //   `camera freecam speed`            Print the current speed.
-        //   `camera freecam cursor_mode <m>`  `toggle` (default, FPS) or `hold` (MMO).
-        //   `camera freecam cursor_mode`      Print the current mode.
         c.register(
             loam_egui::cmd::<Demo, _>(
                 "camera",
@@ -703,7 +655,6 @@ impl RotateScene {
                     // <m>` is two tokens.
                     if matches!(args.first().copied(), Some("freecam")) && args.len() >= 2 {
                         let second = args[1];
-                        // `speed=<N>` and `speed <N>` and bare `speed`.
                         if let Some(value) = second.strip_prefix("speed=") {
                             let parsed: f32 = value
                                 .parse()
@@ -813,12 +764,10 @@ impl RotateScene {
             ]),
         );
 
-        // Floor toggle for the y=0 hyperplane ground. On by default. The
-        // SDF kernel reads `u.params[0]` (set in `Demo::update`); when 0.0
+        // The SDF kernel reads `u.params[0]` (set in `Demo::update`); when 0.0
         // the wrapper around `loam_scene_sdf` (injected into the shader at
         // setup time) short-circuits to a huge distance, so the marcher
         // never converges on the floor and the checkerboard never paints.
-        // Bare `floor` flips the flag; `floor on|off` is the explicit form.
         c.register(
             loam_egui::cmd::<Demo, _>(
                 "floor",
@@ -849,10 +798,6 @@ mod tests {
     use super::*;
     use loam_app::shell::SceneRegistry;
 
-    /// A `--script` run is unattended by design, so a line naming a command
-    /// this build no longer registers would fail into the scrollback where
-    /// nobody is looking and the run would still exit clean. Pin the shipped
-    /// example against the live registry.
     #[test]
     fn the_shipped_script_parses_and_every_line_names_a_registered_command() {
         let script =
@@ -874,18 +819,11 @@ mod tests {
         }
     }
 
-    /// Under `--embed=1` the menu bar is hidden, so the console is the only
-    /// way to reach another scene: losing this registration strands an embed
-    /// on its boot scene.
     #[test]
     fn console_exposes_the_scene_switcher() {
         assert!(RotateScene::build_console().has_command("scene"));
     }
 
-    /// Tab on the switcher's first argument has to spell the slugs, because
-    /// nothing else in the app does: a user who never read the crate docs
-    /// learns the registry from the completion cycle. Registering the command
-    /// against a stale slug list would leave `has_command` above green.
     #[test]
     fn scene_completion_cycles_every_registered_slug() {
         let mut console = RotateScene::build_console();
@@ -910,12 +848,6 @@ mod tests {
         assert_eq!(completed, slugs);
     }
 
-    /// `help` is where a user goes first, so the switcher has to be in that
-    /// listing with a description, and `help scene` has to carry the boot
-    /// params on to the reader who wants a URL. Driven on the `Console<()>`
-    /// the S3 scene builds, since executing anything on the rotate scene's
-    /// `Console<Demo>` needs a GPU-backed `Demo`; both consoles take the
-    /// command from the same registration.
     #[test]
     fn the_help_listing_describes_the_scene_switcher() {
         let mut console = Console::<()>::new();

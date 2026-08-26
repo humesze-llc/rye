@@ -1,19 +1,3 @@
-//! Interactive 4D-rotation demo over `Hyperslice4DNode`: a row of convex
-//! regular polychora (5-cell, tesseract, 16-cell, 24-cell by default;
-//! 120-cell and 600-cell via `--shapes` or the in-app `+`) on a 4D `y = 0`
-//! floor, with `w`-slice scrubbing and two rotation-composition UIs.
-//!
-//! Active-set mode toggles individual rotation planes whose bivectors sum
-//! into the per-frame angular velocity (integrated via `(ω · dt).exp()`);
-//! the sum is commutative, so toggle order is irrelevant. Composer mode
-//! builds a reorderable sequence of `RotorTerm`s applied as a one-shot
-//! product or fed into the continuous spin.
-//!
-//! The 120-cell and 600-cell use a Rust-side face-hyperplane generator
-//! (too large to inline as WGSL); their SDFs run a true-Euclidean Wolfe
-//! greedy hyperplane projection, not a max-plane lower bound. Live state
-//! and controls draw as a `loam-egui` overlay via `App::ui`.
-//!
 //! ## Controls
 //!
 //! - **Mouse left-drag on a hypergimbal ring**: rotate in that ring's plane.
@@ -636,8 +620,6 @@ impl Demo {
                 ));
             });
 
-        // Live rotation formula popup: formula, combo name (Active mode), and
-        // the rotor's log(R) bivector matrix. Off by default; draggable.
         if self.show_formula {
             let formula = self.formula_string();
             let name = if self.rotation_mode == RotationMode::Active {
@@ -679,7 +661,6 @@ impl Demo {
                 });
         }
 
-        // Per-cell `w` annotation overlaid on the scene.
         if self.view_mode == ViewMode::Filmstrip {
             self.render_filmstrip_cell_labels(ctx);
         }
@@ -688,7 +669,6 @@ impl Demo {
         // not paint over it.
         self.render_throw_aim(ctx, frame);
 
-        // Bottom controls overlay. Toggle via `View > Rotation controls` / `H`.
         if self.show_controls {
             self.render_overlay(ctx);
         }
@@ -696,9 +676,7 @@ impl Demo {
         self.render_help_window(ctx);
         // Off by default so the scene fills the window on first launch.
         self.render_render_panel(ctx);
-        // Demonstrates `loam_egui::callout` against the first polychoron.
         self.render_example_callout(ctx, frame);
-        // No-ops in the default drop-w scene; else explains the projection.
         self.render_mode_annotation(ctx, frame);
     }
 
@@ -715,7 +693,6 @@ impl Demo {
             return;
         };
 
-        // Anchor: the leading polychoron's body center in world R³.
         let row_frame = self.row_frame();
         let Some((slot, _entry)) = row_frame
             .row
@@ -757,7 +734,6 @@ impl Demo {
         if !self.example_callout.open {
             return;
         }
-        // First polychoron in the rendered row; its vertex 0 is the anchor.
         let row_frame = self.row_frame();
         let Some((slot, entry)) = row_frame
             .row
@@ -864,10 +840,6 @@ impl Demo {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Scene wrapper: Demo + Console<Demo>
-// ---------------------------------------------------------------------------
-//
 // A wrapper, not a `console` field on `Demo`: `Scene::apply_command` dispatches
 // `&mut self.console` against `&mut self.demo`, so co-locating both would need
 // a simultaneous whole-`self` borrow. Separate fields give the dispatch a clean
@@ -1008,8 +980,6 @@ impl loam_app::shell::Scene for RotateScene {
         cmd: &loam_app::command::CommandLine,
         _ctx: &mut loam_app::command::CommandCtx<'_>,
     ) -> Result<()> {
-        // The registry is unchanged; only when it runs moved. Unknown verbs
-        // report through the scrollback here, where the user can see them.
         self.console
             .dispatch(&cmd.name, &cmd.arg_refs(), &mut self.demo);
         Ok(())
@@ -1075,22 +1045,9 @@ fn main() -> Result<()> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Layout regression tests
-// ---------------------------------------------------------------------------
-//
-// Headless-render the shape row through `egui::Context::run` (no GPU) and
-// inspect placed-rect positions. They guard the "descending staircase"
-// regression: a long-label shape (120/600-cell) wraps and grows its card,
-// recomputing Center cross-alignment so earlier cards stayed at the old
-// center while the new card centered higher.
-
 #[cfg(test)]
 mod color_tests {
-    //! Tests for `compute_cell_strengths` (per-cell w-slice crossing strength).
     use super::*;
-
-    // ---- compute_cell_strengths -----------------------------------------
 
     /// The into-form as an expression; the render path passes a retained buffer.
     fn strengths_of(cells: &[&[u32]], local_vertices: &[Vec4], w_slice: f32) -> Vec<f32> {
@@ -1099,7 +1056,6 @@ mod color_tests {
         out
     }
 
-    /// Slice at the cell's w-midpoint produces strength = 1 (cap is widest there).
     #[test]
     fn cell_strength_at_midpoint_is_one() {
         // Single cell with two vertices at w = -0.5 and w = +0.5. Midpoint w = 0.
@@ -1113,7 +1069,6 @@ mod color_tests {
         assert!((strengths[0] - 1.0).abs() < 1e-5);
     }
 
-    /// Slice outside the cell's w-range produces strength = 0 (cap doesn't exist).
     #[test]
     fn cell_strength_outside_range_is_zero() {
         let cells: [&[u32]; 1] = [&[0, 1]];
@@ -1125,7 +1080,6 @@ mod color_tests {
         assert!(strengths[0].abs() < 1e-5);
     }
 
-    /// Slice at the cell's w-boundary produces strength = 0 (cap is degenerate).
     #[test]
     fn cell_strength_at_boundary_is_zero() {
         let cells: [&[u32]; 1] = [&[0, 1]];
@@ -1139,8 +1093,6 @@ mod color_tests {
         assert!(strengths[0].abs() < 1e-5);
     }
 
-    /// Halfway between midpoint and boundary yields strength = 0.5 (linear in
-    /// `|w_slice - mid| / half_extent`).
     #[test]
     fn cell_strength_is_linear() {
         let cells: [&[u32]; 1] = [&[0, 1]];
@@ -1153,9 +1105,6 @@ mod color_tests {
         assert!((strengths[0] - 0.5).abs() < 1e-5);
     }
 
-    /// Degenerate cell (all vertices at the same w) yields strength = 0; the half-extent
-    /// is zero so the gradient has nothing to interpolate. The function returns 0 rather
-    /// than divide-by-zero, which is what the wireframe overlay path expects.
     #[test]
     fn cell_strength_degenerate_cell_is_zero() {
         let cells: [&[u32]; 1] = [&[0, 1]];
@@ -1189,7 +1138,6 @@ mod blended_edge_tests {
 
     const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
-    /// `blend == 0` emits one chord segment equal to the projected endpoints.
     #[test]
     fn blend_zero_emits_single_chord() {
         let a = Vec4::new(0.7, 0.0, 0.0, 0.0);
@@ -1215,8 +1163,6 @@ mod blended_edge_tests {
         assert!((polyline_length(&mesh) - chord).abs() < 1e-6);
     }
 
-    /// `blend > 0` subdivides the edge into `SPACE_TESSELLATION_SAMPLES`
-    /// sub-segments.
     #[test]
     fn blend_positive_emits_tessellated_segments() {
         let a = Vec4::new(0.7, 0.0, 0.0, 0.0);
@@ -1240,8 +1186,6 @@ mod blended_edge_tests {
         assert_eq!(mesh.segments.len(), SPACE_TESSELLATION_SAMPLES);
     }
 
-    /// A spherical edge bows off its chord: the tessellated polyline is strictly
-    /// longer than the straight chord between the same endpoints.
     #[test]
     fn spherical_edge_is_longer_than_chord() {
         let a = Vec4::new(0.7, 0.0, 0.0, 0.0);
@@ -1274,8 +1218,6 @@ mod blended_edge_tests {
         );
     }
 
-    /// A half-blend's polyline length lies strictly between chord and full arc,
-    /// pinning the morph as monotone, not a step.
     #[test]
     fn half_blend_is_between_flat_and_spherical() {
         let a = Vec4::new(0.7, 0.0, 0.0, 0.0);
@@ -1313,14 +1255,6 @@ mod blended_edge_tests {
         );
     }
 
-    /// The arc is taken about `arc_center`, so an off-centre body frame (what
-    /// `BodyPose::body_local` produces once physics pushes a body off the
-    /// `w = 0` slice) still bows onto the sphere its endpoints share. Read
-    /// through drop-w, where the whole arc of this fixture lies at `w = LIFT`:
-    /// every emitted point must sit at `RADIUS` from the centre's R³ image.
-    /// About the frame origin the samples land on the sphere of radius
-    /// `sqrt(RADIUS² + LIFT²)` instead, whose R³ image pulls the midpoint
-    /// ~0.055 inward here.
     #[test]
     fn the_arc_bows_onto_the_circumsphere_about_the_arc_center() {
         const RADIUS: f32 = 0.5;
@@ -1364,10 +1298,6 @@ mod blended_edge_tests {
         }
     }
 
-    /// `blend == 0` through a non-identity affine projection (Perspective4D)
-    /// emits one segment whose endpoints equal `project_to_world(a/b)` to the
-    /// bit. Pins the fast path under a w-dependent perspective scale, which
-    /// `blend_zero_emits_single_chord` (drop-w only) did not exercise.
     #[test]
     fn blend_zero_is_bit_identical_to_flat_chord() {
         // Adjacent tesseract vertices differing only in w, so the perspective
@@ -1402,9 +1332,6 @@ mod blended_edge_tests {
         assert_eq!(seg_b, expected_b, "end equals projected b");
     }
 
-    /// At any blend in [0, 1] the first/last emitted point equals
-    /// `project_to_world(a/b)` exactly. The morph bows only the interior; bit-
-    /// exact endpoint glue keeps the section cap attached to the wireframe.
     #[test]
     fn blend_endpoints_exact_at_all_t() {
         let a = Vec4::new(0.5, 0.5, 0.5, 0.5);
@@ -1445,14 +1372,9 @@ mod blended_edge_tests {
 
 #[cfg(test)]
 mod section_command_tests {
-    //! Tests for shared console handlers unit-testable without a GPU-backed
-    //! `Demo` by exercising the handler body directly.
     use super::*;
     use loam_egui::console::ConsoleWriter;
 
-    /// `run_section_alpha` sets an in-range alpha, accepts `0` as off, rejects
-    /// the faint `(0, MIN_VISIBLE)` band / over-range / unparseable input (no
-    /// silent clamp), and leaves the field untouched on a bare query.
     #[test]
     fn section_alpha_sets_off_and_visible_rejects_faint_and_bad() {
         let run = |start: f32, args: &[&str]| -> (f32, bool) {
@@ -1465,23 +1387,18 @@ mod section_command_tests {
             (layer.surface_alpha, ok)
         };
 
-        // A visible alpha in [MIN_VISIBLE, 1.0] is set.
         assert_eq!(run(1.0, &["0.5"]), (0.5, true), "in-range alpha is set");
         assert_eq!(run(0.5, &["1.0"]), (1.0, true), "opaque alpha is set");
-        // `0` is the explicit off state, accepted.
         assert_eq!(run(0.85, &["0"]), (0.0, true), "0 turns the layer off");
-        // The faint sub-MIN band is rejected, not rounded.
         let (val, ok) = run(0.85, &["0.01"]);
         assert!(!ok, "faint (0, MIN) alpha must be rejected");
         assert_eq!(val, 0.85, "rejected faint alpha leaves the field untouched");
-        // Over-range and unparseable are rejected, field untouched.
         assert_eq!(run(0.85, &["2.0"]).0, 0.85, "over-range alpha is rejected");
         assert_eq!(
             run(0.85, &["notafloat"]).0,
             0.85,
             "unparseable alpha is rejected"
         );
-        // Bare query reports without mutating.
         assert_eq!(run(0.7, &[]), (0.7, true), "bare query leaves the field");
     }
 }
@@ -1490,16 +1407,11 @@ mod section_command_tests {
 mod script_arg_tests {
     use super::*;
 
-    /// No `script=` key means no driver: the flag has to stay opt-in or every
-    /// ordinary run would exit on its own.
     #[test]
     fn no_script_argument_leaves_the_scene_undriven() {
         assert!(load_script(&Args::default()).unwrap().is_none());
     }
 
-    /// `--script path` (the space form the shell makes natural) drops the path
-    /// as a positional, so without this diagnosis the run would boot the
-    /// default scene and look like the script did nothing.
     #[test]
     fn the_space_separated_form_is_diagnosed_rather_than_ignored() {
         let args = Args::from_argv(["--script", "console-scripts/impulse-bars.script"]);
@@ -1507,8 +1419,6 @@ mod script_arg_tests {
         assert!(format!("{err:#}").contains("--script="), "{err:#}");
     }
 
-    /// A path that does not resolve fails setup instead of booting a scene the
-    /// caller did not ask for.
     #[test]
     fn an_unreadable_script_path_fails_setup() {
         let args = Args::from_pairs([("script", "no-such-directory-for-a-script/x.script")]);
@@ -1524,8 +1434,6 @@ mod director_arg_tests {
     /// The default row the shipped timeline is authored against.
     const DEFAULT_SLOTS: usize = 4;
 
-    /// No `director=` key leaves the whole row on the UI clock, which is what
-    /// every ordinary run is.
     #[test]
     fn no_director_argument_leaves_the_row_on_the_ui_clock() {
         assert!(load_director(&Args::default(), DEFAULT_SLOTS)
@@ -1533,10 +1441,6 @@ mod director_arg_tests {
             .is_none());
     }
 
-    /// The timeline committed beside the crate is the shipped binary's only
-    /// authored input, so it has to load through the real path the flag takes
-    /// and name a strict subset of the default row: a timeline that owned
-    /// every slot would leave nothing to show the UI spin against.
     #[test]
     fn the_shipped_timeline_loads_through_the_flag_and_leaves_the_row_its_tail() {
         let args = Args::from_pairs([("director", "timelines/row-sweep.ron")]);
@@ -1547,9 +1451,6 @@ mod director_arg_tests {
         assert!(playback.owns_w_slice());
     }
 
-    /// The same diagnosis `--script` gets: the space-separated form drops the
-    /// path as a positional, and without this the run boots undirected and
-    /// looks like the timeline did nothing.
     #[test]
     fn the_space_separated_director_form_is_diagnosed_rather_than_ignored() {
         let args = Args::from_argv(["--director", "timelines/row-sweep.ron"]);
@@ -1558,8 +1459,6 @@ mod director_arg_tests {
         assert!(format!("{err:#}").contains("--director="), "{err:#}");
     }
 
-    /// A path that does not resolve fails setup rather than booting a row the
-    /// caller did not ask for.
     #[test]
     fn an_unreadable_timeline_path_fails_setup() {
         let args = Args::from_pairs([("director", "no-such-directory-for-a-timeline/x.ron")]);
@@ -1567,9 +1466,6 @@ mod director_arg_tests {
         assert!(format!("{err:#}").contains("x.ron"), "{err:#}");
     }
 
-    /// A timeline naming a slot the booted row does not have is an authoring
-    /// fault, and the row length is a runtime argument, so it can only be
-    /// caught here.
     #[test]
     fn a_timeline_the_booted_row_cannot_host_fails_setup() {
         let args = Args::from_pairs([("director", "timelines/row-sweep.ron")]);
@@ -1586,9 +1482,6 @@ mod director_arg_tests {
 mod formula_popup_tests {
     use super::*;
 
-    /// The popup boots clear of the shell's menu-bar panel. Seating it against
-    /// `content_rect` (viewport minus safe-area insets, panel-unaware) put its
-    /// first rows behind the bar.
     #[test]
     fn formula_popup_seats_below_the_menu_bar_panel() {
         let ctx = egui::Context::default();
@@ -1618,11 +1511,6 @@ mod formula_popup_tests {
 
 #[cfg(test)]
 mod hyperslice_filter_tests {
-    //! Tests for the cell-level wireframe Hyperslice cull: an edge survives iff
-    //! some cell holding both endpoints has its w-range overlapping the slab
-    //! `[w_slice - t/2, w_slice + t/2]`. Split into `cell_w_range` and the 1D
-    //! `slab_overlaps` predicate; tests pin band semantics plus agreement with
-    //! the active-edge coloring.
     use super::*;
 
     /// Mirror of the production cull closure `edge_in_slab_cell`: keep `(i, j)`
@@ -1644,68 +1532,45 @@ mod hyperslice_filter_tests {
         })
     }
 
-    /// A w-range entirely outside the slab does not overlap, on either side.
     #[test]
     fn slab_overlaps_off_band_is_false() {
         assert!(!slab_overlaps(0.8, 0.9, 0.0, 0.2));
         assert!(!slab_overlaps(-0.9, -0.8, 0.0, 0.2));
     }
 
-    /// A range straddling the slice, and a range wholly inside the slab, both
-    /// overlap. The predicate is true whenever the range touches the band.
     #[test]
     fn slab_overlaps_on_band_is_true() {
-        // Straddles w_slice = 0.
         assert!(slab_overlaps(-0.5, 0.5, 0.0, 0.2));
-        // Wholly inside a wide slab.
         assert!(slab_overlaps(-0.05, 0.05, 0.0, 0.2));
-        // Slab centered off-origin, range inside it.
         assert!(slab_overlaps(0.45, 0.55, 0.5, 0.2));
     }
 
-    /// The band is closed (a range end exactly on `w_slice +/- t/2` overlaps)
-    /// and deterministic across repeated evaluations.
     #[test]
     fn slab_overlaps_closed_boundary_and_deterministic() {
         let keep = slab_overlaps(-0.5, 0.5, 0.0, 1.0);
         assert!(keep, "range ends exactly on the closed band must overlap");
 
-        // One end grazing the upper boundary, the other inside.
         assert!(slab_overlaps(0.0, 0.5, 0.0, 1.0));
-        // One end grazing the lower boundary from outside.
         assert!(slab_overlaps(-0.6, -0.5, 0.0, 1.0));
 
-        // Determinism: same inputs, same answer, every time.
         for _ in 0..16 {
             assert_eq!(slab_overlaps(-0.5, 0.5, 0.0, 1.0), keep);
         }
     }
 
-    /// Thickness 0 is floored to [`HYPERSLICE_MIN_THICKNESS`]: the slab becomes
-    /// a razor band where only a range crossing `w_slice` overlaps.
     #[test]
     fn slab_overlaps_zero_thickness_floor() {
-        // Crosses w_slice = 0: overlaps even at thickness 0 (floor keeps the
-        // band a hair wide).
         assert!(slab_overlaps(-0.3, 0.3, 0.0, 0.0));
-        // Entirely on one side, just above the floor's reach: no overlap.
         assert!(!slab_overlaps(0.1, 0.3, 0.0, 0.0));
-        // A range endpoint exactly at w_slice still counts (closed band).
         assert!(slab_overlaps(0.0, 0.3, 0.0, 0.0));
     }
 
-    /// A negative thickness is floored the same as 0, staying a valid razor band
-    /// rather than an inverted slab.
     #[test]
     fn slab_overlaps_negative_thickness_floor() {
         assert!(slab_overlaps(-0.3, 0.3, 0.0, -5.0));
         assert!(!slab_overlaps(0.1, 0.3, 0.0, -5.0));
     }
 
-    /// The repro that motivated the cell-level cull: an edge with both endpoints
-    /// on the far side of the slab is kept because its containing cell is sliced.
-    /// An edge-level test would cull it; the cell-level cull matches the active-
-    /// green coloring, which also reads the whole cell's w-range.
     #[test]
     fn far_side_edge_of_active_cell_is_kept() {
         let w_slice = -0.182_f32;
@@ -1734,9 +1599,6 @@ mod hyperslice_filter_tests {
         );
     }
 
-    /// Agreement contract: every active-colored edge (cell strength above 0)
-    /// is kept by the cull. The slab band is a superset of the strict-interior
-    /// plane, so `active => kept` for any thickness at or above the floor.
     #[test]
     fn cull_keeps_every_active_edge() {
         let w_slice = -0.182_f32;
@@ -1765,8 +1627,6 @@ mod hyperslice_filter_tests {
         }
     }
 
-    /// The cull still culls: an edge whose only containing cell sits entirely
-    /// outside the slab is dropped.
     #[test]
     fn cull_drops_edge_when_no_containing_cell_overlaps() {
         let w_slice = 0.0_f32;
@@ -1798,8 +1658,6 @@ mod hyperslice_filter_tests {
         ));
     }
 
-    /// `cell_w_range` reproduces the `(w_min, w_max)` implicit in
-    /// `compute_cell_strengths`, so the single-source split cannot drift.
     #[test]
     fn cell_w_range_matches_compute_cell_strengths() {
         let local_vertices = [
@@ -2029,8 +1887,6 @@ mod drag_tests {
         ctx
     }
 
-    /// Baseline: stock `Ui::dnd_drag_source` starts a drag with the test
-    /// driver. If this fails, the driver is wrong, not the helper.
     #[test]
     fn baseline_stock_dnd_drag_source_starts_drag() {
         let ctx = egui::Context::default();
@@ -2064,9 +1920,6 @@ mod drag_tests {
         );
     }
 
-    /// `egui::Id::new(...)` keys drive `dnd_drag_source_collapsing` as well as
-    /// `make_persistent_id`. Regression: cards stopped responding to drags
-    /// after a switch to `Id::new` per-row-index keys.
     #[test]
     fn id_new_starts_drag() {
         let id = egui::Id::new(("polytope-playground-shape-card-test", 0_usize));
@@ -2082,12 +1935,6 @@ mod drag_tests {
         );
     }
 
-    /// Regression: drag ids keyed by `egui::Id::new(...)` (not ui-scoped)
-    /// collide when one source is rendered into two layers, breaking drag
-    /// detection in release and tripping a `debug_assert!`. The fix scopes
-    /// the id per layer via `make_persistent_id`. Area-routed input does not
-    /// reach the headless interaction step, so this verifies the no-panic +
-    /// distinct-id contract rather than drag detection directly.
     #[test]
     fn make_persistent_id_per_pass_avoids_layer_collision() {
         let ctx = egui::Context::default();
@@ -2138,9 +1985,6 @@ mod drag_tests {
         );
     }
 
-    /// Regression ("card snaps right for a frame"): the make-room gap's
-    /// `open_width` must match the card slot's outer (Frame) width, else
-    /// dropping a card shifts the row for one frame.
     #[test]
     fn shape_gap_open_width_matches_card_slot_width() {
         let ctx = egui::Context::default();
@@ -2178,9 +2022,6 @@ mod drag_tests {
         );
     }
 
-    /// The row's total width is invariant through the drag -> drop transition;
-    /// a mismatch between the dragged card's drag-time and post-drop slot
-    /// widths (or the make-room gap width) rubberbands the other cards on drop.
     #[test]
     fn shape_row_total_width_invariant_through_drop() {
         const N: usize = 4;
@@ -2198,7 +2039,6 @@ mod drag_tests {
                     ui.spacing_mut().item_spacing.x = SPACING;
                     let drop_idx = Some(target_slot);
                     for i in 0..N {
-                        // Make-room gap before card i.
                         let gap_id = ui.make_persistent_id(("gap", i));
                         let _ = make_room_gap(ui, drop_idx == Some(i), gap_id, 18.0, CARD_W);
                         let card_id = ui.make_persistent_id(("card", i));
@@ -2213,7 +2053,6 @@ mod drag_tests {
                                 });
                         });
                     }
-                    // Trailing gap.
                     let trail_id = ui.make_persistent_id(("gap", N));
                     let _ = make_room_gap(ui, drop_idx == Some(N), trail_id, 18.0, CARD_W);
                     *total = ui.min_rect().width();
@@ -2229,7 +2068,6 @@ mod drag_tests {
         let _ = ctx.run(pointer_press(0.05, card0_center), |c| {
             render_during_drag(c, &mut total_during_drag)
         });
-        // Past the threshold and past the row to the trailing slot.
         let target_pos = egui::pos2(400.0, 9.0);
         let _ = ctx.run(pointer_move(0.10, target_pos), |c| {
             render_during_drag(c, &mut total_during_drag)
@@ -2243,7 +2081,6 @@ mod drag_tests {
         }
         let drag_total = total_during_drag;
         let dragged_id = ctx.dragged_id();
-        // Release.
         let release_input = egui::RawInput {
             screen_rect: Some(screen()),
             time: Some(0.6),
@@ -2280,8 +2117,6 @@ mod drag_tests {
         );
     }
 
-    /// `dnd_drag_source_collapsing` round-trips through a closure run in two
-    /// egui layers without a same-id-in-two-layers panic.
     #[test]
     fn collapsing_helper_in_two_pass_no_layer_collision() {
         let ctx = egui::Context::default();
@@ -2311,8 +2146,6 @@ mod drag_tests {
         let _ = ctx.run(warmup_input(0.05), render);
     }
 
-    /// `make_persistent_id(...)` keys also start a drag; guards against
-    /// hard-coding one id flavour.
     #[test]
     fn make_persistent_id_starts_drag() {
         let ctx = egui::Context::default();
@@ -2358,17 +2191,12 @@ mod section_cap_projection_tests {
     //! the reconstructed 4D cap vertex per-vertex, matching the parent wireframe.
     use super::*;
 
-    /// `perspective_scale_at_w` reports `Some(scale)` exactly for affine
-    /// projections and `None` for non-affine ones; consumers branch on this, and
-    /// a stray scalar on a non-affine arm would render a w-only-scaled ghost.
     #[test]
     fn perspective_scale_returns_none_for_non_affine() {
-        // Affine: Identity at any w is unit scale.
         assert_eq!(
             perspective_scale_at_w(0.3, &loam_math::Projection::Identity),
             Some(1.0)
         );
-        // Affine: Perspective4D at w_slice is `focal / (focal - w_slice)`.
         let focal = 2.0;
         let w_slice = 0.5;
         let got = perspective_scale_at_w(
@@ -2378,7 +2206,6 @@ mod section_cap_projection_tests {
             },
         );
         assert_eq!(got, Some(focal / (focal - w_slice)));
-        // Non-affine: both report `None`.
         assert_eq!(
             perspective_scale_at_w(0.0, &loam_math::Projection::Stereographic { pole: Vec4::W }),
             None
@@ -2389,10 +2216,6 @@ mod section_cap_projection_tests {
         );
     }
 
-    /// A cap vertex at `w = w_slice` lands at the same world R³ point via the
-    /// affine shim and a direct per-vertex `Perspective4D` projection: scaling
-    /// the dropped-w cap by `focal / (focal - w_slice)` IS the projection of
-    /// `(x, y, z, w_slice)`, so the affine fast path is exact, not approximate.
     #[test]
     fn section_cap_matches_wireframe_under_perspective4d() {
         let focal = 2.0;
@@ -2403,10 +2226,7 @@ mod section_cap_projection_tests {
         let body_pos = Vec3::new(1.3, -0.7, 0.2);
         let scale = perspective_scale_at_w(w_slice, &proj);
         assert!(scale.is_some(), "Perspective4D must take the affine shim");
-        // Off-axis cap vertices sharing the slice's w.
         for cap_r3 in [[0.5, 0.0, 0.0], [0.0, 0.3, -0.2], [-0.4, 0.1, 0.6]] {
-            // Affine shim path vs per-vertex projection of the reconstructed 4D
-            // cap vertex (the wireframe path).
             let via_shim =
                 cap_vertex_projected_and_world(cap_r3, w_slice, scale, &proj, body_pos).1;
             let p4 = Vec4::new(cap_r3[0], cap_r3[1], cap_r3[2], w_slice);
@@ -2422,11 +2242,6 @@ mod section_cap_projection_tests {
         }
     }
 
-    /// Under Stereographic, the equatorial slice (`w_slice = 0`) is opposite the
-    /// `+w` pole, so every reconstructed-and-projected cap vertex is finite,
-    /// pinning the per-vertex non-affine path against NaN/Inf in the upload
-    /// buffer. The test avoids the exact origin, which no cap vertex reaches and
-    /// which `project_point` cannot normalize onto S³.
     #[test]
     fn section_cap_per_vertex_finite_under_stereographic() {
         let w_slice = 0.0;
@@ -2434,7 +2249,6 @@ mod section_cap_projection_tests {
         let body_pos = Vec3::new(0.5, 0.0, -0.3);
         let scale = perspective_scale_at_w(w_slice, &proj);
         assert_eq!(scale, None, "Stereographic must take the per-vertex path");
-        // Cap vertices across the equatorial 3-flat, small radius to near-shell.
         for cap_r3 in [
             [0.5, 0.0, 0.0],
             [0.0, -0.4, 0.3],
@@ -2451,10 +2265,6 @@ mod section_cap_projection_tests {
         }
     }
 
-    /// Edge-line preservation, flat endpoint chords, and cap scalar shortcuts
-    /// are independent: Schlegel preserves straight edges yet needs per-vertex
-    /// cap projection; Stereographic does not preserve a chord interior, but its
-    /// flat wireframe is an endpoint-chord overlay.
     #[test]
     fn flat_edge_chord_policy_splits_from_cap_scale_policy() {
         let schlegel = loam_math::Projection::schlegel(Vec4::W, 0.5, 0.75);
@@ -2488,8 +2298,6 @@ mod section_cap_projection_tests {
         );
     }
 
-    /// Zero-blend stereographic is the comparison overlay: project endpoints and
-    /// draw the R3 chord; the faithful S3 edge is sampled at blend one.
     #[test]
     fn stereographic_zero_blend_is_endpoint_chord_overlay() {
         let proj = loam_math::Projection::Stereographic { pole: Vec4::W };
@@ -2530,9 +2338,6 @@ mod section_cap_projection_tests {
         assert_eq!(mesh.segments[0].1, expected_b);
     }
 
-    /// Schlegel is not affine for cap scaling, but it is a central projection:
-    /// flat R⁴ edges map to straight R³ chords. This catches the old
-    /// "non-affine == must subdivide" mistake.
     #[test]
     fn schlegel_flat_wireframe_edge_is_endpoint_chord() {
         let proj = loam_math::Projection::schlegel(Vec4::W, 0.5, 1.0);
@@ -2567,9 +2372,6 @@ mod section_cap_projection_tests {
         );
     }
 
-    /// Affine projections keep the single-segment fast path: a flat Perspective4D
-    /// edge emits one segment and the cap vertex sits on it. Guards the perf-
-    /// sensitive common case from the subdivided branch.
     #[test]
     fn affine_wireframe_keeps_single_segment_and_caps_land_on_it() {
         let proj = loam_math::Projection::Perspective4D {
@@ -2615,11 +2417,6 @@ mod section_cap_projection_tests {
         );
     }
 
-    /// The two-layer world-transform invariant: the honest layer maps a cap
-    /// vertex to the same world R³ point under every projection (forced drop-w by
-    /// [`state::section_layer_projection`]), while the projected cap moves with
-    /// the active projection. A projection change is non-destructive to the
-    /// honest slice and effective on the projected cap.
     #[test]
     fn honest_section_cap_is_projection_invariant_projected_cap_is_not() {
         let body_pos = Vec3::new(0.7, -0.2, 0.4);
@@ -2636,7 +2433,6 @@ mod section_cap_projection_tests {
             loam_math::Projection::schlegel(Vec4::W, 0.5, 0.9),
         ];
 
-        // Honest layer (drop-w): identical under every active projection.
         let honest_reference = {
             let proj = state::section_layer_projection(true, loam_math::Projection::Identity);
             let scale = perspective_scale_at_w(w_slice, &proj);
@@ -2644,7 +2440,6 @@ mod section_cap_projection_tests {
         };
         let mut projected_caps = Vec::new();
         for active in actives {
-            // Honest layer is drop-w regardless of `active`.
             let honest_proj = state::section_layer_projection(true, active);
             assert_eq!(
                 honest_proj,
@@ -2667,7 +2462,6 @@ mod section_cap_projection_tests {
                 );
             }
 
-            // Projected layer follows `active`.
             let cap_proj = state::section_layer_projection(false, active);
             assert_eq!(cap_proj, active, "projected layer must follow {active:?}");
             let cap_scale = perspective_scale_at_w(w_slice, &cap_proj);
@@ -2700,8 +2494,6 @@ mod section_cap_projection_tests {
         (p - (s + t * d)).length()
     }
 
-    // ---- Stereographic pole clip ----------------------------------------
-    //
     // These pin the near-pole clip: a vertex on or near the projection pole
     // maps to the large-but-finite point the pole-denominator clamp produces,
     // and the wireframe builder DROPS the over-radius sub-segments (not a
@@ -2712,12 +2504,6 @@ mod section_cap_projection_tests {
     // a genuine projection discontinuity; the clip bounds and de-NaNs it but the
     // at-pole instant stays discontinuous, a visual property needing eyes-on.
 
-    /// The per-shape, camera-adaptive clip radius. The 16-cell (the only shape
-    /// with `+w`-pole vertices) stays below the camera distance (no rubberband),
-    /// clears a unit-circumradius image (real geometry never clipped), stays
-    /// under the pole-clamp ceiling, and saturates at
-    /// [`STEREOGRAPHIC_CELL16_RADIUS_MAX`] on zoom-out. Every other shape is
-    /// unclipped (`INFINITY`), its image naturally bounded.
     #[test]
     fn stereographic_view_radius_tracks_camera_distance() {
         // The worst non-pole vertex image (`+w`-cell corner at w = 0.5,
@@ -2778,10 +2564,6 @@ mod section_cap_projection_tests {
         }
     }
 
-    /// `stereographic_clip_radius` returns `Some(R)` only for Stereographic (the
-    /// one projection with a point-at-infinity) and `None` elsewhere. A stray
-    /// `Some` would clip legitimate geometry; a stray `None` would draw the pole
-    /// blow-up.
     #[test]
     fn stereographic_clip_radius_only_for_stereographic() {
         assert_eq!(
@@ -2850,8 +2632,6 @@ mod section_cap_projection_tests {
         Vec4::new(t.sin(), 0.0, 0.0, t.cos())
     }
 
-    /// Zero-blend stereographic is an endpoint chord: if either endpoint clips
-    /// out near the pole the flat chord drops, but the sampled S3 path resumes.
     #[test]
     fn stereographic_zero_blend_near_pole_uses_endpoint_clip() {
         let zero = build_stereographic_edge(near_pole(1.0), Vec4::new(1.0, 0.0, 0.0, 0.0));
@@ -2867,9 +2647,6 @@ mod section_cap_projection_tests {
         );
     }
 
-    /// Boundedness: every emitted endpoint has magnitude <=
-    /// `STEREOGRAPHIC_VIEW_RADIUS`, even on a pole-grazing edge (1 degree off the
-    /// pole out to the equator), since the clip drops the near-pole blow-up.
     #[test]
     fn stereographic_clip_output_bounded_by_radius() {
         let segs =
@@ -2890,13 +2667,6 @@ mod section_cap_projection_tests {
         }
     }
 
-    /// The clip cuts a straddling sub-segment AT the boundary and DROPS one
-    /// running deep through the pole; neither a whole-segment drop nor a rescale.
-    /// Fixture: an edge whose great circle passes through the `+w` pole
-    /// (endpoints 30 degrees off, opposite sides). Three guarantees:
-    /// (1) boundary cut, some endpoint within a hair of `R`, not stopped at the
-    /// last in-radius sample; (2) deep-pole drop leaves a GAP (< samples), where
-    /// a rescale-clamp would keep every segment; (3) every endpoint within `R`.
     #[test]
     fn stereographic_clip_cuts_to_boundary_and_drops_deep_pole() {
         let r = STEREOGRAPHIC_VIEW_RADIUS;
@@ -2939,14 +2709,6 @@ mod section_cap_projection_tests {
         }
     }
 
-    /// Regression for the 16-cell near-pole artifacts under `xw` rotation: the
-    /// visible arc tip must sit at the clip boundary and stay there as the vertex
-    /// sweeps closer, with no popping and no dive toward the center. Fixture: the
-    /// 16-cell edge `+e_w -> +e_y` (`+e_y` fixed, `+e_w` rotating to the pole), so
-    /// the tip is the near-pole end. The `phi` sweep (3 deg, just past the
-    /// view-radius crossing, down to 0.05 deg inside the clamp band) must hold `R`
-    /// to within a unit; both prior defects (whole-segment drop, clamp-band
-    /// deflation) leave the tip far below `R` somewhere in the sweep.
     #[test]
     fn stereographic_clip_arc_tip_holds_boundary_near_pole() {
         let r = STEREOGRAPHIC_VIEW_RADIUS;
@@ -2976,9 +2738,6 @@ mod section_cap_projection_tests {
         }
     }
 
-    /// Finiteness: an edge with one endpoint exactly on the pole emits only
-    /// finite, in-radius endpoints. The pole maps to the origin (zero numerator);
-    /// its near-pole neighbors blow up and drop.
     #[test]
     fn stereographic_pole_endpoint_edge_is_finite_and_bounded() {
         let segs = build_spherical_stereographic_edge(Vec4::W, Vec4::new(1.0, 0.0, 0.0, 0.0));
@@ -2997,10 +2756,6 @@ mod section_cap_projection_tests {
         }
     }
 
-    /// Non-perturbation off the pole: a well-clear spherical edge keeps every
-    /// sub-segment, and each endpoint equals the raw `project_to_world` of its
-    /// great-circle sample bit-for-bit. The clip is a pure post-filter; it never
-    /// moves a retained sample.
     #[test]
     fn stereographic_clip_does_not_perturb_off_pole_edge() {
         let proj = loam_math::Projection::Stereographic { pole: Vec4::W };
@@ -3028,9 +2783,6 @@ mod section_cap_projection_tests {
         }
     }
 
-    /// The clip adds no per-edge allocation: re-building a pole-grazing blended
-    /// edge leaves `slerp_scratch` at its first-edge capacity. The clip is a
-    /// streaming `continue`, not a `filter().collect()`.
     #[test]
     fn stereographic_clip_reuses_scratch_without_realloc() {
         let proj = loam_math::Projection::Stereographic { pole: Vec4::W };
@@ -3080,16 +2832,12 @@ mod section_cap_projection_tests {
         );
     }
 
-    // ---- Cap-fill + points-overlay near-pole drop ----------------------
-    //
     // These pin gaps the perimeter outline already covered: the projected-cap
     // FILL (`retain_in_radius_triangles`, triangle granularity) and the points
     // overlay (`sample_in_radius` per vertex / cell-center). Both reuse the same
     // predicate as the wireframe edges and perimeter, so all four cull on one
     // drop cone. No flicker-freeness claim; see the note above.
 
-    /// Demo default pole, kept in sync with the state constant by
-    /// `state::stereographic_default_pole_is_unit_cell_center`.
     fn default_stereographic() -> loam_math::Projection<4> {
         loam_math::Projection::Stereographic {
             pole: state::STEREOGRAPHIC_DEFAULT_POLE,
@@ -3103,9 +2851,6 @@ mod section_cap_projection_tests {
         cap_vertex_projected_and_world(cap_r3, w_slice, scale, proj, Vec3::ZERO).0
     }
 
-    /// The cap FILL drops, at triangle granularity, any triangle touching a
-    /// near-pole vertex and keeps an all-far fan. A whole-triangle drop (no
-    /// boundary cut), mirroring the deep-pole drop for the fill path.
     #[test]
     fn cap_fill_triangle_dropped_near_pole() {
         let r = STEREOGRAPHIC_VIEW_RADIUS;
@@ -3148,10 +2893,6 @@ mod section_cap_projection_tests {
         );
     }
 
-    /// Fill and perimeter cull in lockstep: the fill's
-    /// `retain_in_radius_triangles` agrees with the perimeter's per-segment
-    /// `sample_in_radius` on the same projected point and radius; both drop when
-    /// the magnitude exceeds the radius.
     #[test]
     fn cap_fill_matches_perimeter_clip() {
         let proj = loam_math::Projection::Stereographic { pole: Vec4::W };
@@ -3182,9 +2923,6 @@ mod section_cap_projection_tests {
         assert!(!fill_keeps, "the near-pole fan must be dropped");
     }
 
-    /// The points overlay drops a near-pole vertex and keeps a far one, the same
-    /// `sample_in_radius` gate `render_points` applies per vertex / cell-center.
-    /// Affine projection (`clip_radius == None`) keeps every point.
     #[test]
     fn points_overlay_drops_near_pole_vertex() {
         let proj = loam_math::Projection::Stereographic { pole: Vec4::W };
@@ -3217,9 +2955,6 @@ mod section_cap_projection_tests {
         );
     }
 
-    /// The default-pole render path applies the cap clip: a cap vertex near `+w`
-    /// drops, a far one is kept. Pins that `resolved_wireframe_projection`'s pole
-    /// substitution flows into the cap fill without re-deriving the projection.
     #[test]
     fn cap_fill_uses_default_plus_w_pole() {
         let proj = default_stereographic();
@@ -3240,9 +2975,6 @@ mod section_cap_projection_tests {
         );
     }
 
-    /// The cap-fill clip scratch retains capacity across two compactions, so the
-    /// hot path has no per-frame allocation. The fill-path counterpart to
-    /// `stereographic_clip_reuses_scratch_without_realloc`.
     #[test]
     fn cap_fill_scratch_reused_without_realloc() {
         let r = STEREOGRAPHIC_VIEW_RADIUS;
@@ -3273,11 +3005,6 @@ mod section_cap_projection_tests {
 mod shader_clock_tests {
     use super::shader_source;
 
-    /// `u.time` and `u.tick` are refreshed every frame but excluded from the
-    /// upload-dirty test in `Demo::update`, which is sound only while nothing
-    /// in the assembled shader reads them. A kernel or scene emit that starts
-    /// animating on the clock fails here rather than silently rendering a
-    /// frozen frame on an otherwise idle scene.
     #[test]
     fn assembled_shader_reads_no_clock() {
         let src = shader_source();

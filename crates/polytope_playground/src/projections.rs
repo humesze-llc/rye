@@ -1,6 +1,3 @@
-//! Wireframe projection modes: the `WireframeProjection` enum, Schlegel diagram
-//! parameter resolution, per-mode edge-blend selection, and mode annotations.
-
 use loam_shape::polytope::Polytope4;
 
 /// How the parent wireframe's 4D vertex positions project to R³. Independent of
@@ -231,14 +228,9 @@ pub(crate) fn apply_projection_selection_defaults(
     }
 }
 
-/// Short educational annotation for the active projection: a callout `title`
-/// plus a one-to-three-sentence `body`. Surfaced via `loam_egui::callout` (see
-/// `Demo::render_mode_annotation`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ModeAnnotation {
-    /// Callout window title: the mode's short name.
     pub(crate) title: &'static str,
-    /// One to three sentences explaining the active projection.
     pub(crate) body: String,
 }
 
@@ -332,7 +324,6 @@ impl WireframeProjection {
         WireframeProjection::Hyperslice,
     ];
 
-    /// Display label for the egui projection radio.
     pub(crate) fn label(self) -> &'static str {
         match self {
             WireframeProjection::Shadow => "Shadow",
@@ -371,8 +362,6 @@ impl WireframeProjection {
             WireframeProjection::WPinhole => loam_math::Projection::Perspective4D {
                 focal_distance: 2.0,
             },
-            // Schlegel needs cached params + rotor (see doc above); drop-w
-            // fallback until `Demo::resolved_wireframe_projection` resolves it.
             WireframeProjection::Schlegel { .. } => loam_math::Projection::Identity,
             WireframeProjection::Stereographic => loam_math::Projection::Stereographic {
                 pole: STEREOGRAPHIC_DEFAULT_POLE,

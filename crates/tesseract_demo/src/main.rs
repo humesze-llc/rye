@@ -1,7 +1,3 @@
-//! Tesseract w-depth demo. An 8-cell wireframe spun in 4D, projected to R³ via
-//! `Perspective4D` (the "cube within a cube" view), drawn as antialiased lines.
-//! Camera is orbit by default, free-roam (WASD + mouse) on `F`.
-//!
 //! The minimal-footprint counterpart to polytope_playground: one render pipeline
 //! (the line rasterizer, no SDF / triangle / point passes, no depth buffer) and
 //! none of the rotor-composition UI, for a smaller wasm bundle.
@@ -45,7 +41,6 @@ const POLYTOPE_SCALE: f32 = 1.5;
 const EDGE_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
 const EDGE_WIDTH_PX: f32 = 1.6;
 
-/// Camera modes. Orbit is the default; `F` toggles FreeRoam (WASD + mouselook).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum CameraMode {
     Orbit,
@@ -61,19 +56,13 @@ struct TesseractApp {
     /// Camera state. The 4D rotation is on the geometry side (the rotor), not the
     /// camera, which is plain `EuclideanR3`.
     camera: Camera<EuclideanR3>,
-    /// Orbit controller (default mode); reused across toggles.
     orbit: OrbitController<EuclideanR3>,
-    /// Freecam preset (mouse-look + WASD + cursor grab); owns its own pose/grab
-    /// state. The demo only toggles `set_active` and calls `advance`.
     freecam: Freecam,
-    /// Active controller selection.
     mode: CameraMode,
-    /// Accumulated 4D rotor: the polytope's current orientation.
     rotor: Rotor4,
     /// Spin angular velocity, integrated into `rotor` each tick. Preserved across
     /// pause + `R` so resuming keeps the same spin.
     omega: Bivector4,
-    /// Pause flag; `T`/`Space` toggle it. `omega` is preserved while paused.
     paused: bool,
     /// Dev console (backtick): `trace`, `log`, etc. `()` Ctx since no command
     /// needs demo state.
@@ -141,7 +130,6 @@ impl App for TesseractApp {
             .map(|v| matches!(v, "true" | "1" | "yes"))
             .unwrap_or(false);
 
-        // One pipeline, no depth: `DepthMode::Off` skips the depth attachment.
         let mut lines = LineRasterStaticR4Node::new(
             &ctx.rd.device,
             ctx.rd.target_format(),
@@ -164,13 +152,11 @@ impl App for TesseractApp {
         }
         lines.upload_mesh(&ctx.rd.device, &ctx.rd.queue, &canonical);
 
-        // Orbit start: slightly above + behind the cube.
         let mut camera = Camera::<EuclideanR3>::at_origin();
         camera.position = Vec3::new(0.0, 1.0, 5.0);
         let mut orbit: OrbitController<EuclideanR3> = OrbitController::default();
         orbit.set_orbit(5.0, -0.15);
 
-        // Freecam preset, inactive at startup; `F` activates it.
         let freecam = Freecam::new().with_speed(2.5);
 
         let mut console = Console::<()>::new();
@@ -224,14 +210,11 @@ impl App for TesseractApp {
         // stall doesn't catapult the rotor through a half-revolution on catch-up.
         let dt = ctx.dt.min(0.1);
 
-        // 4D rotor integration: `(omega * dt).exp()` is the dt-step rotor,
-        // composed onto the current orientation.
         if !self.paused {
             let step = (self.omega * dt).exp();
             self.rotor = (step * self.rotor).normalize();
         }
 
-        // Advance whichever controller is active.
         match self.mode {
             CameraMode::Orbit => {
                 self.orbit
@@ -291,7 +274,6 @@ impl App for TesseractApp {
                 self.paused = !self.paused;
             }
             KeyCode::KeyR => {
-                // Reset orientation; omega is preserved.
                 self.rotor = Rotor4::IDENTITY;
             }
             _ => {}
@@ -314,8 +296,6 @@ impl App for TesseractApp {
             FOCAL_DISTANCE,
         );
 
-        // Clear pass into the shared encoder. Could fuse into the raster pass via
-        // a LoadOp::Clear variant; deferred until a second demo needs it.
         {
             let _clear = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("tesseract_demo::clear"),
@@ -348,7 +328,6 @@ impl App for TesseractApp {
     }
 
     fn ui(&mut self, ctx: &egui::Context, _frame: &mut FrameCtx<'_>) {
-        // Top-left HUD: mode + key legend, no interactive widgets.
         egui::Area::new(egui::Id::new("tesseract-hud"))
             .anchor(egui::Align2::LEFT_TOP, [12.0, 12.0])
             .show(ctx, |ui| {
@@ -378,10 +357,7 @@ impl App for TesseractApp {
                     format!("build {}{}", env!("BUILD_HASH"), env!("BUILD_DIRTY"),),
                 );
             });
-        // F3-toggle perf overlay; cheap when hidden.
         self.perf.show(ctx);
-        // Mirror tracing events and applied-command output into the console
-        // (the former only when `log on`), then draw it.
         loam_app::log::pump_into(&mut self.console);
         loam_app::command::pump_into(&mut self.console);
         self.console.ui(ctx);

@@ -1,6 +1,3 @@
-//! Wireframe edge geometry: stereographic clip and near-pole reconstruction,
-//! chord and great-circle-arc edge building, and per-cell w-slice helpers.
-
 use glam::{Vec3, Vec4};
 use loam_shape::polytope::Polytope4;
 use loam_shape::LineMesh;
@@ -105,7 +102,6 @@ pub(crate) fn perspective_scale_at_w(
         loam_math::Projection::Perspective4D { focal_distance } => {
             Some(focal_distance / (focal_distance - w_slice).max(PERSPECTIVE_SCALE_DENOM_EPSILON))
         }
-        // Non-affine: no single-scalar shortcut; caller projects per-vertex.
         loam_math::Projection::Schlegel { .. } | loam_math::Projection::Stereographic { .. } => {
             None
         }
@@ -136,8 +132,6 @@ pub(crate) fn flat_edge_uses_endpoint_chord(projection: &loam_math::Projection<4
     }
 }
 
-/// Map a body-local R³ point to world R³: scale by `section_scale` (the
-/// perspective scale at the cap's w) then translate by the body's R³ position.
 pub(crate) fn local_r3_to_world(p: [f32; 3], section_scale: f32, body_pos_r3: Vec3) -> [f32; 3] {
     let scaled = Vec3::from_array(p) * section_scale;
     (scaled + body_pos_r3).to_array()
@@ -378,9 +372,7 @@ pub(crate) fn push_clipped_subsegment(
         mesh.widths.push(width);
     };
     match (clip_radius, prev_in, cur_in) {
-        // No clip, or both samples inside: emit the whole sub-segment.
         (None, _, _) | (Some(_), true, true) => push(prev_world, cur_world, prev_c, cur_c),
-        // Both outside: drop, so the polyline breaks across the pole region.
         (Some(_), false, false) => {}
         // Inside -> outside: cut the far end to the clip sphere.
         (Some(r), true, false) => {
@@ -509,7 +501,6 @@ pub(crate) fn push_blended_edge(
     slerp_scratch: &mut Vec<Vec4>,
     view_radius: f32,
 ) {
-    // Flat edge: one R3 chord per edge (a comparison overlay under stereographic).
     if blend <= 0.0 {
         if flat_edge_uses_endpoint_chord(projection) {
             let clip_radius = stereographic_clip_radius(projection, view_radius);

@@ -57,13 +57,10 @@ impl Default for SlotSpin {
 }
 
 impl SlotSpin {
-    /// Displayed angle for plane `plane_idx` at time `t`.
     pub(crate) fn angle_at(&self, plane_idx: usize, t: f32) -> f32 {
         active_plane_angle(self.base_angles[plane_idx], self.active[plane_idx], t)
     }
 
-    /// Active-mode rotor at time `t`: the ordered product this slot's
-    /// baselines and mask compose to. See [`compose_active_rotor`].
     pub(crate) fn active_rotor_at(&self, t: f32) -> Rotor4 {
         compose_active_rotor(&self.base_angles, &self.active, t)
     }
@@ -236,10 +233,6 @@ mod tests {
             .asin()
     }
 
-    /// The node's headline property: two slots given different plane masks are
-    /// two bodies with different angular velocities, and their rotors separate
-    /// as the shared clock advances. A store that kept one rotor for the row,
-    /// or that recomposed every slot from one mask, holds them together here.
     #[test]
     fn slots_with_different_masks_diverge_and_stay_on_the_unit_sphere() {
         let mut spins = SlotSpins::new(2);
@@ -267,9 +260,6 @@ mod tests {
         );
     }
 
-    /// Identical masks stay locked together forever, which is what keeps the
-    /// boot row slice-comparable: divergence is a thing the user asks for, not
-    /// numerical noise between slots.
     #[test]
     fn slots_with_identical_masks_never_separate() {
         let mut spins = SlotSpins::new(3);
@@ -280,10 +270,6 @@ mod tests {
         }
     }
 
-    /// A directed slot is skipped by the UI clock and keeps whatever its other
-    /// writer put there, while its neighbours recompose as usual. A mask
-    /// shorter than the row leaves its tail to the clock, so a timeline
-    /// authored against a shorter row cannot silently freeze the new slots.
     #[test]
     fn a_directed_slot_is_skipped_by_the_ui_clock_and_its_neighbours_are_not() {
         let mut spins = SlotSpins::new(3);
@@ -307,9 +293,6 @@ mod tests {
         spins.set_rotor(9, Rotor4::IDENTITY);
     }
 
-    /// A slot with an empty mask holds its baseline while the clock runs, so
-    /// "auto-rotate" is per slot and not a row-wide switch: one body can spin
-    /// while its neighbour is parked at an angle the user set.
     #[test]
     fn an_empty_mask_parks_one_slot_while_its_neighbour_spins() {
         let mut spins = SlotSpins::new(2);
@@ -328,10 +311,6 @@ mod tests {
         );
     }
 
-    /// Selection is the press ray's pick: the slot the user clicked becomes
-    /// the one the controls write, and every other slot is left alone. Runs
-    /// the real picker over the real layout, so a selection wired to the wrong
-    /// slot (or to all of them) fails here.
     #[test]
     fn a_press_aims_the_controls_at_the_body_it_picked_and_no_other() {
         const SLOTS: usize = 4;
@@ -347,7 +326,6 @@ mod tests {
             spins.select_picked(physics.pick(&ray, SLOTS, BODY_SIZE));
             assert_eq!(spins.selected(), target);
 
-            // The edit the controls make lands on the picked slot only.
             spins.selected_spin_mut().base_angles[Plane4::Zw as usize] = 0.5 + target as f32;
             spins.recompose_active(0.0, &[]);
             for slot in 0..SLOTS {
@@ -361,22 +339,16 @@ mod tests {
             }
         }
 
-        // A ray through empty space keeps the last selection: the controls
-        // always have a subject.
         let sky = Ray {
             origin: Vec3::Y * 40.0,
             direction: Vec3::Y,
         };
         spins.select_picked(physics.pick(&sky, SLOTS, BODY_SIZE));
         assert_eq!(spins.selected(), SLOTS - 1);
-        // So does a slot a row edit already retired.
         spins.select_picked(Some(SLOTS + 3));
         assert_eq!(spins.selected(), SLOTS - 1);
     }
 
-    /// A row edit keeps the rotations of the slots that survived it and hands
-    /// the new ones the boot rotation, and it never leaves the selection
-    /// pointing past the end of the row.
     #[test]
     fn sync_preserves_surviving_slots_and_clamps_the_selection() {
         let mut spins = SlotSpins::new(4);
@@ -395,9 +367,6 @@ mod tests {
         assert_eq!(spins.selected(), 1, "growing the row moved the selection");
     }
 
-    /// `Reset orientation` has to clear the baselines, not just the rotor:
-    /// Active recomposes from the baselines on the next frame, so clearing the
-    /// rotor alone is undone before it draws.
     #[test]
     fn clearing_orientation_survives_the_next_recompose() {
         let mut spins = SlotSpins::new(2);
@@ -418,8 +387,6 @@ mod tests {
         );
     }
 
-    /// The full reset returns every slot to the boot state and re-aims the
-    /// controls at the leading slot.
     #[test]
     fn reset_returns_every_slot_to_the_boot_rotation() {
         let mut spins = SlotSpins::new(3);
@@ -435,9 +402,6 @@ mod tests {
         }
     }
 
-    /// The upload gate compares the whole row, so a single rotated slot is
-    /// enough to re-upload. A gate that compared one rotor against one cached
-    /// rotor (the pre-per-slot form) misses exactly this.
     #[test]
     fn one_rotated_slot_makes_the_uploaded_row_stale() {
         let mut spins = SlotSpins::new(4);
@@ -456,8 +420,6 @@ mod tests {
             assert!(!spins.rotors_differ_from(&uploaded));
         }
 
-        // A row edit that changed the slot count changed which body each
-        // rotor belongs to, whatever the values are.
         spins.sync(3);
         assert!(spins.rotors_differ_from(&uploaded));
     }

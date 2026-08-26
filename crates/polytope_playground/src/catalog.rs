@@ -1,7 +1,5 @@
 //! 4D shape catalog: the single source of truth for shape names,
-//! colors, and tooltips. Holds per-polytope metadata, the default
-//! startup row, the categorized catalog, the `+`-menu helper, and the
-//! `shapes` argument parser.
+//! colors, and tooltips.
 
 use anyhow::{anyhow, Result};
 use loam_app::args::Args;
@@ -133,9 +131,6 @@ pub(crate) const SHAPE_CATALOG: &[ShapeEntry] = &[
     },
 ];
 
-/// Category-grouped shape menu: top level lists [`SHAPE_CATEGORIES`],
-/// each a submenu of shapes with a `long_name` hover tooltip.
-/// `on_select` fires on click; the helper closes the menu.
 pub(crate) fn render_shape_catalog_menu(ui: &mut egui::Ui, mut on_select: impl FnMut(ShapeEntry)) {
     for cat in SHAPE_CATEGORIES {
         ui.menu_button(cat.name, |ui| {
@@ -185,7 +180,6 @@ pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
             return Ok(*entry);
         }
     }
-    // Common aliases not in the catalog's `label` / `long_name`.
     Ok(match needle {
         "5cell" | "pentatope" | "tetrahedron" => SHAPE_CATALOG[0],
         "8cell" | "hypercube" | "cube" => SHAPE_CATALOG[1],
@@ -235,12 +229,6 @@ pub(crate) fn parse_row(args: &Args) -> Result<Vec<ShapeEntry>> {
 mod tests {
     use super::*;
 
-    /// Sweeps the whole catalog rather than the four entries the collider swap
-    /// was written for: exactly the shapes whose hull fits the narrowphase
-    /// budget get one, and each of those has an exact inertia to carry with
-    /// it. A shape added to the catalog with 33 vertices, or a polychoron that
-    /// fits the budget but has no derived second moment, fails here rather
-    /// than colliding a truncated hull or a bounding-ball inertia in silence.
     #[test]
     fn every_catalog_entry_gets_a_hull_or_a_ball_and_a_matching_inertia() {
         let with_hull: Vec<&str> = SHAPE_CATALOG
@@ -300,7 +288,6 @@ mod tests {
         let err = parse_row(&args).unwrap_err().to_string();
         assert!(err.contains("--shapes="), "{err}");
 
-        // A trailing `--shapes` with nothing after it is the same mistake.
         assert!(parse_row(&Args::from_argv(["--seed=42", "--shapes"])).is_err());
     }
 

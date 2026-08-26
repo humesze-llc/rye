@@ -42,9 +42,8 @@ pub trait Space {
     /// Parallel-transport `v` along the polyline through `path`, segment by
     /// segment, returning the vector at the final point.
     ///
-    /// Contract: finer
-    /// subdivision converges to true parallel transport along the polyline.
-    /// `path.len() < 2` returns `v` unchanged.
+    /// Contract: finer subdivision converges to true parallel transport
+    /// along the polyline. `path.len() < 2` returns `v` unchanged.
     fn parallel_transport_along(&self, path: &[Self::Point], v: Self::Vector) -> Self::Vector {
         let mut current = v;
         for w in path.windows(2) {

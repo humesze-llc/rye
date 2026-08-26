@@ -12,8 +12,7 @@
 //!
 //! On wasm the user-facing UX is: the `capture` console command registers and prints a
 //! one-liner explaining that frame capture isn't available in the browser preview;
-//! programmatic [`enqueue`] calls silently drop. A future iteration could plumb a JS
-//! download path for one-shot PNG, but that's deferred until a real use case shows up.
+//! programmatic [`enqueue`] calls silently drop.
 
 use std::path::PathBuf;
 

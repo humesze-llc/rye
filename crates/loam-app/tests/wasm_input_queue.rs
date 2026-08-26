@@ -9,10 +9,6 @@ mod input_queue;
 
 use input_queue::{drain_messages, enqueue, InputMessage, MESSAGE_QUEUE_CAPACITY};
 
-/// A queue nothing drains (paused embed, halted RAF chain) must not grow
-/// without bound, and the survivors must be the newest arrivals in order:
-/// evicting the newest instead would strand a key release behind its
-/// press and leave the key stuck down on resume.
 #[test]
 fn queue_caps_at_capacity_keeping_newest_in_arrival_order() {
     const OVERFLOW: u32 = 37;

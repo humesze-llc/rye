@@ -10,10 +10,6 @@
 //! the frame loop opens inside it (`crate::FRAME_LOOP_SECTIONS`, crate-private
 //! so not linkable from here). Without it a reader has to sum the table by
 //! hand to notice that the named sections cover only a fraction of the frame.
-//!
-//! ```ignore
-//! loam_app::trace::register_command(&mut c);
-//! ```
 
 use loam_egui::{cmd, Console};
 use loam_time::frame_trace;
@@ -232,10 +228,6 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// PerfOverlay: F3-style always-on perf readout
-// ---------------------------------------------------------------------------
-
 /// Live FPS / frame-time overlay, F3-toggled. Reads `frame_trace`'s rolling
 /// history and paints FPS, between-frames cadence, frame CPU work, and a
 /// sparkline. Opt in by calling [`PerfOverlay::show`] from `App::ui`.
@@ -302,8 +294,7 @@ impl PerfOverlay {
     ///
     /// Zero-alloc per call: history read via [`frame_trace::with_history`],
     /// samples into a fixed-size stack buffer ([`MAX_WINDOW`] cap),
-    /// percentile sort in place. The prior per-frame `Vec` clone was ~120
-    /// allocations and dominated the alloc telemetry.
+    /// percentile sort in place.
     pub fn show(&mut self, ctx: &loam_egui::egui::Context) {
         use loam_egui::egui;
 
@@ -682,8 +673,6 @@ fn draw_sparkline(ui: &mut loam_egui::egui::Ui, gaps: &[Duration]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Pins the ns/us/ms/s unit boundaries against threshold drift.
 
     #[test]
     fn fmt_dur_emits_ns_under_microsecond() {

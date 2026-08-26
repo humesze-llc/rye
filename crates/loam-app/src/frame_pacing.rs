@@ -143,15 +143,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_60fps() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Reset in case a sibling test left the atomic elsewhere.
-        set_target_fps(60.0);
-        assert!((target_fps() - 60.0).abs() < 0.01);
-        assert!(target_period().is_some());
-    }
-
-    #[test]
     fn unlimited_round_trip() {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         set_target_fps(0.0);

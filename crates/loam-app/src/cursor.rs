@@ -174,10 +174,7 @@ mod tests {
 
     /// The request/take pairs below drive process-global atomics, and cargo
     /// runs tests in one binary on parallel threads, so without this every
-    /// test in this module races every other for the same pending slot. It
-    /// went unnoticed because the window is a few instructions wide: the
-    /// suite only failed under a full-workspace run, and passed on every
-    /// re-run of the crate alone. Recover from poisoning rather than
+    /// test in this module races every other for the same pending slot. Recover from poisoning rather than
     /// propagate it, so one failing test reports its own assertion instead
     /// of poisoning its four siblings into a confusing cascade.
     static CURSOR_GLOBALS: Mutex<()> = Mutex::new(());
@@ -240,8 +237,6 @@ mod tests {
         mark_applied(GrabMode::None, true);
     }
 
-    // Warp-to-center is swap-on-read: set once, consumed once, then clears,
-    // so the runner doesn't re-warp every frame.
     #[test]
     fn warp_to_center_is_one_shot() {
         let _guard = serialized();

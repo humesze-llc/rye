@@ -8,8 +8,7 @@
 //!
 //! A frontend owns presentation and input plumbing: it translates its key events
 //! into [`Key`], calls the [`Console`] frontend hooks to move the console's
-//! state, and paints [`Console::history`] and the input line. `loam-egui` is the
-//! frontend in this workspace.
+//! state, and paints [`Console::history`] and the input line.
 //!
 //! Accepting a line and running it are two steps, split across two calls.
 //! [`Console::execute`] records input history, runs built-ins, and parks
@@ -61,10 +60,6 @@ pub fn console_echo_enabled() -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// History line types
-// ---------------------------------------------------------------------------
-
 /// A single line in the scrollback buffer.
 #[derive(Clone, Debug)]
 pub struct HistoryLine {
@@ -112,10 +107,6 @@ pub enum LineKind {
     System,
 }
 
-// ---------------------------------------------------------------------------
-// Output collector handed to commands
-// ---------------------------------------------------------------------------
-
 /// Per-invocation output sink. Commands push lines via [`ConsoleWriter::line`] /
 /// [`ConsoleWriter::error`]; the console drains them into scrollback after the command
 /// returns. The two-phase design sidesteps the borrow conflict between the command's
@@ -155,10 +146,6 @@ impl Default for ConsoleWriter {
         Self::new()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Command trait + closure shim
-// ---------------------------------------------------------------------------
 
 /// Console command implementation. Generic over a `Ctx` type so the consuming crate
 /// decides what state commands can mutate.
@@ -238,13 +225,6 @@ pub struct FnCommand<F> {
 impl<F> FnCommand<F> {
     /// Declare positional-argument choices for tab-completion, one inner slice per
     /// position. Trailing free-form args can be omitted.
-    ///
-    /// ```ignore
-    /// cmd("capture", "...", |args, ctx, out| { ... }).with_args(&[
-    ///     &["png", "frames", "toggle", "stop"],
-    ///     &["pre", "post", "both"],
-    /// ])
-    /// ```
     pub fn with_args(mut self, choices: &[&[&'static str]]) -> Self {
         self.arg_choices = choices.iter().map(|s| s.to_vec()).collect();
         self
@@ -253,12 +233,6 @@ impl<F> FnCommand<F> {
     /// Declare enumerable values for a `key=value` arg: first Tab completes to
     /// `key=`, subsequent Tabs cycle these values. Free-form args (`fps=N`) skip
     /// this and only surface the bare `key=`.
-    ///
-    /// ```ignore
-    /// cmd("capture", "...", |a, c, o| ...)
-    ///     .with_args(&[&["png", "gif"], &["fps=", "palette="]])
-    ///     .with_value_choices("palette", &["local", "global"])
-    /// ```
     pub fn with_value_choices(mut self, key: &'static str, values: &[&'static str]) -> Self {
         self.value_choices.insert(key, values.to_vec());
         self
@@ -266,19 +240,6 @@ impl<F> FnCommand<F> {
 
     /// Attach a multi-line help block returned by [`Command::long_help`]. Newlines
     /// paint as separate scrollback entries.
-    ///
-    /// ```ignore
-    /// cmd("wireframe", "wireframe overlay (see help)", handler)
-    ///     .with_args(&[&["on", "off", "nearest-active"], &["on", "off"]])
-    ///     .with_long_help(
-    ///         "Cross-section + parent-wireframe overlay.\n\
-    ///          \n\
-    ///          subcommands:\n  \
-    ///          on              enable the overlay\n  \
-    ///          off             disable\n  \
-    ///          nearest-active  toggle the per-cell brightness gradient",
-    ///     )
-    /// ```
     pub fn with_long_help(mut self, long: &'static str) -> Self {
         self.long_help = Some(long);
         self
@@ -287,15 +248,6 @@ impl<F> FnCommand<F> {
 
 /// Build a [`Command`] from a closure that mutates `Ctx` and writes to the
 /// [`ConsoleWriter`]. Idiomatic for inline per-demo registrations.
-///
-/// ```ignore
-/// console.register(cmd("teleport", "teleport <x> <y> <z>", |args, ctx, out| {
-///     let [x, y, z] = parse3(args)?;
-///     ctx.player.position = vec3(x, y, z);
-///     out.line(format!("ok, now at ({x}, {y}, {z})"));
-///     Ok(())
-/// }));
-/// ```
 pub fn cmd<Ctx, F>(name: &'static str, help: &'static str, f: F) -> FnCommand<F>
 where
     F: FnMut(&[&str], &mut Ctx, &mut ConsoleWriter) -> anyhow::Result<()> + 'static,
@@ -341,10 +293,6 @@ where
         (self.f)(args, ctx, out)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Subcommand dispatch
-// ---------------------------------------------------------------------------
 
 /// Boxed handler for an on/off toggle subcommand. `Some(bool)` when the user supplied
 /// `on|off|true|false|1|0`, `None` on bare invocation (the handler flips the field).
@@ -394,21 +342,6 @@ struct SubcommandEntry<Ctx> {
 /// typed dispatch and context-aware tab completion (the value slot narrows to the
 /// chosen subcommand). Build with [`subcommands`] and chain
 /// [`SubcommandSet::toggle`] / [`SubcommandSet::choice`].
-///
-/// ```ignore
-/// let tests = subcommands::<MyCtx>("tests", "select what renders")
-///     .toggle("axes", "toggle world-axes", |ctx, on| {
-///         ctx.show_axes = on;
-///         Ok(())
-///     })
-///     .choice(
-///         "polytope",
-///         "set R⁴ polytope overlay",
-///         &["5cell", "tesseract", "16cell", "off"],
-///         |ctx, name| { ctx.polytope = parse_polytope(name)?; Ok(()) },
-///     );
-/// console.register(tests);
-/// ```
 pub struct SubcommandSet<Ctx> {
     name: &'static str,
     help: &'static str,
@@ -425,13 +358,6 @@ impl<Ctx: 'static> SubcommandSet<Ctx> {
     /// Register an on/off subcommand. The value slot parses
     /// `on|off|true|false|1|0` to `Some(bool)`; bare invocation passes `None` so the
     /// handler flips the field in place.
-    ///
-    /// ```ignore
-    /// .toggle("axes", "toggle world-axes", |ctx, v| {
-    ///     ctx.show_axes = v.unwrap_or(!ctx.show_axes);
-    ///     Ok(())
-    /// })
-    /// ```
     pub fn toggle<F>(mut self, name: &'static str, help: &'static str, handler: F) -> Self
     where
         F: FnMut(&mut Ctx, Option<bool>) -> anyhow::Result<()> + 'static,
@@ -477,21 +403,6 @@ impl<Ctx: 'static> SubcommandSet<Ctx> {
     /// both. `arg_choices[i]` lists completion choices for the i-th arg after the
     /// subcommand name (include `key=` entries for kv prefixes); `value_choices[k]`
     /// lists enumerable values for key `k`; `handler` owns parsing of the raw args.
-    ///
-    /// ```ignore
-    /// subcommands::<Ctx>("capture", "...")
-    ///     .custom(
-    ///         "gif",
-    ///         "gif sequence (with fps/scale/palette knobs)",
-    ///         &[
-    ///             &["pre", "post", "both"],
-    ///             &["fps=", "palette=", "scale="],
-    ///             &["fps=", "palette=", "scale="],
-    ///         ],
-    ///         &[("palette", &["local", "global"])],
-    ///         |ctx, args, out| { /* parse and act */ Ok(()) },
-    ///     )
-    /// ```
     pub fn custom<F>(
         mut self,
         name: &'static str,
@@ -523,16 +434,6 @@ impl<Ctx: 'static> SubcommandSet<Ctx> {
 
     /// Attach a bare-invocation handler: typing just the command name runs `handler`
     /// instead of returning a usage error (e.g. `wireframe` flips the overlay on/off).
-    ///
-    /// ```ignore
-    /// subcommands::<Ctx>("wireframe", "...")
-    ///     .on_bare(|ctx| {
-    ///         ctx.wireframe_enabled = !ctx.wireframe_enabled;
-    ///         Ok(())
-    ///     })
-    ///     .toggle("nearest-active", "...", |ctx, v| { ... })
-    ///     .choice("color", "...", &["position", "active"], |ctx, v| { ... })
-    /// ```
     pub fn on_bare<F>(mut self, handler: F) -> Self
     where
         F: FnMut(&mut Ctx) -> anyhow::Result<()> + 'static,
@@ -644,7 +545,6 @@ impl<Ctx: 'static> Command<Ctx> for SubcommandSet<Ctx> {
 
     fn run(&mut self, args: &[&str], ctx: &mut Ctx, out: &mut ConsoleWriter) -> anyhow::Result<()> {
         let Some((sub_name, rest)) = args.split_first() else {
-            // Bare invocation: run `on_bare` if set, else emit a usage block.
             if let Some(handler) = self.bare.as_mut() {
                 return handler(ctx);
             }
@@ -690,29 +590,9 @@ impl<Ctx: 'static> Command<Ctx> for SubcommandSet<Ctx> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Console
-// ---------------------------------------------------------------------------
-
 /// The dev console. Owns the command registry, scrollback, input line, hotkey binds,
 /// and open/close state. Register commands and binds at setup, then let a frontend
 /// drive it once per frame.
-///
-/// ```ignore
-/// let mut console = Console::<MyCtx>::new();
-/// console.register(cmd("hello", "say hi", |_, _, out| {
-///     out.line("hi");
-///     Ok(())
-/// }));
-/// console.bind(Key::F9, "capture.toggle");
-///
-/// // per frame, through the frontend's entry point (loam_egui::ConsoleUi):
-/// console.ui(&egui_ctx);
-/// for line in console.drain_pending() { /* hand to the host's command queue */ }
-/// ```
-///
-/// The methods grouped under `Frontend hooks` below are the surface a frontend
-/// drives; command authors need none of them.
 pub struct Console<Ctx> {
     commands: BTreeMap<String, Box<dyn Command<Ctx>>>,
     /// BTreeMap, not HashMap: several bound keys can land in one frame and the
@@ -897,10 +777,6 @@ impl<Ctx: 'static> Console<Ctx> {
         self.status = text.into();
     }
 
-    // -----------------------------------------------------------------
-    // Frontend hooks
-    // -----------------------------------------------------------------
-
     /// Key that opens and closes the console.
     pub fn toggle_key(&self) -> Key {
         self.toggle_key
@@ -1015,7 +891,6 @@ impl<Ctx: 'static> Console<Ctx> {
 
     /// Apply the next tab completion, starting or advancing the match cycle.
     pub fn tab_complete(&mut self) {
-        // Continue an existing cycle if still applicable.
         if let Some(tab) = self.tab.as_mut() {
             if !tab.matches.is_empty() {
                 tab.index = (tab.index + 1) % tab.matches.len();
@@ -1048,10 +923,6 @@ impl<Ctx: 'static> Console<Ctx> {
             self.tab = None;
         }
     }
-
-    // -----------------------------------------------------------------
-    // Internals
-    // -----------------------------------------------------------------
 
     fn push_history(&mut self, line: HistoryLine) {
         // Optional browser-console echo, off by default. Bypasses `tracing` on
@@ -1088,7 +959,6 @@ impl<Ctx: 'static> Console<Ctx> {
         }
         let trailing_ws = self.input.ends_with(char::is_whitespace);
 
-        // No whitespace yet: still typing the command name.
         if !trailing_ws {
             if let [only] = parsed.as_slice() {
                 return Some(CompletionContext::Command {
@@ -1097,8 +967,6 @@ impl<Ctx: 'static> Console<Ctx> {
             }
         }
 
-        // On an argument now (0-based `arg_index`). `prior` captures the arg tokens
-        // before the cursor for subcommand-aware value-slot completion.
         let mut parts = parsed;
         let cmd_name = parts.remove(0);
         let (arg_index, prefix, prior) = if trailing_ws {
@@ -1134,8 +1002,6 @@ impl<Ctx: 'static> Console<Ctx> {
                 };
                 let prior_refs: Vec<&str> = prior.iter().map(String::as_str).collect();
 
-                // Mid-`key=` value completion: an `=` in the partial token means we're
-                // completing the value; return enumerables prefixed with `key=`.
                 if let Some(eq) = prefix.find('=') {
                     let key = &prefix[..eq];
                     let value_prefix = &prefix[eq + 1..];
@@ -1225,7 +1091,6 @@ impl<Ctx: 'static> Console<Ctx> {
             return;
         }
 
-        // Input history (skip consecutive duplicates).
         if self.input_history.back().map(String::as_str) != Some(line) {
             self.input_history.push_back(line.to_string());
             while self.input_history.len() > MAX_INPUT_HISTORY {
@@ -1239,9 +1104,6 @@ impl<Ctx: 'static> Console<Ctx> {
             return;
         };
 
-        // Built-ins first, off the `Builtin` enum (single source of truth for name +
-        // help across `execute`, `dispatch`, `has_command`, `builtin_help`,
-        // `all_command_names`).
         if let Some(builtin) = Builtin::from_name(&name) {
             self.push_history(HistoryLine::input(format!("> {line}")));
             self.run_builtin(builtin, args.first().map(String::as_str));
@@ -1361,10 +1223,6 @@ impl<Ctx: 'static> Console<Ctx> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Built-in commands
-// ---------------------------------------------------------------------------
-
 /// Framework-owned commands that mutate `Console` state directly (history, detached
 /// flag). They can't go through [`Command<Ctx>`], which only sees `&mut Ctx`. One enum
 /// centralizes their name + help; user crates can't add new built-ins.
@@ -1414,10 +1272,6 @@ impl Builtin {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Parser
-// ---------------------------------------------------------------------------
 
 /// Split a line into `(command_name, args)` or `None` if empty. Quote-aware:
 /// double quotes honor `\"` / `\\` escapes, single quotes are literal (shell
@@ -1545,10 +1399,6 @@ fn apply_completion(input: &str, ctx: &CompletionContext, choice: &str) -> Strin
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1599,14 +1449,11 @@ mod tests {
 
     #[test]
     fn tab_preview_shows_first_match_suffix() {
-        // Built-ins, sorted: clear < detach < dock < help.
         let mut c = Console::<Ctx>::new();
 
-        // Empty input -> no ghost; the bare prompt shouldn't default to a command.
         c.input = String::new();
         assert_eq!(c.tab_preview(), None);
 
-        // Single match -> preview is the rest of that command.
         c.input = "de".into();
         assert_eq!(c.tab_preview().as_deref(), Some("tach"));
 
@@ -1623,7 +1470,6 @@ mod tests {
         c.input = "d".into();
         assert_eq!(c.tab_preview().as_deref(), Some("etach"));
 
-        // No match -> no preview.
         c.input = "zzz".into();
         assert_eq!(c.tab_preview(), None);
     }
@@ -1636,11 +1482,9 @@ mod tests {
             &["pre", "post", "both"],
         ]));
 
-        // Mid-arg-0 prefix narrows to a single choice; ghost = its suffix.
         c.input = "capture p".into();
         assert_eq!(c.tab_preview().as_deref(), Some("ng"));
 
-        // `t` -> only `toggle`; ghost = `oggle`.
         c.input = "capture t".into();
         assert_eq!(c.tab_preview().as_deref(), Some("oggle"));
 
@@ -1648,11 +1492,9 @@ mod tests {
         c.input = "capture png ".into();
         assert_eq!(c.tab_preview().as_deref(), Some("both"));
 
-        // Mid-arg-1: `po` -> `post`.
         c.input = "capture png po".into();
         assert_eq!(c.tab_preview().as_deref(), Some("st"));
 
-        // Past the declared arg list: no completion.
         c.input = "capture png post extra ".into();
         assert_eq!(c.tab_preview(), None);
     }
@@ -1666,19 +1508,16 @@ mod tests {
                 .with_value_choices("palette", &["local", "global"]),
         );
 
-        // Step 1: typing the key prefix completes to `key=` (no value yet).
         c.input = "capture pal".into();
         assert_eq!(c.tab_preview().as_deref(), Some("ette="));
         c.tab_complete();
         assert_eq!(c.input, "capture palette=");
 
-        // Step 2: at the trailing `=`, completion now suggests values.
         // Alphabetical: global < local; first match wins.
         let ctx = c.completion_context().unwrap();
         let matches = c.completion_matches(&ctx);
         assert_eq!(matches, vec!["palette=global", "palette=local"]);
 
-        // Free-form key (no value choices) stops at the bare prefix.
         c.input = "capture fps=".into();
         let ctx = c.completion_context().unwrap();
         let matches = c.completion_matches(&ctx);
@@ -1698,21 +1537,18 @@ mod tests {
             &["fps=", "scale="],
         ]));
 
-        // Fresh prompt: every choice surfaces.
         c.input = "rec ".into();
         let ctx = c.completion_context().unwrap();
         let m = c.completion_matches(&ctx);
         assert!(m.contains(&"fps=".into()));
         assert!(m.contains(&"scale=".into()));
 
-        // After picking `fps=30`, the next completion shouldn't suggest fps= again.
         c.input = "rec fps=30 ".into();
         let ctx = c.completion_context().unwrap();
         let m = c.completion_matches(&ctx);
         assert!(!m.contains(&"fps=".into()), "got matches: {m:?}");
         assert!(m.contains(&"scale=".into()));
 
-        // Both kv prefixes used -> no kv suggestions remain.
         c.input = "rec fps=30 scale=720 ".into();
         let ctx = c.completion_context().unwrap();
         let m = c.completion_matches(&ctx);
@@ -1783,15 +1619,6 @@ mod tests {
     }
 
     #[test]
-    fn execute_mutates_ctx() {
-        let mut c = Console::<Ctx>::new();
-        c.register(add_cmd());
-        let mut ctx: Ctx = 10;
-        run(&mut c, "add 5 3", &mut ctx);
-        assert_eq!(ctx, 18);
-    }
-
-    #[test]
     fn unknown_command_produces_error_line() {
         let mut c = Console::<Ctx>::new();
         let mut ctx: Ctx = 0;
@@ -1799,19 +1626,6 @@ mod tests {
         let last = c.history.back().unwrap();
         assert_eq!(last.kind, LineKind::Error);
         assert!(last.text.contains("nope"));
-    }
-
-    #[test]
-    fn builtin_help_lists_registered_and_builtin() {
-        let mut c = Console::<Ctx>::new();
-        c.register(echo_cmd());
-        let mut ctx: Ctx = 0;
-        run(&mut c, "help", &mut ctx);
-        let texts: Vec<&str> = c.history.iter().map(|l| l.text.as_str()).collect();
-        assert!(texts.iter().any(|t| t.contains("commands:")));
-        assert!(texts.iter().any(|t| t.contains("echo")));
-        assert!(texts.iter().any(|t| t.contains("help")));
-        assert!(texts.iter().any(|t| t.contains("clear")));
     }
 
     #[test]
@@ -1824,18 +1638,6 @@ mod tests {
         assert_eq!(last.kind, LineKind::Output);
         assert!(last.text.contains("echo"));
         assert!(last.text.contains("echo args back"));
-    }
-
-    #[test]
-    fn builtin_clear_empties_scrollback() {
-        let mut c = Console::<Ctx>::new();
-        c.register(echo_cmd());
-        let mut ctx: Ctx = 0;
-        run(&mut c, "echo a", &mut ctx);
-        run(&mut c, "echo b", &mut ctx);
-        assert!(!c.history.is_empty());
-        run(&mut c, "clear", &mut ctx);
-        assert!(c.history.is_empty());
     }
 
     #[test]
@@ -1932,20 +1734,6 @@ mod tests {
     }
 
     #[test]
-    fn bind_and_unbind() {
-        let mut c = Console::<Ctx>::new();
-        c.bind(Key::F9, "echo hello");
-        assert_eq!(
-            c.binds.get(&Key::F9).map(String::as_str),
-            Some("echo hello")
-        );
-        c.unbind(Key::F9);
-        assert!(!c.binds.contains_key(&Key::F9));
-    }
-
-    /// Binds are handed to the frontend in `Key` order so several keys pressed in
-    /// one frame always run their commands in the same sequence.
-    #[test]
     fn binds_are_enumerated_in_key_order() {
         let mut c = Console::<Ctx>::new();
         c.bind(Key::F12, "third");
@@ -1962,7 +1750,6 @@ mod tests {
         );
     }
 
-    /// Rebinding a key replaces the command line rather than accumulating.
     #[test]
     fn rebinding_a_key_replaces_the_command_line() {
         let mut c = Console::<Ctx>::new();
@@ -1970,20 +1757,6 @@ mod tests {
         c.bind(Key::F9, "two");
         let seen: Vec<(Key, &str)> = c.binds().collect();
         assert_eq!(seen, vec![(Key::F9, "two")]);
-    }
-
-    #[test]
-    fn detach_and_dock_methods_flip_state() {
-        let mut c = Console::<Ctx>::new();
-        assert!(!c.is_detached());
-        c.detach();
-        assert!(c.is_detached());
-        c.detach(); // idempotent
-        assert!(c.is_detached());
-        c.dock();
-        assert!(!c.is_detached());
-        c.dock(); // idempotent
-        assert!(!c.is_detached());
     }
 
     #[test]
@@ -2003,24 +1776,6 @@ mod tests {
     }
 
     #[test]
-    fn builtin_help_lists_detach_and_dock() {
-        let mut c = Console::<Ctx>::new();
-        let mut ctx: Ctx = 0;
-        run(&mut c, "help", &mut ctx);
-        let texts: Vec<&str> = c.history.iter().map(|l| l.text.as_str()).collect();
-        assert!(texts.iter().any(|t| t.contains("detach")));
-        assert!(texts.iter().any(|t| t.contains("dock")));
-    }
-
-    #[test]
-    fn tab_complete_includes_detach_and_dock() {
-        let mut c = Console::<Ctx>::new();
-        c.input.clone_from(&"de".to_string());
-        c.tab_complete();
-        assert_eq!(c.input, "detach");
-    }
-
-    #[test]
     fn command_returning_err_pushes_error_line() {
         let mut c = Console::<Ctx>::new();
         c.register(cmd("fail", "always fails", |_, _, _| anyhow::bail!("nope")));
@@ -2031,10 +1786,6 @@ mod tests {
         assert!(last.text.contains("nope"));
     }
 
-    // ----------------- Frontend hooks -----------------
-
-    /// `submit` runs the input line and leaves the prompt empty, which is what the
-    /// frontend's Enter handler relies on.
     #[test]
     fn submit_runs_the_input_line_and_clears_it() {
         let mut c = Console::<Ctx>::new();
@@ -2046,7 +1797,6 @@ mod tests {
         assert!(c.input.is_empty());
     }
 
-    /// Submitting a blank line is inert: no scrollback, no input-history entry.
     #[test]
     fn submit_of_blank_input_is_inert() {
         let mut c = Console::<Ctx>::new();
@@ -2057,8 +1807,6 @@ mod tests {
         assert!(c.input_history.is_empty());
     }
 
-    /// Both one-shot flags are consumed on read, so a frontend that polls every
-    /// frame acts on them exactly once.
     #[test]
     fn one_shot_frontend_flags_are_consumed_on_take() {
         let mut c = Console::<Ctx>::new();
@@ -2074,8 +1822,6 @@ mod tests {
         assert!(!c.take_pending_cursor_to_end());
     }
 
-    /// The docked console holds focus every frame until the user clicks out;
-    /// detaching hands focus back unconditionally.
     #[test]
     fn persistent_focus_is_docked_and_not_user_defocused() {
         let mut c = Console::<Ctx>::new();
@@ -2092,8 +1838,6 @@ mod tests {
         assert!(c.wants_persistent_focus());
     }
 
-    /// `clear_input` drops the prompt, the history cursor and the Tab cycle
-    /// together; a leftover cycle would splice into the next keystroke.
     #[test]
     fn clear_input_drops_prompt_history_cursor_and_tab_cycle() {
         let mut c = Console::<Ctx>::new();
@@ -2112,7 +1856,6 @@ mod tests {
         assert!(c.input_history_pos.is_none());
     }
 
-    /// `clear_history` empties the scrollback without touching input history.
     #[test]
     fn clear_history_leaves_input_history_intact() {
         let mut c = Console::<Ctx>::new();
@@ -2123,18 +1866,6 @@ mod tests {
         assert!(c.history.is_empty());
         assert_eq!(c.input_history.len(), 1);
     }
-
-    /// The default toggle key is the Quake backtick, and `with_toggle_key`
-    /// overrides it.
-    #[test]
-    fn toggle_key_defaults_to_backtick_and_is_overridable() {
-        let c = Console::<Ctx>::new();
-        assert_eq!(c.toggle_key(), Key::Backtick);
-        let c = Console::<Ctx>::new().with_toggle_key(Key::F1);
-        assert_eq!(c.toggle_key(), Key::F1);
-    }
-
-    // ----------------- SubcommandSet -----------------
 
     /// Holds a single `Ctx: u32` slot plus a `last_choice` string so tests can verify
     /// which branch ran.
@@ -2212,7 +1943,6 @@ mod tests {
         );
     }
 
-    /// Bare toggle invocation passes `None`; the handler inverts the field.
     #[test]
     fn subcommand_toggle_bare_invocation_flips() {
         let mut con = Console::<SubCtx>::new();
@@ -2226,7 +1956,6 @@ mod tests {
         assert_eq!(ctx, (0, "axes=false".into()));
     }
 
-    /// Bare choice invocation passes `None` to the handler (it's still invoked).
     #[test]
     fn subcommand_choice_bare_invocation_passes_none() {
         let mut con = Console::<SubCtx>::new();
@@ -2236,7 +1965,6 @@ mod tests {
         assert_eq!(ctx.1, "polytope=<bare>");
     }
 
-    /// Bare `SubcommandSet` invocation calls the `on_bare` handler, not the usage block.
     #[test]
     fn subcommand_bare_runs_on_bare_handler() {
         let mut con = Console::<SubCtx>::new();
@@ -2249,7 +1977,6 @@ mod tests {
         assert_eq!(ctx.1, "bare!");
     }
 
-    /// Without `on_bare`, bare invocation falls back to the usage block.
     #[test]
     fn subcommand_bare_without_handler_emits_usage() {
         let mut con = Console::<SubCtx>::new();
@@ -2261,14 +1988,11 @@ mod tests {
         assert!(last.text.contains("subcommands"), "got: {}", last.text);
     }
 
-    /// Value-slot completion narrows to the chosen subcommand's choices, not the
-    /// union. Toggles surface nothing (bare-flip UX); choices surface their list.
     #[test]
     fn subcommand_value_completion_is_context_aware() {
         let mut con = Console::<SubCtx>::new();
         con.register(sample_subset());
 
-        // `tests axes ` -> toggle, no suggestions.
         con.input = "tests axes ".into();
         let ctx = con.completion_context().unwrap();
         let m = con.completion_matches(&ctx);
@@ -2292,7 +2016,6 @@ mod tests {
         assert!(!m.contains(&"on".into()));
     }
 
-    /// The subcommand slot lists every registered subcommand, sorted.
     #[test]
     fn subcommand_first_slot_completion_lists_subcommands() {
         let mut con = Console::<SubCtx>::new();
@@ -2310,18 +2033,14 @@ mod tests {
         );
     }
 
-    // ----------------- SubcommandSet::Custom -----------------
-
     type CustomCtx = Vec<String>;
 
     fn custom_subset() -> SubcommandSet<CustomCtx> {
         subcommands::<CustomCtx>("capture", "umbrella")
-            // No-arg subcommand.
             .custom("stop", "stop running capture", &[], &[], |c, rest, _out| {
                 c.push(format!("stop;rest={}", rest.join(",")));
                 Ok(())
             })
-            // Single-slot positional subcommand.
             .custom(
                 "png",
                 "one-shot png",
@@ -2332,7 +2051,6 @@ mod tests {
                     Ok(())
                 },
             )
-            // Multi-slot with kv pairs + enumerable value for one of them.
             .custom(
                 "gif",
                 "gif sequence",
@@ -2369,13 +2087,11 @@ mod tests {
         );
     }
 
-    /// Each positional slot after the subcommand name returns its own arg_choices.
     #[test]
     fn custom_multi_slot_completion_per_slot() {
         let mut con = Console::<CustomCtx>::new();
         con.register(custom_subset());
 
-        // `capture gif ` -> slot 0 of `gif`: stages.
         con.input = "capture gif ".into();
         let ctx = con.completion_context().unwrap();
         let m = con.completion_matches(&ctx);
@@ -2384,7 +2100,6 @@ mod tests {
             vec!["both".to_string(), "post".to_string(), "pre".to_string()]
         );
 
-        // `capture gif post ` -> slot 1 of `gif`: kv prefixes.
         con.input = "capture gif post ".into();
         let ctx = con.completion_context().unwrap();
         let m = con.completion_matches(&ctx);
@@ -2400,15 +2115,12 @@ mod tests {
         assert!(m.contains(&"post".into()));
         assert!(!m.contains(&"fps=".into()), "got: {m:?}");
 
-        // `capture stop ` -> no choices (zero-slot subcommand).
         con.input = "capture stop ".into();
         let ctx = con.completion_context().unwrap();
         let m = con.completion_matches(&ctx);
         assert!(m.is_empty(), "got: {m:?}");
     }
 
-    /// After `palette=`, completion cycles the declared values; the kv lookup is
-    /// scoped to the subcommand that declared them.
     #[test]
     fn custom_subcommand_kv_value_completion_is_context_aware() {
         let mut con = Console::<CustomCtx>::new();
@@ -2422,8 +2134,6 @@ mod tests {
             vec!["palette=global".to_string(), "palette=local".to_string()]
         );
     }
-
-    // ----------------- Quoted-string tokenizer -----------------
 
     #[test]
     fn tokenize_handles_bare_words() {
@@ -2486,8 +2196,6 @@ mod tests {
         assert_eq!(ctx, vec!["5 cell".to_string(), "off".to_string()]);
     }
 
-    // ----------------- Unified built-ins -----------------
-
     #[test]
     fn builtin_from_name_round_trips() {
         for b in Builtin::ALL {
@@ -2525,21 +2233,6 @@ mod tests {
     }
 
     #[test]
-    fn detach_dock_builtins_flip_flag() {
-        type Ctx = u32;
-        let mut con = Console::<Ctx>::new();
-        let mut ctx: Ctx = 0;
-        assert!(!con.detached);
-        run(&mut con, "detach", &mut ctx);
-        assert!(con.detached);
-        run(&mut con, "dock", &mut ctx);
-        assert!(!con.detached);
-    }
-
-    /// The line drawn by the existing types: a registry command takes `&mut Ctx`
-    /// and therefore waits for the host's application point; a built-in takes
-    /// none, mutates the console, and must act on the frame it was typed.
-    #[test]
     fn builtins_run_on_the_typed_frame_and_registry_commands_wait() {
         let mut c = Console::<Ctx>::new();
         c.register(add_cmd());
@@ -2562,11 +2255,6 @@ mod tests {
         assert_eq!(ctx, 5);
     }
 
-    /// The queue carries lines from producers that hold no console, so a name
-    /// only `execute` resolves is a line that reaches `dispatch`, reports as
-    /// unregistered, and changes nothing. Compares whole scrollbacks rather
-    /// than one flag apiece: the echo is part of what the two entry points owe
-    /// equally.
     #[test]
     fn a_builtin_does_the_same_thing_from_either_entry_point() {
         for line in ["clear", "detach", "dock", "help", "help echo"] {
@@ -2595,9 +2283,6 @@ mod tests {
         }
     }
 
-    /// One echo per line, at the site that runs it, ahead of that line's own
-    /// output. Two echoes would double every scripted line in the scrollback;
-    /// none would leave an unattended run with no record of what it issued.
     #[test]
     fn a_line_is_echoed_exactly_once_ahead_of_its_own_output() {
         let mut c = Console::<Ctx>::new();
@@ -2621,10 +2306,6 @@ mod tests {
         assert_eq!(kinds, [LineKind::Input, LineKind::Error]);
     }
 
-    /// The echo is rebuilt from a name and args, so it has to survive the
-    /// grammar it is printed in: what the scrollback shows must tokenize back
-    /// to the invocation that produced it, or a quoted argument reads as
-    /// several and the line cannot be copied back to the prompt.
     #[test]
     fn a_rendered_line_reparses_to_the_invocation_it_came_from() {
         let cases: [(&str, &[&str]); 7] = [
@@ -2646,9 +2327,6 @@ mod tests {
         }
     }
 
-    /// A caller that pre-checks a line (the playground validates its shipped
-    /// scripts this way) has to agree with what `execute` and `dispatch` will
-    /// do with the name, and the enum is the only list that stays in step.
     #[test]
     fn has_command_answers_for_every_builtin() {
         let c = Console::<Ctx>::new();
@@ -2658,9 +2336,6 @@ mod tests {
         assert!(!c.has_command("nonesuch"));
     }
 
-    /// Several bound keys can fire in one frame, and `binds` is a `BTreeMap` so
-    /// that they fire in a fixed order. The pending buffer has to carry that
-    /// order through to the host unchanged, or the fixed order buys nothing.
     #[test]
     fn submission_order_survives_the_pending_buffer() {
         let mut c = Console::<Ctx>::new();

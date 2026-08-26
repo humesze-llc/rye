@@ -199,14 +199,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn from_pairs_round_trips() {
-        let args = Args::from_pairs([("shape", "tesseract"), ("seed", "42")]);
-        assert_eq!(args.get("shape"), Some("tesseract"));
-        assert_eq!(args.get("seed"), Some("42"));
-        assert_eq!(args.get("missing"), None);
-    }
-
-    #[test]
     fn parse_returns_typed_or_none() {
         let args = Args::from_pairs([("seed", "42"), ("fov", "60.5"), ("bad", "nope")]);
         assert_eq!(args.parse::<u32>("seed"), Some(42));

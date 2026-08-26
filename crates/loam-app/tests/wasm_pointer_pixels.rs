@@ -32,9 +32,6 @@ fn mouse_press(input: &mut InputState, x: f32, y: f32, dpr: f32) {
     input.mouse_input(MouseButton::Left, ElementState::Pressed);
 }
 
-/// A picking ray indexes the rendered pixel grid, which is CSS pixels
-/// times the ratio the canvas backing store was sized with. Reporting the
-/// DOM's CSS pixels unscaled is a silent hi-DPI miss, not a visible error.
 #[test]
 fn cursor_position_is_reported_in_physical_pixels() {
     for (dpr, want_x, want_y) in CASES {
@@ -48,9 +45,6 @@ fn cursor_position_is_reported_in_physical_pixels() {
     }
 }
 
-/// The move stream is rAF-coalesced, so its last sample can predate a
-/// click by a frame of motion. The press must anchor where the button
-/// event says it happened, and in the same physical pixels.
 #[test]
 fn a_press_anchors_at_its_own_position_not_the_last_coalesced_move() {
     for (dpr, want_x, want_y) in CASES {

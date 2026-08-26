@@ -2,18 +2,6 @@
 //! (APNG) streams, with two taps (`pre`-egui = pure 3D scene, `post`-egui = final
 //! composite).
 //!
-//! ## Picking a format
-//!
-//! - **One-shot PNG** (`capture png`): lossless screenshot.
-//! - **PNG sequence** (`capture frames`): one lossless file per frame; the master
-//!   format for ffmpeg post-processing.
-//! - **APNG** (`capture apng`): lossless 24-bit animation, one file. Recommended for
-//!   shareable clips of raymarched content. All frames buffered in memory until stop
-//!   (`frames * width * height * 4` bytes); practical limit ~5 s at 1080p.
-//! - **GIF** (`capture gif`): NeuQuant-quantized animation. Convenient but has a
-//!   256-color quality ceiling that flickers on raymarched content; prefer APNG or
-//!   `capture frames` + ffmpeg. `palette=global` mitigates but doesn't eliminate it.
-//!
 //! ## How requests flow
 //!
 //! Console commands push [`CaptureRequest`]s onto a global queue via [`enqueue`]. The
@@ -35,26 +23,6 @@
 //! - GIF stream:   `{dir}/{name}.gif`
 //!
 //! `dir` defaults to `./captures/`; `name` defaults to `{example}_{unix_secs}`.
-//!
-//! ## Post-processing with ffmpeg
-//!
-//! From a PNG sequence, `palettegen + paletteuse` gives a flicker-free GIF; other
-//! containers work too:
-//!
-//! ```text
-//! # Clean GIF (global palette, dithered)
-//! ffmpeg -framerate 30 -i ./captures/clip/post_%06d.png \
-//!   -vf "split[s0][s1];[s0]palettegen=stats_mode=full[p];[s1][p]paletteuse=dither=bayer" \
-//!   out.gif
-//!
-//! # WebP (animated, inline-renders on GitHub, smaller than GIF)
-//! ffmpeg -framerate 30 -i ./captures/clip/post_%06d.png \
-//!   -vcodec libwebp -lossless 0 -q:v 80 -loop 0 out.webp
-//!
-//! # MP4 (best quality, Discord/Twitter inline; GitHub via <video>)
-//! ffmpeg -framerate 30 -i ./captures/clip/post_%06d.png \
-//!   -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p out.mp4
-//! ```
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -187,10 +155,6 @@ pub(crate) fn drain_requests() -> Vec<CaptureRequest> {
     std::mem::take(&mut *QUEUE.lock().expect("capture queue poisoned"))
 }
 
-// ---------------------------------------------------------------------------
-// Status broadcast
-// ---------------------------------------------------------------------------
-
 /// The runner publishes [`Capture::status`] here each frame so UI code can read it
 /// without a reference to the runner.
 static STATUS: Mutex<Option<String>> = Mutex::new(None);
@@ -215,10 +179,6 @@ fn toggle_panel_global() -> bool {
     PANEL_OPEN.store(now_open, Ordering::Relaxed);
     now_open
 }
-
-// ---------------------------------------------------------------------------
-// Capture state machine
-// ---------------------------------------------------------------------------
 
 /// Runner-owned state machine. Drives the per-frame copy + write.
 pub(crate) struct Capture {
@@ -515,10 +475,6 @@ fn encode_one_frame(
     enc.write_frame(&gif_frame).context("gif encode")?;
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// APNG worker
-// ---------------------------------------------------------------------------
 
 /// Owns the APNG encoder thread. APNG can't stream frame-by-frame: the `acTL` chunk
 /// needs the frame count up front, so the worker buffers every frame and writes the
@@ -1195,10 +1151,6 @@ fn default_name() -> String {
     format!("capture_{unix}")
 }
 
-// ---------------------------------------------------------------------------
-// GPU readback + PNG writer
-// ---------------------------------------------------------------------------
-
 /// Row-major RGBA8 pixels, already R/B-swapped from BGRA sources.
 pub(crate) struct RawImage {
     pub width: u32,
@@ -1303,10 +1255,6 @@ fn write_png_bytes(path: &Path, rgba: &[u8], width: u32, height: u32) -> Result<
         .with_context(|| format!("write png {}", path.display()))?;
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Console command registration
-// ---------------------------------------------------------------------------
 
 /// Register the `capture` console command (subcommands png / frames / gif / apng /
 /// toggle / stop / panel; see `capture_help` for the grammar).
@@ -1565,21 +1513,9 @@ pub fn bind_default_hotkeys<Ctx: 'static>(console: &mut Console<Ctx>) {
     console.bind(loam_egui::Key::F11, "capture panel");
 }
 
-// ---------------------------------------------------------------------------
-// Panel UI
-// ---------------------------------------------------------------------------
-
 /// Egui widget for setting capture parameters and driving start / stop / one-shot.
 /// Buttons synthesise a [`CaptureRequest`] onto the global queue. Visibility tracks
 /// [`CapturePanel::open`] or the `capture panel` console toggle, whichever changed last.
-///
-/// ```ignore
-/// // setup:
-/// let capture_panel = loam_app::capture::CapturePanel::new();
-///
-/// // each frame in App::ui:
-/// self.capture_panel.show(egui_ctx);
-/// ```
 pub struct CapturePanel {
     /// Visible? Toggle via [`CapturePanel::toggle`] or the `capture panel` subcommand.
     pub open: bool,

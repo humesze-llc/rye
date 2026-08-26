@@ -9,7 +9,7 @@
 //! camera framework; apps own those directly.
 //!
 //! A frame-capture pipeline ships behind the `capture` feature (default-on); see
-//! [`capture`]. External recorders (OBS) remain better for long sessions.
+//! [`capture`].
 //!
 //! ## Lifecycle
 //!
@@ -538,11 +538,6 @@ impl Default for RunConfig {
 ///   the launch button to spawn the worker on click.
 /// - When invoked on main thread WITHOUT manual mode, falls back to
 ///   [`run_with_config`] (the legacy windowed-mode wasm path).
-///
-/// The single function call replaces ~8 lines of dispatch boilerplate
-/// in each demo's `main()`. Demos that need finer control over the
-/// dispatch (e.g. inspecting `wasm::is_worker_context()` for setup-time
-/// side effects) can still call the lower-level entry points directly.
 pub fn run<A: App + 'static>(config: RunConfig) -> anyhow::Result<()> {
     #[cfg(target_arch = "wasm32")]
     {
@@ -700,7 +695,7 @@ fn setup_after_device<A: App>(
     // formats coincide.
     let mut ui = UiIntegration::new(&rd.device, win, rd.ui_format(), UI_PASS_SAMPLE_COUNT);
 
-    // Runner-side pipeline warming (N3). Forces lazy pipeline compilation for
+    // Forces lazy pipeline compilation for
     // egui-wgpu's shape variants and the browser-WebGPU composite pass during
     // setup, instead of stalling the user's first visible frame for ~50-200ms
     // per first-touched pipeline. App-owned pipelines are warmed inside the
@@ -709,9 +704,7 @@ fn setup_after_device<A: App>(
     //
     // Architectural note: lives here (in setup_after_device, after both ui +
     // rd exist but before the first redraw) so it's truly part of the setup
-    // step, not a per-frame check + first-frame-flag pattern. A demo that
-    // skips the runner (does its own event loop) would also skip this warm,
-    // but no loam demo does that today.
+    // step, not a per-frame check + first-frame-flag pattern.
     ui.warm_pipelines(
         &rd.device,
         &rd.queue,
@@ -750,9 +743,7 @@ type PendingInit<A> = std::rc::Rc<std::cell::RefCell<Option<anyhow::Result<InitA
 /// Host element selection prefers `#loam-canvas-host` when the page provides one
 /// (Trunk-generated pages typically have a dedicated container so CSS can layout
 /// around the canvas); falls back to `<body>` so a minimal page without any host
-/// element still works. Canvas style is set to fill its parent so a flex / grid /
-/// percentage-sized container drives the surface size; the next resize observer
-/// hookup (TODO) will then forward `ResizeObserver` fires to `winit::WindowEvent`.
+/// element still works.
 #[cfg(target_arch = "wasm32")]
 fn attach_canvas_to_dom(win: &winit::window::Window) -> anyhow::Result<()> {
     use winit::platform::web::WindowExtWebSys;
@@ -1083,9 +1074,6 @@ impl<A: App> ApplicationHandler for Runner<A> {
                 return;
             }
         };
-        // for debugging negotiated MSAA count; the actual count is in `rd.sample_count()`
-        // tracing::info!("scale_factor: {}, msaa: {}x", win.scale_factor(), rd.sample_count());
-
         let artifacts = match setup_after_device::<A>(&win, rd, &self.jobs) {
             Ok(a) => a,
             Err(e) => {
@@ -2219,11 +2207,6 @@ mod tests {
         events
     }
 
-    /// The contract the whole queue exists for: a command stamped T is applied
-    /// after tick T-1 and before tick T, whatever the pacing. Dispatching in
-    /// the UI phase, as the console used to, puts the mutation after the
-    /// frame's whole tick batch instead, and the batch size is a wall-clock
-    /// accident.
     #[test]
     fn a_command_applies_after_the_previous_tick_and_before_the_one_it_is_stamped_for() {
         let smooth: Vec<Duration> = (0..=40).map(|k| TICK * k).collect();
@@ -2271,10 +2254,6 @@ mod tests {
         }
     }
 
-    /// A frame that runs zero ticks still drains, and its commands carry the
-    /// same stamp as the next frame's. Concatenation preserves order, so one
-    /// tick's worth of commands split over many frames arrives in submission
-    /// order at one boundary.
     #[test]
     fn commands_split_over_zero_tick_frames_reach_one_boundary_in_order() {
         // A quarter tick per frame: three frames of nothing, then one tick.

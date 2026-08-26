@@ -1,21 +1,8 @@
 //! The [`Space`] trait, Loam's interface to geometry.
-//!
-//! A `Space` is a Riemannian manifold: a metric and its Levi-Civita
-//! connection. Isometries are a separate contract on [`IsometryGroup`],
-//! because a Space need not have any. The GPU-facing half of the contract
-//! lives on [`WgslSpace`].
-//!
-//! Methods take `&self` so parametric geometries (curvature scalar, radius) can
-//! store their parameter; stateless ones monomorphize to direct calls.
-//!
-//! `Self::Vector` is a tangent vector at *some* point; the trait does not track
-//! which. Prefer [`crate::Tangent`] outside tight kernels, it bundles the base
-//! point with the vector.
 
 use std::borrow::Cow;
 
 /// A Riemannian manifold: a metric and the Levi-Civita connection it induces.
-/// Isometries live on [`IsometryGroup`], shader integration on [`WgslSpace`].
 /// All methods must be deterministic and side-effect-free.
 pub trait Space {
     /// A point on the manifold.
@@ -24,14 +11,9 @@ pub trait Space {
     /// Use [`crate::Tangent`] to enforce that tracking.
     type Vector: Copy + Send + Sync + 'static;
 
-    // ---- Riemannian primitives ----------------------------------------
-
     /// Geodesic distance between two points.
     ///
-    /// The metric is positive-definite. An indefinite (Lorentzian) metric is
-    /// out of contract here rather than merely untested: it has no such
-    /// distance, and a sibling trait carrying a signed interval would be the
-    /// way in.
+    /// The metric is positive-definite.
     fn distance(&self, a: Self::Point, b: Self::Point) -> f32;
 
     /// Exponential map: travel from `at` along the geodesic with initial velocity `v` for
@@ -60,11 +42,9 @@ pub trait Space {
     /// Parallel-transport `v` along the polyline through `path`, segment by
     /// segment, returning the vector at the final point.
     ///
-    /// The path-aware primitive: pinning the macro path makes the integrated
-    /// result independent of how the caller batched the journey. Contract: finer
+    /// Contract: finer
     /// subdivision converges to true parallel transport along the polyline.
-    /// `path.len() < 2` returns `v` unchanged. The default chains
-    /// [`Self::parallel_transport`] over consecutive pairs.
+    /// `path.len() < 2` returns `v` unchanged.
     fn parallel_transport_along(&self, path: &[Self::Point], v: Self::Vector) -> Self::Vector {
         let mut current = v;
         for w in path.windows(2) {
@@ -73,16 +53,10 @@ pub trait Space {
         current
     }
 
-    // ---- Chart properties ---------------------------------------------
-
     /// Whether the chart is globally flat: chart-coord arithmetic computes the
-    /// correct geometry without the Riemannian machinery. False for curved
-    /// Spaces (Poincaré ball H³, stereographic S³, `BlendedSpace`).
+    /// correct geometry without the Riemannian machinery.
     ///
-    /// A statement about the geometry, not about any rendering backend, so it
-    /// lives here rather than on [`WgslSpace`]: the SDF emitter and the CPU SDF
-    /// evaluator both gate chart-coord fast paths on it, and only the former
-    /// speaks WGSL. Defaults to `false` so a new Space must opt in.
+    /// Defaults to `false` so a new Space must opt in.
     fn is_chart_flat(&self) -> bool {
         false
     }
@@ -91,10 +65,7 @@ pub trait Space {
 /// A [`Space`] that has isometries: metric-preserving self-maps forming a
 /// group under composition.
 ///
-/// Split from [`Space`] because not every Space has any. `BlendedSpace`'s
-/// blending field breaks translation and rotation symmetry, so its group is
-/// trivial; omitting this impl is how that is said in the type system rather
-/// than in a comment.
+/// Split from [`Space`] because not every Space has any.
 ///
 /// The laws, stated as actions on points because `Iso` carries no equality
 /// bound and a rotor representation double-covers its rotation group:
@@ -102,8 +73,6 @@ pub trait Space {
 /// two-sided, `iso_apply` preserves [`Space::distance`], and `iso_transport`
 /// is the differential of `iso_apply`, so
 /// `iso_apply(g, exp(p, v)) == exp(iso_apply(g, p), iso_transport(g, p, v))`.
-/// Transitivity is not required here and no impl currently claims it; it
-/// becomes a per-impl rustdoc claim when a consumer reads one.
 pub trait IsometryGroup: Space {
     /// An orientation-preserving isometry of the manifold.
     type Iso: Copy + Send + Sync + 'static;
@@ -129,8 +98,7 @@ pub trait IsometryGroup: Space {
 /// into shaders by `loam-shader`.
 ///
 /// Split from [`Space`] so the stable math trait and the volatile shader ABI do
-/// not share a release cadence, and so CPU-only consumers can depend on
-/// `loam-math` without WGSL.
+/// not share a release cadence.
 pub trait WgslSpace: Space {
     /// WGSL source providing this space's primitives. The v0 ABI is tiny and
     /// single-space (`vec3<f32>` point/vector only):
@@ -155,9 +123,6 @@ mod tests {
         LinearBlendX, SphericalS3, SphericalS3Embedded,
     };
 
-    /// `is_chart_flat` reports the geometry, and the default `false` is a trap
-    /// for a flat Space that forgets to override it: pin every impl in the
-    /// crate, flat and curved alike.
     #[test]
     fn is_chart_flat_holds_exactly_for_the_flat_geometries() {
         assert!(EuclideanR2.is_chart_flat());
@@ -167,8 +132,6 @@ mod tests {
         assert!(!HyperbolicH3.is_chart_flat());
         assert!(!SphericalS3.is_chart_flat());
         assert!(!SphericalS3Embedded.is_chart_flat());
-        // Blending a flat source with a curved one yields a variable metric,
-        // flat nowhere but the pure-A tail.
         assert!(
             !BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-1.0, 1.0))
                 .is_chart_flat()

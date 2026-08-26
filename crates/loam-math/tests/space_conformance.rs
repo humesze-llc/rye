@@ -31,10 +31,6 @@ use loam_math::{
     LinearBlendX, Space, SphericalS3, SphericalS3Embedded,
 };
 
-// ---------------------------------------------------------------------------
-// The fixture surface
-// ---------------------------------------------------------------------------
-
 /// Per-impl error budget, keyed by what is being measured rather than by which
 /// invariant does the measuring: three numbers stay honest, eleven would be
 /// eleven places to launder a failure.
@@ -137,10 +133,6 @@ where
     fn isos(&self) -> Vec<Self::Iso>;
 }
 
-// ---------------------------------------------------------------------------
-// Harness primitives
-// ---------------------------------------------------------------------------
-
 /// Seeded xorshift32 (Marsaglia, *Xorshift RNGs*, J. Stat. Soft. 8(14), 2003,
 /// §3). Every fixture's sample set is a pure function of a hardcoded seed, per
 /// the Tier 0 determinism contract.
@@ -223,10 +215,6 @@ const TRIANGLE_SIDE: f32 = 0.1;
 /// `K * area`. Sized by the flat-area truncation above, not by what makes the
 /// suite green; a sign flip in `K` misses by `2 * area`, forty times this.
 const GAUSS_BONNET_RELATIVE_TOL: f32 = 0.05;
-
-// ---------------------------------------------------------------------------
-// Invariants
-// ---------------------------------------------------------------------------
 
 mod invariants {
     use super::*;
@@ -964,8 +952,6 @@ mod invariants {
         }
     }
 
-    // ---- shared machinery ------------------------------------------------
-
     /// The fixture's isometries, with the floor of three enforced: two operands
     /// cannot distinguish a composition convention from its transpose in a
     /// group that is nearly abelian on the sample. Every group item reads its
@@ -1106,10 +1092,6 @@ mod invariants {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The macro
-// ---------------------------------------------------------------------------
-
 /// One `#[test]` per invariant, named after the property, so a failure names
 /// the property rather than "conformance".
 macro_rules! conformance_tests {
@@ -1171,10 +1153,6 @@ macro_rules! isometry_conformance_suite {
         }
     };
 }
-
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
 
 /// Euclidean R². Extent: coordinates of order 1. Tolerances are the closed-form
 /// ones the inline tests already meet at a wider extent.

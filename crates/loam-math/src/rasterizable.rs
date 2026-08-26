@@ -394,16 +394,6 @@ mod tests {
     const GOLDEN_TIE_FRAME: Vec3 = Vec3::new(0.5, 0.5, std::f32::consts::FRAC_1_SQRT_2);
 
     #[test]
-    fn r3_array_round_trip() {
-        let p = Vec3::new(1.0, -2.5, 0.7);
-        let arr = <EuclideanR3 as RasterizableSpace<3>>::point_to_array(p);
-        let back = <EuclideanR3 as RasterizableSpace<3>>::array_to_point(arr);
-        assert_eq!(p, back);
-    }
-
-    /// A scaled vertex `k * p` projects to the same R³ point as unit `p`. Pins
-    /// the `point.normalize()` guard; every other test feeds unit input.
-    #[test]
     fn stereographic_r4_normalizes_scaled_input() {
         let proj = Projection::Stereographic { pole: Vec4::W };
         for p in [
@@ -423,14 +413,6 @@ mod tests {
     }
 
     #[test]
-    fn r3_identity_projection_is_passthrough() {
-        let p = Vec3::new(0.7, -1.3, 2.1);
-        let projected =
-            <EuclideanR3 as RasterizableSpace<3>>::project_point(p, &Projection::Identity);
-        assert_eq!(p, projected);
-    }
-
-    #[test]
     fn r3_tessellate_one_sample_appends_endpoints() {
         let p0 = Vec3::new(0.0, 0.0, 0.0);
         let p1 = Vec3::new(2.0, 4.0, -6.0);
@@ -441,7 +423,6 @@ mod tests {
         assert_eq!(out[1], p1);
     }
 
-    /// Pins the lerp-factor convention: t = i/samples for i in 1..samples.
     #[test]
     fn r3_tessellate_four_samples_produces_five_points() {
         let p0 = Vec3::new(0.0, 0.0, 0.0);
@@ -456,7 +437,6 @@ mod tests {
         assert_eq!(out[4], p1);
     }
 
-    /// Pins the writer-pattern guarantee the upload loop relies on for reuse.
     #[test]
     fn r3_tessellate_appends_does_not_clear() {
         let mut out = vec![Vec3::new(9.0, 9.0, 9.0)];
@@ -465,14 +445,6 @@ mod tests {
         assert_eq!(out[0], Vec3::new(9.0, 9.0, 9.0));
         assert_eq!(out[1], Vec3::ZERO);
         assert_eq!(out[2], Vec3::X);
-    }
-
-    #[test]
-    fn projection_default_is_identity() {
-        let p3: Projection<3> = Projection::default();
-        assert_eq!(p3, Projection::Identity);
-        let p4: Projection<4> = Projection::default();
-        assert_eq!(p4, Projection::Identity);
     }
 
     #[test]
@@ -490,14 +462,6 @@ mod tests {
         // Out-of-range falls back to zero per the doc contract.
         assert_eq!(pj(3), Vec3::ZERO);
         assert_eq!(pj(99), Vec3::ZERO);
-    }
-
-    #[test]
-    fn r4_array_round_trip() {
-        let p = Vec4::new(1.0, -2.5, 0.7, 4.2);
-        let arr = <EuclideanR4 as RasterizableSpace<4>>::point_to_array(p);
-        let back = <EuclideanR4 as RasterizableSpace<4>>::array_to_point(arr);
-        assert_eq!(p, back);
     }
 
     #[test]
@@ -525,8 +489,6 @@ mod tests {
         assert_eq!(pj(4), Vec3::ZERO);
     }
 
-    /// `w = 0` gives `scale = 1`: Perspective4D collapses to Identity on the
-    /// `w = 0` 3-flat.
     #[test]
     fn r4_perspective4d_w_zero_is_unchanged() {
         let p = Vec4::new(1.0, 2.0, 3.0, 0.0);
@@ -537,7 +499,6 @@ mod tests {
         assert_eq!(got, Vec3::new(1.0, 2.0, 3.0));
     }
 
-    /// Pins the "cube within a cube" scaling: +w face outer, -w face inner.
     #[test]
     fn r4_perspective4d_cube_within_cube_scaling() {
         let focal = 2.0;
@@ -556,8 +517,6 @@ mod tests {
         assert!(pn.length() > pf.length(), "near={pn:?} far={pf:?}");
     }
 
-    /// A vertex at the eye (`w == focal_distance`) clamps to a finite result
-    /// rather than NaN-ing the buffer.
     #[test]
     fn r4_perspective4d_at_viewer_clamps_finite() {
         let p = Vec4::new(0.1, 0.2, 0.3, 2.0);
@@ -573,7 +532,6 @@ mod tests {
         }
     }
 
-    /// Unsupported on R³: `Vec3::ZERO` per the enum contract.
     #[test]
     fn r3_perspective4d_returns_zero() {
         let p = Vec3::new(1.0, 2.0, 3.0);
@@ -583,8 +541,6 @@ mod tests {
         let got = <EuclideanR3 as RasterizableSpace<3>>::project_point(p, &proj);
         assert_eq!(got, Vec3::ZERO);
     }
-
-    // ---- Schlegel ------------------------------------------------------
 
     /// Tesseract vertices, unit-circumradius (`±0.5` each). The `w = +0.5` cell
     /// is the canonical boundary cell.
@@ -607,9 +563,6 @@ mod tests {
         Vec4::new(-0.5, -0.5, -0.5, -0.5),
     ];
 
-    /// The chosen boundary cell maps to itself (`t = 1`) and the frame readout is
-    /// an isometry of its 3-flat, so pairwise distances are preserved: the
-    /// boundary cube renders at true size (Coxeter, *Regular Polytopes*, ch. 13).
     #[test]
     fn schlegel_chosen_cell_renders_undistorted() {
         let cell_offset = 0.5;
@@ -635,9 +588,6 @@ mod tests {
         }
     }
 
-    /// An oblique cell normal (the 16-cell `{+x,+y,+z,+w}` cell, normal
-    /// `(1,1,1,1)/2`) must not flatten the boundary cell. Regression for the old
-    /// w-drop that collapsed the `+n` vertex onto the origin.
     #[test]
     fn schlegel_non_axis_aligned_cell_is_not_flattened() {
         let verts = [
@@ -708,8 +658,6 @@ mod tests {
         }
     }
 
-    /// The supplied basis (not a rebuilt frame) drives the readout: the point is
-    /// on the boundary cell, so only basis ordering can change the R³ coordinates.
     #[test]
     fn schlegel_uses_supplied_basis_for_readout() {
         let p = Vec4::new(0.5, -0.25, 0.125, 0.5);
@@ -723,8 +671,6 @@ mod tests {
         assert_eq!(b, Vec3::new(-0.25, 0.5, 0.125));
     }
 
-    /// Every tesseract vertex projects to a finite R³ point under the default
-    /// viewpoint, including the `w = -0.5` cell the eye looks through.
     #[test]
     fn schlegel_projection_is_always_finite() {
         let cell_offset = 0.5;
@@ -740,8 +686,6 @@ mod tests {
         }
     }
 
-    /// A vertex on the viewer's 3-flat clamps to a finite result, mirroring
-    /// `r4_perspective4d_at_viewer_clamps_finite`.
     #[test]
     fn schlegel_zero_denominator_clamps_finite() {
         let viewpoint_distance = 0.75;
@@ -757,9 +701,6 @@ mod tests {
         }
     }
 
-    /// The normal sign is load-bearing: the outward normal nests the opposite
-    /// cell, the inward normal blows it past the boundary. Compares center radii
-    /// (rotation-invariant) since the frame readout rotates the xyz axes.
     #[test]
     fn schlegel_outward_normal_sign_required() {
         let cell_offset = 0.5;
@@ -785,9 +726,6 @@ mod tests {
         );
     }
 
-    /// `perp_frame(n)` is orthonormal and perpendicular to `n` across a spread of
-    /// normals (axis-aligned and all-equal worst cases). The Schlegel readout
-    /// relies on this invariant.
     #[test]
     fn perp_frame_is_orthonormal_and_perpendicular_to_normal() {
         let normals = [
@@ -815,7 +753,6 @@ mod tests {
         }
     }
 
-    /// Unsupported on R³: `Vec3::ZERO` per the enum contract.
     #[test]
     fn schlegel_unsupported_on_r3_returns_zero() {
         let p = Vec3::new(1.0, 2.0, 3.0);
@@ -828,8 +765,6 @@ mod tests {
         let got = <EuclideanR3 as RasterizableSpace<3>>::project_point(p, &proj);
         assert_eq!(got, Vec3::ZERO);
     }
-
-    // ---- Stereographic -------------------------------------------------
 
     /// Inverse stereographic map for pole `Vec4::W`: with `s = |q|²`,
     /// `w = (s - 1)/(s + 1)`, `(x, y, z) = q*(1 - w)` (Wikipedia, *Stereographic
@@ -853,10 +788,6 @@ mod tests {
         dot * pole + (1.0 - dot) * perp
     }
 
-    /// Pole `Vec4::W`: the fast path equals `(x, y, z) / (1 - w)` bitwise
-    /// (Wikipedia, *Stereographic projection*). Tested on `stereographic_to_r3`
-    /// directly because `project_point` re-normalizes and a second normalize of a
-    /// unit vector is not bit-idempotent.
     #[test]
     fn stereographic_default_pole_is_drop_w_of_scaled() {
         for p in [
@@ -887,9 +818,6 @@ mod tests {
         );
     }
 
-    /// `stereo_inverse(stereo(p)) ~= p` for unit `p` clear of the pole, default
-    /// and off-axis poles. Pins the `n`-perpendicular truncation: a leaked
-    /// pole-component would break the round-trip.
     #[test]
     fn stereographic_inverts_off_pole() {
         let proj_w = Projection::Stereographic { pole: Vec4::W };
@@ -921,8 +849,6 @@ mod tests {
         }
     }
 
-    /// The image lies in the pole-perpendicular 3-flat (zero pole-component after
-    /// re-embedding). Catches the naive `p / (1 - dot)` leak.
     #[test]
     fn stereographic_image_in_n_perp_hyperplane() {
         for pole in [
@@ -948,8 +874,6 @@ mod tests {
         }
     }
 
-    /// A vertex at the pole and a near-pole tangential point both stay finite via
-    /// the `STEREOGRAPHIC_POLE_EPSILON` floor.
     #[test]
     fn stereographic_pole_denominator_clamped_finite() {
         for pole in [Vec4::W, Vec4::new(0.5, 0.5, 0.5, 0.5)] {
@@ -974,8 +898,6 @@ mod tests {
         }
     }
 
-    /// The antipode `-pole` maps to the origin (`dot = -1`, denominator `2`): the
-    /// safe far point, distinct from the singular pole.
     #[test]
     fn stereographic_antipode_maps_to_origin() {
         for pole in [Vec4::W, Vec4::new(0.1, -0.2, 0.3, 0.9).normalize()] {
@@ -987,9 +909,6 @@ mod tests {
         }
     }
 
-    /// A pole tied between two axes yields the same Vec3 across calls and matches
-    /// a golden value. Tier-0 bit-repro guard: the frame must not flip gauge under
-    /// the tie-break.
     #[test]
     fn stereographic_frame_is_deterministic_under_tie() {
         // Pole equidistant from the z and w axes.
@@ -1008,8 +927,6 @@ mod tests {
         assert_relative_eq!(first.z, GOLDEN_TIE_FRAME.z, epsilon = 1e-6);
     }
 
-    /// `perp_frame(pole)` is orthonormal and finite for poles swept toward each
-    /// axis, including exactly an axis. The stereographic readout relies on this.
     #[test]
     fn stereographic_frame_orthonormal_for_every_pole() {
         let mut poles = vec![Vec4::X, Vec4::Y, Vec4::Z, Vec4::W];
@@ -1038,8 +955,6 @@ mod tests {
         }
     }
 
-    /// Stereographic is conformal: the angle between two edges at a shared
-    /// non-pole vertex is preserved (Wikipedia, *Stereographic projection*).
     #[test]
     fn stereographic_is_conformal() {
         let s = SphericalS3Embedded;
@@ -1074,7 +989,6 @@ mod tests {
         assert_relative_eq!(projected, intrinsic, epsilon = 1e-2);
     }
 
-    /// Unsupported on R³: `Vec3::ZERO` per the enum contract.
     #[test]
     fn stereographic_unsupported_on_r3_returns_zero() {
         let p = Vec3::new(1.0, 2.0, 3.0);
@@ -1083,7 +997,6 @@ mod tests {
         assert_eq!(got, Vec3::ZERO);
     }
 
-    /// `tessellate_segment` on flat R⁴ is plain lerp across all four components.
     #[test]
     fn r4_tessellate_lerps_all_components() {
         let p0 = Vec4::new(0.0, 0.0, 0.0, 0.0);

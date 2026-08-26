@@ -1,14 +1,5 @@
 //! `BlendedSpace<A, B, F>`: a `Space` whose metric smoothly interpolates
 //! between two source Spaces A and B via a blending field F: ℝ³ -> [0, 1].
-//!
-//! - [`BlendingField`] trait + [`LinearBlendX`] (axis-aligned smooth-step
-//!   zone).
-//! - [`ConformallyFlat`] trait + impls for `EuclideanR3`, `HyperbolicH3`.
-//! - [`BlendedSpace<A, B, F>`] implementing `Space` via RK4 geodesic
-//!   integration, Gauss-Newton `log` shooting, and RK4 parallel transport for
-//!   the conformally-flat fast path.
-//! - WGSL emit (specific to
-//!   `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>`).
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -16,10 +7,6 @@ use std::marker::PhantomData;
 use glam::{Mat3, Vec3};
 
 use crate::space::{Space, WgslSpace};
-
-// ---------------------------------------------------------------------------
-// ConformallyFlat: extension trait for Spaces with scalar metric
-// ---------------------------------------------------------------------------
 
 /// A [`Space`] whose metric tensor is a scalar multiple of the identity in its
 /// standard chart: g_ij(p) = f(p)·δ_ij for some positive scalar function f.
@@ -139,10 +126,6 @@ impl ConformallyFlat for crate::HyperbolicH3 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// BlendedSpace: Space whose metric varies smoothly with position
-// ---------------------------------------------------------------------------
-
 /// A `Space` whose metric is the smooth blend of two source Spaces' metrics,
 /// weighted by a [`BlendingField`]:
 /// g(p) = (1 - α(p))·g_A(p) + α(p)·g_B(p).
@@ -245,10 +228,6 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// RK4 geodesic integrator
-// ---------------------------------------------------------------------------
-
 /// RK4 steps per unit-parameter integration. 32 gives ~6 digits on moderately
 /// curved metrics; 64 gives ~7.
 pub const GEODESIC_DEFAULT_STEPS: u32 = 32;
@@ -302,10 +281,6 @@ pub fn rk4_geodesic<S: ConformallyFlat>(
     }
     (p, vel)
 }
-
-// ---------------------------------------------------------------------------
-// Parallel transport along a polyline
-// ---------------------------------------------------------------------------
 
 /// RK4 steps per polyline segment for parallel transport. 8 gives ~5 digits on
 /// moderately curved metrics, enough that a camera frame stays orthonormal over
@@ -363,10 +338,6 @@ pub fn parallel_transport_segment_rk4<S: ConformallyFlat>(
     }
     v_curr
 }
-
-// ---------------------------------------------------------------------------
-// log: Gauss-Newton shooting
-// ---------------------------------------------------------------------------
 
 /// Maximum Gauss-Newton iterations for `log`. ~5 converges to f32 precision off
 /// the cut locus; cap at 12 to bound the worst case.
@@ -535,10 +506,6 @@ pub trait BlendingField: Copy + Send + Sync + 'static {
     }
 }
 
-// ---------------------------------------------------------------------------
-// LinearBlendX: axis-aligned smoothstep zone
-// ---------------------------------------------------------------------------
-
 /// Smoothstep blending zone along the X axis: pure A at `x ≤ start`, pure B at
 /// `x ≥ end`, smooth C² transition between.
 ///
@@ -607,10 +574,6 @@ impl BlendingField for LinearBlendX {
         Vec3::new(dx, 0.0, 0.0)
     }
 }
-
-// ---------------------------------------------------------------------------
-// WGSL emission
-// ---------------------------------------------------------------------------
 
 /// WGSL prelude for the specific
 /// `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>` instantiation. A
@@ -807,7 +770,6 @@ mod tests {
         assert!((a - b).abs() <= tol, "expected {a} ≈ {b} (tol {tol})");
     }
 
-    /// Smoothstep boundary values: 0 at start, 1 at end, 0.5 at midpoint.
     #[test]
     fn linear_blend_x_smoothstep_endpoints() {
         let f = LinearBlendX::new(-1.0, 1.0);
@@ -816,8 +778,6 @@ mod tests {
         close(f.weight(Vec3::ZERO), 0.5, 1e-6);
     }
 
-    /// Outside the zone the field is constant and the gradient is exactly zero,
-    /// so the metric reduces to pure A / pure B with no Christoffel kick.
     #[test]
     fn linear_blend_x_is_constant_outside_zone() {
         let f = LinearBlendX::new(-1.0, 1.0);
@@ -830,8 +790,6 @@ mod tests {
         close(f.gradient(Vec3::new(1.0, 0.0, 0.0)).x, 0.0, 1e-6);
     }
 
-    /// Inside the zone the gradient is along X only (axis-aligned blend), peak
-    /// magnitude at the midpoint.
     #[test]
     fn linear_blend_x_gradient_is_axis_aligned() {
         let f = LinearBlendX::new(-1.0, 1.0);
@@ -843,8 +801,6 @@ mod tests {
         close(g.x, 0.9375, 1e-6);
     }
 
-    /// Closed-form gradient agrees with central finite differences. Catches a
-    /// sign or scale error in the analytic gradient.
     #[test]
     fn linear_blend_x_closed_form_matches_finite_diff() {
         let f = LinearBlendX::new(-1.0, 1.0);
@@ -870,7 +826,6 @@ mod tests {
         }
     }
 
-    /// Reversed inputs get auto-swapped so the field still ramps 0 -> 1.
     #[test]
     fn linear_blend_x_handles_reversed_inputs() {
         let f = LinearBlendX::new(1.0, -1.0);
@@ -878,11 +833,6 @@ mod tests {
         close(f.weight(Vec3::new(1.0, 0.0, 0.0)), 1.0, 1e-6);
     }
 
-    /// The fields are `pub`, so a struct literal can install `end <= start`
-    /// without passing through `new`'s swap. That configuration is defined,
-    /// not undefined: a step at `start` with a zero gradient everywhere, so
-    /// the integrator sees no curvature kick instead of a division by a
-    /// non-positive width.
     #[test]
     fn linear_blend_x_literal_with_non_positive_width_is_a_step_at_start() {
         for f in [
@@ -904,26 +854,6 @@ mod tests {
         }
     }
 
-    // ------ ConformallyFlat impls ------
-
-    /// EuclideanR3: f ≡ 1, log-half ≡ 0, gradient ≡ 0.
-    #[test]
-    fn euclidean_r3_conformal_factor_is_unity() {
-        use crate::EuclideanR3;
-        let s = EuclideanR3;
-        for p in [
-            Vec3::ZERO,
-            Vec3::new(1.0, 2.0, 3.0),
-            Vec3::new(-100.0, 50.0, 7.0),
-        ] {
-            close(s.conformal_factor(p), 1.0, 0.0);
-            close(s.conformal_log_half(p), 0.0, 0.0);
-            assert_eq!(s.conformal_log_half_gradient(p), Vec3::ZERO);
-        }
-    }
-
-    /// Poincaré-ball HyperbolicH3 conformal factor 4/(1-|p|²)² at origin,
-    /// halfway out, and near the boundary.
     #[test]
     fn hyperbolic_h3_conformal_factor_pin_values() {
         use crate::HyperbolicH3;
@@ -944,8 +874,6 @@ mod tests {
         );
     }
 
-    /// HyperbolicH3 closed-form `conformal_log_half_gradient` agrees with central
-    /// finite differences.
     #[test]
     fn hyperbolic_h3_log_half_gradient_matches_finite_diff() {
         use crate::HyperbolicH3;
@@ -1060,12 +988,6 @@ mod tests {
         );
     }
 
-    // ------ BlendedSpace conformally-flat overrides ------
-
-    /// `BlendedSpace::conformal_log_half_gradient` analytic override agrees with
-    /// central finite differences on the blended `conformal_log_half`, pinning
-    /// the chain rule against the default FD path. Tolerance `5e-3` clears both
-    /// the FD truncation and roundoff floors near the |r|≈0.7 H3 sample.
     #[test]
     fn blended_space_log_half_gradient_matches_finite_diff() {
         use crate::{EuclideanR3, HyperbolicH3};
@@ -1097,8 +1019,6 @@ mod tests {
         }
     }
 
-    /// At alpha=0 the fast path returns A's gradient verbatim; with A = E³ that
-    /// is exactly zero.
     #[test]
     fn blended_space_log_half_gradient_at_alpha_zero_is_pure_a() {
         use crate::{EuclideanR3, HyperbolicH3};
@@ -1109,7 +1029,6 @@ mod tests {
         close(g.z, 0.0, 1e-6);
     }
 
-    /// At alpha=1 the fast path returns B's gradient verbatim.
     #[test]
     fn blended_space_log_half_gradient_at_alpha_one_is_pure_b() {
         use crate::{EuclideanR3, HyperbolicH3};
@@ -1122,39 +1041,6 @@ mod tests {
         close(blended.z, pure_b.z, 1e-6);
     }
 
-    // ------ BlendedSpace skeleton ------
-
-    /// At a zone extreme (pure A), `BlendedSpace::distance` matches
-    /// `A::distance`.
-    #[test]
-    fn blended_space_distance_at_alpha_zero_matches_a() {
-        use crate::EuclideanR3;
-        let bs = BlendedSpace::new(
-            EuclideanR3,
-            EuclideanR3, // dummy; alpha=0 means we never see B
-            LinearBlendX::new(10.0, 20.0),
-        );
-        let a = Vec3::new(-1.0, 0.0, 0.0);
-        let b = Vec3::new(2.0, 0.0, 0.0);
-        let d_blend = bs.distance(a, b);
-        let d_a = EuclideanR3.distance(a, b);
-        close(d_blend, d_a, 1e-6);
-    }
-
-    /// At a zone extreme (pure B), distance matches `B::distance`.
-    #[test]
-    fn blended_space_distance_at_alpha_one_matches_b() {
-        use crate::EuclideanR3;
-        let bs = BlendedSpace::new(EuclideanR3, EuclideanR3, LinearBlendX::new(-20.0, -10.0));
-        let a = Vec3::new(0.0, 0.0, 0.0);
-        let b = Vec3::new(3.0, 0.0, 0.0);
-        let d_blend = bs.distance(a, b);
-        let d_b = EuclideanR3.distance(a, b);
-        close(d_blend, d_b, 1e-6);
-    }
-
-    /// `BlendedSpace` conformal factor: source value at a zone extreme,
-    /// alpha-weighted blend of the two in between.
     #[test]
     fn blended_space_conformal_factor_blends_linearly() {
         use crate::{EuclideanR3, HyperbolicH3};
@@ -1171,9 +1057,6 @@ mod tests {
         close(bs.conformal_factor(p), expected, 1e-2);
     }
 
-    // ------ RK4 geodesic integrator ------
-
-    /// In flat E³ the geodesic ODE has zero curvature term: `exp_p(v) = p + v`.
     #[test]
     fn rk4_in_pure_e3_is_straight_line() {
         use crate::EuclideanR3;
@@ -1194,9 +1077,6 @@ mod tests {
         }
     }
 
-    /// In pure HyperbolicH3, `exp` from the origin along a Euclidean tangent `v`
-    /// lands at the closed-form endpoint. Convention (matching `HyperbolicH3::
-    /// exp`): `v` is Euclidean, so at the origin |exp_0(v)|_E = tanh(|v|_E).
     #[test]
     fn rk4_in_pure_h3_matches_closed_form_at_origin() {
         use crate::{HyperbolicH3, Space};
@@ -1228,8 +1108,6 @@ mod tests {
         close(final_p_blended.x, 0.5_f32.tanh(), 5e-3);
     }
 
-    /// Geodesic round-trip in pure E³: `exp_p(v)` then `exp_q(-v)` returns to
-    /// `p`. Integrator time-reversibility on a flat metric.
     #[test]
     fn rk4_in_e3_is_time_reversible() {
         use crate::EuclideanR3;
@@ -1240,8 +1118,6 @@ mod tests {
         close((back - p).length(), 0.0, 1e-5);
     }
 
-    /// `BlendedSpace::exp` at a zone extreme matches the source Space's exp,
-    /// end-to-end through the integrator.
     #[test]
     fn blended_space_exp_at_alpha_zero_matches_e3() {
         use crate::EuclideanR3;
@@ -1254,10 +1130,6 @@ mod tests {
         close((result - expected).length(), 0.0, 1e-5);
     }
 
-    // ------ log via Gauss-Newton shooting ------
-
-    /// In pure E³, `log_from(to) = to − from` exactly (Gauss-Newton converges
-    /// in one step).
     #[test]
     fn log_in_pure_e3_is_euclidean_displacement() {
         use crate::EuclideanR3;
@@ -1277,8 +1149,6 @@ mod tests {
         }
     }
 
-    /// Round-trip `exp_from(log_from(to)) ≈ to` in pure H³, where the integrator
-    /// does real work.
     #[test]
     fn exp_log_round_trip_in_pure_h3() {
         use crate::HyperbolicH3;
@@ -1299,8 +1169,6 @@ mod tests {
         }
     }
 
-    /// `log` matches the closed-form `HyperbolicH3::log`, validating the
-    /// numerical inversion against independent ground truth.
     #[test]
     fn log_in_pure_h3_matches_closed_form() {
         use crate::{HyperbolicH3, Space};
@@ -1321,8 +1189,6 @@ mod tests {
         }
     }
 
-    /// `log_p(p) = 0`; the shooting routine special-cases this to avoid a
-    /// singular Jacobian at zero residual.
     #[test]
     fn log_of_self_is_zero() {
         use crate::HyperbolicH3;
@@ -1331,21 +1197,6 @@ mod tests {
         close(v.length(), 0.0, 1e-5);
     }
 
-    /// `BlendedSpace::distance` matches the source distance at a zone extreme.
-    #[test]
-    fn blended_space_distance_at_alpha_zero_uses_log() {
-        use crate::{EuclideanR3, Space};
-        let bs = BlendedSpace::new(EuclideanR3, EuclideanR3, LinearBlendX::new(50.0, 100.0));
-        let a = Vec3::new(1.0, 2.0, 3.0);
-        let b = Vec3::new(4.0, 5.0, 6.0);
-        let d = bs.distance(a, b);
-        close(d, (b - a).length(), 1e-4);
-    }
-
-    // ------ Parallel transport ------
-
-    /// In pure E³ parallel transport is the identity along any path (zero
-    /// Christoffel symbols, zero transport RHS).
     #[test]
     fn parallel_transport_in_e3_is_identity() {
         use crate::EuclideanR3;
@@ -1371,8 +1222,6 @@ mod tests {
         close((result - v).length(), 0.0, 1e-5);
     }
 
-    /// Hyperbolic transport preserves the Riemannian length √f(p)·|v|_E, not
-    /// the Euclidean length.
     #[test]
     fn parallel_transport_in_h3_preserves_riemannian_length() {
         use crate::HyperbolicH3;
@@ -1395,24 +1244,6 @@ mod tests {
         close(len_from, len_to, 5e-3);
     }
 
-    /// The RK4 kernel integrates the same connection the closed-form gyration
-    /// formula implements, checked as a *coefficient* rather than a distance.
-    ///
-    /// A single short segment under an absolute budget cannot do this job: the
-    /// residual it admits is dominated by how short the segment is, so a
-    /// spurious rotation inside the RHS hides under the tolerance as long as
-    /// the sample is small enough. The two error terms separate by order
-    /// instead. Following the chord rather than the geodesic costs O(h³); a
-    /// wrong connection contributes a term linear in h, because the erroneous
-    /// rotation rate is integrated over the path. Dividing by h and shrinking
-    /// h therefore drives the honest error to zero while a wrong connection's
-    /// coefficient converges to a nonzero constant.
-    ///
-    /// So this sweeps base points, directions and tangents at three
-    /// separations, and asserts the worst coefficient both stays small and
-    /// keeps falling as h halves. Measured worst coefficients are 1.5e-3,
-    /// 4.0e-4 and 1.0e-4 at h = 0.04, 0.02 and 0.01: falling by ~4x per
-    /// halving, which is the h² signature of an O(h³) residual.
     #[test]
     fn h3_transport_agrees_with_the_closed_form_by_a_vanishing_coefficient() {
         use crate::{HyperbolicH3, Space};
@@ -1469,24 +1300,6 @@ mod tests {
         }
     }
 
-    /// Transport is the flow of an ODE along a fixed curve, so chopping that
-    /// curve into more pieces refines the discretization without changing what
-    /// is being integrated: `n_steps` is counted per segment, so `k`
-    /// sub-segments is `k` times the RK4 steps one call spends on the same
-    /// curve. The answer must not move.
-    ///
-    /// This is the pin an integrated transport admits and a geodesic oracle
-    /// does not. `BlendedSpace` walks the chart-coordinate straight line rather
-    /// than its geodesic, so the pole ladder of the conformance suite has
-    /// nothing to compare a single call against; refinement compares the kernel
-    /// against itself at a step size where the truncation is orders smaller.
-    /// What it does not see is which connection is being integrated. Every
-    /// discretization of a wrong RHS converges to the same wrong flow, so a
-    /// spurious rotation proportional to arc length is subdivision-invariant
-    /// by construction and passes here unchanged; only a rotation applied once
-    /// per segment, independent of that segment's length, scales with `k`.
-    /// `h3_transport_agrees_with_the_closed_form_by_a_vanishing_coefficient`
-    /// is the item that pins the connection, by order rather than by distance.
     #[test]
     fn transport_is_invariant_to_how_its_own_path_is_subdivided() {
         use crate::{EuclideanR3, HyperbolicH3, Space};
@@ -1522,9 +1335,6 @@ mod tests {
         );
     }
 
-    /// Closed-loop holonomy in H³: transport around a small triangle returns a
-    /// vector differing from the original, proving real curvature is integrated
-    /// (flat space would return it exactly).
     #[test]
     fn parallel_transport_in_h3_has_nonzero_holonomy() {
         use crate::{HyperbolicH3, Space};
@@ -1552,9 +1362,6 @@ mod tests {
         assert!(drift < 0.5, "holonomy unreasonably large: {drift}");
     }
 
-    // ------ Curvature continuity ------
-
-    /// HyperbolicH3 scalar curvature is -6 everywhere (constant K = -1 in 3D).
     #[test]
     fn hyperbolic_h3_scalar_curvature_is_constant_minus_six() {
         use crate::HyperbolicH3;
@@ -1568,8 +1375,6 @@ mod tests {
         }
     }
 
-    /// Default FD curvature agrees with the closed-form override for H3,
-    /// validating the FD stencil for blended-space use (no closed form there).
     #[test]
     fn finite_diff_curvature_matches_closed_form_in_h3() {
         use crate::HyperbolicH3;
@@ -1609,8 +1414,6 @@ mod tests {
         }
     }
 
-    /// BlendedSpace<E³, H³, LinearBlendX> scalar curvature varies continuously
-    /// across the zone: R=0 (E³) and R=-6 (H³) at the extremes, smooth between.
     #[test]
     fn blended_space_curvature_varies_continuously_across_zone() {
         use crate::{EuclideanR3, HyperbolicH3};
@@ -1653,10 +1456,6 @@ mod tests {
         );
     }
 
-    // ------ Boundary extremes ------
-
-    /// At α=0 every BlendedSpace `Space` method matches source A; `exp`, `log`,
-    /// `parallel_transport`, `distance`, `conformal_factor`, `scalar_curvature`.
     #[test]
     fn blended_space_at_alpha_zero_is_pure_a() {
         use crate::{EuclideanR3, HyperbolicH3, Space};
@@ -1709,7 +1508,6 @@ mod tests {
         close(bs.scalar_curvature(p), -6.0, 0.05);
     }
 
-    /// Smoothstep is monotonic non-decreasing across the zone (no overshoot).
     #[test]
     fn linear_blend_x_is_monotonic() {
         let f = LinearBlendX::new(-1.0, 1.0);

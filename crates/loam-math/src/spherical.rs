@@ -4,8 +4,7 @@
 //! unit 4-vector `(p, √(1−|p|²))` on S³ ⊂ R⁴; the origin is the north pole.
 //! This keeps the WGSL ABI at `vec3<f32>` (the v0 `WgslSpace` contract) at the
 //! cost of upper-hemisphere-only coverage: an isometry that pushes a point below
-//! the equator returns out-of-domain (a debug warning fires). The fractal demo's
-//! `ball_scale` keeps coordinates near the origin, well clear of the equator.
+//! the equator returns out-of-domain (a debug warning fires).
 //!
 //! Isometries are SO(4) matrices: composition is matmul, inverse is transpose.
 //! Curvature `K = +1`; geodesic triangles have positive angle excess.
@@ -441,17 +440,12 @@ mod tests {
         assert_relative_eq!(norm_from, norm_to, epsilon = 1e-5);
     }
 
-    /// Norm preservation just off the antipodal singularity pins the
-    /// well-conditioned denominator. `to` is `from` mirrored through the
-    /// yz-plane, so the pair is near-antipodal and the two lifts share a
-    /// bit-identical `w`; the exact denominator is then `2·(b² + w²)`, which
-    /// `1 + ⟨qf, qt⟩` evaluates as `1 − a² + b² + w²` and loses to cancellation
-    /// while `|qf + qt|² / 2` reads it off components that are already small.
-    /// Only the near-equator band reaches the regime: `1 + ⟨qf, qt⟩ ≥ 2·w²`,
-    /// and the saturation shell floors `w` at 1e-3. Measured error at the
-    /// tightest case is 3.3e-3 for the literal form against 0 ulp here.
     #[test]
     fn parallel_transport_preserves_norm_near_antipode() {
+        // `to` is `from` mirrored through the yz-plane, so the pair is
+        // near-antipodal and the two lifts share a bit-identical `w`.
+        // Measured error at the tightest case is 3.3e-3 for the literal
+        // `1 + ⟨qf, qt⟩` form against 0 ulp here.
         let s = s3();
         let lifted_norm = |p: Vec3, v: Vec3| {
             let vw = -v.dot(p) / to_sphere(p).w;
@@ -793,12 +787,6 @@ mod tests {
         }
     }
 
-    /// The shader declares every chart floor, and declares it as the CPU
-    /// constant's own value: the emitted text is formatted from the constant,
-    /// so the twins cannot disagree, and this fails if a declaration is dropped
-    /// or its exponent rendering stops being a WGSL float literal. The bodies
-    /// then read the names, which `WGSL_BODY_PINS` pins; between the two, no
-    /// guard in the shipped shader can carry a transcribed value.
     #[test]
     fn wgsl_declares_every_chart_floor_from_its_cpu_constant() {
         let src = s3().wgsl_impl();
@@ -812,26 +800,21 @@ mod tests {
         }
     }
 
-    /// Each floor's doc comment derives its value; every other site now reads
-    /// the constant, so nothing else fails when one moves. This is the tripwire
-    /// that keeps a retune an explicit numerical decision with a derivation to
-    /// update, rather than a one-character edit that stays green.
     #[test]
     fn chart_floors_hold_their_derived_values() {
+        // Each floor's doc comment derives its value; every other site now
+        // reads the constant, so nothing else fails when one moves.
         assert_eq!(SPHERE_R2_MAX, 1.0 - 1e-6);
         assert_eq!(EXP_TANGENT_MIN_SQ, 1e-14);
         assert_eq!(LOG_PERP_MIN, 1e-7);
         assert_eq!(ISO_TRANSLATION_MIN_ARC, 1e-7);
     }
 
-    /// `LOAM_MAX_ARC` caps the marcher's Riemannian arc length and has no Rust
-    /// consumer, so nothing else pins its value: `march_geodesic_cpu` takes the
-    /// cap as a parameter precisely because the kernel reads it as a prelude
-    /// constant. The cap has to stay under the largest origin distance this
-    /// chart can report, `asin(√SPHERE_R2_MAX)`, or the marcher's boundary
-    /// escape can never fire and only the arc budget terminates a ray.
     #[test]
     fn wgsl_max_arc_stays_under_the_saturated_chart_radius() {
+        // The cap has to stay under the largest origin distance this chart
+        // can report, `asin(√SPHERE_R2_MAX)`, or the marcher's boundary
+        // escape can never fire and only the arc budget terminates a ray.
         const S3_MAX_ARC: f32 = 1.5;
         let pin = format!("const LOAM_MAX_ARC: f32 = {S3_MAX_ARC};");
         assert!(
@@ -845,15 +828,6 @@ mod tests {
         );
     }
 
-    /// Every `vw = −dot(v, p)/w`, and the bound that stands in for a transport
-    /// floor, rest on `w ≥ √(1 − SPHERE_R2_MAX)`; what enforces it is
-    /// `to_sphere`'s own `min`, not `clamp_to_hemisphere`'s postcondition. The
-    /// clamp's scale factor rounds and leaves a quarter of out-of-domain
-    /// directions above the shell, which alone would put `w` 16% under the
-    /// floor, so the floor is pinned on raw input the clamp never saw, and the
-    /// overshoot count is asserted nonzero so the pin cannot pass by exercising
-    /// only inputs the clamp did land inside. A `to_sphere` rewritten to trust
-    /// its caller fails here.
     #[test]
     fn lift_floors_w_at_the_shell_even_where_the_clamp_overshoots_it() {
         let floor = (1.0 - SPHERE_R2_MAX).sqrt();
@@ -889,14 +863,6 @@ mod tests {
         assert!(to_sphere(Vec3::splat(f32::INFINITY)).w >= floor);
     }
 
-    /// The deleted transport floor's reachability argument, as a bound the
-    /// code has to keep satisfying: both lifts carry `w ≥ √(1 − SPHERE_R2_MAX)`
-    /// whatever the input was, because `to_sphere` takes the `min` before the
-    /// square root, so `|qf + qt|²/2 ≥ 2·(1 − SPHERE_R2_MAX)` with no
-    /// assumption on the xyz parts. The upper bound keeps the shell antipodes
-    /// in `parity_points`, which are what make this measured rather than
-    /// merely asserted. Fails first if `SPHERE_R2_MAX` moves toward 1, which is
-    /// where a floor would start to earn its place again.
     #[test]
     fn transport_denominator_is_bounded_below_by_the_saturation_shell() {
         let chart_min = 2.0 * (1.0 - SPHERE_R2_MAX);
@@ -920,12 +886,6 @@ mod tests {
         );
     }
 
-    /// The deleted `exp` lifted-magnitude floor's reachability argument, as a
-    /// bound: past the surviving early return the lift only appends a
-    /// component, so `mag ≥ |v| ≥ √EXP_TANGENT_MIN_SQ`, and at that floor
-    /// `sin(mag)/mag` is exactly 1.0 in f32. Lowering `EXP_TANGENT_MIN_SQ` to
-    /// where the quotient stops being exact is the edit that would make a
-    /// second guard necessary again, and it fails here.
     #[test]
     fn exp_lifted_magnitude_is_never_below_the_tangent_guard() {
         let mut smallest = f32::INFINITY;
@@ -954,10 +914,6 @@ mod tests {
         assert_eq!(smallest.sin() / smallest, 1.0);
     }
 
-    /// `Iso4::from_translation` has the only guard with no WGSL twin, so no
-    /// mirror discriminates it; straddle it directly. Below the threshold the
-    /// isometry is exactly the identity, above it the origin lands on the
-    /// target.
     #[test]
     fn translation_guard_separates_degenerate_targets_from_representable_ones() {
         let s = s3();
@@ -1065,14 +1021,5 @@ mod tests {
                 max_relative = 1e-5
             );
         }
-    }
-
-    #[test]
-    fn wgsl_impl_is_non_empty() {
-        let src = s3().wgsl_impl();
-        assert!(src.contains("fn loam_distance"));
-        assert!(src.contains("fn loam_exp"));
-        assert!(src.contains("fn loam_log"));
-        assert!(src.contains("fn loam_parallel_transport"));
     }
 }

@@ -1,16 +1,5 @@
 //! `loam-math`: geometric primitives for Loam.
 //!
-//! The central abstraction is the [`Space`] trait. Every other crate that cares about *where
-//! things are* (scene graph, physics, render, shaders) routes through it, so that swapping
-//! `EuclideanR3` for `HyperbolicH3` or `Spherical S3` is a type-level decision, not a fork.
-//!
-//! [`IsometryGroup`] is a separate subtrait for the spaces that have isometries, and
-//! [`WgslSpace`] for the GPU half of the contract; CPU-only consumers never need to
-//! implement the latter.
-//!
-//! [`Tangent`] bundles a tangent vector with its base point, the recommended holder outside
-//! tight numerical kernels.
-//!
 //! ## Determinism
 //!
 //! Loam is built for lockstep multiplayer, so all math here must be bit-reproducible across

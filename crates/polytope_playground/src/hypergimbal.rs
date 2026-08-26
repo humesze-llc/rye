@@ -80,11 +80,13 @@ pub(crate) struct GimbalUi {
 }
 
 impl Default for GimbalUi {
-    /// On at startup: the widget is the demo's answer to "how do I move this
-    /// thing in 4D", and a hidden answer is no answer.
+    /// Off at startup, by the maintainer's call: ten rings and arrows drawn
+    /// over every body read as clutter before they read as an answer.
+    /// Discovery lives in the View menu ("Transform handles") and the About
+    /// panel, not in the default framing.
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             drag: None,
             hover: None,
             built_highlight: None,

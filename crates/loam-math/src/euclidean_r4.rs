@@ -1,9 +1,5 @@
 //! Euclidean R⁴, flat 4D space with a [`Rotor4`]-based isometry.
 //!
-//! Parallels [`crate::euclidean::EuclideanR3`] but in one higher dimension: [`Vec4`] points,
-//! [`Vec4`] tangent vectors, and an `Iso4Flat` that carries a `Rotor4` rotation + `Vec4`
-//! translation.
-//!
 //! Intentionally distinct from [`crate::spherical::Iso4`], that type is an SO(4) matrix used
 //! to embed `S³` in 4D ambient space. The flat Iso here is for rigid motions of `R⁴` itself,
 //! the setting in which 4D physics simulations live.
@@ -46,8 +42,7 @@ impl Iso4Flat {
         }
     }
 
-    /// Pure translation. [`IsometryGroup::iso_transport`] is the identity for
-    /// these, since translation does not act on tangent vectors in R⁴.
+    /// Pure translation.
     pub fn from_translation(translation: Vec4) -> Self {
         Self {
             rotation: Rotor4::IDENTITY,
@@ -63,9 +58,6 @@ impl Default for Iso4Flat {
 }
 
 /// Euclidean R⁴ with the standard metric `‖x‖² = x₁² + x₂² + x₃² + x₄²`.
-///
-/// Stateless unit struct; there is only one R⁴. `Space` methods monomorphize to the bare
-/// arithmetic.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EuclideanR4;
 
@@ -86,12 +78,9 @@ impl Space for EuclideanR4 {
     }
 
     fn parallel_transport(&self, _from: Vec4, _to: Vec4, v: Vec4) -> Vec4 {
-        // R⁴ is flat; parallel transport along any path is the identity.
         v
     }
 
-    /// ℝ⁴ is globally flat: chart-coord 4D SDFs (hyperplanes, hyperboxes) are mathematically
-    /// correct.
     fn is_chart_flat(&self) -> bool {
         true
     }
@@ -129,7 +118,6 @@ impl IsometryGroup for EuclideanR4 {
     }
 
     fn iso_transport(&self, iso: Iso4Flat, _at: Vec4, v: Vec4) -> Vec4 {
-        // Tangent vectors are unaffected by translation; rotation acts.
         iso.rotation.apply(v)
     }
 }
@@ -140,11 +128,6 @@ impl WgslSpace for EuclideanR4 {
     }
 }
 
-// EuclideanR4's WGSL is the honest, closed-form ABI for flat ℝ⁴: `exp(p, v) = p + v`,
-// `log(a, b) = b - a`, transport is identity. Naga validation lives in `loam-shader/db.rs`'s
-// `euclidean_r4_space_prelude_validates_against_abi_probe`. No render node consumes it today
-// (4D rendering goes through the hyperslice path, not a native 4D geodesic march), but the
-// prelude is correct content rather than a stub, ready for the first consumer.
 const WGSL_IMPL: &str = r#"
 // loam-math :: EuclideanR4 (v0 Space WGSL ABI)
 const LOAM_MAX_ARC: f32 = 1e9;
@@ -164,11 +147,6 @@ mod tests {
         EuclideanR4
     }
 
-    /// `iso_compose` propagates rotor drift instead of correcting it, which is
-    /// what makes the per-step `Rotor4::normalize` in the physics integrator
-    /// load-bearing rather than redundant. Composing with the identity is the
-    /// sharpest probe: any renormalization inside `iso_compose` would pull the
-    /// off-manifold rotor back to unit norm and erase the defect.
     #[test]
     fn iso_compose_leaves_rotor_drift_uncorrected() {
         let s = r4();
@@ -205,10 +183,6 @@ mod tests {
         assert_relative_eq!(v.length(), v_at_to.length());
     }
 
-    /// Pin the v0 ABI surface: every function the shader contract requires must appear in the
-    /// emitted prelude. Naga validation of the assembled source lives in `loam-shader/db.rs`;
-    /// this test is a fast local check that catches a name-rename regression without spinning
-    /// up the WGSL parser.
     #[test]
     fn wgsl_impl_emits_v0_abi_surface() {
         let src = r4().wgsl_impl();

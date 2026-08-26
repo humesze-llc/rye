@@ -275,8 +275,6 @@ mod tests {
         assert_relative_eq!(s.distance(Vec4::X, Vec4::W), PI / 2.0, epsilon = 1e-6);
     }
 
-    /// The antipode is the cut locus, so it is the one distance the conformance
-    /// suite's samples deliberately exclude.
     #[test]
     fn distance_at_antipode_is_pi() {
         let s = s3();
@@ -294,7 +292,6 @@ mod tests {
         assert_relative_eq!(v.dot(from), 0.0, epsilon = 1e-6);
     }
 
-    /// `exp` lands on the sphere even with a radial component in the input.
     #[test]
     fn exp_stays_on_sphere_with_non_tangent_input() {
         let s = s3();
@@ -305,8 +302,6 @@ mod tests {
         assert_relative_eq!(moved.length(), 1.0, epsilon = 1e-6);
     }
 
-    /// Transport preserves norm and tangency. `v` is in the xw-plane of motion so
-    /// it actually rotates (a y-vector would be left fixed, a weaker check).
     #[test]
     fn parallel_transport_preserves_norm_and_tangency() {
         let s = s3();
@@ -319,11 +314,6 @@ mod tests {
         assert!((vt - v).length() > 1e-3, "in-plane vector should rotate");
     }
 
-    /// Norm preservation up to the antipodal floor pins the well-conditioned
-    /// denominator: the literal `1 + ⟨from, to⟩` drifts the norm percent-level as
-    /// `⟨from, to⟩ -> −1` while `|from + to|² / 2` holds it to f32 epsilon. `ω` is
-    /// kept just outside the floor (`sin(ω) > 1e-3`) so the exact norm is `|v| = 1`;
-    /// the genuinely-undefined regime is the slerp degenerate branch's concern.
     #[test]
     fn parallel_transport_preserves_norm_near_antipode() {
         let s = s3();
@@ -339,8 +329,6 @@ mod tests {
         }
     }
 
-    /// `iso_transport` sends a tangent at `at` to a tangent at `iso_apply(at)`,
-    /// preserving length.
     #[test]
     fn iso_transport_keeps_tangency_and_norm() {
         let s = s3();
@@ -353,9 +341,6 @@ mod tests {
         assert_relative_eq!(moved_v.dot(moved_at), 0.0, epsilon = 1e-5);
     }
 
-    // ---- RasterizableSpace ----------------------------------------------
-
-    /// Round-trip closes only on S³ since `array_to_point` normalizes.
     #[test]
     fn array_round_trip_on_unit_input() {
         let p = Vec4::new(0.5, -0.5, 0.5, 0.5); // unit
@@ -367,7 +352,6 @@ mod tests {
         assert_relative_eq!(back.w, p.w, epsilon = 1e-6);
     }
 
-    /// Slerp endpoints are exact; `samples` subdivisions append `samples + 1`.
     #[test]
     fn slerp_endpoints_exact_and_count() {
         let p0 = Vec4::X;
@@ -379,7 +363,6 @@ mod tests {
         assert_relative_eq!(out[4].y, p1.y, epsilon = 1e-6);
     }
 
-    /// Every slerp sample is unit, unlike the chord whose interior dips inside.
     #[test]
     fn slerp_samples_stay_on_sphere() {
         let p0 = Vec4::new(1.0, 0.0, 0.0, 0.0);
@@ -391,8 +374,6 @@ mod tests {
         }
     }
 
-    /// The quarter-arc midpoint sits at 45° on the sphere, bulging off the chord
-    /// midpoint `(0.5, 0, 0, 0.5)`.
     #[test]
     fn slerp_midpoint_is_on_great_circle_not_chord() {
         let s = s3();
@@ -409,9 +390,6 @@ mod tests {
         assert!(mid.x > 0.5, "slerp midpoint must bulge off the chord");
     }
 
-    /// Exact antipodes must still yield finite, on-sphere samples (no zero-vector
-    /// `normalize` -> NaN). Unreachable from polytope edges, but the method is
-    /// public and must be antipode-safe.
     #[test]
     fn slerp_antipode_produces_finite_unit_samples() {
         let p0 = Vec4::X;
@@ -428,9 +406,6 @@ mod tests {
         }
     }
 
-    /// Near-antipodal endpoints (ω just below π) pass the perp-norm gate but break
-    /// the classic `sin((1−t)ω)/sin(ω)` slerp; the exp-form keeps every interior
-    /// sample on S³. Endpoints placed at exact angles so the test pins the impl.
     #[test]
     fn slerp_near_antipode_samples_stay_on_sphere() {
         let p0 = Vec4::X;
@@ -453,8 +428,6 @@ mod tests {
         }
     }
 
-    /// Constant-speed: consecutive sub-arc distances sum to the total, for any
-    /// sample count. A chord-lerp would undershoot.
     #[test]
     fn slerp_consecutive_arc_sum_equals_total() {
         let s = s3();
@@ -471,8 +444,6 @@ mod tests {
         }
     }
 
-    /// Tier 0: tessellating the same segment twice is byte-identical (exact f32
-    /// bit-reproducibility, not just approximate as the other tests check).
     #[test]
     fn slerp_is_bit_reproducible() {
         let p0 = Vec4::new(0.3, -0.2, 0.5, 0.4).normalize();
@@ -509,9 +480,6 @@ mod tests {
         }
     }
 
-    /// Near-coincident endpoints take the degenerate branch and emit unit samples
-    /// clustered at `p0`. Broadens the angle coverage of
-    /// `slerp_samples_stay_on_sphere`.
     #[test]
     fn slerp_near_coincident_falls_back_on_sphere() {
         let p0 = Vec4::new(0.1, -0.2, 0.3, 0.9).normalize();
@@ -530,7 +498,6 @@ mod tests {
         }
     }
 
-    /// `project_point` delegates to flat R⁴ on the Perspective4D path.
     #[test]
     fn project_point_matches_flat_r4() {
         let p = Vec4::new(0.5, 0.5, 0.5, 0.5);
@@ -542,7 +509,6 @@ mod tests {
         assert_eq!(got, want);
     }
 
-    /// Schlegel delegates to flat R⁴ too, not just Perspective4D.
     #[test]
     fn project_point_schlegel_matches_flat_r4() {
         let p = Vec4::new(0.5, 0.5, 0.5, 0.5);
@@ -552,8 +518,6 @@ mod tests {
         assert_eq!(got, want);
     }
 
-    /// Stereographic does NOT delegate: it returns the conformal image, not the
-    /// flat R⁴ drop-w.
     #[test]
     fn project_point_stereographic_is_conformal_map_not_drop_w() {
         let p = Vec4::new(0.5, 0.5, 0.5, 0.5); // unit

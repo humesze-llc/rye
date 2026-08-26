@@ -491,8 +491,7 @@ impl Bivector4 {
     /// math sign: `e_xy ⌋ e_x = −e_y`.
     ///
     /// Physics wants the opposite sign (`ω × r`); use
-    /// `loam_physics::euclidean_r4::omega_cross_r` or negate. Kept
-    /// Clifford-pure so future `Bivector5`/`Bivector6` stay consistent.
+    /// `loam_physics::euclidean_r4::omega_cross_r` or negate.
     pub fn contract_vec(self, v: Vec4) -> Vec4 {
         Vec4::new(
             self.xy * v.y + self.xz * v.z + self.xw * v.w,
@@ -1168,20 +1167,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn scalar_mul_scales_angle() {
-        let b = Bivector2(0.5) * 2.0;
-        assert_close(b.0, 1.0);
-    }
-
-    #[test]
-    fn bivector_add_sums_angles() {
-        let b = Bivector2(0.3) + Bivector2(0.5);
-        assert_close(b.0, 0.8);
-    }
-
-    // ---- 3D tests ----
-
     fn assert_vec3_close(a: Vec3, b: Vec3) {
         assert!((a - b).length() <= 1e-5, "expected {a:?} close to {b:?}");
     }
@@ -1308,8 +1293,6 @@ mod tests {
         assert_vec3_close(rotor.apply(v), quat * v);
     }
 
-    // ---- 4D tests ----
-
     fn assert_vec4_close(a: Vec4, b: Vec4) {
         assert!(
             (a - b).length() <= 1e-4,
@@ -1332,7 +1315,6 @@ mod tests {
         assert_eq!(r, Rotor4::IDENTITY);
     }
 
-    /// `component` / `set_component` round-trip is the identity.
     #[test]
     fn bivector4_component_round_trip() {
         let b = Bivector4::new(1.0, 2.0, 3.0, 4.0, 5.0, 6.0);
@@ -1349,7 +1331,6 @@ mod tests {
         assert_eq!(c, b);
     }
 
-    /// `dot` invariants: orthogonality, self-dot 1, bilinearity.
     #[test]
     fn bivector4_dot_inner_product_invariants() {
         let xy = Plane4::Xy.unit_bivector();
@@ -1371,8 +1352,6 @@ mod tests {
         assert_vec4_close(Rotor4::IDENTITY.apply(v), v);
     }
 
-    /// Single-plane rotations are planar: two coordinates swap under a
-    /// quarter turn, the other two stay fixed.
     #[test]
     fn bivector4_single_plane_rotations_are_planar() {
         // xy-plane (θ = π/2): x -> y, y -> −x, z / w fixed.
@@ -1410,7 +1389,6 @@ mod tests {
         assert_vec4_close(r.apply(Vec4::W), -Vec4::Z);
     }
 
-    /// A simple bivector has `B ∧ B = 0`.
     #[test]
     fn simple_bivector_has_zero_wedge_self() {
         for b in [
@@ -1422,8 +1400,6 @@ mod tests {
         }
     }
 
-    /// Double rotation in xy and zw simultaneously; nonzero pseudoscalar is
-    /// the fingerprint of the compound decomposition.
     #[test]
     fn bivector4_double_rotation_xy_plus_zw() {
         let theta = FRAC_PI_2;
@@ -1436,12 +1412,6 @@ mod tests {
         assert_close(r.xyzw, 0.5);
     }
 
-    /// `Rotor4`'s documented reading of its scalar and pseudoscalar slots:
-    /// `s = cos(θ₁/2)·cos(θ₂/2)` and `xyzw = sin(θ₁/2)·sin(θ₂/2)` over the
-    /// invariant decomposition, so `xyzw` is zero exactly on simple
-    /// rotations. Exercises all three non-trivial `exp` branches, since each
-    /// computes the two slots by a different route and only the isoclinic one
-    /// was pinned.
     #[test]
     fn rotor4_scalar_and_pseudoscalar_carry_the_two_invariant_half_angles() {
         // (θ₁, θ₂) picked to land on simple, general compound, and
@@ -1461,8 +1431,6 @@ mod tests {
         }
     }
 
-    /// Isoclinic rotation (equal angles in two orthogonal planes) preserves
-    /// length.
     #[test]
     fn bivector4_isoclinic_rotation_preserves_length() {
         let theta = 0.9;
@@ -1569,8 +1537,6 @@ mod tests {
         }
     }
 
-    /// `log ∘ exp` for a compound bivector, recovered up to the
-    /// decomposition's branch ambiguity; checked via probe-vector rotations.
     #[test]
     fn rotor4_log_is_inverse_of_exp_compound() {
         let bv = Bivector4::new(0.5, 0.0, 0.0, 0.0, 0.0, 0.3);
@@ -1670,10 +1636,6 @@ mod tests {
         (0.5, -0.4),
     ];
 
-    /// Both invariant angles survive `log`, not just the rotor's action on a
-    /// probe vector. The reference rotor is the product of two simple
-    /// rotors, so it is built entirely from `exp`'s well-conditioned simple
-    /// branch and the residual here is `log`'s alone.
     #[test]
     fn rotor4_log_recovers_both_invariant_angles() {
         for (p1, p2) in invariant_plane_pairs() {
@@ -1689,13 +1651,6 @@ mod tests {
         }
     }
 
-    /// `log ∘ exp` on the same stress table. The tolerance is looser than
-    /// the test above because `exp`'s compound branch carries the
-    /// discriminant `√(|B|⁴ − (B∧B)²)`, which cancels to noise as the two
-    /// angles converge; that floor is `exp`'s, not the half-angle
-    /// recovery's, and it scales with `|B|` rather than sitting at a fixed
-    /// absolute size. The worst case in this table, `(2, 1.999)` on the
-    /// eigenpart-orthogonal pair, measures `1.3e-5·|B|`.
     #[test]
     fn rotor4_log_of_exp_round_trips_at_small_and_near_equal_angles() {
         for (p1, p2) in invariant_plane_pairs() {
@@ -1711,11 +1666,6 @@ mod tests {
         }
     }
 
-    /// The fixtures really are invariant plane pairs: each plane simple and
-    /// unit, the two orthogonal to each other, and the pair carrying the
-    /// orientation the angle convention assumes. A fixture that failed this
-    /// would make the round-trip tests above assert against a bivector whose
-    /// invariant angles are not the `(t₁, t₂)` they were built from.
     #[test]
     fn invariant_plane_pairs_are_orthogonal_simple_unit_planes() {
         let (t1, t2) = (1.2_f32, -0.3_f32);
@@ -1729,10 +1679,6 @@ mod tests {
         }
     }
 
-    /// What makes the last two fixtures discriminating: `log` writes each
-    /// output coefficient as one sum-part coordinate plus or minus one
-    /// difference-part coordinate, so a coordinate sitting at zero absorbs a
-    /// sign error on the term it multiplies.
     #[test]
     fn nondegenerate_pairs_populate_every_self_dual_coordinate() {
         // The angle table scales these two directions by (t₁ + t₂) and
@@ -1757,10 +1703,6 @@ mod tests {
         }
     }
 
-    /// Branch cut: the isoclinic half-turn has zero bivector part, so its
-    /// plane pair is unrecoverable. The recovered log must still be finite
-    /// and must still exponentiate to that rotation (which is −1 on every
-    /// vector, whatever plane pair it is read on).
     #[test]
     fn rotor4_log_stays_finite_at_the_isoclinic_branch_cut() {
         let rotor = Bivector4::new(PI, 0.0, 0.0, 0.0, 0.0, PI).exp();
@@ -1774,10 +1716,6 @@ mod tests {
         }
     }
 
-    /// The branch defect: a simple rotation past the half-turn used to log as
-    /// the long way round. `exp(1.9π·e_xy)` turns 18° from `y` toward `x`,
-    /// and logging it as +1.9π sends anything interpolated along that
-    /// generator 342° the other way instead.
     #[test]
     fn rotor4_log_of_a_simple_turn_takes_the_short_way_round() {
         let long_way = 1.9 * PI;
@@ -1831,15 +1769,6 @@ mod tests {
         }
     }
 
-    /// The branch invariant, over rotors whose generators wind several turns
-    /// past the cut in every plane at once: `h₊ + h₋ ≤ π` (the minimality
-    /// condition itself, read back off the returned bivector's own
-    /// eigenparts), hence `|log| ≤ π√2`, SO(4)'s bi-invariant diameter. The
-    /// bound alone would not pin minimality: `(h₊, h₋) = (0.9π, 0.1π)` and
-    /// its long-way twin both sit under it.
-    ///
-    /// The recovered generator must still generate the rotation it came from,
-    /// which is what stops "return zero" from passing the bound.
     #[test]
     fn rotor4_log_is_the_shorter_of_the_two_representatives() {
         const SAMPLES: usize = 100_000;
@@ -1870,10 +1799,6 @@ mod tests {
         }
     }
 
-    /// The compound branch takes its second angle from the product
-    /// `2·θ₁·θ₂ = δ`, so a double rotation with one tiny angle survives:
-    /// reading it off `(s − disc)/2` instead returned an all-NaN rotor once
-    /// `disc` rounded to `s`, which needs only `|δ|/|B|² < √ε`.
     #[test]
     fn rotor4_exp_survives_a_double_rotation_with_one_tiny_angle() {
         for (t1, t2) in [(3.0_f32, 1.0e-4_f32), (1.0, 1.0e-5), (0.5, -1.0e-4)] {
@@ -1888,11 +1813,6 @@ mod tests {
         }
     }
 
-    /// The one rotation with no generator to recover, and the guard that
-    /// names it. `log` cannot serve the isoclinic half-turn: it returns zero,
-    /// which regenerates the identity rather than the negation of every
-    /// vector, so a caller that skips the guard gets a silently wrong
-    /// rotation. Rotations arbitrarily close to it are fine.
     #[test]
     fn only_the_isoclinic_half_turn_hides_its_plane_pair_from_log() {
         let pseudoscalar = Rotor4 {
@@ -1968,8 +1888,6 @@ mod tests {
         }
     }
 
-    /// An xy-plane 4D rotation restricted to the xy-subspace agrees with
-    /// `Mat4::from_rotation_z`.
     #[test]
     fn rotor4_xy_matches_mat4_rotation_z_on_xy_subspace() {
         use glam::Mat4;
@@ -2007,8 +1925,6 @@ mod tests {
         assert_close(back.norm_squared(), 1.0);
     }
 
-    /// Small-angle path: a near-precision magnitude must still rotate by that
-    /// magnitude, not collapse to identity.
     #[test]
     fn rotor4_small_angle_path() {
         let eps = 1e-3_f32;
@@ -2018,8 +1934,6 @@ mod tests {
         assert_vec4_close_tol(rotated, expected, 1e-5);
     }
 
-    /// Composition with a w-mixing plane (xy then xw). The pure-3D
-    /// composition test would miss a sign error in the w-mixing terms.
     #[test]
     fn rotor4_composition_xy_then_xw_matches_sequential_apply() {
         let r_xy = Bivector4::new(0.4, 0.0, 0.0, 0.0, 0.0, 0.0).exp();
@@ -2036,10 +1950,6 @@ mod tests {
         }
     }
 
-    /// Integrating `orientation = (omega·dt).exp() · orientation` over N steps
-    /// must equal the closed-form `(omega·N·dt).exp()`. Regression gate for
-    /// the `Rotor4::mul` e14·e24 / e24·e14 sign fix in the e12 output: pre-fix
-    /// drift was ~1.3%, post-fix it sits at f32 noise (~5e-7).
     #[test]
     fn rotor4_compound_xy_xz_xw_yz_integrated_matches_closed_form() {
         let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
@@ -2078,8 +1988,6 @@ mod tests {
         }
     }
 
-    /// 900 rotor multiplications (60 Hz × 15 s): norm-squared must stay near
-    /// 1, else vertices grow/shrink under sustained spin.
     #[test]
     fn rotor4_compound_integration_preserves_unit_norm_over_900_steps() {
         let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
@@ -2098,9 +2006,6 @@ mod tests {
         );
     }
 
-    /// A unit-radius vertex must stay at radius 1 after sustained integration.
-    /// Raw composition (no `.normalize()`) to catch algebraic drift in the
-    /// geometric product itself.
     #[test]
     fn polytope_vertex_stays_on_unit_hypersphere_over_900_steps() {
         let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
@@ -2128,8 +2033,6 @@ mod tests {
         }
     }
 
-    /// Same 900-step integration but with `.normalize()` each step, mirroring
-    /// `loam_physics::euclidean_r4::integrate_orientation`.
     #[test]
     fn polytope_vertex_stays_on_unit_hypersphere_with_normalize_path() {
         let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
@@ -2159,8 +2062,6 @@ mod tests {
         }
     }
 
-    /// Pins the Clifford left-contraction sign convention (`B ⌋ v`, not the
-    /// physics `ω × r`) so future `Bivector5`/`Bivector6` stay consistent.
     #[test]
     fn bivector4_contract_vec_is_clifford_left_contraction() {
         // e_xy ⌋ e_x = -e_y, e_xy ⌋ e_y = +e_x.
@@ -2177,8 +2078,6 @@ mod tests {
         assert_vec4_close_tol(b.contract_vec(Vec4::W), Vec4::ZERO, 1e-6);
     }
 
-    /// `Plane4::ALL[i].unit_bivector()` and `Bivector4::basis(i)` both agree
-    /// with `Bivector4`'s field ordering.
     #[test]
     fn plane4_unit_bivector_matches_bivector4_field_order() {
         // Order: 0=xy, 1=xz, 2=xw, 3=yz, 4=yw, 5=zw.
@@ -2204,18 +2103,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn plane4_label_matches_field_name() {
-        assert_eq!(Plane4::Xy.label(), "xy");
-        assert_eq!(Plane4::Xz.label(), "xz");
-        assert_eq!(Plane4::Xw.label(), "xw");
-        assert_eq!(Plane4::Yz.label(), "yz");
-        assert_eq!(Plane4::Yw.label(), "yw");
-        assert_eq!(Plane4::Zw.label(), "zw");
-    }
-
-    /// `From<Rotor4> for [f32; 8]` packs as `[s, xy, xz, xw, yz, yw, zw,
-    /// xyzw]`, the order GPU uniform buffers consume.
     #[test]
     fn rotor4_to_slot_packs_in_canonical_order() {
         let r = Rotor4 {

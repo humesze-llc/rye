@@ -6,12 +6,6 @@
 //! It is a Space-level trait, not a polytope helper, because the assembly above
 //! [`SectionableSpace::edge_section`] (cap-polygon, plane fit, fan triangulation)
 //! is space-agnostic; only the per-edge solve is flat-vs-curved.
-//!
-//! [`SectionableSpace::edge_section`] uses an FMA-friendly lerp and rejects edges
-//! within [`EDGE_PARALLEL_EPSILON`] of parallel to the slice. The cell-assembly
-//! caller perturbs the slice by [`SLICE_PERTURBATION_EPSILON`] when any vertex
-//! sits that close; one perturbation kills three degeneracies (vertex on slice,
-//! edge in slice plane, slice grazes a face).
 
 use glam::{Vec3, Vec4};
 
@@ -30,9 +24,7 @@ pub const EDGE_PARALLEL_EPSILON: f32 = 1e-6;
 /// grazes a face.
 pub const SLICE_PERTURBATION_EPSILON: f32 = 1e-5;
 
-/// Axis-aligned w-slice hyperplane for R⁴: the 3-flat where `w = w_slice`. A
-/// newtype, not a bare `f32`, so future variants (arbitrary normal, geodesic)
-/// extend the same `type Hyperplane`.
+/// Axis-aligned w-slice hyperplane for R⁴: the 3-flat where `w = w_slice`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WPlane {
     /// The w-coordinate the 3-flat sits at. Unconstrained: a slice that
@@ -51,20 +43,15 @@ impl WPlane {
 /// holding the intersection of the parent with a hyperplane. `N` matches the
 /// [`crate::rasterizable::RasterizableSpace`] convention.
 pub trait SectionableSpace<const N: usize>: Space {
-    /// The `(N - 1)`-Space the section lives in. Flat R⁴ -> [`crate::EuclideanR3`];
-    /// S³ -> a great-2-sphere `SphericalS2` (future).
+    /// The `(N - 1)`-Space the section lives in.
     type SectionSpace: Space;
 
-    /// Hyperplane identifier. Flat spaces use [`WPlane`] (or a future
-    /// `(point, normal)`); curved spaces carry a geodesic basis.
+    /// Hyperplane identifier.
     type Hyperplane;
 
     /// Intersect geodesic edge `(p0, p1)` with `slice`. Returns the lerp `t in
     /// [0, 1]` and the point in [`Self::SectionSpace`], or `None` if the edge
     /// misses the slice or is parallel within [`EDGE_PARALLEL_EPSILON`].
-    ///
-    /// Flat spaces solve linearly; curved spaces bisect along the geodesic
-    /// (closed forms exist for the standard S³/H³ charts).
     fn edge_section(
         slice: &Self::Hyperplane,
         p0: Self::Point,
@@ -99,7 +86,6 @@ impl SectionableSpace<4> for EuclideanR4 {
 mod tests {
     use super::*;
 
-    /// Edge straddling w = 0 with equal-magnitude opposite w yields the midpoint.
     #[test]
     fn r4_edge_section_midpoint() {
         let slice = WPlane::new(0.0);
@@ -110,7 +96,6 @@ mod tests {
         assert_eq!(p3, Vec3::new(3.0, 4.0, 5.0));
     }
 
-    /// Edge with both endpoints on the same side of the slice returns `None`.
     #[test]
     fn r4_edge_section_no_crossing_returns_none() {
         let slice = WPlane::new(0.0);
@@ -119,7 +104,6 @@ mod tests {
         assert!(<EuclideanR4 as SectionableSpace<4>>::edge_section(&slice, p0, p1).is_none());
     }
 
-    /// Edge parallel to the slice (shared w within the epsilon) returns `None`.
     #[test]
     fn r4_edge_section_parallel_edge_returns_none() {
         let slice = WPlane::new(0.0);
@@ -128,8 +112,6 @@ mod tests {
         assert!(<EuclideanR4 as SectionableSpace<4>>::edge_section(&slice, p0, p1).is_none());
     }
 
-    /// First endpoint on the slice returns `t = 0`; `edge_section` does not reject
-    /// the boundary even though the caller normally perturbs it away.
     #[test]
     fn r4_edge_section_endpoint_on_slice_returns_t_zero() {
         let slice = WPlane::new(0.0);
@@ -140,11 +122,9 @@ mod tests {
         assert_eq!(p3, Vec3::new(2.0, 2.0, 2.0));
     }
 
-    /// Pentatope midpoint slice: the apex edge crosses w = 0 at t = 0.8 and the R³
-    /// point lands at `0.8·v_i`. Coxeter: the pentatope's midpoint section is a
-    /// regular tetrahedron.
     #[test]
     fn r4_edge_section_matches_pentatope_midpoint_worked_example() {
+        // Coxeter: the pentatope's midpoint section is a regular tetrahedron.
         let slice = WPlane::new(0.0);
         let t_base = (15.0f32).sqrt() / (4.0 * (3.0f32).sqrt());
         let apex = Vec4::new(0.0, 0.0, 0.0, 1.0);

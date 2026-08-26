@@ -703,12 +703,6 @@ mod tests {
         lifts
     }
 
-    // ---- fundamental domain ------------------------------------------------
-
-    /// The postcondition every other quotient claim rests on. A representative
-    /// an ulp outside the box is a portal that occasionally fails to close, so
-    /// the sweep includes the boundary lifts explicitly rather than trusting
-    /// uniform sampling to find them.
     #[test]
     fn wrap_lands_every_lift_in_the_half_open_fundamental_domain() {
         let t = torus();
@@ -726,8 +720,6 @@ mod tests {
         }
     }
 
-    /// `in_fundamental_domain` and `wrap_to_domain` must name the same set, or
-    /// membership is a second opinion instead of a predicate.
     #[test]
     fn fundamental_domain_membership_is_exactly_the_wrap_fixpoint() {
         let t = torus();
@@ -739,9 +731,6 @@ mod tests {
         }
     }
 
-    /// The deck element is not advisory: applying it to the lift reproduces the
-    /// representative exactly, which is what lets a caller carry state (a
-    /// velocity, a portal count, a colour) across the gluing.
     #[test]
     fn the_returned_deck_element_reproduces_the_representative_exactly() {
         let t = torus();
@@ -765,11 +754,6 @@ mod tests {
         assert_eq!(g, Iso3::IDENTITY);
     }
 
-    // ---- the deck group ----------------------------------------------------
-
-    /// The generators are the three positive lattice translations; the opposite
-    /// face is paired by the inverse. A sign flip here glues the room to itself
-    /// with a shear and nothing downstream would notice.
     #[test]
     fn face_pairings_are_the_three_positive_lattice_translations() {
         let t = torus();
@@ -784,10 +768,6 @@ mod tests {
         }
     }
 
-    /// Deck elements act: composition of isometries agrees with composition of
-    /// their actions, the identity acts trivially, and every element is
-    /// invertible. Products are taken over words in the generators so the test
-    /// covers the group, not just the generating set.
     #[test]
     fn deck_group_composition_is_a_group_action_on_lifts() {
         let t = torus();
@@ -825,8 +805,6 @@ mod tests {
         })
     }
 
-    /// The whole point of a quotient: the deck group is invisible to the
-    /// canonical representative.
     #[test]
     fn wrap_is_invariant_under_the_deck_group() {
         let t = torus();
@@ -846,12 +824,6 @@ mod tests {
         }
     }
 
-    // ---- the quotient metric -----------------------------------------------
-
-    /// `distance` must be the true minimum over Λ, not the chart distance of
-    /// two representatives. Brute force searches a 7³ block of translates
-    /// *centered on the separation*, three cells past the one the closed form
-    /// could be wrong by on each axis.
     #[test]
     fn distance_is_the_minimum_over_the_lattice() {
         let t = torus();
@@ -873,7 +845,6 @@ mod tests {
         }
     }
 
-    /// A metric on the quotient cannot see which lift it was handed.
     #[test]
     fn distance_is_lattice_invariant_symmetric_and_zero_on_the_orbit() {
         let t = torus();
@@ -897,9 +868,6 @@ mod tests {
         }
     }
 
-    /// Diameter bound: no two points of E³/Λ are further apart than the
-    /// half-diagonal of the cell. Catches a wrap that silently gives up on an
-    /// axis.
     #[test]
     fn distance_never_exceeds_half_the_cell_diagonal() {
         let t = torus();
@@ -923,10 +891,6 @@ mod tests {
         }
     }
 
-    // ---- geodesics and the gluing ------------------------------------------
-
-    /// Walk out through the +x face and you come back through the -x face at
-    /// the matching offset, with the other two coordinates untouched.
     #[test]
     fn crossing_a_face_re_enters_through_the_opposite_face() {
         let t = torus();
@@ -949,9 +913,6 @@ mod tests {
         }
     }
 
-    /// Criterion the other way round: the crossing's deck element is the face
-    /// pairing itself, and it is what maps the naive straight-line endpoint onto
-    /// the point `exp` reports.
     #[test]
     fn a_geodesic_crossing_the_gluing_lands_where_the_face_pairing_says() {
         let t = torus();
@@ -975,10 +936,6 @@ mod tests {
         }
     }
 
-    /// Ray continuation is `exp` applied one march step at a time. If the two
-    /// disagree the shader draws a different world than the simulation walks
-    /// through; agreement is what lets the geodesic march kernel cross the
-    /// gluing with no portal test at all.
     #[test]
     fn stepped_ray_continuation_matches_a_single_geodesic_exp() {
         let t = torus();
@@ -1005,9 +962,6 @@ mod tests {
         }
     }
 
-    /// `exp` and `log` invert inside the injectivity radius and not outside it;
-    /// the failure past the radius is the cut locus, not a bug, so pin both
-    /// halves.
     #[test]
     fn exp_and_log_invert_exactly_within_the_injectivity_radius() {
         let t = torus();
@@ -1034,9 +988,6 @@ mod tests {
         assert_relative_eq!(short.z, 0.0);
     }
 
-    /// `log` is the shortest lift, so its length is the quotient distance for
-    /// every pair. Ties the two primitives together instead of letting them
-    /// drift apart.
     #[test]
     fn log_length_equals_quotient_distance() {
         let t = torus();
@@ -1054,10 +1005,6 @@ mod tests {
         FlatTorus3::new(Vec3::new(1.0, 0.0, 1.0));
     }
 
-    // ---- WGSL ABI ----------------------------------------------------------
-
-    /// The march kernel calls these by name; a rename here is a black screen,
-    /// and a cell baked at reduced precision is a seam that does not close.
     #[test]
     fn wgsl_prelude_exports_the_abi_and_bakes_a_round_tripping_cell() {
         let cell = Vec3::new(2.0, 3.0, 1.5e-7);
@@ -1153,12 +1100,6 @@ mod lens_tests {
         lifts
     }
 
-    // ---- the deck group ----------------------------------------------------
-
-    /// The claim the whole quotient rests on: `p` applications of the face
-    /// pairing are the identity and no fewer are. A generator of order less
-    /// than `p` folds the manifold onto a smaller one, and every metric claim
-    /// below would still pass.
     #[test]
     fn the_face_pairing_composes_to_the_identity_after_exactly_p_steps() {
         let mut rng = Xorshift(0x1e45_9ac1);
@@ -1193,9 +1134,6 @@ mod lens_tests {
         }
     }
 
-    /// `deck(k)` is the k-th power of the generator, for powers well outside
-    /// `0..p` in both directions. Pins the modular reduction that keeps the
-    /// trigonometry away from large angles.
     #[test]
     fn deck_powers_agree_with_repeated_composition_of_the_generator() {
         let mut rng = Xorshift(0x510c_2b77);
@@ -1221,10 +1159,6 @@ mod lens_tests {
         }
     }
 
-    /// A lens space is not its own twist: `q` reaches the geometry, not just
-    /// the constructor. L(5, 1) and L(5, 2) share a fundamental domain and
-    /// differ only in the gluing, so a metric that ignored `q` would agree
-    /// with itself everywhere.
     #[test]
     fn the_twist_changes_the_metric_at_equal_order() {
         let untwisted = LensSpace::new(5, 1);
@@ -1242,9 +1176,6 @@ mod lens_tests {
         );
     }
 
-    /// Order reaches the geometry too: the domain of L(7, ·) is a narrower
-    /// wedge than the domain of L(3, ·), so lifts exist that are canonical for
-    /// one and not the other.
     #[test]
     fn the_order_changes_the_fundamental_domain() {
         let coarse = LensSpace::new(3, 1);
@@ -1268,12 +1199,6 @@ mod lens_tests {
         LensSpace::new(1, 0);
     }
 
-    // ---- fundamental domain ------------------------------------------------
-
-    /// The postcondition every other quotient claim rests on. A representative
-    /// an ulp outside the wedge is a gluing that occasionally fails to close,
-    /// so the sweep carries the wall lifts explicitly rather than trusting
-    /// uniform sampling to find them.
     #[test]
     fn wrap_lands_every_lift_in_the_half_open_fundamental_domain() {
         let mut rng = Xorshift(0x5eed_1234);
@@ -1291,14 +1216,6 @@ mod lens_tests {
         }
     }
 
-    /// Membership and the wrap must name the same set, or membership is a
-    /// second opinion instead of a predicate. They share one expression by
-    /// construction; this is what fails if a later edit gives either its own.
-    ///
-    /// The fixpoint is stated as "the wrap reports the identity deck element",
-    /// not as bitwise point equality: the cover renormalises on every
-    /// `iso_apply` to shed drift, so an already-canonical lift comes back as
-    /// itself up to that renormalisation.
     #[test]
     fn fundamental_domain_membership_is_exactly_the_wrap_fixpoint() {
         let mut rng = Xorshift(0x1337_beef);
@@ -1320,11 +1237,6 @@ mod lens_tests {
         }
     }
 
-    /// The wall is where the deck action's rounding decides, and the type doc
-    /// says so. What survives there: the returned lift is still exactly the
-    /// reported deck element applied to the input, and it is still a wall
-    /// representative, so the point of the quotient is the one asked for
-    /// whichever way the rounding went.
     #[test]
     fn a_lift_on_a_wedge_wall_comes_back_on_a_wall() {
         for &(p, q) in LENSES {
@@ -1352,9 +1264,6 @@ mod lens_tests {
         }
     }
 
-    /// The deck element is not advisory: applying it to the lift reproduces
-    /// the representative exactly, which is what lets a caller carry a
-    /// velocity or a camera frame across the gluing.
     #[test]
     fn the_returned_deck_element_reproduces_the_representative_exactly() {
         let mut rng = Xorshift(0x0bad_f00d);
@@ -1373,9 +1282,6 @@ mod lens_tests {
         }
     }
 
-    /// The whole point of a quotient: the deck group is invisible to the
-    /// canonical representative. Compared as lifts, not as orbits, which is
-    /// what keeps the claim about the wrap rather than about the metric.
     #[test]
     fn wrap_is_invariant_under_the_deck_group() {
         let mut rng = Xorshift(0x00c0_ffee);
@@ -1394,10 +1300,6 @@ mod lens_tests {
         }
     }
 
-    /// Leaving through the `+arg(z1)` face re-enters through the other one,
-    /// and the deck element the wrap reports for the crossing is the face
-    /// pairing's inverse. A sign flip here glues the lens to the wrong copy
-    /// and nothing downstream would notice.
     #[test]
     fn crossing_a_face_re_enters_through_the_opposite_face() {
         let mut rng = Xorshift(0x4d59_5f21);
@@ -1433,12 +1335,6 @@ mod lens_tests {
         }
     }
 
-    /// The isometries of the quotient are the deck group's normaliser, not all
-    /// of SO(4). A rotation mixing the `z1` and `z2` planes conjugates the
-    /// generator to a double rotation outside the group, so it does not
-    /// descend, and the quotient distance is not invariant under it. Without
-    /// this the conformance suite's choice of isometries reads as a
-    /// convenience rather than as a constraint.
     #[test]
     fn a_rotation_mixing_the_two_planes_is_not_an_isometry_of_the_quotient() {
         let lens = LensSpace::new(5, 2);
@@ -1467,11 +1363,6 @@ mod lens_tests {
         );
     }
 
-    // ---- the quotient metric -----------------------------------------------
-
-    /// `distance` must be the true minimum over the deck group, not the
-    /// cover's distance between two lifts. Brute force raises the hand-built
-    /// generator instead of calling `deck`.
     #[test]
     fn distance_is_the_minimum_over_the_deck_group() {
         let mut rng = Xorshift(0xdead_10cc);
@@ -1492,8 +1383,6 @@ mod lens_tests {
         }
     }
 
-    /// A metric on the quotient cannot see which lift it was handed, and it
-    /// vanishes exactly on the orbit.
     #[test]
     fn distance_is_deck_invariant_symmetric_and_zero_on_the_orbit() {
         let mut rng = Xorshift(0x9e37_79b9);
@@ -1512,9 +1401,6 @@ mod lens_tests {
         }
     }
 
-    /// Quotienting can only shorten: the orbit contains the lift the cover
-    /// would have used. The strict half is what says the quotient is not the
-    /// cover in disguise.
     #[test]
     fn quotient_distance_never_exceeds_the_cover_distance_and_sometimes_beats_it() {
         let mut rng = Xorshift(0x7711_4402);
@@ -1555,9 +1441,6 @@ mod lens_tests {
         }
     }
 
-    /// The shortest deck displacement is `2π/p`, attained in the `z1` plane,
-    /// and the injectivity radius is half of it. Measured over the sphere, so
-    /// the claim is that the bound is attained rather than merely respected.
     #[test]
     fn the_injectivity_radius_is_half_the_shortest_deck_displacement() {
         let mut rng = Xorshift(0x41c6_4e6d);
@@ -1576,11 +1459,6 @@ mod lens_tests {
         }
     }
 
-    // ---- geodesics ---------------------------------------------------------
-
-    /// `exp` and `log` invert inside the injectivity radius and not outside
-    /// it; the failure past the radius is the cut locus, not a bug, so pin
-    /// both halves.
     #[test]
     fn exp_and_log_invert_within_the_injectivity_radius() {
         let mut rng = Xorshift(0x6c07_8965);
@@ -1613,9 +1491,6 @@ mod lens_tests {
         }
     }
 
-    /// `log` is the shortest lift, so its length is the quotient distance for
-    /// every pair. Ties the two primitives together instead of letting them
-    /// drift apart.
     #[test]
     fn log_length_equals_quotient_distance() {
         let mut rng = Xorshift(0x1c69_b3f5);
@@ -1629,10 +1504,6 @@ mod lens_tests {
         }
     }
 
-    /// Transport hands back a tangent at the lift the caller named, not at the
-    /// one the minimisation happened to pick. Without the pull-back by the
-    /// deck element the result is tangent to a different point of the cover
-    /// and every metric taken at `to` is wrong.
     #[test]
     fn parallel_transport_lands_tangent_to_the_lift_the_caller_named() {
         let mut rng = Xorshift(0x339a_cb15);
@@ -1653,10 +1524,6 @@ mod lens_tests {
         }
     }
 
-    // ---- WGSL prelude ------------------------------------------------------
-
-    /// The shader calls these by name, and the baked deck table has to be the
-    /// one the Rust impl computes or the GPU marches a different manifold.
     #[test]
     fn the_wgsl_prelude_bakes_the_deck_table_the_rust_impl_computes() {
         for &(p, q) in LENSES {

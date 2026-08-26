@@ -1,16 +1,4 @@
-//! Console command that prints the demo's build identity. Sibling to
-//! [`crate::trace`], [`crate::fps`], [`crate::vsync`] in structure.
-//!
-//! ## What it shows
-//!
-//! - Crate name (passed by the caller; the demo's binary name).
-//! - Crate version (from `CARGO_PKG_VERSION` at compile time).
-//! - Git short hash + dirty marker (from the demo's `build.rs` baking
-//!   `BUILD_HASH` and `BUILD_DIRTY` env vars; if a demo's `build.rs`
-//!   doesn't bake these, the demo passes empty strings and the output
-//!   degrades gracefully).
-//!
-//! Example output: `polytope_playground v0.1.0 (a3f9c1d2+dirty)`.
+//! Console command that prints the demo's build identity.
 //!
 //! ## Wiring (per demo)
 //!

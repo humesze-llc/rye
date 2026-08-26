@@ -281,9 +281,6 @@ fn assert_every_texel(pixels: &[u8], expected: [u8; 4], tolerance: u8, what: &st
     }
 }
 
-/// The composite is the only pass that writes the swapchain on this path, so a
-/// tap that submits and reads before it gets the surface's prior contents and
-/// none of the frame. This is the failure the tap ordering exists to avoid.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn swapchain_holds_no_scene_pixels_until_the_composite_runs_gpu_probe() {
@@ -303,11 +300,6 @@ fn swapchain_holds_no_scene_pixels_until_the_composite_runs_gpu_probe() {
     );
 }
 
-/// After the composite the swapchain holds sRGB-encoded bits, byte for byte
-/// what the scene target stores, which is also what an sRGB swapchain holds on
-/// the direct path. That equality is why a capture taken after the composite is
-/// colour-correct and one taken from the raw linear values would not be: the
-/// unencoded bytes for these channels are 64, 128 and 191.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn composite_leaves_the_swapchain_holding_srgb_encoded_channels_gpu_probe() {
@@ -335,9 +327,6 @@ fn composite_leaves_the_swapchain_holding_srgb_encoded_channels_gpu_probe() {
     );
 }
 
-/// The pre-egui tap composites into a swapchain the frame's own composite
-/// overwrites a pass later. Running it twice has to land on the same bits, or
-/// the diagnostic tap would be paid for with a corrupted presented frame.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn a_repeated_composite_leaves_the_swapchain_unchanged_gpu_probe() {
@@ -350,11 +339,6 @@ fn a_repeated_composite_leaves_the_swapchain_unchanged_gpu_probe() {
     assert_eq!(once, twice, "a second composite changed the swapchain");
 }
 
-/// The runner's pre-egui tap composites, then lets the UI pass keep painting
-/// into the scene target, then composites again for presentation. The presented
-/// bits must be the post-UI scene, so the second composite has to resample
-/// rather than leave the first one's output standing. Without this the
-/// diagnostic tap would freeze the presented frame at its pre-UI state.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn the_composite_after_a_diagnostic_one_republishes_the_post_ui_scene_gpu_probe() {

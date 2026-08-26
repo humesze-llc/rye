@@ -4,21 +4,6 @@
 //! embeds. Embed mode leaves the `scene` console command as the only in-app
 //! switcher.
 //!
-//! A demo supplies the table through [`SceneRegistry`] and runs [`SceneShell`]
-//! as its App:
-//!
-//! ```ignore
-//! struct Demos;
-//! impl loam_app::shell::SceneRegistry for Demos {
-//!     const SCENES: &'static [SceneEntry] = &[SceneEntry {
-//!         slug: "rotate",
-//!         label: "Rotate polytopes",
-//!         build: |ctx| Ok(Box::new(RotateScene::new(ctx)?)),
-//!     }];
-//! }
-//! loam_app::run::<SceneShell<Demos>>(config)
-//! ```
-//!
 //! [`Scene`] names no Space: each scene owns its own and recompiles through its
 //! own [`ShaderOwner`](crate::ShaderOwner), so a registry may mix geometries.
 
@@ -454,11 +439,6 @@ mod tests {
         }
     }
 
-    /// Pins that [`Scene`]'s required surface names no Space: the fixture above
-    /// erases into a `SceneEntry` the shell resolves like any other. A `Scene`
-    /// method returning a fixed Space would make this unwritable. It also pins
-    /// that a scene contributing nothing to the menu bar registers without
-    /// writing an empty `menus`, which is what a single-purpose demo does.
     #[test]
     fn registry_admits_a_scene_in_a_geometry_of_its_own() {
         const ENTRY: SceneEntry = SceneEntry {
@@ -583,8 +563,6 @@ mod tests {
         f()
     }
 
-    /// Startup fills exactly one slot. Building the registry eagerly is what
-    /// made a cold start pay every demo's shader compile and VRAM.
     #[test]
     fn startup_builds_the_boot_entry_and_no_other() {
         let builds = Cell::new(0);
@@ -600,8 +578,6 @@ mod tests {
         );
     }
 
-    /// Re-entering a scene must hit the cache: the builder runs on the first
-    /// activation and never again, however much the user switches around.
     #[test]
     fn activation_builds_once_and_serves_the_cache_after() {
         let mut slots =
@@ -621,8 +597,6 @@ mod tests {
         assert_eq!(builds.get(), 1);
     }
 
-    /// A builder that fails must leave the shell on a filled slot: every frame
-    /// unwraps the active scene.
     #[test]
     fn a_failed_build_keeps_the_current_scene_active() {
         let mut slots =
@@ -634,8 +608,6 @@ mod tests {
         assert!(slots[1].is_none());
     }
 
-    /// The `scene` command must reject a slug no scene claims instead of
-    /// queueing a switch the shell would index with.
     #[test]
     fn scene_request_queues_known_slugs_and_rejects_unknown() {
         with_exclusive_switcher(|| {
@@ -660,12 +632,6 @@ mod tests {
             .to_string()
     }
 
-    /// The whole switching path, driven the way a user drives it: `scene
-    /// <slug>` through the registered command, the shell's drain, and bare
-    /// `scene` reading back what became active. Pins the round trip in both
-    /// directions, so a drain that only ever moved forward, or one that
-    /// activated without republishing, fails here. The return leg costs no
-    /// build: the boot scene is already in its slot.
     #[test]
     fn the_scene_command_switches_to_a_second_scene_and_back() {
         with_exclusive_switcher(|| {
@@ -696,8 +662,6 @@ mod tests {
         });
     }
 
-    /// A slug nothing claims must leave the shell where it was: the command
-    /// reports the error and queues nothing, so the next drain is a no-op.
     #[test]
     fn an_unknown_slug_leaves_the_active_scene_alone() {
         with_exclusive_switcher(|| {
@@ -715,10 +679,6 @@ mod tests {
         });
     }
 
-    /// Second visit to a scene serves the object built on the first: the
-    /// builder runs once per entry, and the state written while a scene was
-    /// active is still there after a round trip through another scene. A drain
-    /// that rebuilt on every switch would silently reset every demo.
     #[test]
     fn a_revisited_scene_is_the_cached_instance_with_its_state_intact() {
         with_exclusive_switcher(|| {
@@ -755,9 +715,6 @@ mod tests {
         });
     }
 
-    /// A build that fails mid-switch must leave both the shell and the console
-    /// on the scene that is actually rendering; publishing the requested index
-    /// would have bare `scene` mark an entry no slot holds.
     #[test]
     fn a_failed_switch_publishes_the_scene_still_rendering() {
         with_exclusive_switcher(|| {
@@ -773,8 +730,6 @@ mod tests {
         });
     }
 
-    /// The command is keyed to the registry type, not to a scene's state, so a
-    /// demo whose console carries any `Ctx` can register the switcher.
     #[test]
     fn scene_command_registers_against_any_console_context() {
         let mut console = Console::<u32>::new();

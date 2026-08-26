@@ -53,10 +53,6 @@ fn key_event(
     }
 }
 
-/// The contract: an ordinary key event carries the browser's modifier
-/// flags, and after it `FrameInput::modifiers` equals them. Every ordered
-/// pair of flag states is exercised, so both edges of every modifier are
-/// covered in the presence of every other modifier.
 #[test]
 fn frame_input_modifiers_equal_the_browser_flags_after_any_transition() {
     for from in all_flag_combinations() {
@@ -79,10 +75,6 @@ fn frame_input_modifiers_equal_the_browser_flags_after_any_transition() {
     }
 }
 
-/// The defect the reconciler exists for: switching windows on a chord
-/// (Alt+Tab, Cmd+Tab) leaves the keyup undelivered, so the physical-key
-/// stream alone holds the modifier down forever. Either side of the pair
-/// can be the one stuck.
 #[test]
 fn a_swallowed_keyup_is_released_by_the_next_contradicting_flag() {
     for side in [KeyCode::AltLeft, KeyCode::AltRight] {
@@ -110,8 +102,6 @@ fn a_swallowed_keyup_is_released_by_the_next_contradicting_flag() {
     }
 }
 
-/// `keymap::keycode_winit` maps no `MetaLeft` / `MetaRight`, so the flag
-/// is the only path by which Cmd / Win can reach the modifier set.
 #[test]
 fn meta_reaches_super_key_without_a_mapped_code() {
     let mut sync = ModifierSync::default();
@@ -129,9 +119,6 @@ fn meta_reaches_super_key_without_a_mapped_code() {
     assert!(input.take_frame().modifiers.super_key);
 }
 
-/// Correction, not brute force: an unchanged flag set emits nothing, so a
-/// genuinely held right-hand modifier survives every unrelated key event
-/// that follows it.
 #[test]
 fn unchanged_flags_emit_no_transitions() {
     for flags in all_flag_combinations() {
@@ -144,8 +131,6 @@ fn unchanged_flags_emit_no_transitions() {
     }
 }
 
-/// The right-hand side of a pair is not special-cased away: holding it
-/// keeps the modifier set, and only its own release clears it.
 #[test]
 fn a_held_right_hand_modifier_survives_unrelated_key_events() {
     let mut sync = ModifierSync::default();

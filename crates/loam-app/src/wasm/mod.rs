@@ -32,14 +32,8 @@ pub mod modifier_sync;
 pub mod worker;
 pub mod worker_ui;
 
-// Re-export the demo-facing entry so callers can write
-// `loam_app::wasm::launch_on_click(...)` without descending into the
-// submodule. The submodule path is still available for explicit access.
 pub use main_launcher::launch_on_click;
 
-// Re-export the click-to-start surface at the wasm module level so existing
-// `loam_app::wasm::is_manual_mode(...)` and `loam_app::wasm::wait_for_launch(...)`
-// call sites continue to work after the wasm.rs -> wasm/launch.rs move.
 pub use launch::{is_manual_mode, js_heap_sampler, wait_for_launch};
 
 /// Returns true when the wasm binary is executing inside a

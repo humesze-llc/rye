@@ -20,12 +20,6 @@
 //!   to leaving the mode alone (typical browser case; surfaces there
 //!   advertise only Fifo, so this command is effectively a no-op).
 //!
-//! ## Wiring (per demo)
-//!
-//! ```ignore
-//! loam_app::vsync::register_command(&mut console);
-//! ```
-//!
 //! [`fps`]: crate::fps
 
 use loam_egui::{cmd, Console, ConsoleWriter};
@@ -41,8 +35,7 @@ pub(crate) fn apply(args: &[&str], out: &mut ConsoleWriter) {
     match args.first().copied() {
         None => {
             // Without access to RenderDevice from the handler we can only report
-            // what was last requested. That's sufficient for the common workflow;
-            // the user typed it, they know what they asked for.
+            // what was last requested.
             out.line("vsync: use 'vsync on' (Fifo) or 'vsync off' (Mailbox/Immediate)");
         }
         Some("on") => {

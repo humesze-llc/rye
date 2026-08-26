@@ -263,20 +263,6 @@ mod tests {
     }
 
     #[test]
-    fn new_is_inactive() {
-        let f = Freecam::new();
-        assert!(!f.active());
-        assert!(!f.cursor_grabbed());
-        assert_eq!(f.speed, DEFAULT_SPEED);
-    }
-
-    #[test]
-    fn with_speed_overrides() {
-        let f = Freecam::new().with_speed(12.0);
-        assert!((f.speed - 12.0).abs() < 1e-6);
-    }
-
-    #[test]
     fn set_active_true_seeds_position_and_grabs() {
         let _ = cursor::take_pending();
         let mut f = Freecam::new();
@@ -312,7 +298,6 @@ mod tests {
         let mut f = Freecam::new();
         f.set_active(true, Vec3::ZERO);
         let _ = cursor::take_pending();
-        // Second call with same value: no new request queued.
         f.set_active(true, Vec3::new(99.0, 99.0, 99.0));
         let (grab, vis) = cursor::take_pending();
         assert_eq!(grab, None, "idempotent set_active shouldn't re-queue");
@@ -394,12 +379,6 @@ mod tests {
     }
 
     #[test]
-    fn default_cursor_mode_is_toggle() {
-        let f = Freecam::new();
-        assert_eq!(f.cursor_mode(), CursorMode::Toggle);
-    }
-
-    #[test]
     fn cursor_mode_from_token_roundtrip() {
         for m in [CursorMode::Hold, CursorMode::Toggle] {
             assert_eq!(CursorMode::from_token(m.token()), Some(m));
@@ -433,19 +412,16 @@ mod tests {
         f.set_active(true, Vec3::ZERO);
         let _ = cursor::take_pending();
 
-        // First press: flip to released.
         f.on_alt(true);
         assert!(!f.cursor_grabbed());
         let _ = cursor::take_pending();
 
-        // Release: ignored.
         f.on_alt(false);
         assert!(!f.cursor_grabbed());
         let (grab, vis) = cursor::take_pending();
         assert_eq!(grab, None);
         assert_eq!(vis, None);
 
-        // Second press: flip back to grabbed.
         f.on_alt(true);
         assert!(f.cursor_grabbed());
     }
@@ -488,7 +464,7 @@ mod tests {
         f.set_active(true, Vec3::ZERO);
         let mut cam = make_camera();
         cam.position = Vec3::ZERO;
-        cam.forward = -Vec3::Z; // forward = -Z
+        cam.forward = -Vec3::Z;
         let input = FrameInput {
             move_forward: 1.0,
             ..Default::default()

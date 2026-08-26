@@ -162,9 +162,6 @@ impl Key {
 mod tests {
     use super::*;
 
-    /// `ALL` is the discriminant sequence with no gaps, duplicates or
-    /// reordering, so `ALL[i] as usize == i` can be relied on by frontends
-    /// building index-keyed tables.
     #[test]
     fn all_is_the_dense_discriminant_sequence() {
         for (index, key) in Key::ALL.iter().enumerate() {
@@ -178,8 +175,6 @@ mod tests {
         );
     }
 
-    /// Ord follows declaration order, which fixes the order bound keys fire in
-    /// when several are pressed in the same frame.
     #[test]
     fn ord_follows_declaration_order() {
         assert!(Key::ALL.windows(2).all(|w| w[0] < w[1]));

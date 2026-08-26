@@ -1,5 +1,5 @@
 //! Console command that reads / writes the target framerate via
-//! [`crate::frame_pacing`]. Sibling to [`crate::trace`] in structure.
+//! [`crate::frame_pacing`].
 //!
 //! ## Subcommands
 //!
@@ -9,12 +9,6 @@
 //! - `fps unlimited` (alias: `off`, `0`): remove the cap entirely. On native
 //!   the surface's `PresentMode` (vsync) is the upper bound; on wasm the
 //!   browser's `requestAnimationFrame` cadence remains the upper bound.
-//!
-//! ## Wiring (per demo)
-//!
-//! ```ignore
-//! loam_app::fps::register_command(&mut console);
-//! ```
 
 use loam_egui::{cmd, Console};
 
@@ -133,8 +127,6 @@ mod tests {
         let mut c = build_console();
         let mut ctx = ();
         let before = frame_pacing::target_fps();
-        // Past the MAX_ACCEPTED_FPS guard; the handler prints a usage line
-        // but does not poke the atomic.
         crate::command::run_on_console(&mut c, "fps 100000", &mut ctx);
         let after = frame_pacing::target_fps();
         assert_eq!(before, after, "out-of-range input should be a no-op");

@@ -276,8 +276,6 @@ mod tests {
         });
     }
 
-    /// The queue's grammar is the console's, so a quoted argument survives
-    /// submission as one token rather than splitting at the space.
     #[test]
     fn a_submitted_line_is_tokenized_with_the_console_grammar() {
         let parsed = CommandLine::parse(r#"load "5 cell" fast"#).expect("tokens");
@@ -290,9 +288,6 @@ mod tests {
         });
     }
 
-    /// A claimed name has to be the applied one and an unclaimed name has to
-    /// leave engine state untouched; those two together are what
-    /// `apply_drained` reads when it decides whether to consult the App hook.
     #[test]
     fn the_engine_table_claims_vsync_and_leaves_unknown_verbs_to_the_app_hook() {
         let _held = crate::frame_pacing::TEST_LOCK
@@ -322,13 +317,6 @@ mod tests {
         );
     }
 
-    /// An engine verb runs with no console in scope, so the branch that claims
-    /// it owes the scrollback the record `Console::dispatch` writes for
-    /// everything else; a scripted `vsync` would otherwise leave no trace of
-    /// having run. The echo has to be the line, quoting intact, and it has to
-    /// be an `Input` line so the frontend colors it as one. `apply_drained`
-    /// itself needs a `RenderDevice` and is out of reach headless, so this
-    /// pins the record it pushes.
     #[test]
     fn an_engine_verb_is_recorded_as_the_line_that_ran() {
         let echo = echo_line(&CommandLine::parse(r#"vsync "a b""#).expect("tokens"));
@@ -353,12 +341,6 @@ mod tests {
         code.match_indices(needle).map(|(at, _)| at).collect()
     }
 
-    /// Criterion: one drain point, ahead of the ticks it stamps for, in each
-    /// runner. Read off the source because neither frame loop is reachable
-    /// from a headless test: the windowed one needs a surface and the worker
-    /// one a browser. A behavioural test that rebuilds the frame order in the
-    /// harness pins the queue, not the placement, and stays green when the
-    /// call moves.
     #[test]
     fn each_runner_drains_once_and_before_its_ticks() {
         for (runner, source) in [

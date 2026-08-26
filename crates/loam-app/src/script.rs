@@ -342,9 +342,6 @@ mod tests {
         assert_eq!(first.len(), 4);
     }
 
-    /// A verb no registry claims is rejected where every other unclaimed verb
-    /// is, at the drain; the playhead does not care and the next line still
-    /// fires on its own frame.
     #[test]
     fn a_command_no_target_claims_does_not_stall_the_timeline() {
         let script = Script::parse("0 nonesuch\n1 mark after\n").unwrap();
@@ -354,12 +351,6 @@ mod tests {
         );
     }
 
-    /// Criterion: a scripted line reaches the same handler a typed one does,
-    /// and the run leaves a record of what it issued. Drives the leg the
-    /// runner's drain hands to a scene: the driver submits, the queue serves a
-    /// parsed line, and the console the scene owns runs it. A built-in and a
-    /// name nothing claims ride together, because "does what the typed line
-    /// does" and "fails loudly" are the same requirement read twice.
     #[test]
     fn a_scripted_builtin_runs_and_the_scrollback_records_every_line() {
         let _held = command::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -414,7 +405,6 @@ mod tests {
         assert_eq!(driver.advance(), ScriptStatus::Finished);
     }
 
-    /// An empty script is legal (a file of comments) and still terminates.
     #[test]
     fn an_empty_script_settles_and_finishes() {
         let mut driver = ScriptDriver::new(Script::parse("# nothing here\n").unwrap());
@@ -447,11 +437,6 @@ mod tests {
         code
     }
 
-    /// Criterion: the timeline is frame-indexed. A wall-clock read anywhere on
-    /// the path would make two runs of one script differ under load, which is
-    /// exactly what a pixel-identity comparison cannot survive. Asserted by
-    /// absence in the source rather than by timing a run, because a run that
-    /// happened to be fast proves nothing.
     #[test]
     fn the_script_timeline_reads_no_clock() {
         let code = driver_code();
@@ -471,12 +456,6 @@ mod tests {
         }
     }
 
-    /// Criterion: no focus, no synthesized input. The driver's only outside
-    /// call is a submit that carries a name and its args, and that signature
-    /// admits no window handle, so the OS-level APIs that would need one are
-    /// unreachable. A locked workstation nulls a synthesized cursor position
-    /// before the next frame, so a driver that needed one would fail there and
-    /// nowhere else.
     #[test]
     fn the_driver_names_no_window_or_input_api() {
         let code = driver_code();
@@ -497,9 +476,6 @@ mod tests {
         }
     }
 
-    /// Criterion: one path. The script driver must not reach a registry
-    /// directly, because a second dispatch site is a second ordering and the
-    /// queue's stamp then describes only half the mutations.
     #[test]
     fn the_driver_holds_no_console_and_dispatches_nothing_itself() {
         let code = driver_code();

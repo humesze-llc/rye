@@ -618,8 +618,8 @@ mod tests {
                 "{shape:?} sampled <|x|²> = {measured} over {hits} samples, \
                  not the {closed_form} the closed form claims"
             );
-            // The 4-ball's `2/3` is in the rival set because it is exactly
-            // what `ball4_inertia` was charging these bodies before.
+            // The 4-ball's `2/3` is in the rival set because it is the value a
+            // shape silently falling back to `ball4_inertia` would produce.
             let rivals = expected
                 .iter()
                 .map(|(shape, value)| (format!("{shape:?}"), *value))

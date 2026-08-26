@@ -538,9 +538,8 @@ impl<S: PhysicsSpace> World<S> {
         for unit in &units {
             #[cfg(test)]
             self.visit_log.prepare_solve.push(unit.key);
-            // The hoist replaced a `dense_index(..).expect(..)` that would have
-            // panicked on a stale handle. This keeps that alarm in debug builds
-            // without paying the lookup in release.
+            // A stale handle here would silently index the wrong body. Keep the
+            // alarm in debug builds without paying the dense lookup in release.
             debug_assert_eq!(unit.dense, self.dense_pair(unit.key));
             let (i, j) = unit.dense;
             let manifold = self

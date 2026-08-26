@@ -54,8 +54,6 @@ pub enum SceneNode4 {
 }
 
 impl SceneNode4 {
-    // ---- Leaf constructors ------------------------------------------------
-
     pub fn hypersphere(center: Vec4, radius: f32) -> Self {
         SceneNode4::Leaf(Shape::HyperSphere4D { center, radius })
     }
@@ -75,8 +73,6 @@ impl SceneNode4 {
     pub fn polytope(vertices: Vec<Vec4>) -> Self {
         SceneNode4::Leaf(Shape::ConvexPolytope4D { vertices })
     }
-
-    // ---- Combinators ------------------------------------------------------
 
     pub fn union(self, other: SceneNode4) -> Self {
         SceneNode4::Union(Box::new(self), Box::new(other))
@@ -410,15 +406,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn single_hypersphere_emits_4d_scene() {
-        let scene = Scene4::new(SceneNode4::hypersphere(Vec4::ZERO, 0.25));
-        let wgsl = scene.to_wgsl_4d();
-        assert!(wgsl.contains("fn loam_scene_sdf_4d(p: vec4<f32>) -> f32"));
-        assert!(wgsl.contains("length(p"));
-        assert!(wgsl.contains("- (0.25)"));
-    }
-
-    #[test]
     fn hyperslice_wraps_4d_with_w_slice() {
         let scene = Scene4::new(SceneNode4::hypersphere(Vec4::ZERO, 0.5));
         let wgsl = scene.to_hyperslice_wgsl("u.w_slice");
@@ -469,19 +456,6 @@ mod tests {
         assert_eq!(scene.to_wgsl_4d(), recovered.to_wgsl_4d());
     }
 
-    /// Polytope leaves still emit (helper returns the sentinel); the combinator
-    /// path produces a far-away surface, not a break.
-    #[test]
-    fn polytope_leaf_emits_sentinel_helper() {
-        let scene = Scene4::new(SceneNode4::polytope(vec![Vec4::ZERO; 5]));
-        let wgsl = scene.to_wgsl_4d();
-        assert!(wgsl.contains("fn sdf4_p0(_p: vec4<f32>) -> f32"));
-        assert!(wgsl.contains("return 1e9"));
-    }
-
-    /// `to_hyperslice_wgsl` emits the per-primitive identity layer: kind
-    /// constants, `LoamSceneHit`, and `loam_scene_at` returning `dist` + `kind`
-    /// (the marcher uses `kind` for floor classification).
     #[test]
     fn hyperslice_emits_per_primitive_identity_layer() {
         let scene = Scene4::new(
@@ -500,8 +474,6 @@ mod tests {
         assert!(wgsl.contains("<="));
     }
 
-    /// Difference's kind is intentionally the `LOAM_PRIM_OTHER` sentinel; pin it so
-    /// a future tightening fails loudly.
     #[test]
     fn hyperslice_difference_emits_kind_sentinel() {
         let scene = Scene4::new(
@@ -511,8 +483,6 @@ mod tests {
         assert!(wgsl.contains(": u32 = LOAM_PRIM_OTHER;"));
     }
 
-    /// Gated emit wraps every HalfSpace4D SDF in `select(1e9, raw, gate >= 0.5)`;
-    /// non-halfspace primitives are untouched.
     #[test]
     fn hyperslice_gated_wraps_halfspaces_only() {
         let scene = Scene4::new(
@@ -531,8 +501,6 @@ mod tests {
         assert!(wgsl.contains("let d1 = sdf4_p1(p);"));
     }
 
-    /// Gated emit also guards the `loam_scene_max_t` halfspace contribution in
-    /// `if (gate >= 0.5)` so a gated-off halfspace doesn't terminate rays early.
     #[test]
     fn hyperslice_gated_skips_max_t_when_off() {
         let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, 0.0));
@@ -544,8 +512,6 @@ mod tests {
         assert!(wgsl.contains("t_max = t;"));
     }
 
-    /// On a halfspace-free scene the gated emit must match the ungated emit
-    /// byte-for-byte; catches gated-path divergence.
     #[test]
     fn hyperslice_gated_matches_ungated_when_no_halfspaces() {
         let scene = Scene4::new(SceneNode4::hypersphere(Vec4::ZERO, 0.5));

@@ -147,10 +147,6 @@ impl Polytope4 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Visualizable<4> impl
-// ---------------------------------------------------------------------------
-
 /// Default uniform styling for [`Polytope4::to_lines`]: white at 1.5 px. For
 /// per-cell or per-position coloring see [`Polytope4::lines_colored_by_cell`].
 const DEFAULT_LINE_COLOR: [f32; 4] = [0.9, 0.9, 0.9, 1.0];
@@ -248,10 +244,6 @@ pub fn vertex_color_by_position(v: Vec4) -> [f32; 4] {
     let w_mod = 0.7 + 0.3 * (0.5 + 0.5 * n.w);
     [bias(n.x) * w_mod, bias(n.y) * w_mod, bias(n.z) * w_mod, 1.0]
 }
-
-// ---------------------------------------------------------------------------
-// Cross-section algorithm
-// ---------------------------------------------------------------------------
 
 /// Cross-section fill: translucent white; alpha 0.55 keeps the surface behind
 /// it visible. Only the test-only by-value overlay bakes a colour in; the
@@ -623,10 +615,6 @@ fn order_around_centroid(
     ordered.extend(keys.iter().map(|&(i, _)| points[i]));
 }
 
-// ---------------------------------------------------------------------------
-// Per-polytope vertex caches
-// ---------------------------------------------------------------------------
-//
 // Unit-circumradius vertex sets from the `euclidean_r4` generators, leaked to
 // `'static` (never freed, matching the LazyLock's process lifetime).
 
@@ -642,10 +630,6 @@ static CELL120_VERTICES: LazyLock<&'static [Vec4]> =
     LazyLock::new(|| Box::leak(cell120_vertices(1.0).into_boxed_slice()));
 static CELL600_VERTICES: LazyLock<&'static [Vec4]> =
     LazyLock::new(|| Box::leak(cell600_vertices(1.0).into_boxed_slice()));
-
-// ---------------------------------------------------------------------------
-// Per-polytope edge caches
-// ---------------------------------------------------------------------------
 
 /// Canonical edge length at unit circumradius. Coxeter, *Regular Polytopes*,
 /// Table I, cross-checked against Wikipedia and the empirical min pairwise
@@ -714,10 +698,6 @@ static CELL120_EDGES: LazyLock<&'static [[u32; 2]]> =
 static CELL600_EDGES: LazyLock<&'static [[u32; 2]]> =
     LazyLock::new(|| cache_edges(*CELL600_VERTICES, canonical_edge_length(Polytope4::Cell600)));
 
-// ---------------------------------------------------------------------------
-// Per-polytope cell caches
-// ---------------------------------------------------------------------------
-//
 // Cells are fit against the polytope's own edge graph, not an external dual:
 // the 120-cell and 600-cell generators in [`crate::polytope_geom`] are not in
 // mutually-dual orientation (their 96 golden-ratio vertices differ), so a
@@ -876,10 +856,6 @@ static CELL600_CELLS: LazyLock<&'static [&'static [u32]]> = LazyLock::new(|| {
     )
 });
 
-// ---------------------------------------------------------------------------
-// Per-polytope topology assemblies
-// ---------------------------------------------------------------------------
-
 static PENTATOPE_TOPOLOGY: LazyLock<Polytope4Topology> = LazyLock::new(|| Polytope4Topology {
     vertices: *PENTATOPE_VERTICES,
     edges: *PENTATOPE_EDGES,
@@ -915,7 +891,6 @@ static CELL600_TOPOLOGY: LazyLock<Polytope4Topology> = LazyLock::new(|| Polytope
 mod tests {
     use super::*;
 
-    /// f-vector vertex counts (Coxeter, *Regular Polytopes*, Table I).
     #[test]
     fn vertex_counts_match_f_vector() {
         assert_eq!(Polytope4::Pentatope.vertex_count(), 5);
@@ -926,7 +901,6 @@ mod tests {
         assert_eq!(Polytope4::Cell600.vertex_count(), 120);
     }
 
-    /// Every vertex sits on the unit 3-sphere (circumradius = 1).
     #[test]
     fn vertices_on_unit_circumradius() {
         for p in Polytope4::ALL {
@@ -940,19 +914,6 @@ mod tests {
         }
     }
 
-    /// Discriminants match `loam_render::raymarch::SHAPE_*`. Hard-coded here
-    /// since `loam_render` is not a dep; update if the renderer's table changes.
-    #[test]
-    fn discriminants_match_renderer_shape_constants() {
-        assert_eq!(Polytope4::Pentatope as u32, 0);
-        assert_eq!(Polytope4::Tesseract as u32, 1);
-        assert_eq!(Polytope4::Cell16 as u32, 2);
-        assert_eq!(Polytope4::Cell24 as u32, 3);
-        assert_eq!(Polytope4::Cell120 as u32, 4);
-        assert_eq!(Polytope4::Cell600 as u32, 5);
-    }
-
-    /// Edge counts per f-vector (Coxeter Table I).
     #[test]
     fn edge_counts_match_f_vector() {
         assert_eq!(Polytope4::Pentatope.edge_count(), 10);
@@ -963,7 +924,6 @@ mod tests {
         assert_eq!(Polytope4::Cell600.edge_count(), 720);
     }
 
-    /// Every edge matches the canonical edge length within `EDGE_TOLERANCE`.
     #[test]
     fn edge_lengths_match_canonical() {
         for p in Polytope4::ALL {
@@ -979,7 +939,6 @@ mod tests {
         }
     }
 
-    /// Each edge index pair is in `(min, max)` order.
     #[test]
     fn edge_pairs_in_min_max_order() {
         for p in Polytope4::ALL {
@@ -989,7 +948,6 @@ mod tests {
         }
     }
 
-    /// No duplicate edges, and `(j, i)` is never a separate entry from `(i, j)`.
     #[test]
     fn edges_are_unique() {
         for p in Polytope4::ALL {
@@ -1002,9 +960,6 @@ mod tests {
         }
     }
 
-    /// Canonical edge length equals the empirical minimum pairwise distance,
-    /// catching drift between the theoretical value and the `euclidean_r4`
-    /// vertex set before it silently breaks the edge set.
     #[test]
     fn canonical_edge_length_matches_empirical_min() {
         for p in Polytope4::ALL {
@@ -1026,7 +981,6 @@ mod tests {
         }
     }
 
-    /// Cell counts per f-vector (Coxeter Table I).
     #[test]
     fn cell_counts_match_f_vector() {
         assert_eq!(Polytope4::Pentatope.cell_count(), 5);
@@ -1037,8 +991,6 @@ mod tests {
         assert_eq!(Polytope4::Cell600.cell_count(), 600);
     }
 
-    /// Each cell has its 3D shape's vertex count (tet 4, cube 8, octahedron 6,
-    /// dodecahedron 20).
     #[test]
     fn cell_vertex_counts_match_shape() {
         let cases: &[(Polytope4, usize)] = &[
@@ -1061,8 +1013,6 @@ mod tests {
         }
     }
 
-    /// All vertices of a cell lie on a common 3-flat: their projections onto the
-    /// centroid direction agree within `CELL_TOLERANCE`.
     #[test]
     fn cells_lie_on_common_hyperplane() {
         for p in Polytope4::ALL {
@@ -1088,9 +1038,6 @@ mod tests {
         }
     }
 
-    /// Vertex pairs at canonical edge length within a cell match its 3D shape's
-    /// edge count (tet 6, cube 12, octahedron 12, dodecahedron 30), catching a
-    /// merely-coplanar cell that is not the expected regular polytope.
     #[test]
     fn cell_internal_edge_counts_match_shape() {
         let cases: &[(Polytope4, usize)] = &[
@@ -1123,9 +1070,6 @@ mod tests {
         }
     }
 
-    /// Every edge is shared by at least two cells (the closed-polytope
-    /// invariant). The weak `>= 2` form, below the exact per-polytope counts,
-    /// still catches a dropped or mis-fit cell.
     #[test]
     fn every_edge_in_at_least_two_cells() {
         for p in Polytope4::ALL {
@@ -1144,8 +1088,6 @@ mod tests {
         }
     }
 
-    /// `cross4` of linearly-independent inputs is non-zero and orthogonal to
-    /// each.
     #[test]
     fn cross4_is_orthogonal_to_inputs() {
         let a = Vec4::new(1.0, 0.5, -0.3, 0.7);
@@ -1166,8 +1108,6 @@ mod tests {
         }
     }
 
-    /// `cross4` is ~zero for linearly-dependent inputs (no unique normal);
-    /// [`derive_cells`] relies on this to skip degenerate triples.
     #[test]
     fn cross4_zero_for_linearly_dependent_inputs() {
         let a = Vec4::new(1.0, 0.0, 0.0, 0.0);
@@ -1181,9 +1121,6 @@ mod tests {
         );
     }
 
-    /// Euler-Poincaré relation `V - E + F - C = 0` for closed convex
-    /// 4-polytopes. `F` (2-face count, not exposed in the API) comes from
-    /// Coxeter, *Regular Polytopes*, Table I.
     #[test]
     fn euler_poincare_relation_holds() {
         // (Polytope, F = number of 2-faces). V/E/C come from `.topology()`.
@@ -1207,7 +1144,6 @@ mod tests {
         }
     }
 
-    /// [`Visualizable<4>::to_lines`] returns one segment per topology edge.
     #[test]
     fn visualizable_line_count_matches_edge_count() {
         use crate::Visualizable;
@@ -1226,8 +1162,6 @@ mod tests {
         }
     }
 
-    /// [`Visualizable<4>::to_lines`] segments hit the topology vertex
-    /// coordinates directly.
     #[test]
     fn visualizable_line_endpoints_are_polytope_vertices() {
         use crate::Visualizable;
@@ -1240,7 +1174,6 @@ mod tests {
         }
     }
 
-    /// [`Visualizable<4>::to_points`] returns one point per topology vertex.
     #[test]
     fn visualizable_point_count_matches_vertex_count() {
         use crate::Visualizable;
@@ -1253,8 +1186,6 @@ mod tests {
         }
     }
 
-    /// [`Visualizable<4>::to_triangles`] returns `Degenerate` until 2-face
-    /// topology is shipped.
     #[test]
     fn visualizable_triangles_currently_not_visualizable() {
         use crate::Visualizable;
@@ -1264,8 +1195,6 @@ mod tests {
         }
     }
 
-    /// [`Polytope4::lines_colored_by_cell`] colors each segment from the palette
-    /// (no defaults leak through) and preserves segment count.
     #[test]
     fn lines_colored_by_cell_uses_palette() {
         let palette: &[[f32; 4]] = &[
@@ -1281,10 +1210,6 @@ mod tests {
         }
     }
 
-    // ----------------- Cross-section algorithm -----------------
-
-    /// 5-cell midpoint section: 4 triangle caps (12 fan triangles, 12 perimeter
-    /// edges). Coxeter's classical result is a regular tetrahedron.
     #[test]
     fn pentatope_section_at_midpoint() {
         let (tri, edges) =
@@ -1295,8 +1220,6 @@ mod tests {
         assert_eq!(tri.vertices.len(), 16);
     }
 
-    /// Tesseract midpoint section: 6 square caps (24 fan triangles, 24 perimeter
-    /// segments). Coxeter's classical result is a cube.
     #[test]
     fn tesseract_section_at_midpoint_has_six_square_caps() {
         let (tri, edges) =
@@ -1307,7 +1230,6 @@ mod tests {
         assert_eq!(tri.vertices.len(), 30);
     }
 
-    /// A slice beyond every vertex's w (`w = 2`) returns an empty section.
     #[test]
     fn section_outside_polytope_is_empty() {
         for polytope in Polytope4::ALL {
@@ -1323,8 +1245,6 @@ mod tests {
         }
     }
 
-    /// A slice exactly on a vertex's w triggers the perturbation path and still
-    /// yields finite output (5-cell base-vertex w = -0.25).
     #[test]
     fn vertex_on_slice_is_perturbed_not_nan() {
         let (tri, edges) =
@@ -1341,7 +1261,6 @@ mod tests {
         }
     }
 
-    /// A midpoint slice produces a non-empty section for every polytope.
     #[test]
     fn midpoint_slice_is_non_empty_for_every_polytope() {
         for polytope in Polytope4::ALL {
@@ -1357,10 +1276,6 @@ mod tests {
         }
     }
 
-    // ----------------- Section faces (filled, solid-colored) -----------------
-
-    /// Face triangulation produces the same triangle and vertex counts as the
-    /// overlay variant (shared cap-iteration core).
     #[test]
     fn section_faces_triangle_count_matches_section_triangles() {
         let probe_color = [0.5, 0.5, 0.5, 1.0];
@@ -1381,8 +1296,6 @@ mod tests {
         }
     }
 
-    /// Every face vertex carries exactly the supplied color, pinning the solid
-    /// per-body contract against a reintroduction of position-based coloring.
     #[test]
     fn section_faces_use_supplied_color_uniformly() {
         let color = [0.95, 0.55, 0.30, 1.0];
@@ -1397,12 +1310,6 @@ mod tests {
         }
     }
 
-    // ----------------- Section perimeter, append form -----------------------
-
-    /// The append form emits the by-value overlay's perimeter exactly, segment
-    /// for segment: dropping the fill half changes no outline geometry. Run
-    /// against a reused scratch so a stale cap buffer would show up as a
-    /// divergence rather than as silent extra points.
     #[test]
     fn perimeter_append_matches_the_by_value_overlay_perimeter() {
         let mut scratch = SectionScratch::default();
@@ -1432,9 +1339,6 @@ mod tests {
         }
     }
 
-    /// The append form appends: a second call over the same body leaves the
-    /// first call's segments in place and repeats them, so a caller merging a
-    /// row of bodies into one mesh keeps every body's outline.
     #[test]
     fn perimeter_append_concatenates_instead_of_replacing() {
         let slice = loam_math::WPlane::new(0.1);
@@ -1463,8 +1367,6 @@ mod tests {
         assert_eq!(mesh.colors.len(), mesh.segments.len());
     }
 
-    // ----------------- Cross-validation: section perimeter vs SDF surface ---
-    //
     // Every section-perimeter vertex sits on the parent's true surface by
     // construction, so a correct SDF returns ~0 there. The 120/600-cell SDFs in
     // [`crate::polytope_geom`] use dual-polytope vertices as face normals (the
@@ -1483,10 +1385,6 @@ mod tests {
         out
     }
 
-    /// Worst-case |SDF| at the 120-cell midpoint perimeter, pinning the
-    /// documented BUG's divergence window: lower bound `> 1e-3` (a BUG fix drops
-    /// it to ~0 and fires here), upper bound `< 0.1` (a face-normal regression
-    /// widens it).
     #[test]
     fn cell120_section_perimeter_diverges_from_sdf_documenting_bug() {
         use crate::polytope_geom::{cell120_face_planes, polytope_sdf_wolfe};
@@ -1514,16 +1412,6 @@ mod tests {
         );
     }
 
-    /// The four polytopes without the documented face-plane BUG agree exactly
-    /// (within f32 tolerance) with the topology-derived SDF along the section
-    /// perimeter. This is the "no camera tricks" gate: section algorithm and
-    /// SDF agree, both compute the *same* surface.
-    ///
-    /// Uses `Polytope4::face_planes` (topology-derived, exact for every regular
-    /// convex 4-polytope) rather than the raymarch kernel's `cell{120,600}_face_planes`
-    /// (dual-vertex approximation). 120- and 600-cell are deliberately not in this
-    /// loop because the kernel's helpers are buggy; their divergence is pinned by
-    /// the `*_documenting_bug` tests below.
     #[test]
     fn five_eight_sixteen_twentyfour_cell_section_perimeter_on_sdf_surface() {
         use crate::polytope_geom::polytope_sdf_wolfe;
@@ -1555,10 +1443,6 @@ mod tests {
         }
     }
 
-    /// Same shape as `cell120_section_perimeter_diverges_from_sdf_documenting_bug`
-    /// for the 600-cell. The 600-cell carries the symmetric BUG: its true face
-    /// normals are the cell centroids of its tetrahedral cells, but the SDF uses
-    /// the 120-cell's vertex set instead.
     #[test]
     fn cell600_section_perimeter_diverges_from_sdf_documenting_bug() {
         use crate::polytope_geom::{cell600_face_planes, polytope_sdf_wolfe};
@@ -1586,9 +1470,7 @@ mod tests {
         );
     }
 
-    // ----------------- Pruning + recompute invariants -----------------
-
-    /// w-range of a cell, helper for `cell_pruning_matches_full_scan`. Independent
+    /// w-range of a cell, helper for `cell_pruning_matches_straddle_count`. Independent
     /// copy of the algorithm's internal `cell_w_range`; if the two ever drift, this
     /// test fires and signals a refactor that didn't update both sites.
     fn test_cell_w_range(cell: &[u32], vertices: &[Vec4]) -> (f32, f32) {
@@ -1599,16 +1481,6 @@ mod tests {
             })
     }
 
-    /// The per-cell w-range pruning step inside the section algorithm is the
-    /// load-bearing optimization for the 600-cell (factor 100x speedup at typical
-    /// slices). It MUST be exact: every cell that straddles the slice contributes a
-    /// cap, and no cell contributes that doesn't straddle.
-    ///
-    /// Counts caps in the output via `vertices.len() - indices.len()`: each cap's
-    /// fan-triangulation adds one centroid vertex over and above its N cap-vertices
-    /// and emits N triangles, so subtracting triangle count from vertex count
-    /// recovers the number of caps. Compares against an independent count of
-    /// straddling cells computed from the topology directly.
     #[test]
     fn cell_pruning_matches_straddle_count() {
         // Slice values across the [-1, 1] interior of each polytope. Avoid grazing
@@ -1654,12 +1526,6 @@ mod tests {
         }
     }
 
-    /// Every fan-triangle in the section mesh has its face normal pointing AWAY from
-    /// the polytope's R³ center. Pins the winding-consistency contract that lets a
-    /// future single-sided lighting / back-face culling consumer rely on the section
-    /// surface being topologically outward-oriented. Two-sided Lambert (the current
-    /// shading) is invariant under winding, so this property isn't visible at the
-    /// surface, but it's load-bearing for downstream consumers we haven't built yet.
     #[test]
     fn section_face_normals_point_outward_from_polytope_center() {
         for polytope in Polytope4::ALL {
@@ -1692,20 +1558,6 @@ mod tests {
         }
     }
 
-    /// Randomized robustness sweep: across each polytope, sample 16 random
-    /// Rotor4 orientations applied to the canonical vertex set and 16 random
-    /// slice values, exercising the cross-section algorithm under non-axis-
-    /// aligned inputs. Asserts: every emitted vertex is finite (no NaN/Inf),
-    /// every triangle index references a valid vertex, every line-segment
-    /// endpoint matches an existing triangle vertex up to perturbation
-    /// tolerance, and the perimeter is always non-empty when the slice falls
-    /// inside the polytope's rotated w-range.
-    ///
-    /// Catches a different failure class from the fixed-vertex tests:
-    /// numerical instability that only triggers at off-axis orientations
-    /// (cap-collinearity that survives `fit_plane_basis`,
-    /// FMA rounding at edge intersections, perturbation aliasing). Pure deterministic: uses
-    /// a xorshift PRNG seeded with a fixed value, so failures reproduce verbatim across runs.
     #[test]
     fn section_under_random_rotors_stays_well_formed() {
         let mut state: u32 = 0x517_C0DE;
@@ -1782,19 +1634,6 @@ mod tests {
         }
     }
 
-    /// `polytope4_section_overlay` is a pure function of `(polytope, slice)`: re-invoking it
-    /// with a different slice produces a different section mesh. Trivial but pins
-    /// the contract so a future caching optimization that accidentally returns a
-    /// stale mesh across slice changes fires here.
-    ///
-    /// **Polytope choice matters.** The tesseract's cubical cells have w-edges
-    /// going from (x,y,z,-0.5) to (x,y,z,+0.5): same R³ endpoints, only differing
-    /// in w. Slicing at any interior `w` produces the same R³ intersection point
-    /// (x,y,z,w_slice), so the tesseract's R³ section is *literally invariant*
-    /// across its w-range. A non-trivial recompute test needs a polytope whose
-    /// cells aren't axis-aligned in w; the 5-cell qualifies (apex edges run from
-    /// (0,0,0,1) to (t,t,t,-0.25), so the slice intersection moves in R³ as `w`
-    /// changes).
     #[test]
     fn section_recomputes_when_w_slice_changes() {
         let (a, _) = polytope4_section_overlay(Polytope4::Pentatope, loam_math::WPlane::new(0.0));

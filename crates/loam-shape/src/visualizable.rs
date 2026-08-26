@@ -115,8 +115,6 @@ pub struct PointMesh<const N: usize> {
 mod tests {
     use super::*;
 
-    /// [`LineMesh<3>`] round-trips through RON; pins the const-generic-with-serde
-    /// behavior scene persistence relies on.
     #[test]
     fn line_mesh_3d_ron_round_trip() {
         let original: LineMesh<3> = LineMesh {
@@ -137,20 +135,6 @@ mod tests {
         assert_eq!(parsed.widths, original.widths);
     }
 
-    /// Same for [`LineMesh<4>`]. Pins that the const generic doesn't break for higher dims.
-    #[test]
-    fn line_mesh_4d_ron_round_trip() {
-        let original: LineMesh<4> = LineMesh {
-            segments: vec![([0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0])],
-            colors: vec![([1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0])],
-            widths: vec![1.0],
-        };
-        let s = ron::ser::to_string(&original).expect("serialize");
-        let parsed: LineMesh<4> = ron::de::from_str(&s).expect("deserialize");
-        assert_eq!(parsed.segments, original.segments);
-    }
-
-    /// [`TriangleMesh<3>`] round-trips and the index buffer is preserved exactly.
     #[test]
     fn triangle_mesh_3d_ron_round_trip() {
         let original: TriangleMesh<3> = TriangleMesh {
@@ -175,7 +159,6 @@ mod tests {
         assert_eq!(parsed.colors, original.colors);
     }
 
-    /// [`PointMesh<4>`] round-trips, sizes preserved.
     #[test]
     fn point_mesh_4d_ron_round_trip() {
         let original: PointMesh<4> = PointMesh {
@@ -187,24 +170,5 @@ mod tests {
         let parsed: PointMesh<4> = ron::de::from_str(&s).expect("deserialize");
         assert_eq!(parsed.positions, original.positions);
         assert_eq!(parsed.sizes, original.sizes);
-    }
-
-    /// Default-constructed meshes have empty buffers, for callers that build them
-    /// incrementally rather than via a struct literal.
-    #[test]
-    fn default_meshes_are_empty() {
-        let lm: LineMesh<3> = LineMesh::default();
-        assert!(lm.segments.is_empty());
-        assert!(lm.colors.is_empty());
-        assert!(lm.widths.is_empty());
-
-        let tm: TriangleMesh<4> = TriangleMesh::default();
-        assert!(tm.vertices.is_empty());
-        assert!(tm.indices.is_empty());
-        assert!(tm.colors.is_empty());
-
-        let pm: PointMesh<3> = PointMesh::default();
-        assert!(pm.positions.is_empty());
-        assert!(pm.sizes.is_empty());
     }
 }

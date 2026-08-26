@@ -33,10 +33,6 @@ impl Drop for TempScene {
     }
 }
 
-/// The committed example must deserialize to the tree its text spells, not
-/// merely to some tree: a swapped operand or a dropped combinator would still
-/// parse. Emitted WGSL is the comparison because it carries both the structure
-/// and every baked constant.
 #[test]
 fn committed_scene_file_deserializes_to_the_tree_it_spells() {
     let loaded = Scene::load(scenes_dir().join("sphere_over_floor.ron")).expect("scene loads");
@@ -59,10 +55,6 @@ fn committed_scene4_file_deserializes_to_the_tree_it_spells() {
     assert_eq!(loaded.to_wgsl_4d(), expected.to_wgsl_4d());
 }
 
-/// Loading is only half the contract: a scene that came from a file has to
-/// reach a shader. Both committed examples are emitted and put through naga,
-/// so a file that parses but bakes a token WGSL rejects fails here rather than
-/// at pipeline creation in a demo.
 #[test]
 fn a_loaded_scene_emits_wgsl_naga_accepts() {
     use loam_math::WgslSpace;
@@ -99,9 +91,6 @@ fn a_loaded_scene_emits_wgsl_naga_accepts() {
     ));
 }
 
-/// A path that does not resolve is a `Read`, distinguishable from a file that
-/// exists and is wrong: a caller falling back to a built-in scene when there is
-/// no file must not also swallow a typo inside one.
 #[test]
 fn a_missing_file_is_a_read_error_naming_the_path() {
     let path = scenes_dir().join("no_such_scene.ron");
@@ -116,8 +105,6 @@ fn a_missing_file_is_a_read_error_naming_the_path() {
     );
 }
 
-/// The position is the whole point of reporting a syntax error: without it the
-/// author of a hundred-line scene file has nowhere to look.
 #[test]
 fn a_syntax_error_is_reported_with_its_path_and_position() {
     let scene = TempScene::new(
@@ -136,8 +123,6 @@ fn a_syntax_error_is_reported_with_its_path_and_position() {
     );
 }
 
-/// A leaf naming a shape that does not exist is rejected rather than skipped,
-/// so a renamed variant fails loudly at the file that still spells the old name.
 #[test]
 fn an_unknown_leaf_variant_is_rejected() {
     let err = Scene::from_ron(
@@ -151,9 +136,6 @@ fn an_unknown_leaf_variant_is_rejected() {
     );
 }
 
-/// The emitter asserts on constants WGSL cannot spell, so without a check at
-/// the load boundary a one-word edit to a scene file would take the process
-/// down inside `to_wgsl`. Swept over both dimensions and over infinity and NaN.
 #[test]
 fn a_non_finite_constant_is_rejected_at_load_rather_than_reaching_the_emitter() {
     for spelling in ["inf", "-inf", "NaN"] {
@@ -183,11 +165,6 @@ fn a_non_finite_constant_is_rejected_at_load_rather_than_reaching_the_emitter() 
     }
 }
 
-/// A non-finite constant nested under combinators is still caught, whichever
-/// arm holds it and whichever combinator sits above it. Sweeping the placement
-/// rather than fixing one nesting is what makes this a pin: a walk that
-/// recurses into a single child, or that treats a `SmoothUnion`'s subtrees as
-/// covered by its `k` test, satisfies any one fixed tree.
 #[test]
 fn a_non_finite_constant_below_any_combinator_arm_is_rejected() {
     const GOOD: &str = "Leaf(Sphere(center: (0.0, 0.0, 0.0), radius: 0.3))";
@@ -216,8 +193,6 @@ fn a_non_finite_constant_below_any_combinator_arm_is_rejected() {
     }
 }
 
-/// `Scene4` is walked by its own recursion over its own node type, so the 3D
-/// sweep above constrains none of it.
 #[test]
 fn a_non_finite_constant_below_any_4d_combinator_arm_is_rejected() {
     const GOOD: &str = "Leaf(HyperSphere4D(center: (0.0, 0.0, 0.0, 0.0), radius: 0.3))";
@@ -242,11 +217,6 @@ fn a_non_finite_constant_below_any_4d_combinator_arm_is_rejected() {
     }
 }
 
-/// `k` divides in both the emitted `smin` and its CPU twin, and a negative `k`
-/// stops the result being an underestimate of `min`, so neither is a scene the
-/// loader may hand on. A non-finite `k` is the third case and fails differently
-/// if unchecked: it reaches `wgsl_f32` and panics rather than emitting a bad
-/// field.
 #[test]
 fn a_blend_radius_that_is_not_finite_and_positive_is_rejected() {
     for k in ["0.0", "-0.5", "inf", "-inf", "NaN"] {
@@ -270,10 +240,6 @@ fn a_blend_radius_that_is_not_finite_and_positive_is_rejected() {
     }
 }
 
-/// The scene tree is recursive and so is every walk over it, so nesting depth
-/// is the one malformed input that could take the process down without an
-/// assert to blame. RON's own recursion limit is what bounds it; this pins that
-/// the limit is in force on the path the loader actually uses.
 #[test]
 fn deeply_nested_input_errors_instead_of_exhausting_the_stack() {
     const DEPTH: usize = 5_000;
@@ -295,8 +261,6 @@ fn deeply_nested_input_errors_instead_of_exhausting_the_stack() {
     );
 }
 
-/// Empty input is a parse failure, not an empty scene: a truncated or
-/// zero-length file must not deserialize into anything.
 #[test]
 fn empty_input_is_a_parse_error() {
     let scene = TempScene::new("empty", "");
@@ -304,8 +268,6 @@ fn empty_input_is_a_parse_error() {
     assert!(matches!(err, SceneLoadError::Parse { .. }), "{err:?}");
 }
 
-/// Trailing text after the description is rejected rather than ignored, so a
-/// half-finished edit below a valid tree cannot load as if it were not there.
 #[test]
 fn trailing_text_after_the_description_is_rejected() {
     let err = Scene::from_ron(

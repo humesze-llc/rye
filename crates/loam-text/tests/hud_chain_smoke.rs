@@ -1,14 +1,11 @@
 //! Smoke pin for the `TextRenderer` chain: construct, queue, record.
 //!
-//! This test exists to fail when a signature drifts, nothing more: it asserts
-//! the chain still type-checks and still reaches the GPU, never what the glyphs
-//! look like. Keep it thin.
-//!
 //! It drives `record` rather than `render` because that is the path a host with
 //! a frame encoder takes, and the one whose pass ordering can go wrong.
 //!
 //! The atlas and layout halves are pure-CPU and pinned in the crate's own unit
-//! tests. Only the wgpu half needs a device, and only it is `#[ignore]`d.
+//! tests. Only the wgpu half needs a device, and only it is `#[ignore]`d. The
+//! `gpu_probe` suffix is what CI's software-adapter job selects on.
 
 use loam_text::TextRenderer;
 use wgpu::{Device, Queue, TextureFormat, TextureView};
@@ -72,9 +69,6 @@ async fn request_device() -> Result<(Device, Queue), String> {
         .map_err(|e| format!("request_device failed: {e}"))
 }
 
-/// Bake an atlas, queue a string, and draw it into an offscreen target.
-/// Ignored by default because it needs an adapter; the `gpu_probe` suffix is
-/// what CI's software-adapter job selects on.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn hud_frame_renders_into_an_offscreen_target_gpu_probe() {

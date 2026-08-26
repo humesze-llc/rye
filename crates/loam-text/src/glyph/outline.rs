@@ -185,8 +185,6 @@ mod tests {
         curves
     }
 
-    /// A curve whose start does not continue the previous curve's end opens a
-    /// new contour, which is the only contour delimiter `ab_glyph` provides.
     #[test]
     fn discontinuous_start_opens_a_new_contour() {
         let mut curves = square(0.0, 0.0, 1.0, false);
@@ -197,8 +195,6 @@ mod tests {
         assert_eq!(contours[1].points.len(), 4);
     }
 
-    /// The explicit closing line back to the move-to point must not survive as
-    /// a duplicate vertex; a zero-length edge has no winding-test direction.
     #[test]
     fn closing_line_does_not_duplicate_the_first_point() {
         let contours = contours_from_curves(&square(0.0, 0.0, 1.0, false), 1.0, 0.01);
@@ -208,7 +204,6 @@ mod tests {
         assert!(points[0].distance(points[points.len() - 1]) > 0.5);
     }
 
-    /// Font units are scaled to em exactly once, on the way out.
     #[test]
     fn font_units_scale_to_em() {
         let contours = contours_from_curves(&square(0.0, 0.0, 1024.0, false), 1.0 / 2048.0, 0.001);
@@ -218,9 +213,6 @@ mod tests {
         }
     }
 
-    /// The polyline a quadratic flattens to stays within the requested chord
-    /// tolerance of the true curve, at every parameter and not just at the
-    /// subdivision points.
     #[test]
     fn flattened_quadratic_stays_within_tolerance() {
         let (p0, p1, p2) = (
@@ -239,7 +231,6 @@ mod tests {
         assert_max_deviation(&out, tolerance, |t| eval_quad(p0, p1, p2, t));
     }
 
-    /// Same for a cubic, whose chord bound is the looser of the two.
     #[test]
     fn flattened_cubic_stays_within_tolerance() {
         let (p0, p1, p2, p3) = (
@@ -282,8 +273,6 @@ mod tests {
         }
     }
 
-    /// A straight-line "curve" needs no subdivision: the deviation bound is
-    /// zero, so the count must be one segment, not `MAX_SUBDIVISIONS`.
     #[test]
     fn collinear_quadratic_is_not_subdivided() {
         let mut out = vec![Vec2::ZERO];
@@ -295,8 +284,6 @@ mod tests {
         assert_eq!(out.len(), 2);
     }
 
-    /// Subdivision count is bounded even when the tolerance is absurd, so a
-    /// hostile font cannot make flattening allocate without limit.
     #[test]
     fn subdivision_count_is_clamped() {
         assert_eq!(subdivisions(1.0e12, 1.0e-12), MAX_SUBDIVISIONS);

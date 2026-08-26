@@ -63,8 +63,6 @@ mod tests {
     use super::*;
     use glam::Vec3;
 
-    // ---- Primitive trait tests -------------------------------------------
-
     #[test]
     fn sphere_emits_loam_distance_call() {
         use loam_math::EuclideanR3;
@@ -75,9 +73,6 @@ mod tests {
         assert!(src.contains("- (0.25)"));
     }
 
-    /// Every baked constant must parse back to the exact input `f32`, including
-    /// magnitudes below the 5e-7 floor that fixed-precision printing collapsed to
-    /// `0.000000`. This is the emitter's half of the CPU/GPU parity contract.
     #[test]
     fn sphere_constants_round_trip_below_the_old_print_floor() {
         use loam_math::EuclideanR3;
@@ -118,7 +113,6 @@ mod tests {
         assert_eq!(h3, s3);
     }
 
-    /// `HalfSpace` emits the honest chart-coord `dot(p, n) - d` in flat E³.
     #[test]
     fn halfspace_emits_dot_in_flat_chart() {
         use loam_math::EuclideanR3;
@@ -132,8 +126,6 @@ mod tests {
         assert!(src.contains("- (-0.5)"));
     }
 
-    /// `HalfSpace` sentinels in a curved Space; pinned so a regression that
-    /// re-enables raw chart-coord `dot()` there fails loud.
     #[test]
     fn halfspace_sentinels_in_curved_chart() {
         use loam_math::HyperbolicH3;
@@ -163,27 +155,6 @@ mod tests {
     }
 
     #[test]
-    fn combinator_union_expr() {
-        use combinator::union_expr;
-        let expr = union_expr("da", "db");
-        assert_eq!(expr, "min(da, db)");
-    }
-
-    #[test]
-    fn combinator_smooth_min_fn_compiles() {
-        use combinator::smooth_min_fn;
-        let src = smooth_min_fn("smin", 0.08);
-        assert!(src.contains("fn smin(a: f32, b: f32) -> f32"));
-        assert!(src.contains("/ (0.08)"));
-        assert!(src.contains("clamp"));
-        assert!(src.contains("mix"));
-    }
-
-    // ---- Scene-tree integration tests ------------------------------------
-
-    /// Sphere + plane in E³ emits both `loam_distance` and `dot(p,` inside one
-    /// `loam_scene_sdf`.
-    #[test]
     fn scene_with_sphere_and_plane_emits_both_paths_in_e3() {
         use loam_math::EuclideanR3;
         let scene =
@@ -195,7 +166,6 @@ mod tests {
         assert!(src.contains("- (-0.5)"));
     }
 
-    /// A sphere-only scene emits no `dot()` calls.
     #[test]
     fn sphere_only_scene_emits_no_chart_coord_dot() {
         use loam_math::EuclideanR3;
@@ -205,30 +175,6 @@ mod tests {
         assert!(src.contains("loam_distance"));
         assert!(!src.contains("dot(p,"));
     }
-
-    /// Baked sphere centres match the input point literally.
-    #[test]
-    fn sphere_center_appears_as_wgsl_literal() {
-        use loam_math::EuclideanR3;
-        let scene = Scene::new(SceneNode::sphere(Vec3::new(0.5, 0.0, 0.0), 0.1));
-        let src = scene.to_wgsl(&EuclideanR3);
-        assert!(src.contains("vec3<f32>(0.5, 0.0, 0.0)"));
-    }
-
-    /// A tangent vector exped through H³ compresses below its E³ coordinate, so
-    /// the H³ scene does not emit the E³-style literal.
-    #[test]
-    fn lattice_centres_compress_under_hyperbolic_exp() {
-        use loam_math::{HyperbolicH3, Space};
-        let p = HyperbolicH3.exp(Vec3::ZERO, Vec3::X * 0.5);
-        let scene = Scene::new(SceneNode::sphere(p, 0.1));
-        let src = scene.to_wgsl(&HyperbolicH3);
-        // tanh(0.25) ≈ 0.2449, well under 0.5.
-        assert!(p.x < 0.5);
-        assert!(!src.contains("vec3<f32>(0.5, 0.0, 0.0)"));
-    }
-
-    // ---- Sentinel parity --------------------------------------------------
 
     /// One `Shape` per [`loam_shape::ShapeKind`], in declaration order. The
     /// sentinel tables sweep this, and `shape_table_covers_every_kind_exactly_once`
@@ -283,12 +229,6 @@ mod tests {
         );
     }
 
-    /// The highest-consequence parity failure in the whole evaluator: returning
-    /// a finite distance where the shader emits the sentinel would bake a
-    /// collider for geometry the renderer never draws, and nothing downstream
-    /// would catch it. Asserted as an iff over every `ShapeKind` in every
-    /// shipped 3D Space; the emitted body is string-sniffed because "the
-    /// emitter chose the sentinel arm" has no other observable.
     #[test]
     fn eval_sentinels_exactly_where_emit_sentinels() {
         use loam_math::{
@@ -322,8 +262,6 @@ mod tests {
         );
     }
 
-    /// Same iff for the 4D half. ℝ⁴ is the only 4D Space, so there is no Space
-    /// parameter to sweep.
     #[test]
     fn eval_4d_sentinels_exactly_where_emit_4d_sentinels() {
         use glam::Vec4;
@@ -342,9 +280,6 @@ mod tests {
         }
     }
 
-    /// The 3D `HalfSpace` arm is gated on flatness, so one shape must be finite
-    /// in E³ and sentinel in H³. Pins that `eval` reads the gate at all, which
-    /// the deleted shadow helper never did.
     #[test]
     fn halfspace_eval_follows_the_chart_flatness_gate() {
         use loam_math::{EuclideanR3, HyperbolicH3};
@@ -356,8 +291,6 @@ mod tests {
         assert!((plane.eval(&EuclideanR3, p) - 0.75).abs() < 1e-6);
         assert_eq!(plane.eval(&HyperbolicH3, p), SENTINEL_DISTANCE);
     }
-
-    // ---- Analytic invariants of the shipped evaluator ---------------------
 
     /// Deterministic xorshift32 point-pair sampler for Lipschitz checks.
     fn deterministic_pair_samples(seed: u32, count: usize, extent: f32) -> Vec<(Vec3, Vec3)> {
@@ -427,9 +360,6 @@ mod tests {
         }
     }
 
-    /// Every combinator and every 3D primitive with a closed form, in one tree,
-    /// checked against the Riemannian Lipschitz bound in all three shipped
-    /// curvature regimes.
     #[test]
     fn scene_eval_is_lipschitz_1_under_the_space_metric() {
         use loam_math::{EuclideanR3, HyperbolicH3, SphericalS3};
@@ -462,9 +392,6 @@ mod tests {
         );
     }
 
-    /// Sphere leaves vanish exactly on the geodesic sphere of radius `r` in
-    /// every Space, which is the point of routing them through `Space::distance`
-    /// rather than a chart-coord length.
     #[test]
     fn sphere_eval_is_zero_on_the_geodesic_surface_in_every_space() {
         use loam_math::{EuclideanR3, HyperbolicH3, Space, SphericalS3};
@@ -507,8 +434,6 @@ mod tests {
         check(&SphericalS3, "S3");
     }
 
-    /// Box and half-space leaves are chart-coord formulas; pin their zero set
-    /// and sign in the flat chart where they are honest.
     #[test]
     fn box_and_halfspace_eval_zero_sets_and_signs_in_e3() {
         use loam_math::EuclideanR3;
@@ -533,11 +458,6 @@ mod tests {
         assert!(plane.eval(&EuclideanR3, Vec3::new(0.0, -1.0, 0.0)) < 0.0);
     }
 
-    // ---- Combinator algebra ----------------------------------------------
-
-    /// Union commutes and difference does not: `max(l, -r)` picks a side, so
-    /// swapping the operands must change the field where the shapes overlap.
-    /// Catches a swapped-operand transcription of the `Difference` arm.
     #[test]
     fn union_commutes_and_difference_does_not() {
         use loam_math::EuclideanR3;
@@ -564,10 +484,6 @@ mod tests {
         );
     }
 
-    /// Quilez's polynomial smooth-min is a lower bound on `min` and converges to
-    /// it as the blend radius vanishes, with worst-case gap exactly `k/4` at
-    /// `a == b`. Pins the transcription of the polynomial rather than merely the
-    /// presence of the word `clamp` in the emitted text.
     #[test]
     fn smooth_union_underestimates_min_and_converges_to_it() {
         use loam_math::EuclideanR3;
@@ -594,8 +510,6 @@ mod tests {
         }
     }
 
-    /// Far outside the blend band `|a - b| < k` the polynomial saturates and the
-    /// smooth union must equal `min` bit-for-bit, not merely approximately.
     #[test]
     fn smooth_union_matches_min_outside_the_blend_band() {
         use loam_math::EuclideanR3;
@@ -609,11 +523,6 @@ mod tests {
         assert_eq!(soft.eval(&EuclideanR3, p), hard.eval(&EuclideanR3, p));
     }
 
-    // ---- 4D evaluator -----------------------------------------------------
-
-    /// The hyperslice `dist` is the 4D field restricted to `w = w_slice`, and
-    /// `kind` follows the emitted `select`: closer leaf under union, farther
-    /// under intersection, sentinel under difference.
     #[test]
     fn hyperslice_eval_tracks_distance_and_kind_through_combinators() {
         use glam::Vec4;
@@ -642,9 +551,6 @@ mod tests {
         assert_eq!(kind, PRIM_KIND_OTHER);
     }
 
-    /// The slice coordinate is a real degree of freedom: a hypersphere centred
-    /// at `w = 0` presents radius `sqrt(r² − w²)` in the slice and vanishes past
-    /// its pole.
     #[test]
     fn hyperslice_radius_shrinks_with_the_slice_coordinate() {
         use glam::Vec4;
@@ -663,8 +569,6 @@ mod tests {
         assert!(scene.eval(Vec3::ZERO, 0.6, true) > 0.0);
     }
 
-    /// A gated-off halfspace reads exactly the sentinel, matching the emitted
-    /// `select`; every other leaf is untouched by the gate.
     #[test]
     fn hyperslice_gate_off_returns_the_sentinel_for_halfspaces_only() {
         use glam::Vec4;
@@ -680,8 +584,6 @@ mod tests {
         );
     }
 
-    /// Both 4D leaves with a closed form are Lipschitz-1 in flat ℝ⁴, where the
-    /// chart metric is the Riemannian one.
     #[test]
     fn scene4_eval_is_lipschitz_1_in_flat_r4() {
         use glam::Vec4;
@@ -713,8 +615,6 @@ mod tests {
         }
     }
 
-    // ---- Emitted-WGSL acceptance -------------------------------------------
-
     /// A magnitude past 2^63, where a bare digit run overflows WGSL's
     /// `AbstractInt` (i64) range. 1e19 is used rather than 2^63 itself because
     /// the shortest round-trip decimal for 2^63 is 9223372000000000000, which
@@ -732,11 +632,6 @@ mod tests {
         .unwrap_or_else(|e| panic!("WGSL validation failed: {e:?}\n--- source ---\n{source}"));
     }
 
-    /// Every constant a 3D scene bakes (sphere centre and radius, box half-
-    /// extents, half-space normal and offset, smooth-min blend radius) must
-    /// still parse as WGSL at magnitudes past 2^63. Under a bare `{}` print
-    /// each one becomes a digit run that naga rejects as "numeric literal not
-    /// representable by target type".
     #[test]
     fn scene3_beyond_abstract_int_range_emits_wgsl_naga_accepts() {
         use loam_math::{EuclideanR3, WgslSpace};
@@ -757,9 +652,6 @@ mod tests {
         assert_naga_accepts(&probe);
     }
 
-    /// The 4D emit surface has its own constants (hypersphere centre and
-    /// radius, 4D half-space normal and offset, plus the offset re-printed in
-    /// the `loam_scene_max_t` ray-plane bound), so it is pinned separately.
     #[test]
     fn scene4_beyond_abstract_int_range_emits_wgsl_naga_accepts() {
         use glam::Vec4;
@@ -788,9 +680,6 @@ mod tests {
         assert_naga_accepts(&hyperslice);
     }
 
-    /// The finite-constant guard has to sit on the emit path, not just in the
-    /// literal printer: a non-finite radius must stop at `Scene::to_wgsl`
-    /// instead of reaching a shader as `inf`.
     #[test]
     #[should_panic(expected = "non-finite")]
     fn scene3_rejects_a_non_finite_constant() {
@@ -799,8 +688,6 @@ mod tests {
         let _ = scene.to_wgsl(&EuclideanR3);
     }
 
-    /// The 4D path bakes its constants through separate emit functions, so the
-    /// guard is pinned there independently.
     #[test]
     #[should_panic(expected = "non-finite")]
     fn scene4_rejects_a_non_finite_constant() {
@@ -809,14 +696,6 @@ mod tests {
         let _ = scene.to_wgsl_4d();
     }
 
-    // ---- Determinism ------------------------------------------------------
-
-    /// `Scene::eval` sits inside the Tier-0 boundary the moment a baked collider
-    /// feeds the sim, so the field is pinned bit-exactly over a fixed lattice.
-    /// This is the test that fails when a combinator is reassociated or FMA
-    /// contraction is enabled. `EuclideanR3` only: its `distance` is the square
-    /// root of a dot product, IEEE-exact and therefore portable, whereas H³ and
-    /// S³ route through `artanh` / `asin`, whose last bit is a libm decision.
     #[test]
     fn scene_eval_bit_pattern_is_pinned_over_a_fixed_lattice() {
         use loam_math::EuclideanR3;

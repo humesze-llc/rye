@@ -59,9 +59,6 @@ mod tests {
         after.split(')').next().expect("divisor is parenthesized")
     }
 
-    /// The baked divisor must round-trip to the requested `k` for every `k` a
-    /// caller can pass, including radii far below the `{:.6}` print floor that
-    /// used to collapse to `0.000000`.
     #[test]
     fn smooth_min_divisor_round_trips_to_k() {
         for k in [0.08_f32, 4.9e-7, 1e-7, 1e-20, 1e-30] {
@@ -73,9 +70,6 @@ mod tests {
         }
     }
 
-    /// Both occurrences of `k` (divisor and blend term) come from one value, so
-    /// they must be the same literal; a divergence would make the emitted
-    /// smooth-min discontinuous.
     #[test]
     fn smooth_min_bakes_one_literal_for_both_uses_of_k() {
         let src = smooth_min_fn("smin", 1e-7);

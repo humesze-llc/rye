@@ -4,7 +4,8 @@
 //! a frame encoder takes, and the one whose pass ordering can go wrong.
 //!
 //! The atlas and layout halves are pure-CPU and pinned in the crate's own unit
-//! tests. Only the wgpu half needs a device, and only it is `#[ignore]`d.
+//! tests. Only the wgpu half needs a device, and only it is `#[ignore]`d. The
+//! `gpu_probe` suffix is what CI's software-adapter job selects on.
 
 use loam_text::TextRenderer;
 use wgpu::{Device, Queue, TextureFormat, TextureView};

@@ -1209,6 +1209,7 @@ mod tests {
             assert!(palette.contains(end_color));
         }
     }
+
     #[test]
     fn pentatope_section_at_midpoint() {
         let (tri, edges) =
@@ -1274,6 +1275,7 @@ mod tests {
             );
         }
     }
+
     #[test]
     fn section_faces_triangle_count_matches_section_triangles() {
         let probe_color = [0.5, 0.5, 0.5, 1.0];
@@ -1307,6 +1309,7 @@ mod tests {
             );
         }
     }
+
     #[test]
     fn perimeter_append_matches_the_by_value_overlay_perimeter() {
         let mut scratch = SectionScratch::default();
@@ -1466,7 +1469,8 @@ mod tests {
              a face-normal regression may have widened the error."
         );
     }
-    /// w-range of a cell, helper for `cell_pruning_matches_full_scan`. Independent
+
+    /// w-range of a cell, helper for `cell_pruning_matches_straddle_count`. Independent
     /// copy of the algorithm's internal `cell_w_range`; if the two ever drift, this
     /// test fires and signals a refactor that didn't update both sites.
     fn test_cell_w_range(cell: &[u32], vertices: &[Vec4]) -> (f32, f32) {

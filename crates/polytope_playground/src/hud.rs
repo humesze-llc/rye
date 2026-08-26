@@ -1,7 +1,3 @@
-//! Top-left state readout drawn through `loam-text`, the first-party
-//! (non-egui) text path: w-slice, animation time, rate, and the active
-//! rotation-plane strip. Off by default; the `hud` console command toggles it.
-//!
 //! Owned by the scene, not by the shell. The pre-shell version hung off the
 //! `App` because it had to draw after the demo's own passes; under
 //! `loam_app::shell` a scene's `record` is already the last thing before egui
@@ -181,7 +177,6 @@ fn draw_list(seat: HudSeat) -> [HudDraw; 2] {
     ]
 }
 
-/// The readout's `loam-text` renderer plus its reused format buffer.
 pub(crate) struct TextHud {
     text: TextRenderer,
     /// Rebuilt every frame with `clear` + `write!`, keeping the allocation.
@@ -270,11 +265,6 @@ mod tests {
             .expect("bundled Hack Regular parses")
     }
 
-    /// loam-text silently drops anything outside printable ASCII, so a readout
-    /// that formatted a non-ASCII character would lose it with no diagnostic.
-    /// Pinned against `loam_text::is_renderable` (the shipping predicate the
-    /// layout uses) rather than a restated character range, and over the float
-    /// values whose `Display` impls are the plausible source of a surprise.
     #[test]
     fn readout_is_renderable_for_every_extreme_float() {
         let mut out = String::new();
@@ -297,9 +287,6 @@ mod tests {
         }
     }
 
-    /// The value column is the only alignment mechanism available (advance-only
-    /// layout), so every line's value must end at the same column across
-    /// magnitudes and signs.
     #[test]
     fn readout_value_columns_align_across_magnitudes() {
         let mut out = String::new();
@@ -321,8 +308,6 @@ mod tests {
         }
     }
 
-    /// Line count is fixed so the block never reflows; a HUD that changes height
-    /// with its own values reads as a glitch.
     #[test]
     fn readout_line_count_is_fixed() {
         let mut out = String::new();
@@ -332,9 +317,6 @@ mod tests {
         assert_eq!(out.lines().count(), 5);
     }
 
-    /// The strip names exactly the selected slot's active planes, in `Plane4::ALL`
-    /// index order,
-    /// and holds its width when a plane is off.
     #[test]
     fn plane_strip_names_exactly_the_active_planes() {
         let mut out = String::new();
@@ -350,11 +332,6 @@ mod tests {
         assert_eq!(off.chars().count(), strip.chars().count());
     }
 
-    /// The reshell changed where the block is anchored, not what it draws. At
-    /// unit scale under a bar 24 points tall, the two entries are the pre-shell
-    /// readout verbatim: black shadow one pixel down-right of a near-white body
-    /// at (16, 40), both 16px. A reordering, a lost shadow, or a recoloured body
-    /// all fail here.
     #[test]
     fn reshelled_draw_list_matches_the_pre_shell_readout_at_unit_scale() {
         let free = egui::Rect::from_min_max(egui::pos2(0.0, 24.0), egui::pos2(1280.0, 720.0));
@@ -375,10 +352,6 @@ mod tests {
         );
     }
 
-    /// Origin, draw size and shadow offset are all in points scaled by the
-    /// frame's pixels-per-point. The pre-shell constants were fixed physical
-    /// pixels, which shrank the readout and slid it under the menu bar on every
-    /// scaled display; this is the test that would have caught that.
     #[test]
     fn draw_list_scales_the_whole_placement_by_pixels_per_point() {
         let free = egui::Rect::from_min_max(egui::pos2(0.0, 24.0), egui::pos2(1280.0, 720.0));
@@ -399,10 +372,6 @@ mod tests {
         }
     }
 
-    /// The chrome check runs in points, the draw runs in pixels; this is the
-    /// bridge. The rect's top-left scaled by pixels-per-point must be exactly
-    /// where the body string is queued, otherwise clearing the chrome in points
-    /// would prove nothing about the pixels the readout lands on.
     #[test]
     fn hud_rect_top_left_is_the_body_origin_in_points() {
         let metrics = hud_metrics();
@@ -421,11 +390,6 @@ mod tests {
         }
     }
 
-    /// The readout is not egui chrome, so nothing but this arithmetic keeps it
-    /// off the shell's menu bar and the controls overlay. Both rects come from
-    /// a headless egui pass: the bar is the shell's own top panel, and the
-    /// overlay is a bottom-pivoted window forced to `OVERLAY_PROBE_FRACTION` of
-    /// the viewport, comfortably taller than the auto-sized production strip.
     #[test]
     fn hud_rect_clears_the_menu_bar_and_the_bottom_overlay() {
         /// Share of the viewport height the overlay stand-in claims. The real

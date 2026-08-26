@@ -1,8 +1,3 @@
-//! Shape-row UI: a horizontal row of shape cards with `+`-button
-//! menu, drag-and-drop reorder, and per-card "Remove from row"
-//! context menu. Drives `self.row` (the visible polytopes in
-//! `Shapes` view mode); mutations here trigger `rebuild_bodies()`.
-
 use loam_app::egui;
 use loam_egui::{
     dnd::{
@@ -20,8 +15,6 @@ use crate::consts::{CARD_ITEM_SPACING_X, CONTROL_H, CONTROL_W, MAX_ROW_LEN, SHAP
 use crate::state::Demo;
 
 impl Demo {
-    /// Shape row + add-menu + drag-and-drop reorder, called from both
-    /// rotation modes.
     pub(crate) fn render_shapes_section(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         // The 120/600-cell is heavy only on the SDF raymarch path; the
@@ -139,9 +132,8 @@ impl Demo {
         }
     }
 
-    /// One shape card: reorder drag source, hover-name tooltip,
-    /// right-click remove. Returns `true` on Remove so the caller can
-    /// defer removal past the row's iteration.
+    /// Returns `true` on Remove so the caller can defer removal past the
+    /// row's iteration.
     fn render_shape_card(ui: &mut egui::Ui, i: usize, entry: &ShapeEntry, row_len: usize) -> bool {
         let card_id = ui.make_persistent_id(("shape-card", i));
         let pickup_t = drag_pickup_t(ui.ctx(), card_id);

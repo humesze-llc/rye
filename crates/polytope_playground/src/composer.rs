@@ -1,13 +1,3 @@
-//! Composer mode: typed-formula parser + sequence-of-terms UI.
-//!
-//! The user builds a `Vec<RotorTerm>` by typing a single-term
-//! expression (`90° (xy + zw)`) or appending basis-plane chips into a
-//! draft. Terms render as draggable cards that reorder via DnD, with
-//! cross-term plane migration via plane pills. The scrub slider
-//! projects `log(R)` of the SELECTED slot's rotor onto the seq's net
-//! bivector direction so scrubbing preserves any perpendicular rotation
-//! already applied.
-//!
 //! There is one authored seq and it drives one body: the selected slot.
 //! Handing the same integrated delta to every slot would be the row-wide
 //! spin per-slot rotation exists to remove.
@@ -25,10 +15,6 @@ use loam_math::{Bivector, Plane4, Rotor};
 
 use crate::consts::{CARD_ITEM_SPACING_X, CONTROL_H, MINI_BUTTON_W};
 use crate::state::{render_plane_sum, DeferredAction, Demo, DragPayload, RotorTerm};
-
-// ---------------------------------------------------------------------------
-// Formula parser
-// ---------------------------------------------------------------------------
 
 /// Parse one term like `90° (xy + zw)`, `90 xy`, `0.5 rad xy` into a
 /// [`RotorTerm`]. Degrees default; `rad` overrides. The `*` / `·`
@@ -106,16 +92,10 @@ fn parse_plane(s: &str) -> Result<Plane4, String> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Composer-mode rendering
-// ---------------------------------------------------------------------------
-
 impl Demo {
     pub(crate) fn render_composer_mode(&mut self, ui: &mut egui::Ui) {
         ui.separator();
 
-        // `f: [text input] [Add] [+xy] ... [+zw]`. Chips append to the
-        // draft; the text input takes a full expression.
         ui.horizontal_wrapped(|ui| {
             ui.label("f:");
             let resp = ui.add(
@@ -167,7 +147,6 @@ impl Demo {
             );
         }
 
-        // Draft preview as a card; Add commits to seq, × discards.
         if !self.draft.is_empty() {
             egui::Frame::group(ui.style())
                 .inner_margin(4.0)
@@ -257,11 +236,8 @@ impl Demo {
         });
     }
 
-    /// Composer's seq-card row. Each [`RotorTerm`] card is both a drag
-    /// source (Term payload, reorders the seq) and a drop zone (Entry
-    /// payload, cross-term plane migration). Mutations are gathered
-    /// during rendering and applied at the end so the loop can borrow
-    /// `self.seq` immutably in flight.
+    /// Mutations are gathered during rendering and applied at the end so the
+    /// loop can borrow `self.seq` immutably in flight.
     pub(crate) fn render_composer_seq_cards(&mut self, ui: &mut egui::Ui) {
         let mut entry_moves: Vec<(usize, usize, usize)> = Vec::new();
         let mut remove_term: Option<usize> = None;
@@ -352,8 +328,6 @@ impl Demo {
                                     ui.horizontal(|ui| {
                                         let term = &self.seq[term_idx];
                                         if let Some(phi) = term.scalar {
-                                            // Inline DragValue: drag to adjust,
-                                            // click to type.
                                             let phi_color = egui::Color32::from_rgb(255, 150, 150);
                                             let mut deg = phi.to_degrees();
                                             let drag_resp = ui
@@ -429,8 +403,6 @@ impl Demo {
                     let scalar_now = self.seq[term_idx].scalar;
                     let menu_resp = card_resp.interact(egui::Sense::click());
                     menu_resp.context_menu(|ui| {
-                        // Scalar editing is inline above; the menu owns only
-                        // add/remove-scalar and delete-term.
                         if scalar_now.is_some() {
                             if ui.button("Remove scalar (φ)").clicked() {
                                 remove_scalar = Some(term_idx);
@@ -515,12 +487,6 @@ mod tests {
     use loam_math::{Bivector, Bivector4, Rotor};
     use std::f32::consts::{PI, SQRT_2};
 
-    /// The scrub slider writes `exp(bivec + unit·Δ)` and re-reads
-    /// `log()` on the next frame, so a range wider than `log`'s own reach
-    /// is a control that snaps under the cursor. `Rotor4::log` returns
-    /// the minimal-norm generator, bounded by SO(4)'s bi-invariant
-    /// diameter, and the old ±360° range assumed the principal branch it
-    /// no longer returns.
     #[test]
     fn the_scrub_range_never_exceeds_what_log_can_return() {
         const LIMIT_DEG: f32 = 254.558_44;

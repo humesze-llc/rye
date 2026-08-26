@@ -1,7 +1,3 @@
-//! Cross-section and surface policy: the SurfaceMode enum, the SectionLayer
-//! pass config, the cross-section projection rule, and the heavy-polychora SDF
-//! gate.
-
 use loam_math::Projection;
 use loam_render::raymarch::RaymarchShape;
 use loam_shape::polytope::Polytope4;
@@ -25,7 +21,6 @@ pub(crate) enum SurfaceMode {
 }
 
 impl SurfaceMode {
-    /// Parse the console-arg spelling. Returns `None` for any other input.
     pub(crate) fn from_token(token: &str) -> Option<Self> {
         match token {
             "raster" => Some(SurfaceMode::Raster),
@@ -35,15 +30,11 @@ impl SurfaceMode {
         }
     }
 
-    /// `true` when the polychoral SDF dispatch needs to be live. False for
-    /// Raster (the rasterizer draws them) and Off (nothing does).
     pub(crate) fn uses_sdf_for_polychora(self) -> bool {
         matches!(self, SurfaceMode::Sdf)
     }
 }
 
-/// One overlaid layer of the rasterized cross-section: a perimeter-outline
-/// toggle plus a surface-fill alpha that doubles as the layer's on/off switch.
 /// Both layers share the same slice geometry (the drop-w 3-flat cut) and differ
 /// only in how it maps to R³. See `Demo::cross_section` /
 /// `Demo::projected_cap`.
@@ -60,8 +51,6 @@ pub(crate) struct SectionLayer {
 }
 
 impl SectionLayer {
-    /// Whether the surface fill draws at all (`surface_alpha > 0`); at or below
-    /// zero the layer skips its triangle pass rather than submit invisible mesh.
     pub(crate) fn fill_visible(self) -> bool {
         self.surface_alpha > 0.0
     }

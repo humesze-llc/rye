@@ -1,6 +1,3 @@
-//! Transform-gizmo overlay: the six rotation planes as grabbable rings and
-//! the four translation axes as grabbable arrows.
-//!
 //! Handle geometry, picking and the drag-to-delta map are engine machinery in
 //! [`loam_render::gizmo`], derivation included. This module places the widget
 //! in the scene, arbitrates the left button against the flick gesture, and
@@ -33,7 +30,6 @@ const SCALE: f32 = 0.55;
 /// which is what makes grabbing fussier as the camera pulls back.
 const PICK_TOLERANCE: f32 = 0.09;
 
-/// Colour for the handle under the cursor, or held.
 const HIGHLIGHT: [f32; 4] = [1.0, 0.94, 0.55, 1.0];
 
 /// Widget placement. The handles are the ambient rotation planes and the
@@ -95,7 +91,6 @@ impl Default for GimbalUi {
     }
 }
 
-/// Handle the ray grabs, anchored where it met it.
 fn grab_handle(gizmo: &TransformGizmo, ray: &Ray) -> Option<HandleDrag> {
     let handle = gizmo.pick(ray.origin, ray.direction, PICK_TOLERANCE)?;
     HandleDrag::press(handle, ray.origin, ray.direction)
@@ -118,7 +113,6 @@ impl Demo {
         self.gimbal.enabled && self.view_mode != ViewMode::Filmstrip
     }
 
-    /// This frame's widget, standing on the selected body.
     fn gimbal_widget(&self) -> TransformGizmo {
         widget(gimbal_center(
             &self.physics,
@@ -319,7 +313,6 @@ mod tests {
         gimbal_center(&PlaygroundPhysics::new(1, BODY_SIZE), 0, 1)
     }
 
-    /// Every centre a selection can put the widget on in a row of `slots`.
     fn selectable_centers(slots: usize) -> Vec<Vec3> {
         let physics = PlaygroundPhysics::new(slots, BODY_SIZE);
         (0..slots)
@@ -395,16 +388,11 @@ mod tests {
         ))
     }
 
-    /// Ray the demo would build from a press aimed at `world`.
     fn ray_at(camera: &Camera<EuclideanR3>, world: Vec3) -> Option<Ray> {
         let pixels = pixels_of(camera, world)?;
         Some(camera.ray_from_ndc(ndc_from_pixels(pixels, VIEWPORT)))
     }
 
-    /// The pixel seam is round-trip exact: a world point turned into pixels
-    /// and back into a ray produces a ray through that point. Catches a
-    /// dropped y-flip and a dropped aspect, either of which would leave the
-    /// drag tracking the cursor along the wrong screen axis.
     #[test]
     fn the_pixel_to_ray_seam_round_trips_a_world_point() {
         let camera = startup_camera();
@@ -416,11 +404,6 @@ mod tests {
         }
     }
 
-    /// The widget is on screen at the startup framing WHEREVER the selection
-    /// puts it, out to the widest row. This is as close as a headless test
-    /// gets to the visual claim: every ring point and every shaft point is in
-    /// front of the eye and inside the NDC square, so nothing is clipped away
-    /// and no handle is behind the camera.
     #[test]
     fn every_handle_is_inside_the_startup_view_at_every_selectable_slot() {
         let camera = startup_camera();
@@ -439,9 +422,6 @@ mod tests {
         }
     }
 
-    /// No handle reaches the centre of the neighbouring column, so a widget
-    /// standing on one body never invites a grab that looks aimed at the
-    /// next one. This is the bound [`SCALE`] is chosen against.
     #[test]
     fn the_widget_stays_inside_its_own_column() {
         let gizmo = widget(Vec3::ZERO);
@@ -454,11 +434,6 @@ mod tests {
         }
     }
 
-    /// The handles stand on the body the controls are aimed at: selecting the
-    /// next slot moves the widget by exactly the layout spacing, and nothing
-    /// else about the widget changes. A widget parked at the row's midpoint
-    /// (which is what it was before the row carried per-slot rotations) never
-    /// moves here.
     #[test]
     fn the_widget_stands_on_the_selected_body() {
         for slots in 2..=WIDEST_ROW {
@@ -470,13 +445,10 @@ mod tests {
                     "slot {slot} of {slots} sits {step} from its neighbour"
                 );
             }
-            // Centred on the row, so the ends are mirror images.
             assert!((centers[0].x + centers[slots - 1].x).abs() < 1e-6);
         }
     }
 
-    /// A body a flick threw carries the handles with it, so the manipulator
-    /// cannot be left behind on the layout position its subject vacated.
     #[test]
     fn the_widget_follows_a_thrown_subject() {
         let slots = 3;
@@ -496,10 +468,6 @@ mod tests {
         );
     }
 
-    /// End to end through the pixel seam: a press aimed at a point on ring
-    /// `P` and a release aimed at the point `Δθ` further along `P`'s great
-    /// circle asks the Active slider for exactly `Δθ` more. Runs for all six
-    /// planes, so a ring wired to the wrong slider index fails here.
     #[test]
     fn a_drag_along_a_ring_asks_its_own_plane_for_the_arc_it_swept() {
         let camera = startup_camera();
@@ -553,13 +521,6 @@ mod tests {
         }
     }
 
-    /// All ten handles are reachable at the startup framing, without orbiting
-    /// first, at the demo's own grab tolerance. Rings cross each other, so
-    /// the bar there is that a ring is the front-most grab over most of its
-    /// own circumference; a shaft outranks a ring by rule, so the bar there
-    /// is every point of its arrowhead. A ring the default camera sees
-    /// edge-on scores zero on the first bar, which is what an image frame
-    /// with a ring plane square to a view axis produces.
     #[test]
     fn every_handle_is_grabbable_at_the_startup_framing() {
         let camera = startup_camera();
@@ -605,9 +566,6 @@ mod tests {
         }
     }
 
-    /// A press that grabbed a handle and never moved asks for no change at
-    /// all, so holding the button still cannot drift the subject. Covers all
-    /// ten, through the real pixel seam.
     #[test]
     fn holding_a_handle_still_asks_for_no_change() {
         let camera = startup_camera();
@@ -636,12 +594,6 @@ mod tests {
         }
     }
 
-    /// The acceptance property for the translation half, taken all the way
-    /// through the demo's own state: a drag on the `w` shaft moves the
-    /// selected body's `position.w` by the distance the cursor slid and
-    /// leaves `x`, `y`, `z` bit-identical, while the `x`, `y` and `z` shafts
-    /// each move their own component and no other. Every other slot is left
-    /// alone, because the widget stands on the selected body.
     #[test]
     fn a_shaft_drag_moves_one_component_of_the_selected_body_and_nothing_else() {
         const SLOTS: usize = 3;
@@ -699,11 +651,6 @@ mod tests {
         }
     }
 
-    /// The `w` drag is the one with no R³ consequence: it moves the slice the
-    /// body is cut at and leaves the position every raster path translates by
-    /// exactly where it was. The property behind the module's claim that the
-    /// `w` shaft is the handle a user cannot discover by watching the shape
-    /// move.
     #[test]
     fn a_w_drag_moves_the_slice_and_not_the_r3_position() {
         let mut physics = PlaygroundPhysics::new(1, BODY_SIZE);

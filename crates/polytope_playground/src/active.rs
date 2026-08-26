@@ -1,6 +1,3 @@
-//! Active-set rotation mode: six basis-plane checkboxes + per-plane
-//! angle sliders.
-//!
 //! Orientation is derived each frame, not stored: the truth is
 //! `base_angles[6]` plus `rot_time`, giving displayed angle
 //! `base_angles[i] + (rot_time * rate if active[i])`. The rotor is
@@ -65,8 +62,6 @@ pub(crate) fn combo_name(active: &[bool; 6]) -> Option<&'static str> {
 }
 
 impl Demo {
-    /// Active body: 2x3 grid of `[checkbox][label][slider][value]`
-    /// cells with pinned widths so columns align across rows.
     pub(crate) fn render_active_mode(&mut self, ui: &mut egui::Ui) {
         const TOP_ROW: [usize; 3] = [0, 1, 3]; // xy, xz, yz
         const BOTTOM_ROW: [usize; 3] = [2, 4, 5]; // xw, yw, zw
@@ -102,7 +97,7 @@ impl Demo {
         }
     }
 
-    /// One plane cell, all widths pinned by the caller. The slider
+    /// The slider
     /// reads/writes the SELECTED slot's `base_angles[plane_idx]` via
     /// `base + spin_contribution`, keeping each slider an independent
     /// factor in that body's rotor product (no log/exp round-trips).

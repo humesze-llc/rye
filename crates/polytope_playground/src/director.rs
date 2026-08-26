@@ -1,6 +1,3 @@
-//! Authored playback over the rendered row: which slots a timeline owns, and
-//! the one frame it advances per update.
-//!
 //! [`loam_time::Director`] arbitrates per channel and this module resolves its
 //! channels onto the row. A timeline addresses a body by slot index because
 //! the row is positional and can hold the same polytope twice, so a shape name
@@ -99,8 +96,6 @@ impl Playback {
     }
 }
 
-/// Row slot a timeline body name addresses, or `None` when it names something
-/// the row cannot resolve.
 fn slot_index(name: &str) -> Option<usize> {
     name.strip_prefix(SLOT_PREFIX)?.parse().ok()
 }
@@ -167,8 +162,6 @@ mod tests {
         (Plane4::Xw.unit_bivector() * (std::f32::consts::FRAC_PI_4)).exp()
     }
 
-    /// A timeline turning every named slot through a quarter turn over one
-    /// second, and saying nothing about any other channel.
     fn turn_slots(named: &[usize]) -> Timeline {
         Timeline {
             fps: FPS,
@@ -193,11 +186,6 @@ mod tests {
         Playback::new(Director::new(timeline).unwrap(), slots).unwrap()
     }
 
-    /// The node's headline property: a slot the timeline names answers to the
-    /// playhead alone. Running the UI clock at a rate that would visibly turn
-    /// the slot is what makes this fail the moment both clocks write, because
-    /// the wall-clock recompose is an absolute function of `rot_time` and
-    /// would land on a different rotor every frame.
     #[test]
     fn a_directed_slot_answers_to_the_playhead_and_never_to_the_ui_clock() {
         const SLOTS: usize = 3;
@@ -238,12 +226,9 @@ mod tests {
         }
         assert!(ui_clock_moved_the_row, "the UI spin never advanced");
         assert!(rot_time > 3.0, "the UI clock stalled at {rot_time}");
-        // The timeline says nothing about the slice, so the host keeps it.
         assert_eq!(w_slice, 0.25);
     }
 
-    /// The anchor line: with every slot spoken for there is nothing left for
-    /// the wall clock to drive, so it must not run behind the playhead.
     #[test]
     fn a_timeline_naming_every_slot_stops_the_ui_clock() {
         const SLOTS: usize = 2;
@@ -266,9 +251,6 @@ mod tests {
         assert_ne!(spins.rotor(0), Rotor4::IDENTITY, "the playhead stalled too");
     }
 
-    /// Composer integrates the selected slot in place, so its suppression is a
-    /// separate branch from Active's and needs its own pin: a directed
-    /// selection must not accumulate the omega step.
     #[test]
     fn composer_does_not_integrate_a_slot_the_timeline_owns() {
         const SLOTS: usize = 2;
@@ -304,8 +286,6 @@ mod tests {
         assert_eq!(directed_row.rotor(0), quarter_turn_xw());
     }
 
-    /// Playing the timeline is the only way the slice moves while it owns the
-    /// channel, and a timeline that stays silent about it leaves it alone.
     #[test]
     fn the_slice_follows_the_timeline_only_where_the_timeline_names_it() {
         let mut spins = SlotSpins::new(1);
@@ -354,9 +334,6 @@ mod tests {
         assert_eq!(w_slice, 0.4);
     }
 
-    /// A name the row cannot resolve is an authoring fault, and every one of
-    /// them has to surface at load: a timeline that silently drove nothing
-    /// would look exactly like a timeline that never loaded.
     #[test]
     fn a_body_the_row_cannot_host_is_refused_at_load() {
         let named = |name: &str| Timeline {
@@ -382,9 +359,6 @@ mod tests {
         assert!(format!("{error:#}").contains("4-slot row"), "{error:#}");
     }
 
-    /// A slot's place belongs to its rigid body, so a position track has no
-    /// writer here. Refused rather than dropped: a track that animated nothing
-    /// is worse than one that fails to load.
     #[test]
     fn a_position_track_is_refused_because_nothing_writes_a_slots_place() {
         let director = Director::new(Timeline {
@@ -406,8 +380,6 @@ mod tests {
         assert!(format!("{error:#}").contains("position track"), "{error:#}");
     }
 
-    /// A body with no orientation track leaves the rotor with the UI spin, so
-    /// ownership is per channel and not per body.
     #[test]
     fn naming_a_slot_without_an_orientation_track_leaves_its_rotor_alone() {
         let director = Director::new(Timeline {

@@ -1,11 +1,3 @@
-//! Demo state: the [`Demo`] struct, the mode/view/deferred-action enums, the
-//! [`RotorTerm`] data type and its display helpers, the angular-velocity
-//! derivation, body layout, and full reset.
-//!
-//! Per-mode UI rendering lives in `modes/{active,composer,filmstrip,shapes}.rs`
-//! as additional `impl Demo` blocks; cross-cutting overlay UI lives in `ui.rs`.
-//! All struct fields are `pub(crate)` so those sibling impls can access them.
-
 use std::collections::HashMap;
 
 use glam::{Vec3, Vec4};
@@ -24,10 +16,6 @@ use crate::spins::{is_directed, SlotSpins};
 // module, and the other playground modules keep importing them from `state`.
 pub(crate) use crate::projections::*;
 pub(crate) use crate::sections::*;
-
-// ---------------------------------------------------------------------------
-// Mode + view enums
-// ---------------------------------------------------------------------------
 
 /// Continuous-rotation source driving `omega`, picked via the rotation tab row.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -138,7 +126,6 @@ impl WireframeColorMode {
         Self::Active,
     ];
 
-    /// Parse a console-arg spelling. `None` for unknown input.
     pub(crate) fn from_token(token: &str) -> Option<Self> {
         match token {
             "vertex-gradient" => Some(Self::VertexGradient),
@@ -149,7 +136,6 @@ impl WireframeColorMode {
         }
     }
 
-    /// Display label for the egui radio buttons.
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::VertexGradient => "Vertex gradient",
@@ -162,18 +148,12 @@ impl WireframeColorMode {
 
 /// Camera control mode. `Orbit` (default) is the origin-focused
 /// scroll-zoom/drag-to-rotate camera; `FreeRoam` flies via WASD + mouse-look.
-/// Toggle via the `camera` console command. Switching to `Orbit` resets the
-/// orbit controller to its default distance + pitch.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CameraMode {
     #[default]
     Orbit,
     FreeRoam,
 }
-
-// ---------------------------------------------------------------------------
-// RotorTerm + display helpers
-// ---------------------------------------------------------------------------
 
 /// One term in the rotor-composition sequence: `exp(phi * sum_of_unit_bivectors)`
 /// with an optional scalar `phi` in radians (`None` defaults to unit magnitude).
@@ -244,10 +224,6 @@ pub(crate) fn render_bivector_sum(parts: &[String]) -> Option<String> {
     }
 }
 
-/// Angular velocity from a composed seq: sum over terms of
-/// `scalar * sum_of_unit_bivectors_in_term`, scaled by `rate_scale`. Term order
-/// is irrelevant here (bivector addition commutes); it only matters for the
-/// one-shot multiplicative `Apply`.
 /// Displayed angle of one Active-mode plane at time `t`: the baseline plus the
 /// spin `t * BASE_ROTATION_RATE` when active. Free function so the composition
 /// is unit-testable without a GPU-backed `Demo`.
@@ -282,10 +258,6 @@ pub(crate) fn angular_velocity_from_seq(seq: &[RotorTerm], rate_scale: f32) -> B
     omega * (BASE_ROTATION_RATE * rate_scale)
 }
 
-// ---------------------------------------------------------------------------
-// Deferred action queue
-// ---------------------------------------------------------------------------
-
 /// State mutations queued during overlay rendering and applied once the
 /// overlay closure has returned. Anything that changes the overlay's widget
 /// set must defer: applying mid-render lays out the remainder of the frame
@@ -315,10 +287,6 @@ pub(crate) enum DragPayload {
     /// dragged.
     Entry(usize, usize),
 }
-
-// ---------------------------------------------------------------------------
-// Body layout helper
-// ---------------------------------------------------------------------------
 
 /// Spawn position of the `slot`-th of `n` bodies, centred on the world origin
 /// and spaced by [`BODY_X_SPACING`]. The static layout only: once a body is
@@ -371,10 +339,6 @@ pub(crate) fn sdf_body_uniform(
     )
 }
 
-// ---------------------------------------------------------------------------
-// Rendered-row pose seam
-// ---------------------------------------------------------------------------
-
 /// One frame's rendered row (which shape sits in which slot, where the bodies
 /// actually are, how 4D maps to R³) as its readers see it: the three raster
 /// passes (section caps, wireframe overlay, point sprites) and the egui
@@ -406,7 +370,6 @@ pub(crate) struct RowFrame<'a> {
 }
 
 impl RowFrame<'_> {
-    /// Live pose of `slot`.
     pub(crate) fn pose(&self, slot: usize) -> BodyPose {
         self.physics
             .pose(slot, self.row.len(), self.spins.rotor(slot))
@@ -444,10 +407,6 @@ impl RowFrame<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The App struct
-// ---------------------------------------------------------------------------
-
 pub(crate) struct Demo {
     /// Rigid-body state for the rendered row, one body per slot. Drives every
     /// render path's pose; see [`crate::physics`].
@@ -469,7 +428,6 @@ pub(crate) struct Demo {
     /// Freecam preset (mouse-look + WASD + cursor grab); drives the camera in
     /// `CameraMode::FreeRoam`. Owns its own yaw/pitch/position/grab state.
     pub(crate) freecam: Freecam,
-    /// Active camera control mode (default `Orbit`).
     pub(crate) camera_mode: CameraMode,
     pub(crate) node: Hyperslice4DNode,
     /// Set when the CPU-side hyperslice uniforms stop matching the GPU copy: a
@@ -720,7 +678,6 @@ pub(crate) struct Demo {
     /// via the `hud` console command; drawn by `crate::hud::TextHud`.
     pub(crate) show_text_hud: bool,
 
-    /// Top-level visualisation mode. See [`ViewMode`].
     pub(crate) view_mode: ViewMode,
     /// Filmstrip-axis toggles; at least one MUST be active when `view_mode ==
     /// Filmstrip` (the UI enforces this). `strip_w` alone fans across the w slider,
@@ -739,7 +696,6 @@ pub(crate) struct Demo {
     /// Polytope rendered in each filmstrip cell. Independent of `self.row`.
     pub(crate) strip_subject: ShapeEntry,
 
-    /// Which rotation source drives the continuous spin.
     pub(crate) rotation_mode: RotationMode,
 
     /// Mode change requested this frame by the mode tabs, applied after the overlay
@@ -762,10 +718,6 @@ pub(crate) struct Demo {
     /// Last parse error from the formula bar.
     pub(crate) formula_error: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// State methods
-// ---------------------------------------------------------------------------
 
 impl Demo {
     /// The composer seq's net bivector direction (unscaled): sum over terms of
@@ -988,8 +940,6 @@ impl Demo {
         }
     }
 
-    /// Whether the wireframe Hyperslice cull should run this frame. See the free
-    /// [`hyperslice_cull_active`].
     pub(crate) fn hyperslice_cull_active(&self) -> bool {
         hyperslice_cull_active(self.wireframe_hyperslice, self.wireframe_projection)
     }
@@ -1125,11 +1075,10 @@ impl Demo {
 #[cfg(test)]
 mod tests {
     use super::{
-        active_plane_angle, apply_projection_selection_defaults, body_position, body_upload_needed,
-        compose_active_rotor, default_edge_blend, hyperslice_cull_active, mode_annotation,
-        render_row_entries, resolve_schlegel_params, row_blocks_sdf, sdf_body_uniform,
-        section_layer_projection, set_if_changed, synced_schlegel_projection, SectionLayer,
-        SurfaceMode, ViewMode, WireframeProjection, BASE_ROTATION_RATE, BODY_SIZE,
+        active_plane_angle, body_position, body_upload_needed, compose_active_rotor,
+        mode_annotation, render_row_entries, resolve_schlegel_params, row_blocks_sdf,
+        sdf_body_uniform, section_layer_projection, set_if_changed, synced_schlegel_projection,
+        SectionLayer, SurfaceMode, ViewMode, WireframeProjection, BASE_ROTATION_RATE, BODY_SIZE,
         STEREOGRAPHIC_DEFAULT_POLE,
     };
     use crate::catalog::ShapeEntry;
@@ -1165,14 +1114,11 @@ mod tests {
 
     #[test]
     fn active_plane_angle_adds_spin_only_when_active() {
-        // Inactive plane: angle is the baseline regardless of t.
         assert_eq!(active_plane_angle(0.5, false, 3.0), 0.5);
-        // Active plane: baseline plus t * rate.
         assert_eq!(
             active_plane_angle(0.5, true, 2.0),
             0.5 + 2.0 * BASE_ROTATION_RATE
         );
-        // t = 0 collapses to the baseline even when active.
         assert_eq!(active_plane_angle(0.5, true, 0.0), 0.5);
     }
 
@@ -1190,17 +1136,14 @@ mod tests {
                 0.0
             };
             let base_new = displayed_before - spin_after;
-            // The new displayed angle must equal the pre-toggle one.
             active_plane_angle(base_new, active_after, t)
         };
-        // Switching ON: the inactive baseline must survive unchanged.
         let base_off = 0.42_f32;
         let displayed_off = active_plane_angle(base_off, false, t);
         assert!(
             (resolve(base_off, false) - displayed_off).abs() < 1e-6,
             "toggle on changed the displayed angle"
         );
-        // Switching OFF: the accumulated spin must freeze into the baseline.
         let base_on = -1.1_f32;
         let displayed_on = active_plane_angle(base_on, true, t);
         assert!(
@@ -1217,8 +1160,6 @@ mod tests {
 
     #[test]
     fn compose_is_always_unit_norm() {
-        // A messy multi-plane configuration must still produce a unit rotor
-        // (the function normalizes). Norm-squared within 1e-5 of 1.
         let base = [0.3, -1.1, 2.0, 0.7, -0.4, 1.6];
         let active = [true, false, true, true, false, true];
         for &t in &[0.0_f32, 0.5, 3.0, 50.0] {
@@ -1262,27 +1203,21 @@ mod tests {
 
     #[test]
     fn row_blocks_sdf_only_for_heavy_polychora() {
-        // Empty row: nothing to block.
         assert!(!row_blocks_sdf(&[]));
-        // Lighter shapes (default-row members): SDF stays available.
         let light = [
             entry(RaymarchShape::Polytope(Polytope4::Tesseract)),
             entry(RaymarchShape::Polytope(Polytope4::Cell24)),
         ];
         assert!(!row_blocks_sdf(&light));
-        // A 120-cell anywhere in the row blocks SDF.
         let with_120 = [
             entry(RaymarchShape::Polytope(Polytope4::Tesseract)),
             entry(RaymarchShape::Polytope(Polytope4::Cell120)),
         ];
         assert!(row_blocks_sdf(&with_120));
-        // A 600-cell does too.
         let with_600 = [entry(RaymarchShape::Polytope(Polytope4::Cell600))];
         assert!(row_blocks_sdf(&with_600));
     }
 
-    /// drop-w yields no annotation; every other projection yields a non-empty
-    /// title and body, and the bodies are pairwise distinct.
     #[test]
     fn annotation_text_present_per_mode() {
         assert!(
@@ -1315,9 +1250,6 @@ mod tests {
         }
     }
 
-    /// The SDF crash-safety gate keys off the RENDERED row, not `self.row`: in
-    /// [`ViewMode::Single`] a heavy subject over a light row must BLOCK and a light
-    /// subject under a heavy row must NOT, while Shapes keeps the row-wide gate.
     #[test]
     fn sdf_gate_follows_single_subject_not_row() {
         let heavy = entry(RaymarchShape::Polytope(Polytope4::Cell600));
@@ -1345,10 +1277,6 @@ mod tests {
         );
     }
 
-    /// Every selectable mode's token round-trips through `from_token`, and
-    /// `to_projection` produces the matching engine variant (or the `Identity`
-    /// fallback for Hyperslice / Schlegel). Schlegel is excluded from `ALL` /
-    /// `from_token` (see `WireframeProjection::Schlegel`).
     #[test]
     fn wireframe_projection_from_token_round_trips() {
         // Pin the count so an enum addition that skips `ALL`, or a Schlegel
@@ -1411,55 +1339,6 @@ mod tests {
         );
     }
 
-    /// Edge geometry is derived from the projection: Stereographic renders S3 arcs
-    /// (`blend == 1`), every affine projection renders chords (`blend == 0`).
-    #[test]
-    fn edge_geometry_is_derived_from_projection() {
-        assert_eq!(default_edge_blend(WireframeProjection::Stereographic), 1.0);
-        for p in [
-            WireframeProjection::Shadow,
-            WireframeProjection::WPinhole,
-            WireframeProjection::Hyperslice,
-        ] {
-            assert_eq!(default_edge_blend(p), 0.0, "{p:?} should draw chords");
-        }
-    }
-
-    /// Selecting Stereographic turns the wireframe overlay on (its arcs are drawn
-    /// only there); every other projection leaves the toggle alone.
-    #[test]
-    fn stereographic_selection_enables_wireframe() {
-        let mut wireframe = false;
-        apply_projection_selection_defaults(WireframeProjection::Stereographic, &mut wireframe);
-        assert!(
-            wireframe,
-            "stereographic arcs require the wireframe overlay"
-        );
-
-        let mut wireframe = false;
-        apply_projection_selection_defaults(WireframeProjection::WPinhole, &mut wireframe);
-        assert!(
-            !wireframe,
-            "non-stereographic selection must not force the overlay"
-        );
-    }
-
-    /// The default Stereographic pole is the `+w` axis, exactly unit. See
-    /// [`stereographic_plus_w_pole_scale_depends_only_on_w`].
-    #[test]
-    fn stereographic_default_pole_is_plus_w() {
-        assert_eq!(STEREOGRAPHIC_DEFAULT_POLE, Vec4::W);
-        assert_eq!(
-            STEREOGRAPHIC_DEFAULT_POLE.length_squared(),
-            1.0,
-            "default pole must be exactly unit"
-        );
-    }
-
-    /// The centering property: under the `+w` pole the conformal scale
-    /// `1 / (1 - dot(p, pole))` reduces to `1 / (1 - p.w)`, so points at equal `w`
-    /// share a denominator; an off-w pole (scale depends on `x + y + z + w`) does
-    /// not.
     #[test]
     fn stereographic_plus_w_pole_scale_depends_only_on_w() {
         let pole = STEREOGRAPHIC_DEFAULT_POLE;
@@ -1483,53 +1362,6 @@ mod tests {
         );
     }
 
-    /// The accepted tradeoff: `+w` IS a 16-cell vertex (`+e_w`), so a vertex can
-    /// sweep through the pole and flick to infinity. Pinned as deliberate.
-    #[test]
-    fn stereographic_default_pole_is_a_16cell_vertex_by_design() {
-        let pole = STEREOGRAPHIC_DEFAULT_POLE;
-        let on_a_vertex = Polytope4::Cell16
-            .topology()
-            .vertices
-            .iter()
-            .any(|v| (v.normalize() - pole).length() < 1e-6);
-        assert!(
-            on_a_vertex,
-            "the slice-aligned +w pole sits on a 16-cell vertex by design"
-        );
-    }
-
-    /// The Hyperslice cull runs when EITHER the toggle is on OR the projection is
-    /// `Hyperslice`; every other projection leaves it off unless the toggle is set.
-    #[test]
-    fn hyperslice_cull_active_fires_for_toggle_or_projection() {
-        // Projection mode alone activates the cull, toggle off.
-        assert!(hyperslice_cull_active(
-            false,
-            WireframeProjection::Hyperslice
-        ));
-        // Toggle alone activates it under any other projection.
-        for mode in WireframeProjection::ALL {
-            assert!(
-                hyperslice_cull_active(true, mode),
-                "toggle on must activate the cull under {mode:?}"
-            );
-        }
-        // Neither set: only the Hyperslice projection mode keeps it on.
-        for mode in WireframeProjection::ALL {
-            let expected = matches!(mode, WireframeProjection::Hyperslice);
-            assert_eq!(
-                hyperslice_cull_active(false, mode),
-                expected,
-                "with the toggle off, only the Hyperslice projection activates the cull ({mode:?})"
-            );
-        }
-    }
-
-    /// `resolve_schlegel_params` feeds the topology-derived `face_planes` normal,
-    /// NOT the buggy dual-vertex `cell{120,600}_face_planes`. For the 600-cell the
-    /// resolved normal (a) equals the `face_planes` direction and (b) is, for at
-    /// least one cell, far from every dual normal.
     #[test]
     fn schlegel_params_from_face_planes_not_dual() {
         use loam_physics::euclidean_r4::cell600_face_planes;
@@ -1549,9 +1381,7 @@ mod tests {
             "the 600-cell must have a golden-ratio face that diverges from the dual-vertex set",
         );
         let params = resolve_schlegel_params(polytope, cell_index);
-        // (a) The resolved normal is exactly the topology face-plane direction.
         assert_eq!(params.cell_normal, topo_normals[cell_index as usize]);
-        // (b) It is far from every dual normal (the buggy path is not the source).
         for d in &dual_normals {
             let n = params.cell_normal;
             assert!(
@@ -1561,21 +1391,16 @@ mod tests {
         }
     }
 
-    /// An out-of-range `cell_index` clamps to `[0, cell_count - 1]` without panic.
     #[test]
     fn schlegel_cell_index_clamped_to_cell_count() {
         let polytope = Polytope4::Pentatope; // 5 cells.
         let last = polytope.cell_count() as u32 - 1;
         let params = resolve_schlegel_params(polytope, 9999);
         assert_eq!(params.cell_index, last);
-        // The clamped resolution equals an explicit last-cell request.
         let at_last = resolve_schlegel_params(polytope, last);
         assert_eq!(params, at_last);
     }
 
-    /// An overrunning `cell_index` writes the CLAMPED index back into the
-    /// projection so the enum, cache, UI stepper, and console report all name the
-    /// same cell. Re-resolving is a fixed point.
     #[test]
     fn schlegel_resolve_syncs_carried_index_to_clamp() {
         let polytope = Polytope4::Pentatope; // 5 cells; indices 0..=4.
@@ -1583,7 +1408,6 @@ mod tests {
         let overrun = WireframeProjection::Schlegel { cell_index: 300 };
         let (projection, cache) = synced_schlegel_projection(overrun, Some(polytope));
         let cache = cache.expect("a Schlegel mode with a subject must produce a cache");
-        // The carried index now equals the cache's clamped index (no desync).
         match projection {
             WireframeProjection::Schlegel { cell_index } => {
                 assert_eq!(
@@ -1594,30 +1418,22 @@ mod tests {
             }
             other => panic!("Schlegel input must stay Schlegel, got {other:?}"),
         }
-        // Idempotent: feeding the synced projection back yields the same index.
         let (again, _) = synced_schlegel_projection(projection, Some(polytope));
         assert_eq!(again, projection, "re-resolve must be a fixed point");
     }
 
-    /// A non-Schlegel mode passes through and clears the cache; a subjectless
-    /// Schlegel keeps its index verbatim with a `None` cache.
     #[test]
     fn synced_schlegel_passes_through_non_schlegel_and_subjectless() {
-        // Non-Schlegel: unchanged projection, no cache.
         let (proj, cache) =
             synced_schlegel_projection(WireframeProjection::Stereographic, Some(Polytope4::Cell24));
         assert_eq!(proj, WireframeProjection::Stereographic);
         assert!(cache.is_none(), "non-Schlegel mode must clear the cache");
-        // Schlegel with no subject: index untouched, no cache (the wireframe
-        // draws nothing for an empty / non-polychoral row anyway).
         let schlegel = WireframeProjection::Schlegel { cell_index: 7 };
         let (proj, cache) = synced_schlegel_projection(schlegel, None);
         assert_eq!(proj, schlegel, "no subject means no clamp, index stays put");
         assert!(cache.is_none(), "no subject means no cache");
     }
 
-    /// Resolving a fixed `(polytope, cell_index)` twice yields BIT-identical f32,
-    /// so the cache can be rebuilt on any select without projection jitter.
     #[test]
     fn schlegel_resolution_is_bit_deterministic() {
         for polytope in Polytope4::ALL {
@@ -1634,8 +1450,6 @@ mod tests {
         }
     }
 
-    /// The cached Schlegel basis is an orthonormal frame spanning the chosen
-    /// cell's 3-flat (the no-snap invariant: derived once in canonical coords).
     #[test]
     fn schlegel_cell_basis_spans_chosen_cell() {
         for polytope in Polytope4::ALL {
@@ -1679,9 +1493,6 @@ mod tests {
         }
     }
 
-    /// Under a non-identity subject rotor the effective Schlegel normal and basis are
-    /// the canonical ones rotated by that rotor, so the chosen cell stays the outer
-    /// boundary as the body spins. Verified at the math level (the rotor apply).
     #[test]
     fn schlegel_frame_rotates_with_body() {
         let polytope = Polytope4::Tesseract;
@@ -1732,8 +1543,6 @@ mod tests {
         }
     }
 
-    /// [`ViewMode::Single`] renders EXACTLY the `strip_subject`; Shapes / Filmstrip
-    /// render the full row.
     #[test]
     fn single_mode_renders_one_subject() {
         let subject = entry(RaymarchShape::Polytope(Polytope4::Cell600));
@@ -1742,7 +1551,6 @@ mod tests {
             entry(RaymarchShape::Polytope(Polytope4::Cell24)),
             entry(RaymarchShape::Polytope(Polytope4::Pentatope)),
         ];
-        // Single: exactly one body, and it is the subject (not any row member).
         let single = render_row_entries(ViewMode::Single, &row, &subject);
         assert_eq!(single.len(), 1, "Single renders exactly one body");
         assert_eq!(single[0], subject, "the single body is the strip_subject");
@@ -1752,16 +1560,12 @@ mod tests {
             !row.contains(&subject),
             "test setup: subject must differ from every row entry",
         );
-        // Shapes / Filmstrip render the whole row verbatim (same pointer + len).
         for mode in [ViewMode::Shapes, ViewMode::Filmstrip] {
             let full = render_row_entries(mode, &row, &subject);
             assert_eq!(full, &row[..], "{mode:?} renders the full row");
         }
     }
 
-    /// In Single mode the Schlegel cell-index bound is the `strip_subject`'s cell
-    /// count, NOT any row member's (the bound walks the rendered row's leading
-    /// polychoron, as [`Demo::schlegel_subject`] does).
     #[test]
     fn single_mode_schlegel_cell_bound_from_subject() {
         let subject = entry(RaymarchShape::Polytope(Polytope4::Cell600));
@@ -1796,51 +1600,6 @@ mod tests {
         );
     }
 
-    /// Each `ViewMode` round-trips through the tab's stage-then-apply shape:
-    /// staging a different value and applying it lands `view_mode` there and the
-    /// rendered row matches; re-staging the same mode is a no-op.
-    #[test]
-    fn view_mode_tab_round_trips() {
-        let subject = entry(RaymarchShape::Polytope(Polytope4::Cell24));
-        let row = [entry(RaymarchShape::Polytope(Polytope4::Tesseract))];
-
-        // Replicate the tab's stage rule: stage iff the clicked value differs.
-        let stage = |current: ViewMode, clicked: ViewMode| -> Option<ViewMode> {
-            (clicked != current).then_some(clicked)
-        };
-
-        for &target in &[ViewMode::Shapes, ViewMode::Single, ViewMode::Filmstrip] {
-            // Start from a mode that is guaranteed different from `target` so the
-            // stage fires; Single <-> Shapes covers both directions.
-            let start = if target == ViewMode::Shapes {
-                ViewMode::Single
-            } else {
-                ViewMode::Shapes
-            };
-            let pending = stage(start, target);
-            assert_eq!(pending, Some(target), "clicking {target:?} stages it");
-            // Apply (the `pending_view_mode.take()` arm in render_overlay).
-            let applied = pending.unwrap_or(start);
-            assert_eq!(applied, target, "applying the pending mode lands on it");
-            // The rendered row reflects the applied mode.
-            let rendered = render_row_entries(applied, &row, &subject);
-            match applied {
-                ViewMode::Single => assert_eq!(rendered, std::slice::from_ref(&subject)),
-                ViewMode::Shapes | ViewMode::Filmstrip => assert_eq!(rendered, &row[..]),
-            }
-            // Re-staging the same mode is a no-op: nothing to apply.
-            assert_eq!(
-                stage(target, target),
-                None,
-                "{target:?} re-stage is a no-op"
-            );
-        }
-    }
-
-    // ---- Section layers (cross-section + projected cap) ------------------
-
-    /// The two-layer split: the honest cross-section ALWAYS resolves to drop-w
-    /// (`Identity`); the projected cap follows the active projection.
     #[test]
     fn section_layer_projection_honest_ignores_projected_follows() {
         let actives = [
@@ -1852,13 +1611,11 @@ mod tests {
             Projection::schlegel(Vec4::W, 0.5, 0.75),
         ];
         for active in actives {
-            // Honest layer: drop-w no matter what the active projection is.
             assert_eq!(
                 section_layer_projection(true, active),
                 Projection::Identity,
                 "honest cross-section must stay drop-w under active {active:?}"
             );
-            // Projected cap: exactly the active projection, passed through.
             assert_eq!(
                 section_layer_projection(false, active),
                 active,
@@ -1867,8 +1624,6 @@ mod tests {
         }
     }
 
-    /// `fill_visible` is the layer's on/off switch: positive alpha draws,
-    /// `0` (or below) skips the pass.
     #[test]
     fn section_layer_fill_visible_at_positive_alpha_only() {
         assert!(!SectionLayer {
@@ -1888,24 +1643,6 @@ mod tests {
         .fill_visible());
     }
 
-    /// The defaults encode "honest slice visible, reprojected cap off": the
-    /// cross-section's perimeter + fill on, the projected cap off.
-    #[test]
-    fn section_layer_defaults_match_spec() {
-        let cross = SectionLayer::CROSS_SECTION_DEFAULT;
-        assert!(cross.perimeter, "honest perimeter on by default");
-        assert!(cross.fill_visible(), "honest fill on by default");
-        assert!(
-            cross.surface_alpha > 0.5 && cross.surface_alpha <= 1.0,
-            "honest default alpha should be full-ish, got {}",
-            cross.surface_alpha
-        );
-
-        let cap = SectionLayer::PROJECTED_CAP_DEFAULT;
-        assert!(!cap.perimeter, "projected-cap perimeter off by default");
-        assert!(!cap.fill_visible(), "projected-cap fill off by default");
-    }
-
     /// Throw slot 1 along +w, the one axis on which it cannot reach a
     /// neighbour, from a +x lever point so it picks up an angular velocity
     /// too. The rest of the row stays a clean control group.
@@ -1921,12 +1658,6 @@ mod tests {
         physics
     }
 
-    /// The node's headline property, at the seam that actually reaches the
-    /// screen: two slots of one row upload two different orientations in the
-    /// same frame, both unit, over identical shapes at their own layout
-    /// positions. Every render path (SDF here, raster through
-    /// [`RowFrame::body_local`]) takes its rotor from the same per-slot store,
-    /// so a build that kept one rotor for the row cannot produce this.
     #[test]
     fn two_slots_upload_two_different_orientations_in_one_frame() {
         const SLOTS: usize = 3;
@@ -1960,8 +1691,6 @@ mod tests {
         );
         assert_ne!(first.rotor, control.rotor);
         assert_ne!(second.rotor, control.rotor);
-        // Same shape, own layout position: what separates them is orientation
-        // alone.
         assert_eq!(first.radius_or_shape, second.radius_or_shape);
         assert_eq!(first.position, body_position(0, SLOTS));
         assert_eq!(second.position, body_position(1, SLOTS));
@@ -1974,10 +1703,6 @@ mod tests {
         }
     }
 
-    /// The raymarched body reads the PHYSICS pose, not the authored layout
-    /// under the UI spin: a thrown, tumbling slot's uniform carries its live
-    /// centre and `spin · orientation`. Reverting either to the authored value
-    /// would strand the SDF surface while every raster pass followed the body.
     #[test]
     fn sdf_body_uniform_reads_the_physics_pose_not_the_authored_spin() {
         let slots = 3;
@@ -2018,9 +1743,6 @@ mod tests {
         );
     }
 
-    /// An untouched slot's uniform is the authored layout and spin exactly:
-    /// routing through physics adds no drift to a body nobody threw, which is
-    /// what lets the pin above use exact equality.
     #[test]
     fn sdf_body_uniform_of_an_untouched_slot_is_the_authored_layout_and_spin() {
         let slots = 3;
@@ -2041,10 +1763,6 @@ mod tests {
         assert_eq!(uniform.rotor, <[f32; 8]>::from(spin));
     }
 
-    /// A callout anchor rides the live body: body frame, then projection, then
-    /// the live R³ centre. Hand-rolling it from the authored spin over the
-    /// static layout, which is what unwiring the callout means, lands the
-    /// leader line on a vertex nothing drew.
     #[test]
     fn row_frame_anchor_reads_the_live_pose_not_the_authored_spin() {
         let slots = 3;
@@ -2078,10 +1796,6 @@ mod tests {
         );
     }
 
-    /// The polychora opt-out survives the pose plumbing: the 120/600-cell go
-    /// inert in every mode (their face planes are the known-wrong dual-vertex
-    /// fit), the other polychora only outside Sdf mode, and a smooth-surface
-    /// shape never opts out.
     #[test]
     fn sdf_body_uniform_keeps_the_polychora_opt_out() {
         let slots = 3;
@@ -2120,15 +1834,6 @@ mod tests {
         }
     }
 
-    /// The per-frame body-upload gate never skips a frame whose rendered pose
-    /// changed. `Active` mode recomposes every slot's rotor from `rot_time`
-    /// each frame, so the test has to be a value comparison against the rotors
-    /// the last upload used, not "was it assigned".
-    ///
-    /// Per slot, and that is the point: one rotated body in a row of four has
-    /// to open the gate. A gate comparing one rotor against one cached rotor,
-    /// which is what this was before the row carried per-slot rotations,
-    /// cannot see it.
     #[test]
     fn body_upload_gate_fires_on_every_pose_change_and_nothing_else() {
         let spun = (Plane4::Xw.unit_bivector() * 0.4).exp().normalize();
@@ -2136,7 +1841,6 @@ mod tests {
         let mut uploaded = Vec::new();
         still.record_rotors(&mut uploaded);
         assert!(!body_upload_needed(&still, &uploaded, false));
-        // Motion alone forces it: the poses moved under unchanged rotors.
         assert!(body_upload_needed(&still, &uploaded, true));
 
         for slot in 0..4 {
@@ -2157,9 +1861,6 @@ mod tests {
         }
     }
 
-    /// The dirty test gating the uniform flush reports a change on exactly the
-    /// writes that move a value. A false negative renders a stale slice; a
-    /// false positive is the per-frame upload this gate exists to remove.
     #[test]
     fn set_if_changed_reports_a_change_only_when_the_value_moves() {
         let mut w_slice = 0.0_f32;

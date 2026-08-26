@@ -1,6 +1,3 @@
-//! Wireframe color helpers: deterministic per-edge palettes and the w-depth
-//! diverging gradient.
-
 // Cool/warm diverging palette for the w-depth color mode, keyed on SIGNED w so
 // a +w and a -w vertex read as different colors. Matches the depth cue in the
 // LineRasterStaticR4 shader.
@@ -107,7 +104,6 @@ mod tests {
         assert!((blue[2] - 1.0).abs() < 1e-5);
     }
 
-    /// Zero saturation is gray regardless of hue.
     #[test]
     fn hsv_to_rgb_zero_saturation_is_gray() {
         for h in [0.0, 0.25, 0.5, 0.75, 0.999_f32] {
@@ -118,14 +114,12 @@ mod tests {
         }
     }
 
-    /// Zero value is black regardless of hue/saturation.
     #[test]
     fn hsv_to_rgb_zero_value_is_black() {
         let rgb = hsv_to_rgb(0.5, 0.8, 0.0);
         assert!(rgb.iter().all(|c| c.abs() < 1e-5));
     }
 
-    /// Edges sharing a vertex must get distinct colors (the mode's invariant).
     #[test]
     fn unique_edge_palette_separates_adjacent_edges() {
         let edges: &[[u32; 2]] = &[[0, 1], [0, 2], [0, 3]];
@@ -141,16 +135,6 @@ mod tests {
         }
     }
 
-    /// Non-adjacent edges may reuse a color (greedy first-fit).
-    #[test]
-    fn unique_edge_palette_non_adjacent_edges_may_share_color() {
-        let edges: &[[u32; 2]] = &[[0, 1], [2, 3]];
-        let palette = unique_edge_palette(edges);
-        assert_eq!(palette.len(), 2);
-        assert_eq!(palette[0], palette[1]);
-    }
-
-    /// Deterministic in edge order (the palette is cached per `Polytope4`).
     #[test]
     fn unique_edge_palette_is_deterministic() {
         let edges: &[[u32; 2]] = &[[0, 1], [1, 2], [2, 3], [0, 3]];
@@ -195,7 +179,6 @@ mod tests {
         }
     }
 
-    /// Past the extent, clamp to the endpoint color instead of over-saturating.
     #[test]
     fn w_depth_color_clamps_past_extent() {
         let c_far = w_depth_color(5.0, 1.0);

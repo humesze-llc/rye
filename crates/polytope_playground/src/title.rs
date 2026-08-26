@@ -1,5 +1,3 @@
-//! `title` scene: POLYTOPE PLAYGROUND arriving out of the fourth dimension.
-//!
 //! Each letter is a 4D solid parked off the viewer's slice and translated along
 //! `w` until it meets it. Nothing fades and nothing is scaled by a clock: what
 //! grows on screen is the letter's own 3D cross-section, which is what a 4D
@@ -116,8 +114,6 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const BOOT_ORBIT_DISTANCE: f32 = 5.0;
 const BOOT_ORBIT_PITCH: f32 = -0.10;
 
-/// One letter of the title: the full-size section of its 4D solid, and the
-/// point that solid tapers to.
 #[derive(Clone, Debug)]
 struct Letter {
     /// The section at full size, in world R³, already placed by the layout.
@@ -230,7 +226,6 @@ fn bounds(mesh: &TriangleMesh<3>) -> Option<(Vec3, Vec3)> {
         .reduce(|(lo, hi), (l, h)| (lo.min(l), hi.max(h)))
 }
 
-/// The letters bound to the timeline that walks them across the slice.
 #[derive(Debug)]
 struct Transit {
     director: Director,
@@ -308,7 +303,6 @@ impl Transit {
         Ok(transit)
     }
 
-    /// Read every bound letter's `w` at the current frame.
     fn sample(&mut self) {
         let Self {
             director,
@@ -475,7 +469,7 @@ impl loam_app::shell::Scene for TitleScene {
             (cfg.width, cfg.height),
             rd.sample_count(),
         );
-        let depth = self.depth.as_ref().expect("ensure() guarantees Some"); // ok: just ensured
+        let depth = self.depth.as_ref().expect("ensure() guarantees Some");
         let _ = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("title depth clear pass"),
             color_attachments: &[],
@@ -557,8 +551,6 @@ mod tests {
             .sum()
     }
 
-    /// Longest side of a section's bounding box: how big the letter is on
-    /// screen, independent of how it is triangulated.
     fn extent(mesh: &TriangleMesh<3>) -> f32 {
         bounds(mesh).map_or(0.0, |(lo, hi)| (hi - lo).max_element())
     }
@@ -569,7 +561,6 @@ mod tests {
         mesh
     }
 
-    /// A timeline over `letters` letters whose bodies all carry `key`.
     fn timeline_of(letters: usize, key: Vec4) -> Timeline {
         Timeline {
             fps: 60,
@@ -585,10 +576,6 @@ mod tests {
         }
     }
 
-    /// The headline property: the letters translate along `w` and nowhere else.
-    /// Checked at both ends of the seam, because either end alone can hold
-    /// while the title still slides. The file may only say `w`, and what the
-    /// scene draws may only change size, never place.
     #[test]
     fn the_transit_moves_letters_along_w_and_never_through_r3() {
         let (letters, mut transit) = shipped();
@@ -635,9 +622,6 @@ mod tests {
         );
     }
 
-    /// The objection [`crate::director::Playback`] raised, answered rather than
-    /// routed around: a position track is accepted here because it writes an
-    /// existence channel, so a key that writes a place is refused instead.
     #[test]
     fn a_position_key_that_moves_a_letter_through_r3_is_refused_at_load() {
         for offset in [Vec4::X, Vec4::Y, Vec4::Z, Vec4::new(0.0, -1e-3, 0.0, 2.0)] {
@@ -665,9 +649,6 @@ mod tests {
         frame as u32
     }
 
-    /// Every authored key lands on a whole frame, which is what makes the
-    /// keyframe sampling below an equality rather than an interpolation, and
-    /// every one of them is inside the timeline's own frame count.
     #[test]
     fn every_authored_key_lands_on_a_whole_frame() {
         let (_, transit) = shipped();
@@ -684,11 +665,6 @@ mod tests {
         }
     }
 
-    /// Every letter is where the file says at the frame the file says, and the
-    /// two marks that matter are the two ends of the crossing: the first key
-    /// sits on the apex, where the section is empty, and the last parks inside
-    /// the prism, where it is the whole letter. A solid reshaped without
-    /// retiming the file fails here rather than half-appearing on screen.
     #[test]
     fn every_letter_reaches_its_mark_at_the_keyframe_the_file_states() {
         let (_, mut transit) = shipped();
@@ -734,10 +710,6 @@ mod tests {
         }
     }
 
-    /// What separates a slice crossing from a fade: mid-transit there is real
-    /// geometry in the slice and there is less of it than at the end. Checked
-    /// on the whole title and on a single letter, since a staggered title could
-    /// pass the first while every letter still popped in whole.
     #[test]
     fn a_mid_transit_section_is_non_empty_and_smaller_than_the_landed_one() {
         let (letters, mut transit) = shipped();
@@ -779,11 +751,6 @@ mod tests {
         );
     }
 
-    /// The title materializes and never recedes. Every letter's section scale
-    /// is non-decreasing at every frame, which is the tight statement, and the
-    /// geometry actually drawn follows it at sampled frames. A letter that
-    /// overshot its prism and left out the far side shows up in both as a drop
-    /// to nothing.
     #[test]
     fn the_section_never_recedes_over_the_run() {
         let (letters, mut transit) = shipped();
@@ -813,10 +780,6 @@ mod tests {
         assert!(previous_scale.iter().all(|scale| *scale == 1.0));
     }
 
-    /// The section is a function of the gap between a letter and the slice and
-    /// of nothing else, which is what makes it a crossing rather than an
-    /// animation: move the slice and the letter together and the same geometry
-    /// comes out, to f32 rounding.
     #[test]
     fn the_section_depends_only_on_the_gap_between_a_letter_and_the_slice() {
         /// Somewhere the title's own slice never is, so a hard-coded
@@ -845,8 +808,6 @@ mod tests {
         assert!(drawn > 30, "only {drawn} of 40 gaps drew anything");
     }
 
-    /// Nothing fades. Colour is constant across the whole run, so every change
-    /// on screen is geometry.
     #[test]
     fn the_letters_carry_one_opaque_colour_at_every_frame() {
         let (letters, mut transit) = shipped();
@@ -860,9 +821,6 @@ mod tests {
         }
     }
 
-    /// A body the title cannot host is an authoring fault, and every one of
-    /// them surfaces at load: a timeline that silently drove nothing would look
-    /// exactly like a timeline that never loaded.
     #[test]
     fn a_body_the_title_cannot_host_is_refused_at_load() {
         let named = |name: &str| Timeline {
@@ -888,9 +846,6 @@ mod tests {
         assert!(format!("{error:#}").contains("4-letter title"), "{error:#}");
     }
 
-    /// A letter with no transit never crosses the slice, so it would be missing
-    /// from the title with nothing said about it. Both spellings of that fault
-    /// are refused: a body that names no channel, and a letter no body names.
     #[test]
     fn a_letter_the_timeline_leaves_undriven_is_refused_at_load() {
         let director = Director::new(Timeline {
@@ -918,8 +873,6 @@ mod tests {
         );
     }
 
-    /// An orientation track would be read by nothing here, and a track that
-    /// animates nothing is worse than one that fails to load.
     #[test]
     fn an_orientation_track_is_refused_because_the_title_poses_no_letter() {
         let director = Director::new(Timeline {
@@ -940,9 +893,6 @@ mod tests {
         );
     }
 
-    /// The solid's shape, stated where a reader can see it fail: empty behind
-    /// the apex, opening out linearly to full size, then held by the prism, and
-    /// empty again past its far face.
     #[test]
     fn the_section_scale_opens_from_the_apex_and_holds_across_the_prism() {
         assert_eq!(section_scale(-APEX_DEPTH - 0.01), None);
@@ -953,10 +903,6 @@ mod tests {
         assert_eq!(section_scale(HOLD_DEPTH + 0.01), None);
     }
 
-    /// The whole title is one glyph bake per letter and one section rebuild per
-    /// frame, so the vertex count is the per-frame upload. 12% of headroom over
-    /// the measured 88680 at `GLYPH_RESOLUTION`; the bound is what stops a
-    /// resolution bump from quietly tripling the frame's bandwidth.
     #[test]
     fn the_title_stays_inside_its_per_frame_upload_budget() {
         let (letters, mut transit) = shipped();
@@ -977,10 +923,6 @@ mod tests {
         );
     }
 
-    /// The title is 18 letters of ink on two lines, centred on the origin, and
-    /// each letter sits to the right of the one before it on its own line. A
-    /// layout that stacked every letter at the origin would still pass the
-    /// motion tests.
     #[test]
     fn the_title_is_laid_out_left_to_right_and_centred_on_its_ink() {
         let letters = typeset(&title_font().expect("bundled font")).expect("typeset");
@@ -1023,8 +965,6 @@ mod tests {
         );
     }
 
-    /// Same frame, same bytes: the section is a pure function of the playhead,
-    /// so a re-shot capture of the title is the same title.
     #[test]
     fn the_section_build_is_bit_reproducible() {
         let (letters, mut first) = shipped();
@@ -1039,8 +979,6 @@ mod tests {
         }
     }
 
-    /// Playback is one frame per update and clamps at the end, so the title
-    /// lands and holds rather than looping or running off the timeline.
     #[test]
     fn playback_advances_one_frame_per_update_and_holds_the_landed_title() {
         let (letters, mut transit) = shipped();

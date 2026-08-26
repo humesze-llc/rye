@@ -1,6 +1,3 @@
-//! Bake a short git hash + working-tree-dirty flag into the binary as
-//! `BUILD_HASH` and `BUILD_DIRTY` env vars, surfaced at runtime via `env!`.
-//!
 //! Purpose: visible build-identifier label in the demo's HUD so a tester
 //! reloading the page can confirm at-a-glance that they're looking at the
 //! latest build (the wasm filename includes a content hash, but the browser

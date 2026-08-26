@@ -1,5 +1,3 @@
-//! `s3` scene: a convex regular polychoron drawn where it actually lives.
-//!
 //! `loam-shape` stores every 4-polytope at unit circumradius, so its vertices
 //! are already points of S³ and nothing needs mapping onto the sphere. This
 //! scene poses them through [`SphericalS3Embedded`]'s own isometry group,
@@ -114,7 +112,6 @@ fn pose_vertices(iso: Iso4, source: &[Vec4], out: &mut Vec<Vec4>) {
     );
 }
 
-/// Stereographic cut radius for a camera at `camera_distance`.
 fn clip_radius(camera_distance: f32) -> f32 {
     (camera_distance * CLIP_RADIUS_FRACTION).clamp(CLIP_RADIUS_FLOOR, CLIP_RADIUS_MAX)
 }
@@ -282,7 +279,7 @@ fn polytope_label(p: Polytope4) -> &'static str {
     SHAPE_CATALOG
         .iter()
         .find(|entry| entry.shape.polytope4() == Some(p))
-        .expect("the catalog carries every convex regular polychoron") // ok: pinned above
+        .expect("the catalog carries every convex regular polychoron")
         .label
 }
 
@@ -418,11 +415,6 @@ mod tests {
         out
     }
 
-    /// The defining property of a Clifford translation, and the reason this
-    /// scene exists: an isoclinic rotor moves every point of S³ the same
-    /// geodesic distance, so the figure has no axis to spin about. A simple
-    /// rotor is the control: it fixes an entire great circle and displaces
-    /// the rest by position-dependent amounts.
     #[test]
     fn the_isoclinic_rotor_displaces_every_vertex_equally_and_a_simple_one_does_not() {
         let vertices = Polytope4::Cell600.topology().vertices;
@@ -459,10 +451,6 @@ mod tests {
         );
     }
 
-    /// The scene poses through the Space's isometry group; the flat scene
-    /// poses through the rotor sandwich. They must be the same map, or "R⁴
-    /// rotors are the isometries of S³" is decoration rather than the reason
-    /// this scene is cheap.
     #[test]
     fn the_space_isometry_and_the_rotor_sandwich_agree_on_every_vertex() {
         let rotor = clifford_generator(TEST_ANGLE).exp();
@@ -477,9 +465,6 @@ mod tests {
         }
     }
 
-    /// A pose is an S³ point at any angle, including after the accumulator
-    /// has run a long way. Drift off the sphere would make the stereographic
-    /// denominator wrong and the arcs would slowly stop closing.
     #[test]
     fn posed_vertices_stay_on_the_unit_three_sphere_at_every_angle() {
         for step in 0..257 {
@@ -494,16 +479,6 @@ mod tests {
         }
     }
 
-    /// An isometry preserves the metric, so every pairwise separation in the
-    /// figure is invariant. This is what makes the drawn object still a
-    /// 24-cell after the motion rather than a sheared image of one.
-    ///
-    /// Checked twice. The ambient inner product is what an SO(4) matrix
-    /// preserves exactly and it determines the metric, so it holds to f32
-    /// noise at every pair. The geodesic distance is the chord half-angle
-    /// `2·asin(|a−b|/2)`, whose derivative diverges at the cut locus: for the
-    /// antipodal pairs a one-ulp chord perturbation moves the answer by ~1e-3
-    /// rad, so those pairs are carried by the inner-product check alone.
     #[test]
     fn the_pose_preserves_every_pairwise_separation() {
         /// Arc within this of π counts as the cut locus.
@@ -536,8 +511,6 @@ mod tests {
         assert_eq!(cut_locus_pairs, vertices.len() / 2);
     }
 
-    /// The label lookup expects a catalog hit for every polychoron; without
-    /// this, a catalog edit would turn the panel into a panic.
     #[test]
     fn every_polychoron_has_a_catalog_label() {
         for p in Polytope4::ALL {
@@ -545,10 +518,6 @@ mod tests {
         }
     }
 
-    /// Switching polychoron mid-run reuses the pose buffer, and the panel can
-    /// switch between a frame's update and its record. Posing and meshing
-    /// through one call is what keeps a 600-cell-sized pose from being read
-    /// with a 5-cell's indices, or a 5-cell-sized one with a 600-cell's.
     #[test]
     fn a_polychoron_switch_reposes_before_it_meshes() {
         let mut posed = Vec::new();
@@ -573,7 +542,6 @@ mod tests {
         }
     }
 
-    /// Total polyline length of a built mesh, in world R³.
     fn mesh_length(mesh: &LineMesh<3>) -> f32 {
         mesh.segments
             .iter()
@@ -581,10 +549,6 @@ mod tests {
             .sum()
     }
 
-    /// The curved toggle is a real geometry change, not a label: through the
-    /// one seam both settings share, the S³ arcs are strictly longer than the
-    /// R⁴ chords they bow off. Unclipped, so the comparison is not a count of
-    /// what survived the cut.
     #[test]
     fn great_circle_arcs_are_longer_than_the_chords_through_the_same_seam() {
         let posed = posed_at(Polytope4::Cell24, TEST_ANGLE);
@@ -614,9 +578,6 @@ mod tests {
         );
     }
 
-    /// Every edge of the polytope reaches the mesh: one segment per edge flat,
-    /// `SPACE_TESSELLATION_SAMPLES` per edge curved. A silently dropped edge
-    /// class is invisible in a 720-arc tangle.
     #[test]
     fn every_edge_contributes_geometry_when_nothing_is_clipped() {
         let edges = Polytope4::Cell24.topology().edges.len();
@@ -650,11 +611,6 @@ mod tests {
         assert_eq!(mesh.widths.len(), mesh.segments.len());
     }
 
-    /// The pole is ambient-fixed and the figure turns under it, so vertices
-    /// sweep the stereographic singularity continuously. Every sample must
-    /// stay finite and inside the cut at every angle: a leaked infinity would
-    /// stretch one arc across the whole screen for a frame, which is exactly
-    /// the artifact no test can see after the fact.
     #[test]
     fn no_sample_escapes_the_cut_as_vertices_sweep_the_pole() {
         // The 16-cell puts a vertex exactly on the +w pole, so the sweep hits
@@ -693,9 +649,6 @@ mod tests {
         }
     }
 
-    /// Tier 0: the same angle builds the same bytes. The whole render path is
-    /// a pure function of the accumulator, so a rebuilt frame is reproducible
-    /// even though the accumulator itself is wall-clock driven.
     #[test]
     fn the_wireframe_build_is_bit_reproducible() {
         let posed_a = posed_at(Polytope4::Cell24, TEST_ANGLE);
@@ -726,9 +679,6 @@ mod tests {
         assert_eq!(first.widths, second.widths);
     }
 
-    /// The cut tracks the camera between its floor and its ceiling, so
-    /// zooming in does not amputate the figure and zooming out does not run
-    /// the arcs into the near-pole region the sample count cannot resolve.
     #[test]
     fn the_cut_radius_tracks_the_camera_between_its_floor_and_ceiling() {
         assert_eq!(clip_radius(0.5), CLIP_RADIUS_FLOOR);

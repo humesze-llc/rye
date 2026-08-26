@@ -188,7 +188,6 @@ pub(crate) fn composed_rotor(spin: Rotor4, orientation: Rotor4) -> Rotor4 {
     spin * orientation
 }
 
-/// A rendered body's world pose.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct BodyPose {
     pub(crate) position: Vec4,
@@ -229,7 +228,6 @@ struct SyncedSlot {
 
 pub(crate) struct PlaygroundPhysics {
     pub(crate) world: World<EuclideanR4>,
-    /// Per-slot inputs the live colliders were built from; see [`SyncedSlot`].
     synced: Vec<SyncedSlot>,
     synced_size: f32,
 }
@@ -656,8 +654,6 @@ mod tests {
         ]
     }
 
-    /// A world nothing has thrown holds the static layout exactly, however
-    /// long it runs: the demo's boot state is a fixpoint, not a slow drift.
     #[test]
     fn at_rest_world_holds_the_static_layout() {
         let slots = 4;
@@ -671,10 +667,6 @@ mod tests {
         }
     }
 
-    /// Overlapping bounding spheres, which `surface scale` past
-    /// `BODY_X_SPACING / (2 · BODY_SIZE)` produces, must not push a row nobody
-    /// threw off its layout. Pins the at-rest skip in [`PlaygroundPhysics::step`]:
-    /// without it the contact solver separates the row on its own.
     #[test]
     fn overlapping_layout_at_rest_is_never_pushed_apart() {
         let slots = 4;
@@ -691,9 +683,6 @@ mod tests {
         }
     }
 
-    /// The rendered rotor equals the UI spin component-for-component while the
-    /// physics orientation is identity. This is the rotation-UI half of "idle
-    /// physics changes nothing": a tolerance here would let a real drift hide.
     #[test]
     fn idle_orientation_leaves_the_spin_rotor_exact() {
         let physics = PlaygroundPhysics::new(3, RADIUS);
@@ -711,9 +700,6 @@ mod tests {
         }
     }
 
-    /// A body at the layout `w = 0` maps canonical vertices exactly as the
-    /// pre-physics `size * rotor.apply(v)` did; a body physics moved off the
-    /// slice carries its `w` into the frame the cut is taken in.
     #[test]
     fn body_local_carries_the_body_w_into_the_slice_frame() {
         let v = Vec4::new(0.5, -0.25, 0.125, 0.75);
@@ -734,13 +720,6 @@ mod tests {
         );
     }
 
-    /// An impulse moves the thrown body's rendered pose along the decaying
-    /// trajectory and leaves every other slot on the layout: poses follow the
-    /// bodies, and only the bodies that were thrown.
-    ///
-    /// The closed form is the geometric sum of the per-step decay: `damp` runs
-    /// after each `world.step`, so step `k` integrates `v₀·decayᵏ` and
-    /// `x_n = x₀ + dt·v₀·(1 − decayⁿ)/(1 − decay)`.
     #[test]
     fn impulse_drives_the_thrown_slot_and_only_that_slot() {
         let slots = 3;
@@ -773,9 +752,6 @@ mod tests {
         }
     }
 
-    /// An off-centre impulse spins the body, and the rendered rotor applies
-    /// the UI spin FIRST and the physics orientation second. Reversing the
-    /// factors would rotate the body's own animation into the world frame.
     #[test]
     fn angular_impulse_composes_after_the_ui_spin() {
         let mut physics = PlaygroundPhysics::new(1, RADIUS);
@@ -807,9 +783,6 @@ mod tests {
         );
     }
 
-    /// `sync` respawns on a slot-count change (the layout is a function of the
-    /// count) and leaves poses alone otherwise, which is what lets the render
-    /// path call it every frame without cancelling a throw.
     #[test]
     fn sync_respawns_only_when_the_slot_count_changes() {
         let shape = RaymarchShape::Polytope(Polytope4::Tesseract);
@@ -839,13 +812,6 @@ mod tests {
         }
     }
 
-    // ---- the collider swap ----------------------------------------------
-
-    /// Which catalog entries end up colliding as their own hull, stated over
-    /// the WHOLE catalog so a shape added later cannot slip in unclassified.
-    /// The 120-cell and 600-cell are the interesting rejections: the
-    /// narrowphase truncates past `MAX_POLYTOPE4_VERTICES` in release, which
-    /// is a corrupt hull rather than a coarse one.
     #[test]
     fn exactly_the_polychora_under_the_vertex_cap_collide_as_their_own_hull() {
         for entry in crate::catalog::SHAPE_CATALOG {
@@ -873,11 +839,6 @@ mod tests {
         }
     }
 
-    /// A hull body carries the uniform solid's exact moment and everything
-    /// else the bounding ball's, at the LIVE `surface scale` rather than at
-    /// the authored size. The exact moments are all strictly under the ball's,
-    /// which is the whole reason to carry them: `ball4_inertia` makes a 5-cell
-    /// four times too sluggish for the same torque.
     #[test]
     fn hull_bodies_carry_the_exact_moment_and_everything_else_the_bounding_ball() {
         for size in [RADIUS, 0.4, 1.3] {
@@ -905,13 +866,6 @@ mod tests {
         }
     }
 
-    /// The collider IS the drawn shape. The narrowphase applies
-    /// `body.orientation.rotation` alone, so the UI spin has to be baked into
-    /// the vertex list; baked, the narrowphase reconstructs the same world
-    /// point [`BodyPose::body_local`] hands the render paths. Colliding the
-    /// canonical shape instead, which is the cheaper thing to write, leaves a
-    /// body stopping short of a neighbour or sinking into it by up to half its
-    /// own width, and fails here.
     #[test]
     fn the_hull_collider_is_the_shape_the_row_draws_under_its_ui_spin() {
         let orientation = rotor_at(Plane4::Yw, 0.8);
@@ -940,10 +894,6 @@ mod tests {
         }
     }
 
-    /// Two perf contracts of the per-frame sync, as behaviour. The vertex
-    /// buffer is refilled rather than replaced, so an animating row does not
-    /// allocate once per body per frame; and an unchanged `(row, size, spin)`
-    /// re-derives nothing, which is what lets `sync` run twice a frame.
     #[test]
     fn a_spinning_row_refills_its_hull_in_place_and_skips_an_unchanged_one() {
         let shape = RaymarchShape::Polytope(Polytope4::Cell24);
@@ -1007,17 +957,6 @@ mod tests {
         Some(Bivector4::wedge(contact.point - a.position, contact.normal).magnitude())
     }
 
-    /// Acceptance criterion 1, as the closed form rather than as a
-    /// measurement. `sphere_sphere_r4` puts the contact point on the line of
-    /// centres and the normal along it, so `ra ∧ normal` vanishes at EVERY
-    /// offset and no normal impulse can ever spin a ball here; only friction
-    /// can. A hull contact lands on a facet, edge or vertex that the line of
-    /// centres misses, and carries a real lever.
-    ///
-    /// The sphere bound is 1e-6 rather than exact zero because the normal is
-    /// `log/len`: the two products in each wedge component round differently
-    /// once the separation is off-axis. The hull levers are four orders of
-    /// magnitude above that, so the pin discriminates from both sides.
     #[test]
     fn only_the_hull_pair_puts_a_lever_on_its_normal_impulse() {
         const SEPARATION: f32 = RADIUS;
@@ -1069,20 +1008,6 @@ mod tests {
         peak
     }
 
-    /// Acceptance criterion 1 end to end: the same head-on flick that leaves a
-    /// ball pair at EXACTLY zero angular velocity sets every hull tumbling.
-    ///
-    /// Head-on is the case that isolates the collider: the relative velocity
-    /// at a ball contact is purely normal, so the friction solve returns early
-    /// and the only channel left is the normal impulse's lever, which a ball
-    /// does not have. The 120-cell is in the control group because it keeps
-    /// the ball, which is the fidelity split this node deliberately ships.
-    ///
-    /// The identity pose is excluded for a reason the design note measured:
-    /// two identically oriented mirror-symmetric hulls hit face-on along a
-    /// symmetry axis produce a contact normal through both centres and
-    /// therefore exactly zero torque, correctly. The property is off-axis
-    /// contact, not "a collision".
     #[test]
     fn a_head_on_hull_collision_spins_the_struck_body_where_a_ball_pair_cannot() {
         let spin = rotor_at(Plane4::Xz, 1.1);
@@ -1105,18 +1030,6 @@ mod tests {
         }
     }
 
-    /// Acceptance criterion 2: a throw that stays on the `w = 0` slice, which
-    /// is the only throw [`throw_impulse`] can produce, drives the struck body
-    /// OFF that slice through the hull contact alone.
-    ///
-    /// Stated over the row's live spin rather than for a named shape at a
-    /// named pose: the 8-cell and 24-cell at identity leak exactly zero, for
-    /// the same mirror symmetry that kills their torque, so a per-shape
-    /// assertion at the canonical pose would be false for two of the four.
-    ///
-    /// This is what makes an off-slice body frame reachable, which the
-    /// wireframe's arc path handles by arcing about
-    /// [`BodyPose::body_local`]'s own centre.
     #[test]
     fn a_hull_collision_pushes_the_struck_body_off_the_w_zero_slice() {
         for (polytope, _) in HULL_SHAPES {
@@ -1173,23 +1086,6 @@ mod tests {
         width
     }
 
-    /// Acceptance criterion 3: hulls left overlapping and disturbed reach the
-    /// exact-zero fixpoint [`PlaygroundPhysics::at_rest`] tests for, inside a
-    /// bounded step count, and stay there. Credit goes to
-    /// [`PlaygroundPhysics::damp`] as much as to the solver: exponential decay
-    /// plus the [`REST_SPEED`] snap is what makes an exact fixpoint reachable.
-    ///
-    /// Overlap is 25% of the width each pair actually presents rather than a
-    /// fixed distance, so the 5-cell (which can present a tenth of the
-    /// 24-cell's width) is loaded comparably instead of trivially or
-    /// catastrophically.
-    ///
-    /// Non-vacuity is pinned twice over, because both halves are easy to lose:
-    /// the run has to start OUT of the fixpoint, and the pair has to actually
-    /// produce a contact rather than come to rest because it never touched.
-    /// The third assertion is the hazard the swap raises: an overlap the step
-    /// resolves by pushing one hull THROUGH the other reaches the fixpoint
-    /// just as happily, and reads as a pair that swapped places.
     #[test]
     fn overlapped_hulls_reach_the_at_rest_fixpoint_in_a_bounded_step_count() {
         const BUDGET: usize = 400;
@@ -1256,12 +1152,6 @@ mod tests {
         physics
     }
 
-    /// [`PlaygroundPhysics::body_frame`] is the seam every raster pass reads
-    /// its per-body geometry through, so it must report the LIVE pose: the
-    /// composed rotor and the body's own `w` in the frame vertices, the body's
-    /// live centre in the R³ translate. Reverting it to the authored
-    /// `size * spin.apply(v)` over the static layout, which is what unwiring a
-    /// raster pass from physics means, fails here.
     #[test]
     fn body_frame_reports_the_live_pose_not_the_authored_spin() {
         let slots = 3;
@@ -1302,9 +1192,6 @@ mod tests {
         }
     }
 
-    /// An untouched slot's frame is byte-identical to the pre-physics
-    /// `size * spin.apply(v)`: the seam adds no drift to a body nobody threw,
-    /// which is what lets the pin above use exact equality.
     #[test]
     fn body_frame_of_an_untouched_slot_is_the_authored_spin_exactly() {
         let slots = 3;
@@ -1319,8 +1206,6 @@ mod tests {
         assert_eq!(origin, Vec4::from_array(body_position(2, slots)).truncate());
     }
 
-    /// `out` is refilled, not appended to, so a caller passing a per-frame
-    /// scratch buffer gets exactly one body's vertices.
     #[test]
     fn body_frame_refills_the_scratch_buffer() {
         let physics = PlaygroundPhysics::new(2, RADIUS);
@@ -1330,10 +1215,6 @@ mod tests {
         assert_eq!(out.len(), canonical.len());
     }
 
-    /// A render path reading a world the row edit never reached is a bug, not
-    /// a rendering: the slot count is checked at the seam rather than left to
-    /// index out of bounds on the tail or, worse, silently draw a body at
-    /// another slot's layout position.
     #[test]
     #[should_panic(expected = "physics world not synced to the rendered row")]
     fn pose_rejects_a_row_the_world_was_not_synced_to() {
@@ -1341,18 +1222,11 @@ mod tests {
         physics.pose(0, 4, Rotor4::IDENTITY);
     }
 
-    // ---- the flick ------------------------------------------------------
-
     /// Camera basis for the drag tests: the demo's boot framing looks down
     /// −Z, so screen right is +X and screen up is +Y.
     const RIGHT: Vec3 = Vec3::X;
     const UP: Vec3 = Vec3::Y;
 
-    /// The contract every throw is sized against: whatever the drag, the
-    /// resulting per-step displacement stays inside the tunneling bound the
-    /// physics gate recorded for R⁴. Sweeps drags an order of magnitude past
-    /// full scale and stacks flicks on a body already at the ceiling, which
-    /// is the case a clamp on the IMPULSE rather than on the velocity misses.
     #[test]
     fn throw_speed_never_exceeds_the_measured_tunneling_bound() {
         let mut physics = PlaygroundPhysics::new(2, RADIUS);
@@ -1422,24 +1296,6 @@ mod tests {
         })
     }
 
-    /// [`BODY_TUNNELING_BAND`] is a floor on reach the narrowphase actually
-    /// has, not a number copied into a constant: at exactly that displacement
-    /// per step a pair still meets at every launch alignment. A band widened
-    /// past what the step resolves would let [`MAX_ANGULAR_SPEED`] license a
-    /// spin that tunnels.
-    ///
-    /// Re-measured against the colliders the row now carries, rather than
-    /// carried over from the pair it was derived against: every shape that
-    /// collides as its own hull, at every spin in the sweep, taken from the
-    /// real [`PlaygroundPhysics::sync`] so a change to the vertex scaling or
-    /// to the spin baking moves this number too. The band was set from the
-    /// 8-cell, which the sweep re-confirms is still the tightest of the five.
-    ///
-    /// Both bodies carry the same collider, which is NOT what the row imposes:
-    /// `shapes=` mixes polychora across slots and each slot carries its own
-    /// rotor ([`crate::spins::SlotSpins`]), so a mixed or counter-oriented
-    /// pair presents a narrower window than anything swept here. What covers
-    /// those is the margin on [`BODY_TUNNELING_BAND`], not this scan.
     #[test]
     fn the_body_tunneling_band_is_one_the_narrowphase_resolves() {
         let mut cases = vec![(
@@ -1468,10 +1324,6 @@ mod tests {
         }
     }
 
-    /// The ceiling is the band's remainder rather than a number someone liked:
-    /// a body at both ceilings at once puts its rim exactly at the usable
-    /// share of the band, and no further. Retyping either constant without
-    /// redoing the arithmetic fails here.
     #[test]
     fn the_throw_ceilings_together_spend_exactly_the_usable_band() {
         let spent = (MAX_THROW_SPEED + MAX_ANGULAR_SPEED * RADIUS) * PHYSICS_DT;
@@ -1483,12 +1335,6 @@ mod tests {
         );
     }
 
-    /// The hazard the angular ceiling exists for: the flick's own impulse
-    /// landing at the bounding sphere's rim instead of at the centre of mass.
-    /// Swept over levers and over inertias below the bounding ball's, because
-    /// a solid polychoron's inertia is a fraction of the ball's and a smaller
-    /// inertia is a faster spin for the same torque; whatever the pair, the
-    /// clamp leaves the rim inside the band the narrowphase resolves.
     #[test]
     fn a_full_speed_off_centre_flick_stays_inside_the_body_tunneling_band() {
         let layout = Vec4::from_array(body_position(0, 1));
@@ -1525,9 +1371,6 @@ mod tests {
         );
     }
 
-    /// The clamp scales the spin rather than replacing it: a throw at ten
-    /// times the ceiling comes out pointing where it did. A clamp that zeroed
-    /// the bivector, or that clamped per component, fails here.
     #[test]
     fn clamping_the_spin_preserves_its_plane() {
         let mut physics = PlaygroundPhysics::new(1, RADIUS);
@@ -1549,8 +1392,6 @@ mod tests {
         );
     }
 
-    /// A spin already inside the ceiling is left alone to the bit, so the
-    /// clamp cannot become a slow leak on a body a contact set tumbling.
     #[test]
     fn a_spin_inside_the_ceiling_is_untouched() {
         let mut physics = PlaygroundPhysics::new(1, RADIUS);
@@ -1562,9 +1403,6 @@ mod tests {
         assert_eq!(physics.world.bodies[0].angular_velocity, spin);
     }
 
-    /// The half of "throw feels proportional to drag" a test can hold: speed
-    /// is linear in drag length below full scale and flat above it. A mapping
-    /// that squared the drag, or that ignored its length entirely, fails here.
     #[test]
     fn throw_speed_is_linear_in_drag_length_until_it_saturates() {
         for fraction in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
@@ -1587,10 +1425,6 @@ mod tests {
         }
     }
 
-    /// Direction is the drag carried into the camera plane, with the y-down
-    /// window convention inverted, and it never leaves the `w = 0` slice.
-    /// Catches a dropped negation (a flick that throws the wrong way
-    /// vertically) and a `w` component leaking into the throw.
     #[test]
     fn throw_direction_is_the_drag_in_the_camera_plane_on_the_w_zero_slice() {
         let cases = [
@@ -1613,10 +1447,6 @@ mod tests {
         assert_eq!(throw_impulse(Vec2::ZERO, RIGHT, UP), Vec4::ZERO);
     }
 
-    /// A screen ray picks the first body it enters and nothing else: the slot
-    /// nearest the eye when several line up, and `None` through empty space.
-    /// A pick that returned the last hit instead would throw the body behind
-    /// the one the user clicked.
     #[test]
     fn screen_ray_picks_the_nearest_body_it_enters_and_nothing_else() {
         let slots = 3;
@@ -1656,10 +1486,6 @@ mod tests {
         assert_eq!(physics.pick(&behind, slots, RADIUS), None);
     }
 
-    /// The whole point of the node, as one property: a thrown body leaves the
-    /// at-rest fixpoint, actually advances through `World::step` (so the sim
-    /// tick stops reading as the early return), and decays back into the
-    /// fixpoint so the skip re-engages.
     #[test]
     fn a_thrown_body_advances_the_world_and_returns_to_the_at_rest_fixpoint() {
         let mut physics = PlaygroundPhysics::new(1, RADIUS);
@@ -1688,9 +1514,6 @@ mod tests {
         );
     }
 
-    /// A body that has come to rest is throwable again. The step's at-rest
-    /// skip returns before touching the world, so a throw applied to a
-    /// sleeping row has to wake it or the second flick is inert.
     #[test]
     fn a_body_that_has_come_to_rest_is_throwable_again() {
         let mut physics = PlaygroundPhysics::new(1, RADIUS);
@@ -1710,10 +1533,6 @@ mod tests {
         );
     }
 
-    /// The impact: a body thrown at the ceiling speed down the row reaches
-    /// its neighbour and drives it, rather than passing through it. The
-    /// neighbour ends up faster than the thrower, which is what an
-    /// equal-mass collision at restitution 0.2 produces.
     #[test]
     fn a_full_speed_throw_transfers_momentum_to_the_neighbour_it_hits() {
         let slots = 2;
@@ -1741,8 +1560,6 @@ mod tests {
         assert!(moved.x > 0.0, "the neighbour never left its layout");
     }
 
-    /// Pixel-to-NDC is the exact inverse the ray builder expects: centre maps
-    /// to the origin, and the y flip puts window-top at NDC +1.
     #[test]
     fn ndc_from_pixels_centres_the_viewport_and_flips_y() {
         let viewport = (800, 600);

@@ -528,7 +528,6 @@ mod tests {
 
     #[test]
     fn sphere_sphere_contact_point_between_centers() {
-        // Shallow overlap: contact point should sit on or near the line between centers.
         let a = Sphere4 {
             center: Vec4::ZERO,
             radius: 0.5,
@@ -542,23 +541,11 @@ mod tests {
             _ => panic!("spheres should overlap"),
         };
         let contact = epa_r4(&a, &b, simplex, 1.0).expect("EPA should succeed");
-        // Contact y/z/w should be near zero.
         assert!(contact.point.y.abs() < 0.1);
         assert!(contact.point.z.abs() < 0.1);
         assert!(contact.point.w.abs() < 0.1);
     }
 
-    /// A face whose plane projection falls outside its own tetra. The contact
-    /// must be the affine combination that realizes the projection over all
-    /// four vertices, so the witnesses keep
-    /// `point_a − point_b = normal·penetration`; clamping to the nearest
-    /// sub-simplex rebuilds the contact from three vertices and breaks that
-    /// identity.
-    ///
-    /// The four weights are pairwise distinct and non-zero, so each vertex is
-    /// separately observable: transposing any two of them permutes the solved
-    /// weights and moves the contact, which a fixture with a repeated or zero
-    /// weight would hide.
     #[test]
     fn contact_from_face_realizes_the_plane_projection_outside_the_tetra() {
         use super::super::simplex_r4::closest_to_origin;
@@ -666,10 +653,6 @@ mod tests {
         ])
     }
 
-    /// The 4D twin of the 3D floor. A seed confined to a hyperplane has no
-    /// interior for `build_face` to orient against, and the Hodge dual of
-    /// three dependent edges normalizes to NaN, which reaches the solver as a
-    /// contact. One rung above the floor the answer has to be a number.
     #[test]
     fn seeds_across_the_volume_floor_resolve_finitely_or_not_at_all() {
         let a = Sphere4 {
@@ -701,13 +684,6 @@ mod tests {
         }
     }
 
-    /// Which seeds the volume floor rejects is fixed by the seed's shape and
-    /// not by its size, which is the whole content of the floor being degree 4:
-    /// `seed_of_height` has `|det| = 8·h`, so at size `s` it reads `8·h·s⁴`
-    /// against `SEED_DEGENERATE_VOLUME·(SPHERE_PAIR_SCALE·s)⁴` and the two
-    /// heights below stay 20x under and 50x over the floor at every `s`. The
-    /// scaling property test cannot see the exponent, only that it is not zero:
-    /// its seeds come from GJK and sit far above the floor.
     #[test]
     fn the_seed_volume_floor_admits_the_same_seed_shapes_at_every_size() {
         fn resized(seed: [MinkowskiPoint4; 5], s: f32) -> [MinkowskiPoint4; 5] {
@@ -739,9 +715,6 @@ mod tests {
         }
     }
 
-    /// The rest of the degeneracy ladder: a seed collapsed onto a line, and one
-    /// with a repeated vertex. Both have zero 4-volume by a different route
-    /// than lying in a hyperplane, and both take the same exit.
     #[test]
     fn collinear_and_repeated_vertex_seeds_are_rejected_rather_than_resolved() {
         let a = Sphere4 {
@@ -812,18 +785,6 @@ mod tests {
         epa_r4(&ball, &wall, simplex, wall_scale()).expect("EPA should resolve an overlap")
     }
 
-    /// A ball inside a wall thinner than itself overlaps both faces at once, so
-    /// the wrong exit is always available, and a contact resolved against it
-    /// drives the ball through instead of back. `Contact::normal` runs A -> B
-    /// and the solver drives A along `−normal`, so `−normal` has to be the way
-    /// back out of the face the ball entered.
-    ///
-    /// The depth is closed form: the difference body is the box of half extents
-    /// `WALL_HALF + BALL_RADIUS` on the launch axis rounded by the radius, so on
-    /// that axis the boundary is `CAPTURE − |x|` away.
-    ///
-    /// Swept rather than sampled because the failure this pins occupied
-    /// isolated depths, roughly one sample in twenty, rather than a band.
     #[test]
     fn wall_contact_leaves_through_the_face_the_ball_entered() {
         for side in [-1.0_f32, 1.0] {
@@ -840,12 +801,6 @@ mod tests {
         }
     }
 
-    /// The contact boundary. A ball exactly `CAPTURE` out is touching, not
-    /// overlapping, so the depth is zero there and grows only as it comes in.
-    /// A non-zero depth at a non-negative gap is a phantom contact the solver
-    /// cannot tell from a real one, and it appears the moment face orientation
-    /// takes the origin for an interior point: GJK's containment verdict has a
-    /// tolerance, so on a near-tangency the origin sits outside the seed.
     #[test]
     fn wall_contact_depth_stays_zero_up_to_exact_touching() {
         for gap in [1e-3_f32, 1e-4, 1e-5, 0.0] {
@@ -881,12 +836,6 @@ mod tests {
     // `FACE_COPLANAR_EPS`: drop it to 0 and the pentatope, 24-cell and
     // 600-cell all resolve against a face the expansion should have retired.
 
-    /// Deep pentatope overlap. K's facet normals are `ŵ_S ∝ Σ_{i∈S} v_i` over
-    /// the proper nonempty subsets S, and at circumradius 1
-    /// (`⟨v_i, v_j⟩ = −1/4` for `i ≠ j`) `h_K(ŵ_S) = 5 / (2·√(k(5−k)))` with
-    /// `k = |S|`. For `t = 0.3·x̂` the minimizers are the two facets spanned by
-    /// the vertices with `x = +√5/4`, tied at depth `5/(2√6) − 0.3·√5/√6` with
-    /// x-component `√5/√6`.
     #[test]
     fn pentatope_pentatope_contact_matches_difference_body_facet() {
         use crate::collision::gjk_r4::ConvexHull4;
@@ -923,10 +872,6 @@ mod tests {
         );
     }
 
-    /// Two tesseracts overlapping along all four axes. K is the cube of
-    /// half-extent `r` (the difference body of a half-extent-`r/2` cube), so
-    /// `h_K(±ê_i) = r` and the minimizer is the axis carrying the largest
-    /// `|t_i|`: depth `r − |t_x|`, normal `+x̂`, no tie.
     #[test]
     fn tesseract_tesseract_contact_matches_deepest_axis() {
         use crate::collision::gjk_r4::ConvexHull4;
@@ -954,11 +899,6 @@ mod tests {
         );
     }
 
-    /// 16-cell vs 16-cell: the 8-vertex cross-polytope, fewer support points
-    /// than the tesseract. K is the L¹ ball of radius `2r`, whose facet normals
-    /// are the 16 sign patterns `(±1,±1,±1,±1)/2` with `h_K = r`. For
-    /// `t = 0.5·x̂` the eight patterns with `+1` in x tie at depth `r − t_x/2`,
-    /// all with x-component `1/2`.
     #[test]
     fn cell16_cell16_contact_matches_l1_facet() {
         use crate::collision::gjk_r4::ConvexHull4;
@@ -982,14 +922,6 @@ mod tests {
         assert_close(contact.normal.x, 0.5, EPA_TOLERANCE);
     }
 
-    /// 24-cell vs 24-cell, K's 24 octahedral facets each tiled by several
-    /// coplanar EPA faces. The 24-cell is self-dual (Wikipedia "24-cell"), so
-    /// its facet normals are the dual's vertex directions, the 8 axes `±ê_i`
-    /// and the 16 patterns `(±1,±1,±1,±1)/2`. Both families
-    /// support the vertex set `perms(±r/√2, ±r/√2, 0, 0)` at `h_A = r/√2`, so
-    /// `h_K = √2·r`. For `t = d·x̂` only `x̂` attains `⟨u_j, t⟩ = d`, the sign
-    /// patterns reaching `d/2`, so the minimizer is unique: depth `√2·r − d`
-    /// with the normal exactly `x̂`.
     #[test]
     fn cell24_cell24_contact_matches_axis_facet() {
         use crate::collision::gjk_r4::ConvexHull4;
@@ -1017,17 +949,6 @@ mod tests {
         );
     }
 
-    /// 600-cell vs 600-cell, the most facets in the suite: K carries 600
-    /// simplicial ones. In `cell600_vertices` at circumradius 1 the nearest
-    /// neighbours sit at `⟨v_i, v_j⟩ = 1 − 1/(2φ²) = φ/2` (edge `1/φ`), so a
-    /// cell's four mutually adjacent vertices have centroid norm
-    /// `|c|² = (4 + 12·φ/2)/16 = φ⁴/8`, the inradius `r_in = φ²/(2√2)`.
-    /// `x̂` is not a facet normal here: it is maximized by the single vertex
-    /// `(1, 0, 0, 0)`. The 20 cells meeting that vertex are the closest
-    /// facets to it, each with `c_x = (1 + 3·φ/2)/4 = φ⁴/8`, hence a unit
-    /// normal with x-component `c_x / r_in = r_in`, the largest over all 600
-    /// facets. Depth is `2·r_in − d·r_in`; the 20-fold tie pins the normal
-    /// only through that x-component.
     #[test]
     fn cell600_cell600_contact_matches_vertex_incident_facet() {
         use crate::collision::gjk_r4::ConvexHull4;
@@ -1053,14 +974,6 @@ mod tests {
         assert_close(contact.normal.x, inradius, EPA_TOLERANCE);
     }
 
-    /// 120-cell vs 120-cell, 600 vertices: the largest support set in the
-    /// suite. Facet normals are the dual 600-cell's vertex directions
-    /// (Wikipedia "120-cell"), which include the axes: in
-    /// `cell120_vertices` the largest coordinate is `φ²` before the
-    /// `1/(2√2)` rescale, and the 20 vertices attaining `x = φ²/(2√2)` are one
-    /// dodecahedral cell, so `h_A(x̂) = φ²/(2√2)`. Being a facet normal, `x̂`
-    /// maximizes `⟨u_j, t⟩` for `t = d·x̂` outright: depth `φ²/√2 − d`, normal
-    /// exactly `x̂`, no tie.
     #[test]
     fn cell120_cell120_contact_matches_dodecahedral_facet() {
         use crate::collision::gjk_r4::ConvexHull4;
@@ -1093,22 +1006,6 @@ mod tests {
         );
     }
 
-    /// The whole suite again, but similar to itself: circumradius `s` with the
-    /// translation carried along as `0.3·s·x̂`, so the difference body is `s`
-    /// times the unit one. Depth is then exactly `s` times the unit depth and
-    /// the normal does not move at all, for every `s`. Nothing in EPA's
-    /// geometry has an opinion about `s`, so an answer that depends on it is a
-    /// threshold speaking rather than the shapes.
-    ///
-    /// This is the test that pins the degrees. Every guard here compares a
-    /// distance, a 3-volume or a 4-volume, so a threshold held absolute loses
-    /// one, three or four decades of headroom per decade of shrinkage. Passing
-    /// `scale = 1` at every `s` (that is, the pre-`scale` thresholds) fails it
-    /// at both ends: all six fixtures are `None` at `s = 1e-3` on the seed
-    /// 4-volume guard, and at `s = 1e3` three of them resolve against an
-    /// interior face, the pentatope at depth 216.7 against 746.8 with
-    /// `n_x = 0.667` against 0.913, and the 600-cell and 120-cell collapsing to
-    /// zero depth on a zero normal.
     #[test]
     fn epa_r4_contact_is_equivariant_under_uniform_scaling() {
         use crate::euclidean_r4::{

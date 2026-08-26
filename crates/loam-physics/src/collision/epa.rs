@@ -238,7 +238,6 @@ fn build_face_vs_point(
         normal /= len;
     }
 
-    // Flip if the normal points toward the interior reference.
     let to_interior = interior_point - pa;
     let (v_order, outward_normal) = if normal.dot(to_interior) > 0.0 {
         ([a, c, b], -normal)
@@ -515,11 +514,6 @@ mod tests {
         ])
     }
 
-    /// The floor is a threshold on a determinant, so seeds sit arbitrarily
-    /// close on both sides of it. Below, there is no interior to orient faces
-    /// against and the only honest answer is none; above, however thin, the
-    /// answer has to be a number. A cross product of two nearly parallel edges
-    /// normalizes to NaN, and NaN reaches the solver as a contact.
     #[test]
     fn seeds_across_the_volume_floor_resolve_finitely_or_not_at_all() {
         let a = Sphere {
@@ -551,13 +545,6 @@ mod tests {
         }
     }
 
-    /// Which seeds the volume floor rejects is fixed by the seed's shape and
-    /// not by its size, which is the whole content of the floor being degree 3:
-    /// `seed_of_height` has `|det| = 4·h`, so at size `s` it reads `4·h·s³`
-    /// against `SEED_DEGENERATE_VOLUME·(SPHERE_PAIR_SCALE·s)³` and the two
-    /// heights below stay 20x under and 50x over the floor at every `s`. The
-    /// scaling property test cannot see this guard at all, because its seeds
-    /// come from GJK and sit nowhere near the floor.
     #[test]
     fn the_seed_volume_floor_admits_the_same_seed_shapes_at_every_size() {
         fn resized(seed: [MinkowskiPoint; 4], s: f32) -> [MinkowskiPoint; 4] {
@@ -589,9 +576,6 @@ mod tests {
         }
     }
 
-    /// The rest of the degeneracy ladder: a seed collapsed to a segment, and
-    /// one with a repeated vertex. Both have zero volume by a different route
-    /// than coplanarity, and both must take the same exit.
     #[test]
     fn collinear_and_repeated_vertex_seeds_are_rejected_rather_than_resolved() {
         let a = Sphere {
@@ -618,10 +602,6 @@ mod tests {
         assert!(epa(&a, &b, repeated, SPHERE_PAIR_SCALE).is_none());
     }
 
-    /// Boxes nested deeply enough that separating along the shallowest axis is a
-    /// translation of nearly a full body width. The difference body of two unit
-    /// half-extent boxes is the half-extent-2 box, so the depth is
-    /// `min_i (2 − |t_i|)` and the normal is that axis: `2 − 0.3` along `+x̂`.
     #[test]
     fn deeply_nested_boxes_contact_matches_shallowest_axis() {
         let va = box_vertices(Vec3::ZERO, Vec3::ONE);
@@ -637,16 +617,6 @@ mod tests {
         );
     }
 
-    /// The difference body of two axis-aligned boxes is the box of summed
-    /// half-extents centred at `-t`, so the depth is `min_i (h_i - |t_i|)` and
-    /// the admissible normals are the signed axes attaining it. Every case here
-    /// has an axis exactly flush, which is what tiles a facet of that body with
-    /// coplanar triangles; without [`FACE_COPLANAR_EPS`] the first and the last
-    /// resolve against a face interior to the body. The first returns 0.85 for
-    /// an exact 1.9 on a normal 27 degrees off the nearest separating axis, and
-    /// clears the caller's contact validation on the way to the solver; the
-    /// last collapses to zero depth, which that validation drops, leaving an
-    /// overlapping pair with no contact at all.
     #[test]
     fn flush_box_contacts_resolve_against_a_difference_body_facet() {
         let cases: [(f32, Vec3, &[Vec3]); 5] = [
@@ -680,14 +650,6 @@ mod tests {
         }
     }
 
-    /// Two axes exactly flush and a 5% depth deficit on the third. Without
-    /// [`FACE_COPLANAR_EPS`] this configuration retires part of a coplanar band
-    /// and keeps the rest, which leaves horizon edges with no reverse to cancel
-    /// against, so every iteration stitches more faces than it removed. Neither
-    /// the iteration cap nor the vertex cap bounds face growth, so the count
-    /// climbs geometrically to order 3e5 by the 48th iteration, and
-    /// `add_or_remove_edge` scans the horizon linearly on every one of them.
-    /// Converged, this expansion is 16 faces.
     #[test]
     fn two_axis_flush_expansion_terminates_with_a_bounded_face_count() {
         let offset = Vec3::new(0.0, 0.0, -0.01);
@@ -718,31 +680,6 @@ mod tests {
         );
     }
 
-    /// The scaling twin of the fixtures above, and the 3D half of the property
-    /// `epa_r4_contact_is_equivariant_under_uniform_scaling` pins in R⁴. Each
-    /// case is similar to itself at every `s`, so the difference body is `s`
-    /// times the unit one, the depth is `s` times the unit depth, and the
-    /// normal does not move at all.
-    ///
-    /// Every guard in this module compares a distance, an area, a volume or a
-    /// Gram determinant, so a threshold held absolute loses one, two, three or
-    /// four decades of headroom per decade of shrinkage. Passing `scale = 1` at
-    /// every `s`, which is what the pre-`scale` thresholds amount to, fails
-    /// this at the small end on the curved fixture: the spheres come out 4.5%
-    /// shallow at `s = 1e-3` with a normal 17 degrees off the separating axis,
-    /// and 0.3% shallow at `s = 1e-2` with 4.3 degrees. `EPA_TOLERANCE` is the
-    /// guard that does it, because absolute it buys a fixed number of world
-    /// units of support gap while the whole depth at `s = 1e-3` is 5e-4. The
-    /// box families return the exact depth at every `s` either way; they are
-    /// here to keep the flush-facet path in the property, not because a
-    /// threshold moves them.
-    ///
-    /// The seed is taken once at unit scale and scaled, rather than re-derived
-    /// by `gjk_intersect` at each `s`. GJK compares `length_squared` against
-    /// absolute constants of its own, so below `s ~ 1e-2` it calls these
-    /// overlapping pairs separated and no seed arrives at all. That is a defect
-    /// in `gjk`, in a module this change does not touch, and scaling the seed
-    /// is what isolates the property being pinned here.
     #[test]
     fn epa_contact_is_equivariant_under_uniform_scaling() {
         fn scaled(simplex: [MinkowskiPoint; 4], s: f32) -> [MinkowskiPoint; 4] {

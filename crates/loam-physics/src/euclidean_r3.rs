@@ -1,12 +1,3 @@
-//! `impl PhysicsSpace for EuclideanR3`, 3D Euclidean rigid-body physics.
-//!
-//! Angular velocity is a [`Bivector3`]; inertia is the scalar moment for
-//! isotropic bodies (spheres, regular polyhedra). A full 3×3 tensor is a
-//! structural change to the trait, deferred until a game needs anisotropy.
-//!
-//! Orientation integration bridges `Bivector3` -> `Rotor3` -> `Quat` (stored in
-//! `Iso3`) via the fixed mapping (xy↔z, yz↔x, zx↔y).
-
 use glam::{Quat, Vec3};
 
 use loam_math::{Bivector, Bivector3, EuclideanR3, Iso3};
@@ -19,8 +10,7 @@ use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
 /// Convert a [`Rotor3`] to a [`Quat`] via `(s, xy, yz, zx) ↔ (w, z, x, y)`, the
-/// mapping that makes `Rotor3::apply` agree with `Quat::mul_vec3`. Verified by
-/// `rotor3_matches_glam_quat_for_axis_rotation` in `loam-math`.
+/// mapping that makes `Rotor3::apply` agree with `Quat::mul_vec3`.
 fn rotor_to_quat(r: loam_math::Rotor3) -> Quat {
     Quat::from_xyzw(r.yz, r.zx, r.xy, r.s)
 }
@@ -60,7 +50,7 @@ fn inv_inertia(body: &RigidBody<EuclideanR3>) -> f32 {
 impl PhysicsSpace for EuclideanR3 {
     type AngVel = Bivector3;
     /// Scalar isotropic centroidal moment; exact for spheres and the Platonic
-    /// solids. A full 3×3 tensor comes later if anisotropy is needed.
+    /// solids.
     type Inertia = f32;
 
     fn integrate_orientation(&self, iso: Iso3, omega: Bivector3, dt: f32) -> Iso3 {
@@ -136,10 +126,6 @@ impl PhysicsSpace for EuclideanR3 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Narrowphases for EuclideanR3 colliders.
-// ---------------------------------------------------------------------------
-
 fn sphere_sphere_r3(
     a: &RigidBody<EuclideanR3>,
     b: &RigidBody<EuclideanR3>,
@@ -202,11 +188,6 @@ fn sphere_halfspace_r3(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Polytope narrowphases via GJK + EPA. The generic machinery lives in
-// `crate::collision`; only the support wrappers differ per collider kind.
-// ---------------------------------------------------------------------------
-
 fn world_vertices(local: &[Vec3], pos: Vec3, rot: Quat) -> Vec<Vec3> {
     local.iter().map(|&v| rot * v + pos).collect()
 }
@@ -263,7 +244,6 @@ fn polytope_polytope_r3(
         return None;
     };
 
-    // Bounding-sphere pre-cull before the GJK/EPA path.
     let ra = polytope_bounding_radius(va_local);
     let rb = polytope_bounding_radius(vb_local);
     let center_dist_sq = (b.position - a.position).length_squared();
@@ -298,7 +278,6 @@ fn sphere_polytope_r3(
         return None;
     };
 
-    // Bounding-sphere cull before running GJK.
     let rb = polytope_bounding_radius(vb_local);
     let center_dist_sq = (b.position - a.position).length_squared();
     let combined = radius + rb;
@@ -389,16 +368,11 @@ pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR3>) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Convenience constructors.
-// ---------------------------------------------------------------------------
-
 /// Solid-sphere moment of inertia `I = (2/5)·m·r²`.
 pub fn sphere_inertia(mass: f32, radius: f32) -> f32 {
     (2.0 / 5.0) * mass * radius * radius
 }
 
-/// Dynamic sphere body in R³.
 pub fn sphere_body_r3(
     position: Vec3,
     velocity: Vec3,
@@ -427,11 +401,6 @@ pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> RigidBody<EuclideanR3> {
     )
 }
 
-// ---------------------------------------------------------------------------
-// Polytope builders. Inertia is isotropic (scalar): a reasonable prototype
-// approximation for cube-ish or regular shapes.
-// ---------------------------------------------------------------------------
-
 /// Isotropic box inertia `m·(w² + h² + d²)/18`, the mean of the principal-axis
 /// tensor's diagonal. Reduces to the exact cube inertia `m·s²/6`.
 pub fn box_inertia(mass: f32, half_extents: Vec3) -> f32 {
@@ -456,7 +425,6 @@ pub fn box_vertices(half_extents: Vec3) -> Vec<Vec3> {
     ]
 }
 
-/// Dynamic axis-aligned box body.
 pub fn box_body(
     position: Vec3,
     velocity: Vec3,
@@ -498,10 +466,8 @@ pub fn polytope_body(
     )
 }
 
-// ---------------------------------------------------------------------------
 // Platonic solid vertex generators, each centered at origin with bounding-sphere
 // radius `r`. Vertex lists are convex hulls; GJK ignores face winding.
-// ---------------------------------------------------------------------------
 
 /// Tetrahedron (4 vertices), bounding-sphere radius `r`.
 pub fn tetrahedron_vertices(r: f32) -> Vec<Vec3> {
@@ -655,8 +621,6 @@ mod tests {
 
     #[test]
     fn off_center_glancing_hit_produces_angular_velocity() {
-        // A vertically offset projectile hits off each body's center, so the
-        // impact must impart spin.
         let mut world = World::new(EuclideanR3);
         register_default_narrowphase(&mut world.narrowphase);
 
@@ -684,21 +648,6 @@ mod tests {
         );
     }
 
-    /// The R3 half of the same contract the R4 pin covers: the quaternion
-    /// composition has to agree with the world-frame angular velocity
-    /// [`omega_cross_r`] hands the solver, so a body-fixed point advances along
-    /// `ω⌋r` to first order. Inverting the composition reads `ω` as a
-    /// body-frame rate, which coincides with the world-frame field only where
-    /// the starting orientation commutes with `ω`; the start here is a 1.7 rad
-    /// rotation about an axis 46° off `ω`'s, so it moves that axis a long way.
-    ///
-    /// Tolerance 1e-5, against a residual budget of ~4e-7: the forward
-    /// difference carries the truncation term `½·|ω|²·|r|·dt²` = 3.2e-7 here,
-    /// plus ~1e-7 from cancelling two nearly equal length-0.87 vectors in f32.
-    /// libm `sin`/`cos` reach the result only through `delta_quat`, whose
-    /// arguments are `|ω|·dt/2` ≈ 4e-4, so a last-ULP spread between platform
-    /// libms moves the residual by ~1e-7. The inverted composition leaves a
-    /// residual of `7.1e-4`, 71x the bound.
     #[test]
     fn integrated_orientation_advances_a_body_point_along_the_world_frame_omega() {
         let space = EuclideanR3;
@@ -723,7 +672,6 @@ mod tests {
 
     #[test]
     fn integration_preserves_unit_rotor() {
-        // Many ticks must not drift off the unit-quat manifold.
         let space = EuclideanR3;
         let mut iso = Iso3::IDENTITY;
         let omega = Bivector3::new(0.2, 0.3, -0.1);

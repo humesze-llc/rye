@@ -90,7 +90,6 @@ pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
     b: &B,
     initial_direction: Vec3,
 ) -> GjkResult {
-    // Seed direction (typically `b.center − a.center`); fall back to `+x` if zero.
     let mut dir = if initial_direction.length_squared() > GJK_EPS {
         initial_direction
     } else {
@@ -107,7 +106,6 @@ pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
     dir = -simplex[0].point;
 
     for _ in 0..GJK_MAX_ITERATIONS {
-        // If the new support doesn't reach past the origin, separated along `dir`.
         let new_point = minkowski_support(a, b, dir);
         if new_point.point.dot(dir) < 0.0 {
             return GjkResult::Separated;
@@ -160,7 +158,6 @@ fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let ao = -a;
 
     if ab.dot(ao) > 0.0 {
-        // Edge region: search perpendicular to AB toward the origin.
         let dir = triple_product(ab, ao, ab);
         if dir.length_squared() < 1e-10 {
             // Origin on line AB: any perpendicular escapes the degeneracy.
@@ -169,7 +166,6 @@ fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
             (false, 2, dir)
         }
     } else {
-        // Past A: discard B.
         simplex[0] = simplex[1];
         (false, 1, ao)
     }
@@ -187,7 +183,6 @@ fn any_perpendicular(v: Vec3) -> Vec3 {
     }
 }
 
-/// Drop C, keep A and B, recurse into the line case on `[B, A]`.
 fn fall_back_to_ab(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     simplex[0] = simplex[1];
     simplex[1] = simplex[2];
@@ -204,7 +199,7 @@ fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let ab = b - a;
     let ac = c - a;
     let ao = -a;
-    let abc = ab.cross(ac); // triangle normal
+    let abc = ab.cross(ac);
 
     // Edge AC region?
     if abc.cross(ac).dot(ao) > 0.0 {
@@ -285,11 +280,9 @@ fn do_tetrahedron(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
         return do_triangle(simplex);
     }
 
-    // Inside all three adjacent faces: origin is in the tetrahedron.
     (true, 4, Vec3::ZERO)
 }
 
-/// Vector triple product `(a × b) × c`, used in the edge-region search directions.
 fn triple_product(a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     a.cross(b).cross(c)
 }
@@ -339,7 +332,6 @@ mod tests {
 
     #[test]
     fn touching_boxes_report_intersection() {
-        // Boundaries exactly meeting count as intersecting.
         let va = box_vertices(Vec3::ZERO, Vec3::ONE);
         let vb = box_vertices(Vec3::new(2.0, 0.0, 0.0), Vec3::ONE);
         let a = ConvexHull { vertices: &va };

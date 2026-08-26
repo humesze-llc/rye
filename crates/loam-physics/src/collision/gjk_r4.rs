@@ -5,15 +5,11 @@
 //! handle all simplex sizes (1 through 5) uniformly, which matters in 4D because a 4-simplex
 //! (pentatope) is the first volume-enclosing case; the 3D "tetrahedron encloses when all three
 //! face-normals point inward" logic has no direct 4D analogue worth hand-deriving.
-//!
-//! The support-function side (`Sphere`, `ConvexHull`, `SupportFn`) parallels the 3D module with
-//! `Vec4` replacements.
 
 use glam::Vec4;
 
 use super::simplex_r4::{closest_to_origin, Closest};
 
-/// Shape-side abstraction for 4D GJK.
 pub trait SupportFn4 {
     fn support(&self, direction: Vec4) -> Vec4;
 }
@@ -90,8 +86,7 @@ pub fn minkowski_support_r4<A: SupportFn4, B: SupportFn4>(
 #[allow(clippy::large_enum_variant)]
 pub enum GjkResult4 {
     Intersecting {
-        /// 4D simplex (5 points) whose convex hull encloses the origin. Used to seed 4D EPA's
-        /// polytope expansion.
+        /// 4D simplex (5 points) whose convex hull encloses the origin.
         simplex: [MinkowskiPoint4; 5],
     },
     Separated,
@@ -102,13 +97,6 @@ const GJK_EPS: f32 = 1e-6;
 
 /// Test whether `a` and `b` overlap via GJK on their Minkowski difference. Returns
 /// `Intersecting` with an enclosing 4-simplex for downstream EPA, or `Separated`.
-///
-/// Strategy: maintain a growing simplex inside `A ⊖ B`; each iteration computes the closest
-/// point on the current simplex to the origin (via [`closest_to_origin`]), drops any unused
-/// vertices, then searches for a new support in the direction from the closest point toward the
-/// origin. Terminates when (i) a new support can't advance toward the origin (-> separated),
-/// (ii) the simplex's closest point reaches the origin (-> intersecting), or (iii) iteration cap
-/// is hit.
 pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
     a: &A,
     b: &B,
@@ -146,7 +134,6 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
         }
         simplex.push(new_point);
 
-        // Reduce + advance.
         let points: Vec<Vec4> = simplex.iter().map(|p| p.point).collect();
         let Closest {
             point: closest,
@@ -293,8 +280,6 @@ mod tests {
             center: Vec4::new(1.0, 0.0, 0.0, 0.0),
             radius: 2.0,
         };
-        // Overlapping spheres must report Intersecting, though the simplex shape itself we don't
-        // inspect here.
         assert!(matches!(
             gjk_intersect_r4(&a, &b, Vec4::X),
             GjkResult4::Intersecting { .. }
@@ -323,8 +308,6 @@ mod tests {
     fn deeply_overlapping_pentatopes() {
         use crate::euclidean_r4::pentatope_vertices;
         let va: Vec<Vec4> = pentatope_vertices(1.0);
-        // Pentatope at origin vs pentatope shifted by a small vector; they should overlap
-        // substantially.
         let vb: Vec<Vec4> = pentatope_vertices(1.0)
             .into_iter()
             .map(|v| v + Vec4::new(0.2, 0.0, 0.0, 0.0))
@@ -353,13 +336,6 @@ mod tests {
         ));
     }
 
-    /// Exact touching, the case the overlap fixtures step around. GJK accepts
-    /// a simplex whose closest point is within `GJK_EPS` of the origin, so a
-    /// pair at zero separation can be called either way and pinning that
-    /// verdict would pin the tolerance instead of the geometry. What has to
-    /// hold is that the verdict is monotone in the gap, and that a gap never
-    /// resolves to a depth: a phantom depth is indistinguishable from a real
-    /// one by the time it reaches the solver.
     #[test]
     fn tesseract_face_touching_is_bracketed_and_never_resolves_to_a_depth() {
         use crate::collision::epa_r4::epa_r4;

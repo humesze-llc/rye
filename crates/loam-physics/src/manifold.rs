@@ -1,7 +1,5 @@
 //! Persistent contact manifolds and the projected Gauss-Seidel constraint solver primitives.
 //!
-//! ## Why persistence
-//!
 //! Single-contact, single-pass impulse resolution can't keep a stack of bodies stable: the
 //! bottom body has one contact with the floor, one with the body above; each frame's resolution
 //! applies an impulse, the next frame finds the bodies still slightly overlapping (due to gravity
@@ -15,16 +13,9 @@
 //!    accumulated impulse. Bodies start near their settled velocities, so the iterative solver
 //!    converges in a handful of iterations instead of dozens.
 //!
-//! ## Scope of this first cut
-//!
-//! - Contact-to-slot matching is by **world-space proximity** (cheap, adequate when bodies
-//!   barely move per frame, which is the stacking-demo case). A future revision can switch to
-//!   local-frame matching for fast-rotating bodies.
-//! - Up to 4 contact slots per manifold; replacement policy when full evicts the slot with
-//!   smallest accumulated total impulse.
-//! - Manifolds are keyed by `(body_a, body_b)` with `body_a < body_b`, on generational
-//!   [`BodyId`] handles rather than storage positions, so a despawn elsewhere in the world
-//!   cannot rebind a key to a different pair of bodies.
+//! Manifolds are keyed by `(body_a, body_b)` with `body_a < body_b`, on generational
+//! [`BodyId`] handles rather than storage positions, so a despawn elsewhere in the world
+//! cannot rebind a key to a different pair of bodies.
 
 use crate::body::BodyId;
 use crate::collision::VectorOps;
@@ -32,27 +23,20 @@ use crate::integrator::PhysicsSpace;
 use crate::response::Contact;
 
 /// Maximum contact slots per manifold. Box2D / rapier use 4 in 3D because at most 4 vertex /
-/// edge contacts can be coplanar between two convex polytopes. Sphere-sphere needs only 1;
-/// sphere-polytope usually 1; polytope-polytope can use up to 4 once we add SAT clipping (today
-/// the GJK+EPA path emits one per frame, and persistence accumulates up to 4 over ~4 frames as
-/// the body settles).
+/// edge contacts can be coplanar between two convex polytopes.
 pub const MAX_POINTS: usize = 4;
 
 /// Threshold for "this new contact is the same slot as the old one." In world units. Tuned for
-/// unit-scale demos (1m boxes); should scale with body size in a future revision.
+/// unit-scale demos (1m boxes).
 const MERGE_RADIUS_SQ: f32 = 0.02 * 0.02;
 
-/// One persistent contact constraint between two bodies. Cached across frames; carries
-/// accumulated impulses for warm-starting and the world-space geometry refreshed each frame from
-/// narrowphase.
+/// One persistent contact constraint between two bodies.
 #[derive(Clone, Copy)]
 pub struct ContactPoint<S: PhysicsSpace> {
-    /// World position the contact is applied at. Refreshed each frame from the narrowphase;
-    /// preserved across frames in the `(slot identity)` sense.
+    /// World position the contact is applied at.
     pub world_point: S::Point,
     /// Unit vector from A toward B (separating direction).
     pub normal: S::Vector,
-    /// Penetration depth at this contact this frame.
     pub penetration: f32,
     /// Accumulated normal impulse magnitude. Persisted across frames; PGS clamps to be ≥ 0.
     pub normal_impulse: f32,
@@ -74,14 +58,14 @@ pub struct ContactPoint<S: PhysicsSpace> {
 
 /// Persistent contact data for one pair of bodies.
 pub struct Manifold<S: PhysicsSpace> {
-    /// Handle of body A. Always `< body_b`.
+    /// Always `< body_b`.
     pub body_a: BodyId,
-    /// Handle of body B. Always `> body_a`.
+    /// Always `> body_a`.
     pub body_b: BodyId,
-    /// Combined restitution for this pair. Set on first contact and kept; per-pair restitution
+    /// Set on first contact and kept; per-pair restitution
     /// doesn't change between frames.
     pub restitution: f32,
-    /// Active contact points. `len() ≤ MAX_POINTS`.
+    /// `len() ≤ MAX_POINTS`.
     pub points: Vec<ContactPoint<S>>,
 }
 
@@ -112,7 +96,6 @@ where
     {
         let new_point = contact.point;
 
-        // Try to merge into an existing slot first.
         for cp in &mut self.points {
             let delta = new_point - cp.world_point;
             if VectorOps::length_squared(delta) < MERGE_RADIUS_SQ {
@@ -138,7 +121,6 @@ where
         if self.points.len() < MAX_POINTS {
             self.points.push(fresh);
         } else {
-            // Evict the slot with smallest |jn| + |jt|.
             let (worst, _) = self
                 .points
                 .iter()
@@ -155,8 +137,7 @@ where
 }
 
 /// Number of PGS iterations per step. 8 is a common sweet spot in 2D / 3D rigid-body engines:
-/// enough to settle modest stacks without dominating step cost. Configurable via `World::pgs_iters`
-/// when scenes need more.
+/// enough to settle modest stacks without dominating step cost.
 pub const DEFAULT_PGS_ITERS: usize = 8;
 
 /// Baumgarte bias coefficient: how aggressively the velocity-level constraint corrects positional
@@ -192,8 +173,6 @@ mod tests {
         }
     }
 
-    /// Refreshing a slot with a contact within `MERGE_RADIUS` must preserve the accumulated
-    /// normal and tangent impulses (the warm-start payload) while updating geometry.
     #[test]
     fn merge_preserves_warm_start_impulses() {
         let mut m: Manifold<EuclideanR2> =
@@ -203,8 +182,7 @@ mod tests {
         m.points[0].tangent_impulse = -1.7;
         m.points[0].tangent_dir = Vec2::X;
 
-        // New contact a hair away from the original, well within MERGE_RADIUS_SQ, and with
-        // refreshed geometry.
+        // Well within MERGE_RADIUS_SQ.
         let merged_point = Vec2::new(0.01, 0.0);
         let merged_normal = Vec2::new(0.0, -1.0);
         m.add_or_update(contact(merged_point, merged_normal, 0.05));
@@ -227,14 +205,11 @@ mod tests {
         );
     }
 
-    /// When the manifold is at `MAX_POINTS` and a new contact arrives outside the merge radius
-    /// of every slot, the slot with smallest total accumulated impulse must be evicted.
     #[test]
     fn add_at_max_points_evicts_weakest_slot() {
         let mut m: Manifold<EuclideanR2> =
             Manifold::new(BodyId::forge(0, 0), BodyId::forge(1, 0), 0.0);
-        // Place four slots far enough apart that none merge with each other or with the new
-        // contact below.
+        // Far enough apart that none merge.
         let bases = [
             Vec2::new(0.0, 0.0),
             Vec2::new(1.0, 0.0),
@@ -246,11 +221,10 @@ mod tests {
         }
         assert_eq!(m.points.len(), MAX_POINTS);
 
-        // Distinct totals so the weakest is unambiguous. The slot at index 2 carries the
-        // smallest |jn| + |jt|.
+        // Distinct totals so the weakest is unambiguous.
         m.points[0].normal_impulse = 5.0;
         m.points[1].normal_impulse = 3.0;
-        m.points[2].normal_impulse = 0.5; // weakest
+        m.points[2].normal_impulse = 0.5;
         m.points[3].normal_impulse = 4.0;
         m.points[1].tangent_impulse = -2.0;
         m.points[2].tangent_impulse = 0.1;
@@ -274,8 +248,6 @@ mod tests {
         );
     }
 
-    /// Adding a non-merging contact below capacity grows the slot list without disturbing
-    /// existing slots' impulses.
     #[test]
     fn new_slot_below_capacity_leaves_others_intact() {
         let mut m: Manifold<EuclideanR2> =

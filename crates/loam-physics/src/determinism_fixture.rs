@@ -336,10 +336,6 @@ pub fn first_divergent_step(a: &ScenarioRun, b: &ScenarioRun) -> Option<usize> {
         .position(|(x, y)| x != y)
 }
 
-// ---------------------------------------------------------------------------
-// Multi-island R3 fixture.
-// ---------------------------------------------------------------------------
-
 const ISLAND_RADIUS: f32 = 0.5;
 /// Group centres on the x axis, separated by several diameters so a group
 /// would have to travel to reach its neighbour.
@@ -421,10 +417,6 @@ pub fn multi_island_scenario_run(schedule: Schedule) -> ScenarioRun {
 /// assertion prints. If it failed, the scenario stopped being physical and no
 /// re-recorded hash is correct.
 pub const GOLDEN_MULTI_ISLAND_HASH: u64 = 0x56fd_21a0_2e4f_76e2;
-
-// ---------------------------------------------------------------------------
-// Replay fixture: the multi-island world driven from a recorded input tape.
-// ---------------------------------------------------------------------------
 
 /// Words per recorded tick: the target handle as `(slot, generation)`, then the
 /// impulse. A handle rather than a storage position, because `despawn` compacts
@@ -572,9 +564,6 @@ pub fn replay_flick_chamber_tape(tape: &Tape) -> Vec<Checkpoint> {
     })
 }
 
-/// Both fixtures pass [`assert_scenario_stays_physical`], so nothing else in
-/// the suite would notice an assertion that had stopped discriminating. These
-/// approach each limit from its failing side.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,11 +604,6 @@ mod tests {
         assert_scenario_stays_physical(&run_with(envelope));
     }
 
-    /// The two pins above cover the comparison but not the extremum scan that
-    /// feeds it: reverse either search and both fixtures still pass a pin
-    /// that has stopped meaning anything. Recomputed from the trajectory the
-    /// run already returned, and [`run_scenario`] is shared, so pinning one
-    /// fixture's scan pins it for both.
     #[test]
     fn the_recorded_envelope_is_the_trajectory_extremum_determinism() {
         let run = multi_island_scenario_run(Schedule::default());

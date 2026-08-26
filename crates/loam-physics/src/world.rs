@@ -337,7 +337,6 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    /// Add a body to the world; returns its handle.
     pub fn push_body(&mut self, body: RigidBody<S>) -> BodyId {
         self.bodies.spawn(body)
     }
@@ -359,7 +358,6 @@ impl<S: PhysicsSpace> World<S> {
         true
     }
 
-    /// Add a force field to the world.
     pub fn push_field(&mut self, field: Box<dyn ForceField<S>>) {
         self.fields.push(field);
     }
@@ -540,9 +538,8 @@ impl<S: PhysicsSpace> World<S> {
         for unit in &units {
             #[cfg(test)]
             self.visit_log.prepare_solve.push(unit.key);
-            // The hoist replaced a `dense_index(..).expect(..)` that would have
-            // panicked on a stale handle. This keeps that alarm in debug builds
-            // without paying the lookup in release.
+            // A stale handle here would silently index the wrong body. Keep the
+            // alarm in debug builds without paying the dense lookup in release.
             debug_assert_eq!(unit.dense, self.dense_pair(unit.key));
             let (i, j) = unit.dense;
             let manifold = self
@@ -1105,10 +1102,6 @@ mod tests {
         determinism_scenario_run(Schedule { threads: 1, order })
     }
 
-    /// The harness's sensitivity control. Global PGS is Gauss-Seidel, so its
-    /// converged state depends on constraint visit order; if permuting that
-    /// order left the hash untouched, the hash could not see the solver and
-    /// every invariance assertion built on it would be a rubber stamp.
     #[test]
     fn global_solve_order_permutation_changes_state_hash_determinism() {
         let canonical = run_with(OrderPolicy::Canonical);
@@ -1173,28 +1166,16 @@ mod tests {
         }
     }
 
-    /// `apply_forces` and `integrate` read and write one body each, and
-    /// `force_at` is a pure function of body state and `time`, so body visit
-    /// order must not reach the state hash. Vacuous by construction today and
-    /// deliberately so: it is the tripwire that fires the moment force
-    /// accumulation grows a shared buffer.
     #[test]
     fn body_visit_order_permutation_preserves_state_hash_determinism() {
         assert_phase_order_does_not_reach_the_state_hash(SchedulePhase::Body);
     }
 
-    /// Narrowphase runs once per pair, results land in a `BTreeMap` keyed
-    /// canonically, and each pair contributes one contact per step, so pair
-    /// emission order must not reach the solve. This is the property a
-    /// parallel narrowphase would depend on, and unlike the body axis it is
-    /// not true by construction.
     #[test]
     fn broadphase_pair_order_permutation_preserves_state_hash_determinism() {
         assert_phase_order_does_not_reach_the_state_hash(SchedulePhase::BroadphasePair);
     }
 
-    /// The invariance axes are only evidence if the policy actually reorders
-    /// the buffers the fixture builds: 7 bodies and 21 broadphase pairs.
     #[test]
     fn order_policy_permutes_reproducibly_and_never_to_identity_determinism() {
         for len in [7usize, 21] {
@@ -1305,13 +1286,6 @@ mod tests {
         orders
     }
 
-    /// The invariance axes above compare a canonical run against a canonical
-    /// run whenever a policy fails to reach the buffer its phase executes, so
-    /// on their own they cannot tell "this order does not matter" apart from
-    /// "this order was never applied". This pins the seam directly: after a
-    /// step, each phase's retained buffer carries the policy exactly when the
-    /// policy names that phase, and is identical to its canonical fill
-    /// otherwise.
     #[test]
     fn schedule_reordering_reaches_its_named_phase_buffer_determinism() {
         let dt = 1.0 / 240.0;
@@ -1364,18 +1338,6 @@ mod tests {
         }
     }
 
-    /// [`schedule_reordering_reaches_its_named_phase_buffer_determinism`] shows
-    /// the retained buffer was reordered, not that the phase loop read it. A
-    /// loop head swapped for a freshly built list
-    /// (`let pairs = self.broadphase();` in `update_manifolds`, `0..len` in
-    /// `apply_forces` or `integrate`) leaves that pin and every invariance axis
-    /// green while the ordered buffer goes unread. [`VisitLog`] records each
-    /// loop's own control variable, so the visit order is observed from inside
-    /// the loop and cannot agree with the buffer by construction.
-    ///
-    /// `solve` is checked on every sweep, not the first or the last, because a
-    /// head that reads the ordered buffer once and rebuilds on later passes is
-    /// exactly the half-broken case a sampled sweep would clear.
     #[test]
     fn phase_loops_visit_the_buffer_the_schedule_ordered_determinism() {
         let dt = 1.0 / 240.0;
@@ -1483,10 +1445,6 @@ mod tests {
         }
     }
 
-    /// The multi-island fixture's behaviour pin, on the same terms as the R4
-    /// golden: deterministic-but-changed integration, solve, or contact
-    /// constants move it. The sanity pin runs first for the same reason it
-    /// does there.
     #[test]
     fn multi_island_scenario_matches_golden_determinism_hash() {
         let run = multi_island_scenario_run(Schedule::default());
@@ -1501,10 +1459,6 @@ mod tests {
         );
     }
 
-    /// The replay contract: a run is reproducible from its recorded input, not
-    /// merely from being re-run. Every fixture below drives a fresh world from
-    /// the tape alone; the recording run's world is dropped before any of them
-    /// starts, so nothing carries over but the bytes.
     #[test]
     fn a_recorded_tape_replays_to_the_same_state_hash_determinism() {
         let tape = record_flick_chamber_tape(REPLAY_SEED);
@@ -1529,9 +1483,6 @@ mod tests {
         );
     }
 
-    /// A tape is only worth the name if it survives leaving the process, so the
-    /// replay that matters runs from decoded bytes rather than from the
-    /// in-memory recording.
     #[test]
     fn a_tape_replays_the_same_after_a_round_trip_through_its_byte_format_determinism() {
         let recorded = record_flick_chamber_tape(REPLAY_SEED);
@@ -1540,9 +1491,6 @@ mod tests {
         assert_eq!(replay_flick_chamber_tape(&decoded), decoded.checkpoints());
     }
 
-    /// Without this the suite could not tell a tape that drives the sim from a
-    /// tape that is decoration: a replay ignoring its input would reproduce the
-    /// recording of a scenario that has no input either.
     #[test]
     fn a_flipped_input_word_moves_the_replayed_state_hash_determinism() {
         let recorded = record_flick_chamber_tape(REPLAY_SEED);
@@ -1573,9 +1521,6 @@ mod tests {
         );
     }
 
-    /// The hash has to name the state, not the storage. `despawn` swaps the
-    /// last body into the hole, so two worlds holding the same bodies after
-    /// different spawn histories differ in dense order and in nothing else.
     #[test]
     fn state_hash_is_invariant_under_arena_compaction_determinism() {
         let radii = [0.3_f32, 0.4, 0.5];
@@ -1618,9 +1563,6 @@ mod tests {
         );
     }
 
-    /// Warm-start impulses are carried solver state that no body field
-    /// reflects, so a hash over bodies alone would call two different
-    /// simulations equal.
     #[test]
     fn state_hash_covers_carried_contact_impulses_determinism() {
         let mut world = multi_island_world(Schedule::default());
@@ -1644,21 +1586,11 @@ mod tests {
         );
     }
 
-    /// The stack rests rather than sinking or pumping, whatever the solver's
-    /// constants are tuned to. Named separately from the hash so one
-    /// `cargo test` run reports both verdicts: sanity plus hash means a
-    /// regression, hash alone means an intended change.
     #[test]
     fn multi_island_scenario_stays_above_the_floor_and_never_gains_energy_determinism() {
         assert_scenario_stays_physical(&multi_island_scenario_run(Schedule::default()));
     }
 
-    /// The fixture earns its name only if the contact graph really splits into
-    /// the three groups it lays out and the four-body chain really rests as a
-    /// chain. A layout edit that lets two groups touch, or that leaves the
-    /// chain short of four simultaneous contacts, fails here rather than
-    /// silently making the island-order and colour-order axes vacuous on the
-    /// day they land.
     #[test]
     fn multi_island_contact_graph_stays_three_disjoint_islands_determinism() {
         let groups = multi_island_groups();
@@ -2300,12 +2232,6 @@ mod tests {
             .collect()
     }
 
-    /// `dense_pair` states its precondition as a property of its callers, not
-    /// of `manifolds`, because [`BodyArena::despawn`] is reachable on `bodies`
-    /// and prunes nothing. This pins the consequence the doc names: the map
-    /// keeps naming the dead body, `islands` panics on it, and the next step's
-    /// eviction is what clears it. `despawn_body` is the control, and the pair
-    /// of them is what would fail if either half of the doc drifted.
     #[test]
     fn bare_arena_despawn_strands_a_manifold_key_until_the_next_step() {
         let dt = 1.0 / 240.0;
@@ -2353,12 +2279,6 @@ mod tests {
         assert_eq!(control.islands().len(), ISLAND_X.len() - 1);
     }
 
-    /// The property positional indices cannot have: despawning a body
-    /// compacts storage, and every surviving manifold must keep both its key
-    /// and its accumulated impulses across that move. Bit equality against a
-    /// world that despawned nothing, not a tolerance: a disjoint island's
-    /// trajectory is identically unchanged, and a tolerance would let a
-    /// rebound from a rebound key hide inside it.
     #[test]
     fn despawn_preserves_surviving_manifold_keys_and_warm_start_impulses() {
         let dt = 1.0 / 240.0;
@@ -2420,8 +2340,6 @@ mod tests {
         );
     }
 
-    /// The spawn half of the same contract: a body arriving mid-simulation
-    /// gets its own manifold and leaves every existing one alone.
     #[test]
     fn spawn_mid_simulation_leaves_existing_islands_bit_identical() {
         let dt = 1.0 / 240.0;
@@ -2455,9 +2373,6 @@ mod tests {
         );
     }
 
-    /// The aliasing failure the generation exists to prevent, at world scope:
-    /// a recycled slot must not inherit the previous occupant's contacts, and
-    /// the old handle must be rejected rather than resolve to the new body.
     #[test]
     fn a_recycled_slot_inherits_no_manifold_from_the_previous_body() {
         let dt = 1.0 / 240.0;
@@ -2495,9 +2410,6 @@ mod tests {
         );
     }
 
-    /// `dense_pair` hands back two storage positions in its key's order, so
-    /// the caller's first index has to come back as the first borrow whichever
-    /// side of the split it lands on.
     #[test]
     fn split_two_mut_returns_borrows_in_argument_order() {
         let mut slice = [0u32, 1, 2, 3];
@@ -2584,11 +2496,6 @@ mod tests {
         (world, lower, upper, key)
     }
 
-    /// A manifold's contact normal is documented as pointing from `body_a`
-    /// toward `body_b`, and `body_a` is its key's low handle. Nothing ties the
-    /// key to storage, so taking the pair in storage order flips every normal a
-    /// manifold carries whenever a despawn has moved one body below its
-    /// partner.
     #[test]
     fn contact_normal_points_from_the_pair_key_low_body_to_the_high_one() {
         let dt = 1.0 / 240.0;
@@ -2609,10 +2516,6 @@ mod tests {
         }
     }
 
-    /// Which slot the arena happens to store a body in is not physics, so it
-    /// must not reach the pair's state at all. Bit equality against the
-    /// control, not a tolerance: both worlds run the same arithmetic on the
-    /// same inputs, so a correct solver leaves no error term to bound.
     #[test]
     fn storage_order_does_not_reach_a_contacting_pairs_trajectory() {
         let dt = 1.0 / 240.0;
@@ -2754,11 +2657,6 @@ mod tests {
     /// times.
     const RANDOM_SCENE_SHAPES: [(usize, f32); 3] = [(12, 2.0), (40, 6.0), (80, 3.0)];
 
-    /// The sweep's contract: it emits the candidate set the O(n²) reference
-    /// defines, exactly, on every step of every seeded scene. Set equality and
-    /// not containment in either direction, because a sweep that emits a
-    /// superset has stopped pruning and one that emits a subset has dropped a
-    /// contact.
     #[test]
     fn sweep_broadphase_emits_exactly_the_all_pairs_candidate_set_determinism() {
         let mut ever_beyond_the_floor = false;
@@ -2788,10 +2686,6 @@ mod tests {
         );
     }
 
-    /// The physics-safety half, stated against the narrowphase rather than
-    /// against the reference: a culled pair must be one the narrowphase would
-    /// have rejected anyway. This is what lets the golden hashes survive a
-    /// broadphase that emits fewer pairs than the old all-pairs loop.
     #[test]
     fn broadphase_culls_only_pairs_the_narrowphase_would_reject() {
         for seed in PERMUTATION_SEEDS {
@@ -2834,10 +2728,6 @@ mod tests {
         }
     }
 
-    /// Emission order is a function of the handles alone. Ascending and
-    /// strictly so, which also pins that no pair is emitted twice; a sweep
-    /// whose active list double-counted an interval would fail here rather
-    /// than by quietly solving a contact twice.
     #[test]
     fn broadphase_emits_strictly_ascending_keys_under_disagreeing_storage_order_determinism() {
         for seed in PERMUTATION_SEEDS {
@@ -2859,9 +2749,6 @@ mod tests {
         }
     }
 
-    /// The scale claim. At 200 bodies the all-pairs loop is ~20k pairs; the
-    /// unbounded floor alone contributes one per dynamic body, so the floor is
-    /// the sweep's own lower bound and the assertion is that it lands near it.
     #[test]
     fn broadphase_prunes_the_quadratic_pair_set_at_scale() {
         let world = random_scene(PERMUTATION_SEEDS[1], 200, 20.0);
@@ -2879,9 +2766,6 @@ mod tests {
         );
     }
 
-    /// The buffers the step hands the sweep are reused, so a steady body count
-    /// must not reach the allocator at all. Measured on the sweep rather than
-    /// on the whole step because the phases downstream of it still allocate.
     #[test]
     fn broadphase_fill_allocates_nothing_after_the_first_pass() {
         let world = random_scene(PERMUTATION_SEEDS[0], 120, 8.0);
@@ -2918,12 +2802,6 @@ mod tests {
         );
     }
 
-    /// The cull's boundary, which every seeded fixture above misses: at
-    /// continuous positions exact tangency has measure zero, so `gap <= reach`
-    /// and `gap < reach` agree on all of them. Two unit-diameter spheres one
-    /// unit apart put `gap` and `reach` on the same f32, and the pair is a
-    /// candidate: `d(a, b) ≤ r_a + r_b` is closed, matching the narrowphases,
-    /// which report a contact at zero separation.
     #[test]
     fn exactly_tangent_spheres_are_a_candidate_pair() {
         const RADIUS: f32 = 0.5;
@@ -2956,16 +2834,6 @@ mod tests {
         assert_eq!(world.broadphase(), vec![canonical_pair(anchor, tangent)]);
     }
 
-    /// The only configuration that reaches the active-list cull's `hi >=
-    /// entry.lo` boundary, and therefore the only one that can pin it. For a
-    /// pair of positive-radius bodies `hi_a == entry.lo` expands to
-    /// `d_b − d_a = r_a + r_b + slack_a + slack_b`, so the triangle inequality
-    /// puts `gap` above `reach` by both slack terms and the pair was never a
-    /// candidate to lose; that margin is what
-    /// [`BROADPHASE_TRIANGLE_SLACK`] buys. Both slacks vanish only at the
-    /// anchor itself, which needs two point colliders sharing the anchor's
-    /// position, and there `d(a, b) ≤ r_a + r_b` reads `0 ≤ 0` and the pair is
-    /// a candidate.
     #[test]
     fn coincident_point_colliders_are_a_candidate_pair() {
         let mut world = World::new(EuclideanR3);
@@ -2974,9 +2842,6 @@ mod tests {
         assert_eq!(world.broadphase(), vec![canonical_pair(a, b)]);
     }
 
-    /// The bound the cull rests on: no posed vertex of a collider can lie
-    /// further from the body position than its bounding radius, at any
-    /// orientation. A bound that under-reported would cull contacting pairs.
     #[test]
     fn bounding_radius_contains_every_posed_vertex_of_its_collider() {
         let half_extents = Vec3::new(0.5, 1.25, 0.25);
@@ -3145,11 +3010,6 @@ mod tests {
     /// through one.
     const SYNTHETIC_COMPONENTS: [&[usize]; 2] = [&[0, 2, 4, 5], &[6, 8, 10, 11]];
 
-    /// The union-find's input is a set, so its output owes nothing to the order
-    /// that set is presented in, and its labels owe nothing to storage. Both on
-    /// a shaped graph: the physics fixtures build paths of at most three
-    /// bodies, and on those a label taken from whichever root the unions left
-    /// agrees with the component minimum by coincidence.
     #[test]
     fn island_labels_are_the_component_minimum_whatever_order_pairs_arrive_in_determinism() {
         let (world, ids) = synthetic_island_bodies();
@@ -3202,10 +3062,6 @@ mod tests {
         }
     }
 
-    /// The label is the lowest handle in the component, which is what the
-    /// invariance harness needs to name an island. Storage position is the
-    /// tempting alternative and is wrong: a despawn compacts the arena and
-    /// would rename an island that did not change.
     #[test]
     fn island_ids_are_the_lowest_body_id_not_the_lowest_storage_position_determinism() {
         let mut orders_disagreed = 0usize;
@@ -3244,10 +3100,6 @@ mod tests {
         );
     }
 
-    /// A static body absorbs no impulse, so the two bodies resting on either
-    /// side of one never reach each other and must not share an island. The
-    /// shared floor is the case that matters in practice; the fixture's wedged
-    /// static sphere is the same rule where a merge would be least visible.
     #[test]
     fn a_static_body_joins_no_island_and_merges_none_determinism() {
         for seed in PERMUTATION_SEEDS {
@@ -3352,9 +3204,6 @@ mod tests {
         islands
     }
 
-    /// The partition itself, against the independent oracle. Equality of the
-    /// whole island list also pins that no body lands in two islands and that
-    /// every touched pair lands in exactly one.
     #[test]
     fn islands_match_a_flood_fill_of_the_contact_graph_determinism() {
         let mut ever_multi_body = false;
@@ -3377,10 +3226,6 @@ mod tests {
         );
     }
 
-    /// Criterion for a world whose contact graph is connected: grouping has
-    /// nothing to move, so the constraint order the solver sees is the one it
-    /// saw before islands existed, and the solve is unchanged bit for bit
-    /// rather than merely close.
     #[test]
     fn a_single_island_solves_in_the_global_ascending_key_order_determinism() {
         let world = settled_sphere_stack(1.0 / 240.0, 200);
@@ -3407,12 +3252,6 @@ mod tests {
         );
     }
 
-    /// The grouped buffer is the islands laid end to end, and on this fixture
-    /// that is genuinely a different sequence from ascending key order: the
-    /// chain's contacts and the pair's interleave when sorted by key alone.
-    /// `multi_island_scenario_matches_golden_determinism_hash` still holds
-    /// against a constant recorded before the grouping existed, which is what
-    /// makes the reordering bit-neutral rather than merely untested.
     #[test]
     fn constraint_buffer_runs_island_by_island_determinism() {
         let mut world = multi_island_world(Schedule::default());
@@ -3444,9 +3283,6 @@ mod tests {
         );
     }
 
-    /// The step's island work runs out of the buffers the world retains, on
-    /// the same terms as the sweep above. Measured on `collect_constraints` so
-    /// the in-place sort is inside the probe, not only the union-find.
     #[test]
     fn island_grouping_allocates_nothing_after_the_first_pass() {
         let mut world = settled_columns(PERMUTATION_SEEDS[0]);
@@ -3467,9 +3303,6 @@ mod tests {
         );
     }
 
-    /// The manifold pass runs out of retained buffers on the same terms. The
-    /// eviction set was a fresh `HashSet` per step, so a world that had reached
-    /// a steady contact set still paid the allocator once a frame for it.
     #[test]
     fn manifold_update_allocates_nothing_after_the_first_pass() {
         let mut world = settled_columns(PERMUTATION_SEEDS[0]);
@@ -3544,19 +3377,6 @@ mod tests {
         world
     }
 
-    /// What the step path pays per phase, on the retained buffers the step
-    /// actually uses rather than the allocating public forms `benches/`
-    /// measures. Reported rather than asserted: a wall-clock threshold would
-    /// pin the machine it was recorded on, and what these owe is a number a
-    /// later change, in particular the parallel solver the island partition
-    /// exists for, can be measured against.
-    ///
-    /// `sweep` against `scan` is the sort-and-sweep's own speedup over a
-    /// brute-force pass of the same candidate predicate, both with their
-    /// buffers already grown. `grouped` against `ungrouped` is what the island
-    /// partition adds to a phase that used to copy the manifold keys and stop:
-    /// two O(n_bodies) union-find passes, a `find_root` walk per body, and a
-    /// sort where `BTreeMap` order was already the answer.
     #[test]
     #[ignore = "measurement; run with --release -- --ignored --nocapture"]
     fn step_phase_cost_measurement() {
@@ -3913,11 +3733,6 @@ mod tests {
             assert_tunneling_bound("R4", RECORDED_R4, fire_r4);
         }
 
-        /// R³ is the space with no narrowphase defect in this fixture, so its
-        /// bound is a statement about the step rather than about a contact
-        /// function. Tying it to the closed form is what makes the three
-        /// recorded numbers a measurement of the sampling gap and its two
-        /// deficits, rather than three unexplained constants.
         #[test]
         fn resolving_interval_is_the_slab_half_thickness_plus_the_body_radius() {
             let gap = (RECORDED_R3 - GEOMETRIC_BOUND).abs();
@@ -3929,16 +3744,6 @@ mod tests {
             );
         }
 
-        /// Why R⁴ has no floor. A body released at rest inside the near half
-        /// of the slab must be pushed back out of the face it entered; at
-        /// [`R4_TRAP_DEPTH`] it is pushed toward the far face instead. The
-        /// neighbouring depth is the control: this is a hole in the contact
-        /// function at isolated depths, not a uniformly inverted normal, which
-        /// is why it costs R⁴ its floor rather than its whole bound.
-        ///
-        /// Asserted rather than described so it cannot rot into a doc lie.
-        /// When the R⁴ narrowphase is fixed this test fails, and the fix is to
-        /// re-measure [`RECORDED_R4`], not to keep this assertion.
         #[test]
         fn r4_contact_normal_leaves_through_the_near_face_at_every_depth() {
             // Three depths through the hole that used to invert: R4's EPA
@@ -3951,12 +3756,6 @@ mod tests {
             }
         }
 
-        /// The failing half of the verdict, asserted rather than described for
-        /// the same reason. Stepping the whole capture band twice over puts no
-        /// sample inside the wall at any alignment, and the body arrives on the
-        /// far side untouched, in every space. A swept or speculative path
-        /// fails this test, and that failure is the signal to raise the
-        /// recorded bounds rather than to keep them.
         #[test]
         fn thin_wall_is_transparent_to_a_body_that_steps_clear_over_it() {
             let displacement = 4.0 * GEOMETRIC_BOUND;

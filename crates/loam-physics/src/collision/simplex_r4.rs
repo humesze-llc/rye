@@ -39,7 +39,6 @@ pub fn closest_to_origin(simplex: &[Vec4]) -> Closest {
         kept: vec![0],
     };
 
-    // All non-empty subsets (at most 2⁵ − 1 = 31).
     for mask in 1u32..(1u32 << n) {
         let subset: Vec<usize> = (0..n).filter(|i| mask & (1 << i) != 0).collect();
 
@@ -105,7 +104,6 @@ pub(super) fn project_origin_onto_affine_hull(
         }
     }
 
-    // `None` when singular (collinear / coplanar sub-simplex).
     let alphas = solve_spd_system(&mut g, &mut b, k)?;
 
     let mut weights = Vec::with_capacity(n);
@@ -139,7 +137,7 @@ fn solve_spd_system(g: &mut [[f32; 4]; 4], b: &mut [f32; 4], k: usize) -> Option
 
         let piv = g[i][i];
         if piv.abs() < 1e-10 {
-            return None; // degenerate
+            return None;
         }
 
         let inv_piv = 1.0 / piv;
@@ -226,7 +224,6 @@ mod tests {
 
     #[test]
     fn tetrahedron_in_3d_subspace_containing_origin() {
-        // Standard tetrahedron containing origin, embedded at w = 0.
         let c = closest_to_origin(&[
             Vec4::new(1.0, 1.0, 1.0, 0.0),
             Vec4::new(1.0, -1.0, -1.0, 0.0),
@@ -238,7 +235,6 @@ mod tests {
 
     #[test]
     fn pentatope_containing_origin() {
-        // Symmetric 4-simplex (5 vertices) enclosing the origin.
         let c = closest_to_origin(&[
             Vec4::new(1.0, 1.0, 1.0, -1.0 / 5.0_f32.sqrt()),
             Vec4::new(1.0, -1.0, -1.0, -1.0 / 5.0_f32.sqrt()),
@@ -251,7 +247,6 @@ mod tests {
 
     #[test]
     fn triangle_projects_to_edge() {
-        // Origin outside the triangle, nearest the AB edge.
         let a = Vec4::new(1.0, 0.0, 0.0, 0.0);
         let b = Vec4::new(0.0, 1.0, 0.0, 0.0);
         let c_vert = Vec4::new(2.0, 2.0, 0.0, 0.0);

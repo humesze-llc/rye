@@ -263,7 +263,6 @@ mod tests {
         }
     }
 
-    /// Parameter validation is not font-dependent, so these run everywhere.
     #[test]
     fn nonpositive_and_undersized_params_are_rejected() {
         let bad_depth = GlyphParams {
@@ -287,7 +286,6 @@ mod tests {
             GlyphError::NonPositive { field: "slab", .. }
         ));
 
-        // Both pitches carry the floor, and each names itself when it trips.
         let coarse_render = GlyphParams {
             resolution: MIN_RESOLUTION - 1,
             ..GlyphParams::default()
@@ -315,10 +313,6 @@ mod tests {
         assert!(GlyphParams::default().validate().is_ok());
     }
 
-    /// A flatten tolerance that is not positive fails loudly. Left unchecked
-    /// it reaches `outline::subdivisions`, whose guard against a division by
-    /// zero returns a single subdivision, silently replacing every Bezier in
-    /// the word with its chord instead of erroring as this module promises.
     #[test]
     fn nonpositive_or_nan_flatten_tolerance_is_rejected() {
         for value in [0.0, -0.002, f32::NAN] {
@@ -340,7 +334,6 @@ mod tests {
         }
     }
 
-    /// Non-ASCII coverage the font lacks is an error, not a dropped letter.
     #[test]
     fn characters_the_font_lacks_are_rejected() {
         let Some(bytes) = system_font() else { return };
@@ -354,8 +347,6 @@ mod tests {
         );
     }
 
-    /// Control characters are rejected before any font lookup, so tabs and
-    /// newlines cannot silently vanish from a laid-out word.
     #[test]
     fn control_characters_are_rejected() {
         let Some(bytes) = system_font() else { return };
@@ -368,8 +359,6 @@ mod tests {
         }
     }
 
-    /// A word yields one solid per character, in order, with pen origins that
-    /// advance monotonically by each glyph's own advance.
     #[test]
     fn word_yields_one_solid_per_character_at_advancing_pen_origins() {
         let Some(bytes) = system_font() else { return };
@@ -393,8 +382,6 @@ mod tests {
         }
     }
 
-    /// Each letter's geometry sits at its own pen position rather than all
-    /// letters stacking at the origin, and every letter is solid.
     #[test]
     fn letters_are_placed_at_their_own_pen_positions() {
         let Some(bytes) = system_font() else { return };
@@ -431,9 +418,6 @@ mod tests {
         }
     }
 
-    /// Every letter of a word is baked on the same grid pitch, so a short
-    /// letter is not sampled coarser than a tall one and the colliders they
-    /// emit are the same scale.
     #[test]
     fn all_letters_share_one_grid_pitch() {
         let Some(bytes) = system_font() else { return };
@@ -447,11 +431,6 @@ mod tests {
         }
     }
 
-    /// 'O' keeps its counter: a horizontal line through the middle of the
-    /// letter crosses the surface four times (outside, stroke, counter,
-    /// stroke, outside), where a filled 'O' would cross twice. This is the
-    /// end-to-end check that the nonzero winding rule survived flattening and
-    /// baking, and it does not depend on which face the probe found.
     #[test]
     fn counters_stay_open() {
         let Some(bytes) = system_font() else { return };
@@ -480,9 +459,6 @@ mod tests {
         assert_eq!(crossings, 4, "'O' crossed {crossings} times, not 4");
     }
 
-    /// The same letter is both render geometry and a collider source, and the
-    /// two agree: no collider vertex, placed by its extrinsic centre, lies
-    /// further outside the letter than the cover's stated margin.
     #[test]
     fn letters_serve_as_render_geometry_and_colliders() {
         let Some(bytes) = system_font() else { return };
@@ -518,10 +494,6 @@ mod tests {
         }
     }
 
-    /// The count criterion, reported by `examples/glyph_collider_budget.rs`
-    /// and pinned here: a laid-out word is tens of convex bodies, not
-    /// thousands. The bound sits ~12% above the measured 96 at the default
-    /// pitch, and the render decomposition of the same word is 3717 pieces.
     #[test]
     fn a_laid_out_word_stays_inside_the_solver_body_budget() {
         let Some(bytes) = system_font() else { return };
@@ -541,11 +513,6 @@ mod tests {
         );
     }
 
-    /// Enclosure for a real letter, checked against the baked field rather
-    /// than against the extractor: every point the field calls ink is inside
-    /// some collider box, and no covered point is further outside the ink than
-    /// the stated margin. Counters and notches are what the second half pins,
-    /// since a cover that filled them would pass the first half alone.
     #[test]
     fn the_cover_encloses_every_letter_without_filling_its_counters() {
         let Some(bytes) = system_font() else { return };
@@ -596,8 +563,6 @@ mod tests {
         }
     }
 
-    /// The two pitches are independent knobs: coarsening the collider pitch
-    /// cuts the box count and leaves the render mesh bit-identical.
     #[test]
     fn the_collider_pitch_moves_the_box_count_and_not_the_render_mesh() {
         let Some(bytes) = system_font() else { return };
@@ -626,10 +591,6 @@ mod tests {
         }
     }
 
-    /// Every letter's cover runs on the same pitch, so a short letter is not
-    /// given a finer grid than a tall one and the emitted boxes are all the
-    /// same scale. The tolerance is the round trip through
-    /// `Isovolume`'s own `extent / resolution`.
     #[test]
     fn all_letters_share_one_collider_pitch() {
         let Some(bytes) = system_font() else { return };
@@ -648,8 +609,6 @@ mod tests {
         }
     }
 
-    /// A space carries an advance and no geometry, so word spacing works
-    /// without the pipeline pretending whitespace is a solid.
     #[test]
     fn spaces_advance_without_geometry() {
         let Some(bytes) = system_font() else { return };
@@ -665,8 +624,6 @@ mod tests {
         assert!(letters[2].pen_origin().x > letters[0].pen_origin().x + letters[0].advance());
     }
 
-    /// Baking is deterministic: the same font, word and params give the same
-    /// geometry bit for bit.
     #[test]
     fn layout_is_bit_reproducible() {
         let Some(bytes) = system_font() else { return };

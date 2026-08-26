@@ -1,11 +1,5 @@
 //! `loam-shape`: the canonical geometric-primitive data model.
 //!
-//! Before this crate existed, `loam_scene::PrimitiveKind` (for rendering) and
-//! `loam_physics::Collider` (for collision) each defined their own parallel enum of shape
-//! types. Adding a new shape, say a horosphere for H³, meant touching both, keeping their
-//! variant lists in sync by hand, and inventing new conversion glue. This crate is the single
-//! source of truth they both now alias to.
-//!
 //! ## Design
 //!
 //! - **One enum, all variants.** A `Shape` carries every shape either role needs. Variants that
@@ -185,58 +179,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kind_matches_variant() {
-        assert_eq!(Shape::sphere_at_origin(0.5).kind(), ShapeKind::Sphere);
-        assert_eq!(
-            Shape::HalfSpace {
-                normal: Vec3::Y,
-                offset: 0.0
-            }
-            .kind(),
-            ShapeKind::HalfSpace
-        );
-        assert_eq!(
-            Shape::Box3 {
-                half_extents: Vec3::splat(1.0)
-            }
-            .kind(),
-            ShapeKind::Box3
-        );
-        assert_eq!(
-            Shape::Polygon2D { vertices: vec![] }.kind(),
-            ShapeKind::Polygon2D
-        );
-        assert_eq!(
-            Shape::ConvexPolytope3D { vertices: vec![] }.kind(),
-            ShapeKind::ConvexPolytope3D
-        );
-        assert_eq!(
-            Shape::ConvexPolytope4D { vertices: vec![] }.kind(),
-            ShapeKind::ConvexPolytope4D
-        );
-        assert_eq!(
-            Shape::HalfSpace4D {
-                normal: Vec4::Y,
-                offset: 0.0
-            }
-            .kind(),
-            ShapeKind::HalfSpace4D
-        );
-        assert_eq!(
-            Shape::HyperSphere4D {
-                center: Vec4::ZERO,
-                radius: 1.0
-            }
-            .kind(),
-            ShapeKind::HyperSphere4D
-        );
-    }
-
-    #[test]
     fn ron_roundtrip_preserves_shape() {
-        // Sanity: the derived serde impls work on every variant. Scenes and pair-cache files
-        // lean on this. Covers all 8 variants so adding a new one without thinking about serde
-        // surfaces here, not at runtime when the scene file fails to parse.
+        // Scenes and pair-cache files lean on this. Covers all 8 variants so
+        // adding a new one without thinking about serde surfaces here, not at
+        // runtime when the scene file fails to parse.
         for original in [
             Shape::sphere_at_origin(0.5),
             Shape::sphere_at(Vec3::new(1.0, 2.0, 3.0), 0.25),

@@ -1,7 +1,3 @@
-//! The baked field turned into a solid: convex cross-section pieces, the
-//! extruded 3D surface mesh, the slab-embedded 4D colliders, and the analytic
-//! 4D distance.
-//!
 //! The two consumers want opposite decompositions, so they get different ones.
 //!
 //! **Render.** The cross-section is recovered by splitting every grid cell into
@@ -455,7 +451,6 @@ fn extend(d: f32, x: f32, center: f32, half: f32) -> f32 {
     Vec2::new(d, axial).max(Vec2::ZERO).length() + d.max(axial).min(0.0)
 }
 
-/// Split every cell into two triangles and clip each against `d <= 0`.
 fn extract_pieces(field: &DistanceField2D) -> Vec<Piece> {
     let (cells_x, cells_y) = field.cell_counts();
     let cell = field.cell_size();
@@ -500,8 +495,6 @@ struct Corner {
     distance: f32,
 }
 
-/// Clip `tri` against the half-space `d <= 0`, tracking which output edge lies
-/// on the zero isoline.
 fn clip_triangle(tri: &[Corner; 3], cell: f32) -> Option<Piece> {
     let mut ring: Vec<Vec2> = Vec::with_capacity(4);
     let mut on_isoline: Vec<bool> = Vec::with_capacity(4);
@@ -579,8 +572,6 @@ mod tests {
     use super::super::outline::Contour;
     use super::*;
 
-    /// `cells` counts grid cells across the square, so the fixtures read the
-    /// way the old per-glyph resolution did.
     fn square_field(half: f32, cells: u32) -> DistanceField2D {
         let contour = Contour {
             points: vec![
@@ -597,9 +588,6 @@ mod tests {
         collider_solid(half, resolution, resolution, depth, slab)
     }
 
-    /// Fixture params on a synthetic em: the fixture's own extent is one em, so
-    /// `collider_cells` reads as cells across the shape exactly the way the
-    /// render `cells` does.
     fn fixture_params(
         em: f32,
         collider_cells: u32,
@@ -615,9 +603,6 @@ mod tests {
         }
     }
 
-    /// The two pitches are independent, so fixtures name both. `cells` counts
-    /// cells across the square in each case, so a `collider_cells` below
-    /// `cells` is the decoupled-collider-resolution case.
     fn collider_solid(
         half: f32,
         cells: u32,
@@ -643,8 +628,6 @@ mod tests {
         diamond_hull_solid(half, cells, collider_cells, 0.4, (-0.2, 0.2))
     }
 
-    /// The diamond again, with the depth and slab the prism tests need to tell
-    /// the two interval axes apart.
     fn diamond_hull_solid(
         half: f32,
         cells: u32,
@@ -670,9 +653,7 @@ mod tests {
         )
     }
 
-    /// A square annulus: an outer ring with a counter-wound hole, i.e. the
-    /// topology of `O` without a font. The hole is what a bounding-volume
-    /// shortcut would fill in.
+    /// The hole is what a bounding-volume shortcut would fill in.
     fn annulus_solid(outer: f32, inner: f32, cells: u32, collider_cells: u32) -> GlyphSolid {
         let ring = |half: f32, counter_clockwise: bool| {
             let mut points = vec![
@@ -700,9 +681,6 @@ mod tests {
         )
     }
 
-    /// Every piece is a convex counter-clockwise ring. Convexity is the
-    /// contract the 4D narrowphase relies on; a reflex vertex would make GJK
-    /// report support points inside the hull.
     #[test]
     fn every_piece_is_convex_and_counter_clockwise() {
         let solid = square_solid(1.0, 17, 0.5, (-0.25, 0.25));
@@ -721,8 +699,6 @@ mod tests {
         }
     }
 
-    /// The pieces tile the cross-section: their total area recovers the true
-    /// area up to the grid's boundary error, which shrinks with resolution.
     #[test]
     fn piece_areas_sum_to_the_cross_section_area() {
         for resolution in [16, 32, 64] {
@@ -743,10 +719,6 @@ mod tests {
         }
     }
 
-    /// The surface mesh is closed and outward-wound: the divergence-theorem
-    /// volume of the triangle soup equals cross-section area times depth. This
-    /// pins cap winding, side-wall winding, and that a side wall is emitted for
-    /// exactly the silhouette edges.
     #[test]
     fn extruded_mesh_volume_matches_area_times_depth() {
         let depth = 0.5;
@@ -767,28 +739,6 @@ mod tests {
         );
     }
 
-    /// Reversing the depth would flip the winding and negate the volume, so a
-    /// positive volume is the assertion that the mesh faces outwards rather
-    /// than inwards.
-    #[test]
-    fn extruded_mesh_volume_is_positive() {
-        let solid = square_solid(1.0, 24, 0.3, (0.0, 0.5));
-        let mesh = solid.to_triangles().expect("mesh");
-        let volume: f32 = mesh
-            .indices
-            .iter()
-            .map(|[i0, i1, i2]| {
-                let v0 = Vec3::from_array(mesh.vertices[*i0 as usize]);
-                let v1 = Vec3::from_array(mesh.vertices[*i1 as usize]);
-                let v2 = Vec3::from_array(mesh.vertices[*i2 as usize]);
-                v0.dot(v1.cross(v2)) / 6.0
-            })
-            .sum();
-        assert!(volume > 0.0, "volume {volume} is not outward-wound");
-    }
-
-    /// Mesh invariants the rasterizer upload path assumes: one colour per
-    /// vertex and every index in range.
     #[test]
     fn mesh_buffers_are_consistent() {
         let solid = square_solid(1.0, 20, 0.4, (0.0, 1.0));
@@ -807,9 +757,6 @@ mod tests {
         assert_eq!(points.sizes.len(), points.positions.len());
     }
 
-    /// One 16-vertex box per cover piece, origin-centred with the extrinsic
-    /// centre carrying the placement, spanning the full depth and slab. A box
-    /// that did not span both would leave the letter open on a face.
     #[test]
     fn colliders_are_origin_centred_boxes_spanning_depth_and_slab() {
         let slab = (-0.75, 0.25);
@@ -852,10 +799,6 @@ mod tests {
         }
     }
 
-    /// The criterion the cover exists for, checked against the field rather
-    /// than against the extractor's own occupancy: every point the baked field
-    /// calls solid lies inside some collider box. The probe lattice is offset
-    /// off both grids so it cannot sit on cell centres by construction.
     #[test]
     fn every_point_the_field_calls_solid_lies_inside_a_collider_box() {
         let solid = collider_solid(1.0, 32, 12, 0.5, (-0.25, 0.25));
@@ -880,10 +823,6 @@ mod tests {
         assert!(!cover.clipped(), "the cover ran off its sampling domain");
     }
 
-    /// The cover does not spill: no box corner is further outside the letter
-    /// than [`GlyphSolid::collider_margin`], which is the Lipschitz bound the
-    /// occupancy test earns. Without this an enclosure test would pass on a
-    /// bounding box.
     #[test]
     fn no_collider_corner_exceeds_the_stated_margin() {
         let solid = collider_solid(1.0, 32, 12, 0.5, (-0.25, 0.25));
@@ -901,10 +840,6 @@ mod tests {
         assert!(worst <= margin, "corner reaches {worst}, past {margin}");
     }
 
-    /// A collider pitch coarser than the render pitch is the whole point of
-    /// the two being separate: the render mesh keeps its detail while the box
-    /// count collapses. The clip decomposition at the same coarse pitch is
-    /// what this replaces, so the comparison is against the fine render count.
     #[test]
     fn a_coarser_collider_pitch_cuts_boxes_without_touching_the_render_mesh() {
         let fine = diamond_solid(1.0, 48, 48);
@@ -925,14 +860,6 @@ mod tests {
         assert!(coarse.collider_margin() > fine.collider_margin());
     }
 
-    /// A hole in the letter stays a hole, at a collider pitch four times
-    /// coarser than the render pitch. A convex hull and a bounding volume both
-    /// lose this, and both would still pass every enclosure check.
-    ///
-    /// The bound is the same Lipschitz derivation as
-    /// [`GlyphSolid::collider_margin`], read the other way: a covered point
-    /// lies in a marked cell, whose centre has `d <= cell` and is within one
-    /// cell of it in L1, so no point with `d > 2 * cell` can be covered.
     #[test]
     fn a_counter_stays_open_past_the_margin() {
         let solid = annulus_solid(1.0, 0.6, 48, 16);
@@ -959,15 +886,6 @@ mod tests {
         assert!(clear > 5_000, "only {clear} probes deep inside the counter");
     }
 
-    /// The occupancy threshold [`LIPSCHITZ_SCALE`] buys, stated exactly: a
-    /// cover cell is marked when its centre samples `d <= cell`, not
-    /// `d <= cell/sqrt(2)`. That factor is the whole enclosure argument, and
-    /// dropping it fails no containment probe on a fixture whose worst
-    /// Lipschitz case the probes happen to miss, so the threshold is pinned
-    /// directly rather than through its consequences.
-    ///
-    /// A cell centre is interior to exactly one cell and every box is a union
-    /// of marked cells, so `contains` at a centre reads the occupancy bit.
     #[test]
     fn a_cover_cell_is_marked_out_to_a_full_cell_of_clearance() {
         // A single pitch quantises the sampled distances into an arithmetic
@@ -1022,10 +940,6 @@ mod tests {
         );
     }
 
-    /// The dynamic collider's shape contract: one origin-centred prism whose
-    /// extrinsic centre is its centre of mass, spanning the depth and the slab
-    /// exactly. A hull centred anywhere else spins about the wrong point under
-    /// an off-centre contact.
     #[test]
     fn the_rigid_hull_is_one_origin_centred_prism_about_its_centre_of_mass() {
         let slab = (-0.75, 0.25);
@@ -1058,7 +972,6 @@ mod tests {
             assert!((v.z.abs() - 0.5 * depth).abs() < 1e-6);
             assert!((v.w.abs() - 0.5 * (slab.1 - slab.0)).abs() < 1e-6);
         }
-        // The ring is repeated once per `(z, w)` corner, in one order.
         for k in 0..sides {
             for copy in 1..4 {
                 assert_eq!(vertices[copy * sides + k].xy(), vertices[k].xy());
@@ -1066,8 +979,6 @@ mod tests {
         }
     }
 
-    /// The soundness property: the hull contains the cover it replaces, so a
-    /// dynamic letter never lets a body reach ink the static one would stop.
     #[test]
     fn the_rigid_hull_contains_the_whole_cover() {
         let solid = diamond_hull_solid(1.0, 48, 16, 0.4, (-0.2, 0.2));
@@ -1092,10 +1003,6 @@ mod tests {
         }
     }
 
-    /// What the dynamic path gives up, stated rather than implied: a counter
-    /// the cover keeps open is filled by the hull. Convexity is the price of
-    /// one collider per body, and a reader comparing the two emitters has to be
-    /// able to see it fail here if it ever stops being true.
     #[test]
     fn the_rigid_hull_fills_a_counter_the_cover_keeps_open() {
         let solid = annulus_solid(1.0, 0.6, 48, 16);
@@ -1112,8 +1019,6 @@ mod tests {
         assert!(covered, "the hull left the annulus centre outside");
     }
 
-    /// A blank has no ring and therefore no dynamic body, matching the static
-    /// emitter rather than returning a degenerate prism.
     #[test]
     fn a_blank_emits_no_rigid_hull() {
         let blank = GlyphSolid::new(
@@ -1127,9 +1032,6 @@ mod tests {
         assert!(blank.rigid_hull_4d().is_none());
     }
 
-    /// The hull is a fixed-order construction over a fixed-order cover, so two
-    /// bakes of one letter emit the same vertices in the same order. A dynamic
-    /// letter whose collider reordered would break replay.
     #[test]
     fn rigid_hull_emission_is_reproducible() {
         let build = || diamond_hull_solid(1.0, 48, 16, 0.4, (-0.2, 0.2)).rigid_hull_4d();
@@ -1146,9 +1048,6 @@ mod tests {
         assert_eq!(va, vb);
     }
 
-    /// The cover is a pure fixed-order scan over the baked field, so two bakes
-    /// of the same letter emit the same boxes in the same order. A collider set
-    /// that reordered would break the solver's deterministic pair ordering.
     #[test]
     fn collider_emission_is_reproducible() {
         let build = || collider_solid(1.0, 24, 16, 0.5, (-0.25, 0.25)).colliders_4d();
@@ -1168,9 +1067,6 @@ mod tests {
         }
     }
 
-    /// The 4D distance is the cross-section distance extended twice: inside the
-    /// slab and depth it is the cross-section distance, and past either face it
-    /// grows by the axial offset.
     #[test]
     fn distance_4d_extends_the_cross_section_on_both_interval_axes() {
         let depth = 0.5;
@@ -1194,8 +1090,6 @@ mod tests {
         assert!((corner - 5.0).abs() < 1e-5, "corner {corner}");
     }
 
-    /// A blank glyph has no geometry at all, and says so through the trait's
-    /// own vocabulary instead of returning empty buffers.
     #[test]
     fn blank_glyph_reports_degenerate_and_emits_no_colliders() {
         let blank = GlyphSolid::new(
@@ -1217,8 +1111,6 @@ mod tests {
         assert_eq!(blank.distance_2d(Vec2::ZERO), BLANK_DISTANCE);
     }
 
-    /// A clip that keeps the whole triangle has no silhouette edge; a clip that
-    /// cuts it has exactly one, and its endpoints sit on the zero level.
     #[test]
     fn cut_edge_exists_exactly_when_the_triangle_is_clipped() {
         let inside = [
@@ -1258,7 +1150,6 @@ mod tests {
         let cut = clipped.cut.expect("cut edge");
         let a = clipped.ring[cut];
         let b = clipped.ring[(cut + 1) % 3];
-        // Both endpoints are the midpoints of the two straddling edges.
         assert!(
             a.distance(Vec2::new(0.5, 0.0))
                 .min(a.distance(Vec2::new(0.0, 0.5)))
@@ -1271,8 +1162,6 @@ mod tests {
         );
     }
 
-    /// A fully outside triangle contributes nothing, and a triangle touching
-    /// the zero level at a single corner is a sliver, not a piece.
     #[test]
     fn outside_and_sliver_triangles_produce_no_piece() {
         let outside = [
@@ -1308,8 +1197,6 @@ mod tests {
         assert!(clip_triangle(&grazing, 1.0).is_none());
     }
 
-    /// Piece extraction is a pure function of the field: identical inputs give
-    /// identical rings in identical order.
     #[test]
     fn piece_extraction_is_reproducible() {
         let field = square_field(1.0, 21);

@@ -126,8 +126,6 @@ fn widest_stroke(letter: &GlyphSolid) -> Vec2 {
     Vec2::new(0.5 * (run.0 + run.1), mid)
 }
 
-/// The count criterion, asserted where the count is actually paid: a laid-out
-/// word becomes this many static bodies in a `World`, and the world steps.
 #[test]
 fn a_laid_out_word_spawns_a_solver_sized_set_of_static_bodies() {
     let Some(letters) = word() else { return };
@@ -146,14 +144,6 @@ fn a_laid_out_word_spawns_a_solver_sized_set_of_static_bodies() {
     }
 }
 
-/// A body dropped on ink is held up by the letter's front face, in the band a
-/// sphere resting on a conservative cover of that face can occupy.
-///
-/// The window closes at twice the impact time on purpose. Nothing in
-/// `loam-physics` resists rolling, so a sphere keeps whatever tangential
-/// velocity the contact gave it and eventually walks off a stroke a tenth of
-/// an em wide; that is a solver property, not a property of this
-/// decomposition, and asserting on it would pin the wrong thing.
 #[test]
 fn a_body_dropped_on_a_letter_is_held_up_by_its_front_face() {
     let Some(letters) = word() else { return };
@@ -189,9 +179,6 @@ fn a_body_dropped_on_a_letter_is_held_up_by_its_front_face() {
     }
 }
 
-/// The counter of `O` is a hole a body falls through. This is what the cover
-/// buys over a per-letter convex hull, and what an enclosure test alone cannot
-/// see: a hull encloses the letter perfectly well and plugs the counter.
 #[test]
 fn a_body_dropped_down_the_counter_of_o_falls_through() {
     let Some(letters) = word() else { return };
@@ -217,9 +204,6 @@ fn a_body_dropped_down_the_counter_of_o_falls_through() {
     assert!(z < -DROP_Z, "ball stopped at z = {z} instead of falling");
 }
 
-/// Same word, same colliders, same trajectory bit for bit. The cover is a
-/// fixed-order scan and the solver visits bodies in spawn order, so a
-/// hundred-body static set must not introduce an order dependence.
 #[test]
 fn two_runs_over_a_word_agree_bit_for_bit() {
     let Some(letters) = word() else { return };

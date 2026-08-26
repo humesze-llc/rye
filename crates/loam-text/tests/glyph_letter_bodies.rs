@@ -172,11 +172,6 @@ fn assert_resting_on_the_floor(ch: char, deepest: f32) {
     );
 }
 
-/// The count criterion for the dynamic path: a laid-out word is one body per
-/// non-blank letter, each a single convex prism whose vertex count fits the 4D
-/// narrowphase's fixed polytope buffer. The static path's own count is pinned
-/// in `glyph_collider_world.rs`; what this adds is that going dynamic costs one
-/// body per letter and not one per cover box.
 #[test]
 fn a_word_becomes_one_dynamic_body_per_letter_within_the_polytope_vertex_cap() {
     let Some(letters) = word() else { return };
@@ -209,9 +204,6 @@ fn a_word_becomes_one_dynamic_body_per_letter_within_the_polytope_vertex_cap() {
     );
 }
 
-/// The hull is sound: it contains the letter it renders and the cover it
-/// replaces. A dynamic letter that let a body reach its ink would be worse than
-/// the static path, not merely coarser.
 #[test]
 fn a_letters_hull_contains_both_its_render_mesh_and_its_cover() {
     let Some(letters) = word() else { return };
@@ -267,14 +259,6 @@ fn a_letters_hull_contains_both_its_render_mesh_and_its_cover() {
     }
 }
 
-/// The criterion this node exists for: a letter dropped on a half-space lands
-/// on it and stays put.
-///
-/// Rest is asserted on position over the final second rather than on `|v|`. A
-/// settled body still carries a tenth of a metre per second of alternating-sign
-/// velocity from the Baumgarte cycle while its position moves by microns, so a
-/// velocity bound either passes vacuously at a loose threshold or fails a body
-/// that is measurably still.
 #[test]
 fn a_letter_dropped_on_a_halfspace_settles_without_jitter() {
     let Some(letters) = word() else { return };
@@ -299,11 +283,6 @@ fn a_letter_dropped_on_a_halfspace_settles_without_jitter() {
     }
 }
 
-/// Gravity reaches a letter only through the force-field list, and the field is
-/// what makes it fall: with no field the same body is inert, and one step with
-/// [`Gravity`] changes its velocity by exactly `g * dt` on the gravity axis and
-/// by nothing on the other three. The inert half is what keeps this from
-/// passing on an integrator that hardcoded a downward acceleration.
 #[test]
 fn a_letter_falls_only_because_a_force_field_supplies_gravity() {
     let Some(letters) = word() else { return };
@@ -338,14 +317,6 @@ fn a_letter_falls_only_because_a_force_field_supplies_gravity() {
     assert!(falling.bodies[id].position.y < spawn.y);
 }
 
-/// The finding the static-only contract rests on, as a measurement rather than
-/// a caution: the cover's boxes overlap by construction, so making them bodies
-/// makes them each other's contacts and they drive themselves apart with no
-/// gravity, no floor and nothing else in the world.
-///
-/// Rigid faithful letters therefore wait on a compound collider in
-/// `loam-physics`. When one lands this test fails, which is the point: the doc
-/// on `GlyphSolid::colliders_4d` has to be rewritten in the same change.
 #[test]
 fn the_cover_spawned_as_dynamic_bodies_tears_a_letter_apart() {
     let Some(letters) = word() else { return };
@@ -385,10 +356,6 @@ fn the_cover_spawned_as_dynamic_bodies_tears_a_letter_apart() {
     );
 }
 
-/// Same letter, same drop, same trajectory bit for bit. The hull is a
-/// fixed-order construction over the cover and the solver is single-threaded
-/// fixed-step, so two runs must agree to the last bit or a title beat is not
-/// replayable.
 #[test]
 fn two_drops_of_a_letter_agree_bit_for_bit() {
     let Some(letters) = word() else { return };
@@ -406,10 +373,6 @@ fn two_drops_of_a_letter_agree_bit_for_bit() {
     assert_eq!(trajectory(), trajectory());
 }
 
-/// The whole word dropped into one world settles as four letters rather than as
-/// one pile. Convex hulls are wider than the ink they enclose, so this is also
-/// the pin that the overestimate does not make neighbouring letters overlap at
-/// their laid-out spacing and shove each other along the line.
 #[test]
 fn a_whole_word_dropped_together_settles_in_its_own_line() {
     let Some(letters) = word() else { return };
@@ -457,7 +420,6 @@ fn a_whole_word_dropped_together_settles_in_its_own_line() {
     }
 }
 
-/// A blank carries no dynamic body, the same way it carries no static ones.
 #[test]
 fn a_blank_has_no_dynamic_body() {
     let Some(bytes) = system_font() else { return };

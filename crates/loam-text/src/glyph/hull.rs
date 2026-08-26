@@ -155,9 +155,6 @@ mod tests {
             .collect()
     }
 
-    /// A hull is counter-clockwise, carries no collinear vertex, and encloses
-    /// every input point. Interior and edge-midpoint inputs are what a
-    /// collinear-tolerant turn test would leak through.
     #[test]
     fn hull_is_counter_clockwise_and_free_of_collinear_vertices() {
         let mut points = vec![
@@ -190,8 +187,6 @@ mod tests {
         }
     }
 
-    /// The property every downstream claim rests on: reduction only grows the
-    /// ring, so a hull of the cover stays a hull of the cover.
     #[test]
     fn reduction_encloses_the_ring_it_started_from() {
         for sides in [5usize, 7, 12, 31] {
@@ -214,8 +209,6 @@ mod tests {
         }
     }
 
-    /// Reduction keeps convexity and the counter-clockwise winding the 4D prism
-    /// construction and the area centroid both assume.
     #[test]
     fn reduction_leaves_a_convex_counter_clockwise_ring() {
         let mut ring = regular_ring(17, 2.0);
@@ -234,8 +227,6 @@ mod tests {
         }
     }
 
-    /// A ring already inside the cap is returned untouched, so a simple letter
-    /// pays nothing for the cap and keeps its exact hull.
     #[test]
     fn a_ring_within_the_cap_is_left_alone() {
         let original = regular_ring(5, 1.0);
@@ -244,9 +235,6 @@ mod tests {
         assert_eq!(ring, original);
     }
 
-    /// Least-area-first is the point of the search: taking the first deletable
-    /// edge instead would inflate a ring whose vertices are unevenly spaced.
-    /// The long-edge chain here is cheap to delete and the tight corner is not.
     #[test]
     fn reduction_deletes_the_cheapest_edge_first() {
         // A square with one corner shaved by a tiny chamfer. Deleting the
@@ -267,9 +255,6 @@ mod tests {
         assert!(restored, "the chamfer was not the edge deleted: {ring:?}");
     }
 
-    /// The centroid is the area centroid, not the vertex mean: a subdivided
-    /// edge must not pull it. Stated on an L-free convex case with a known
-    /// answer, a unit square whose top edge carries an extra midpoint.
     #[test]
     fn centroid_is_the_area_centroid_and_ignores_edge_subdivision() {
         let square = vec![

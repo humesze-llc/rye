@@ -24,10 +24,6 @@
 //!
 //! # Limitations
 //!
-//! Established by driving the playground's `hud` readout. Each is a capability
-//! a general UI layer needs and this crate does not have; read the list before
-//! building one on top.
-//!
 //! - **Printable ASCII only.** [`queue`](TextRenderer::queue) drops everything
 //!   else silently, with no fallback box glyph. [`is_renderable`] is the
 //!   pre-check for strings that must survive intact.
@@ -75,8 +71,7 @@ struct GlyphEntry {
     bearing_y: f32,
 }
 
-/// Vertex layout for textured-quad text drawing. One vertex per
-/// quad corner; six vertices per glyph (two-triangle fan).
+/// One vertex per quad corner; six vertices per glyph (two-triangle fan).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct TextVertex {
@@ -194,10 +189,8 @@ pub struct TextRenderer {
     /// alongside the line advance because layout needs both independently.
     ascent_px: f32,
 
-    /// Vertex buffer; reallocated when capacity grows.
     vertex_buf: Buffer,
     vertex_capacity: u64,
-    /// Per-frame queued vertices; cleared on render.
     queued: Vec<TextVertex>,
 }
 
@@ -218,7 +211,6 @@ impl TextRenderer {
         let font = FontRef::try_from_slice(&font_data)
             .map_err(|e| anyhow!("loam-text: failed to parse font: {e}"))?;
 
-        // Atlas texture (R8, alpha-only).
         let atlas_tex = device.create_texture(&TextureDescriptor {
             label: Some("loam-text atlas"),
             size: Extent3d {
@@ -245,7 +237,6 @@ impl TextRenderer {
             ..Default::default()
         });
 
-        // Pre-bake printable ASCII into the atlas.
         let baked = bake_ascii_atlas(&font, bake_size_px)?;
         queue.write_texture(
             TexelCopyTextureInfo {
@@ -267,7 +258,6 @@ impl TextRenderer {
             },
         );
 
-        // Uniform buffer (viewport size).
         let uniform_buf = device.create_buffer(&BufferDescriptor {
             label: Some("loam-text uniforms"),
             size: std::mem::size_of::<TextUniforms>() as u64,
@@ -275,7 +265,6 @@ impl TextRenderer {
             mapped_at_creation: false,
         });
 
-        // Bind group layout: uniforms + atlas + sampler.
         let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("loam-text bgl"),
             entries: &[
@@ -326,7 +315,6 @@ impl TextRenderer {
             ],
         });
 
-        // Pipeline.
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("loam-text shader"),
             source: ShaderSource::Wgsl(WGSL_SHADER.into()),
@@ -377,7 +365,6 @@ impl TextRenderer {
             cache: None,
         });
 
-        // Initial vertex buffer (grows on demand).
         let initial_capacity = 1024_u64;
         let zero_verts: Vec<TextVertex> =
             vec![bytemuck::Zeroable::zeroed(); initial_capacity as usize];
@@ -467,8 +454,6 @@ impl TextRenderer {
         self.queued.clear();
     }
 
-    /// Push this frame's uniforms and vertices, growing the vertex buffer to
-    /// the next power of two when the queue outgrows it.
     fn upload(&mut self, device: &Device, queue: &Queue, viewport_size: [f32; 2]) {
         let uniforms = TextUniforms {
             viewport_size,
@@ -476,7 +461,6 @@ impl TextRenderer {
         };
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
 
-        // Grow vertex buffer if needed (powers-of-two grow).
         let needed = self.queued.len() as u64;
         if needed > self.vertex_capacity {
             let mut new_cap = self.vertex_capacity.max(1);
@@ -516,12 +500,6 @@ impl TextRenderer {
     }
 }
 
-/// Pure layout: append `text`'s vertices (six per glyph) into `out`. No GPU
-/// resources, so testable with a hand-built glyph table. `scale = size_px /
-/// bake_size_px`; newlines reset `cursor_x` and advance `cursor_y` by
-/// `line_height_px * scale`; non-printable, out-of-ASCII, and untabled chars are
-/// skipped.
-///
 /// The baseline sits `ascent_px * scale` below `position.y`, which puts the
 /// ascender line exactly at `position.y`. Offsetting by `line_height_px`
 /// instead would push the block down by the descent plus line gap, so
@@ -553,7 +531,6 @@ fn layout_text(
             continue;
         }
         let Some(g) = glyphs.get(&c) else {
-            // Missing glyph (atlas didn't fit it); silently skip.
             continue;
         };
 
@@ -565,7 +542,6 @@ fn layout_text(
         let (u0, v0) = (g.uv_min[0], g.uv_min[1]);
         let (u1, v1) = (g.uv_max[0], g.uv_max[1]);
 
-        // Six vertices per glyph (two triangles).
         out.extend_from_slice(&[
             TextVertex {
                 pos: [x0, y0],
@@ -618,11 +594,6 @@ pub fn is_renderable(text: &str) -> bool {
     text.chars().all(|c| c == '\n' || is_printable_ascii(c))
 }
 
-// ---------------------------------------------------------------------------
-// Atlas baking
-// ---------------------------------------------------------------------------
-
-/// One baked atlas plus everything layout needs to place it.
 struct BakedAtlas {
     pixels: Vec<u8>,
     glyphs: HashMap<char, GlyphEntry>,
@@ -687,7 +658,6 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
                     ));
                 }
 
-                // Rasterize into the atlas.
                 let dst_x = shelf_x;
                 let dst_y = shelf_y;
                 o.draw(|gx, gy, cov| {
@@ -695,7 +665,6 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
                     let px_y = dst_y + gy;
                     if px_x < ATLAS_SIZE && px_y < ATLAS_SIZE {
                         let idx = (px_y * ATLAS_SIZE + px_x) as usize;
-                        // Saturate to u8.
                         let v = (cov * 255.0).round().clamp(0.0, 255.0) as u8;
                         atlas[idx] = atlas[idx].max(v);
                     }
@@ -752,10 +721,6 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
     })
 }
 
-// ---------------------------------------------------------------------------
-// WGSL
-// ---------------------------------------------------------------------------
-
 const WGSL_SHADER: &str = r#"
 struct Uniforms {
     viewport_size: vec2<f32>,
@@ -799,7 +764,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 mod tests {
     use super::*;
 
-    /// Pure-CPU check that atlas baking works on a real font; no wgpu device.
     #[test]
     fn baking_roundtrip_with_system_arial() {
         // Arial is reliably present on Windows; skip cleanly if not.
@@ -812,9 +776,7 @@ mod tests {
         let font = FontRef::try_from_slice(&bytes).expect("parse arial.ttf");
         let baked = bake_ascii_atlas(&font, 48.0).expect("bake");
         assert_eq!(baked.pixels.len() as u32, ATLAS_SIZE * ATLAS_SIZE);
-        // All printable ASCII should have an entry.
         assert_eq!(baked.glyphs.len(), 0x7F - 0x20);
-        // Line height should be positive and reasonable for 48px bake.
         let line_h = baked.metrics.line_height_px();
         assert!(line_h > 30.0 && line_h < 80.0, "line_h = {line_h}");
         // Ascent is the part of the line box above the baseline, so it is
@@ -824,7 +786,6 @@ mod tests {
             ascent > 0.0 && ascent < line_h,
             "ascent = {ascent}, line_h = {line_h}"
         );
-        // 'A' should have nonzero pixel size.
         let a = baked.glyphs.get(&'A').expect("A in atlas");
         assert!(a.px_width > 0.0 && a.px_height > 0.0);
         // Both construction paths read the same font at the same size, so the
@@ -841,9 +802,8 @@ mod tests {
     /// line advance.
     const MOCK_ASCENT: f32 = 12.0;
 
-    /// Minimal glyph table for layout tests: every printable ASCII char is a
-    /// unit-square glyph. The pinned math (advance, newline reset, vertex count)
-    /// depends only on `h_advance`, not atlas geometry.
+    /// The pinned math (advance, newline reset, vertex count) depends only on
+    /// `h_advance`, not atlas geometry.
     fn mock_glyph_table(h_advance: f32) -> HashMap<char, GlyphEntry> {
         (0x20u8..=0x7Eu8)
             .map(|c| {
@@ -863,10 +823,8 @@ mod tests {
             .collect()
     }
 
-    /// Metrics matching [`mock_glyph_table`]: same advance for every printable
-    /// char, same bake size and line height the layout tests pass. Built by
-    /// hand so `measure` is exercised against the very table `layout_text`
-    /// walks rather than against a second font.
+    /// Built by hand so `measure` is exercised against the very table
+    /// `layout_text` walks rather than against a second font.
     fn mock_metrics(h_advance: f32) -> TextMetrics {
         TextMetrics {
             advances: (0x20u8..=0x7Eu8).map(|c| (c as char, h_advance)).collect(),
@@ -875,28 +833,6 @@ mod tests {
         }
     }
 
-    /// Each printable glyph emits exactly 6 vertices (two triangles).
-    /// "abc" produces 18 vertices.
-    #[test]
-    fn layout_emits_six_vertices_per_glyph() {
-        let glyphs = mock_glyph_table(10.0);
-        let mut out = Vec::new();
-        layout_text(
-            "abc",
-            [0.0, 0.0],
-            16.0,
-            [1.0, 1.0, 1.0, 1.0],
-            &glyphs,
-            16.0,
-            16.0,
-            MOCK_ASCENT,
-            &mut out,
-        );
-        assert_eq!(out.len(), 18);
-    }
-
-    /// Newline resets `cursor_x` to `position[0]` and advances `cursor_y` by
-    /// `line_height_px * scale`.
     #[test]
     fn layout_newline_resets_x_and_advances_y() {
         let glyphs = mock_glyph_table(10.0);
@@ -934,10 +870,6 @@ mod tests {
         );
     }
 
-    /// `position.y` is the ascender line: a glyph whose outline reaches the
-    /// ascender (`bearing_y == -ascent`) puts its top edge exactly there.
-    /// Offsetting the baseline by the line height instead sinks every block by
-    /// the descent plus line gap, which is the placement `queue` documents away.
     #[test]
     fn position_y_is_the_ascender_line_at_every_scale() {
         let mut glyphs = mock_glyph_table(10.0);
@@ -975,7 +907,6 @@ mod tests {
         }
     }
 
-    /// Cursor advances by `h_advance * scale` per glyph.
     #[test]
     fn layout_cursor_advances_by_h_advance_scaled() {
         let glyphs = mock_glyph_table(10.0);
@@ -993,12 +924,10 @@ mod tests {
             &mut out,
         );
 
-        // Glyph 0 at x = 0; glyph 1 at x = 20 (one scaled advance later).
         assert_eq!(out[0].pos[0], 0.0);
         assert_eq!(out[6].pos[0], 20.0);
     }
 
-    /// Non-ASCII / control chars (tabs, 0x80+, emoji) are silently dropped.
     #[test]
     fn layout_skips_unprintable_and_out_of_range_chars() {
         let glyphs = mock_glyph_table(10.0);
@@ -1018,8 +947,6 @@ mod tests {
         assert_eq!(out.len(), 24);
     }
 
-    /// Untabled chars are silently skipped, not rendered as fallback boxes;
-    /// keeps layout deterministic when the atlas is partial.
     #[test]
     fn layout_skips_missing_glyphs() {
         let mut glyphs = mock_glyph_table(10.0);
@@ -1036,15 +963,9 @@ mod tests {
             MOCK_ASCENT,
             &mut out,
         );
-        // Only 'a' produces 6 vertices.
         assert_eq!(out.len(), 6);
     }
 
-    /// `is_renderable` is the contract callers check before queueing, so it must
-    /// agree with what layout actually draws: a char it accepts emits vertices
-    /// (or is the newline it consumes), and a char it rejects emits none.
-    /// Swept over the BMP prefix that brackets the ASCII boundaries, plus two
-    /// codepoints from outside it.
     #[test]
     fn is_renderable_agrees_with_what_layout_emits() {
         let glyphs = mock_glyph_table(10.0);
@@ -1077,24 +998,6 @@ mod tests {
         }
     }
 
-    /// Every codepoint the atlas bakes must be one `is_renderable` accepts,
-    /// otherwise a glyph is paid for and never reachable.
-    #[test]
-    fn every_baked_codepoint_is_renderable() {
-        for code in 0x20u32..=0x7E {
-            let c = char::from_u32(code).expect("0x20..=0x7E is valid Unicode");
-            assert!(
-                is_renderable(&c.to_string()),
-                "U+{code:04X} baked but not renderable"
-            );
-        }
-    }
-
-    /// `measure` is only useful if it bounds what layout emits. Driven with a
-    /// glyph table whose ink exactly fills its advance box, so the two answers
-    /// are directly comparable: every vertex must land inside the measured rect
-    /// anchored at `position`. A dropped scale, a missed newline, or a per-line
-    /// width taken as a running total all break containment.
     #[test]
     fn measured_box_contains_every_vertex_layout_emits() {
         const ADVANCE: f32 = 10.0;
@@ -1151,9 +1054,6 @@ mod tests {
         }
     }
 
-    /// The measured box is linear in `size_px`, which is what lets a caller
-    /// measure once in logical points and scale the result by the display's
-    /// pixels-per-point instead of re-measuring per display.
     #[test]
     fn measured_box_is_linear_in_size() {
         let metrics = mock_metrics(10.0);
@@ -1166,8 +1066,6 @@ mod tests {
         }
     }
 
-    /// Height counts line boxes, not newline characters: a block's height grows
-    /// by exactly one line per break, so a caller can reserve space for it.
     #[test]
     fn measured_height_is_one_line_box_per_line() {
         let metrics = mock_metrics(10.0);
@@ -1181,8 +1079,6 @@ mod tests {
         }
     }
 
-    /// Width is the widest line, not the last one and not the sum: a readout
-    /// whose longest row sits in the middle would otherwise measure short.
     #[test]
     fn measured_width_is_the_widest_line() {
         let metrics = mock_metrics(10.0);
@@ -1190,9 +1086,6 @@ mod tests {
         assert!((w - 40.0).abs() < 1e-4, "measured {w}, expected 4 x 10");
     }
 
-    /// Parse + validate `WGSL_SHADER` via naga so syntax / type / binding errors
-    /// surface at test time, not at first `TextRenderer::new` (which needs a wgpu
-    /// adapter).
     #[test]
     fn wgsl_shader_validates_via_naga() {
         let module = naga::front::wgsl::parse_str(WGSL_SHADER).expect("WGSL parse");

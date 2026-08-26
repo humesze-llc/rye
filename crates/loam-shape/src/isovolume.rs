@@ -456,10 +456,6 @@ mod tests {
         Some(at(0.5 * (lo + hi)))
     }
 
-    /// Criterion the whole module exists for: every point of the isosurface
-    /// is inside some piece. Samples are found by bisecting the field along
-    /// rays from inside the tube, so the check is against the field and not
-    /// against the extractor's own occupancy.
     #[test]
     fn every_isosurface_sample_lies_inside_a_piece() {
         let sdf = torus_3d(TORUS_MAJOR, TORUS_MINOR);
@@ -490,9 +486,6 @@ mod tests {
         }
     }
 
-    /// Enclosure of the whole solid, not just its boundary: a probe grid
-    /// offset off the sampling lattice finds no interior point outside the
-    /// cover. Catches an occupancy predicate that is merely a sign test.
     #[test]
     fn every_interior_probe_lies_inside_a_piece() {
         let sdf = torus_3d(TORUS_MAJOR, TORUS_MINOR);
@@ -517,9 +510,6 @@ mod tests {
         assert!(interior > 1000, "only {interior} interior probes");
     }
 
-    /// The cover does not spill: every piece corner is within the Lipschitz
-    /// margin of the surface, which is what keeps a coarse extraction from
-    /// silently becoming a bounding box.
     #[test]
     fn no_piece_corner_exceeds_the_enclosure_margin() {
         let sdf = torus_3d(TORUS_MAJOR, TORUS_MINOR);
@@ -538,8 +528,6 @@ mod tests {
         }
     }
 
-    /// The cover shrinks onto the solid as the grid refines. A cover that did
-    /// not would still pass enclosure while being useless as a collider.
     #[test]
     fn cover_volume_tightens_towards_the_true_volume() {
         let truth = torus_volume_3d();
@@ -562,10 +550,6 @@ mod tests {
         );
     }
 
-    /// The budget the module's doc table claims, pinned at the three measured
-    /// resolutions so a decomposition regression fails here rather than as a
-    /// mysterious solver cost. Bounds sit ~15% above the measured 24 / 93 /
-    /// 309 and 84 / 114 / 382.
     #[test]
     fn piece_count_stays_within_the_measured_budget_at_three_resolutions() {
         let counts_3d: Vec<usize> = [16, 32, 64]
@@ -595,9 +579,6 @@ mod tests {
         );
     }
 
-    /// A convex solid collapses to a cover far smaller than its occupied-cell
-    /// count, which pins that the decomposition runs at all: the per-cell
-    /// fallback this module exists to avoid misses the bound twentyfold.
     #[test]
     fn piece_count_is_far_below_the_occupied_cell_count() {
         for resolution in [16, 32, 64] {
@@ -611,9 +592,6 @@ mod tests {
         }
     }
 
-    /// Same field, same grid, same boxes in the same order: the extraction is
-    /// a pure fixed-order scan, which is what lets a baked collider set be
-    /// part of a deterministic fixture.
     #[test]
     fn extraction_is_reproducible() {
         let a = extract_torus_3d(24);
@@ -625,8 +603,6 @@ mod tests {
         }
     }
 
-    /// Bounds that cut through the solid break the enclosure guarantee, and
-    /// the extraction says so instead of returning a quietly wrong cover.
     #[test]
     fn bounds_that_cut_the_solid_are_reported_as_clipped() {
         let tight = Isovolume::extract([-0.8; 3], [0.8; 3], 24, torus_3d(TORUS_MAJOR, TORUS_MINOR));
@@ -634,8 +610,6 @@ mod tests {
         assert!(!extract_torus_3d(24).clipped());
     }
 
-    /// An empty field yields no pieces rather than a degenerate one, and the
-    /// collider emitters agree.
     #[test]
     fn a_field_with_no_solid_yields_no_pieces() {
         let empty = Isovolume::extract([-1.0; 3], [1.0; 3], 8, |_| 10.0);
@@ -646,8 +620,6 @@ mod tests {
         assert!(!empty.contains([0.0; 3]));
     }
 
-    /// Emitted colliders are origin-centred hulls with the piece's extents,
-    /// matching the extrinsic-pose contract the narrowphase assumes.
     #[test]
     fn colliders_are_origin_centred_hulls_matching_their_piece_bounds() {
         let volume = extract_torus_3d(16);
@@ -670,8 +642,6 @@ mod tests {
         }
     }
 
-    /// The 4D emitter is the same contract one dimension up: 16 vertices per
-    /// piece, origin-centred, extents matching the piece.
     #[test]
     fn colliders_4d_are_origin_centred_sixteen_vertex_hulls() {
         let volume = Isovolume::extract(
@@ -698,8 +668,6 @@ mod tests {
         }
     }
 
-    /// Enclosure in 4D, checked against the field: every point of a dense
-    /// offset probe grid with `f <= 0` is covered.
     #[test]
     fn every_interior_probe_lies_inside_a_piece_in_4d() {
         let sdf = torus_4d(TORUS_MAJOR, TORUS_MINOR);

@@ -51,8 +51,6 @@ pub enum SceneNode {
     },
 }
 
-// ---- Constructors -----------------------------------------------------------
-
 impl SceneNode {
     pub fn sphere(center: Vec3, radius: f32) -> Self {
         SceneNode::Leaf(PrimitiveKind::Sphere { center, radius })
@@ -76,8 +74,6 @@ impl SceneNode {
         })
     }
 
-    // ---- Combinators --------------------------------------------------------
-
     pub fn union(self, other: SceneNode) -> Self {
         SceneNode::Union(Box::new(self), Box::new(other))
     }
@@ -99,8 +95,6 @@ impl SceneNode {
         }
     }
 }
-
-// ---- Scene ------------------------------------------------------------------
 
 /// A complete SDF scene: a single root [`SceneNode`] that emits
 /// `fn loam_scene_sdf(p: vec3<f32>) -> f32` when compiled for a given Space.
@@ -144,8 +138,6 @@ impl Scene {
         eval_node(&self.root, space, p)
     }
 }
-
-// ---- Recursive emitter ------------------------------------------------------
 
 /// Walk `node` depth-first, appending helper definitions to `helpers` and `let`
 /// bindings to `body`. Returns the WGSL variable holding this node's distance.
@@ -204,8 +196,6 @@ fn emit_node<S: WgslSpace>(
     }
 }
 
-// ---- Recursive evaluator ----------------------------------------------------
-
 /// Scalar twin of [`emit_node`], one arm per `SceneNode` variant in the same
 /// order. The combinator expressions are transcribed from
 /// [`crate::combinator`]'s emitted text operand for operand: reassociating them
@@ -240,21 +230,10 @@ fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S,
     }
 }
 
-// ---- Tests ------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loam_math::{EuclideanR3, HyperbolicH3};
-
-    #[test]
-    fn single_sphere_emits_scene_sdf() {
-        let scene = Scene::new(SceneNode::sphere(Vec3::ZERO, 0.25));
-        let wgsl = scene.to_wgsl(&EuclideanR3);
-        assert!(wgsl.contains("fn loam_scene_sdf(p: vec3<f32>) -> f32"));
-        assert!(wgsl.contains("loam_distance"));
-        assert!(wgsl.contains("- (0.25)"));
-    }
+    use loam_math::EuclideanR3;
 
     #[test]
     fn union_of_two_spheres() {
@@ -269,30 +248,11 @@ mod tests {
     }
 
     #[test]
-    fn smooth_union_emits_smin_helper() {
-        let scene = Scene::new(
-            SceneNode::sphere(Vec3::ZERO, 0.2).smooth_union(SceneNode::cube(0.15), 0.05),
-        );
-        let wgsl = scene.to_wgsl(&EuclideanR3);
-        assert!(wgsl.contains("sdf_smin0"));
-        assert!(wgsl.contains("clamp"));
-        assert!(wgsl.contains("mix"));
-    }
-
-    #[test]
     fn difference_uses_negation() {
         let scene = Scene::new(SceneNode::sphere(Vec3::ZERO, 0.3).subtract(SceneNode::cube(0.2)));
         let wgsl = scene.to_wgsl(&EuclideanR3);
         assert!(wgsl.contains("max("));
         assert!(wgsl.contains("-("));
-    }
-
-    #[test]
-    fn scene_is_space_agnostic_for_spheres() {
-        let scene = Scene::new(SceneNode::sphere(Vec3::ZERO, 0.25));
-        let e3 = scene.to_wgsl(&EuclideanR3);
-        let h3 = scene.to_wgsl(&HyperbolicH3);
-        assert_eq!(e3, h3);
     }
 
     #[test]

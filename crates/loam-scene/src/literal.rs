@@ -33,12 +33,6 @@ pub(crate) fn wgsl_f32(v: f32) -> String {
 mod tests {
     use super::*;
 
-    /// The emitted token must never be a bare digit run: WGSL would type it as
-    /// `AbstractInt` and reject every magnitude at or above 2^63. Swept across
-    /// the whole f32 exponent range, both signs, plus the integer-valued
-    /// magnitudes where `Display` drops the point. `wgsl_f32` leans on `Debug`
-    /// for this rather than patching its output, so this is the pin on `Debug`
-    /// itself.
     #[test]
     fn every_finite_f32_prints_with_a_point_or_an_exponent() {
         for exponent in -45..=38 {
@@ -76,10 +70,6 @@ mod tests {
         }
     }
 
-    /// Infinity and NaN have no WGSL literal spelling, and `Debug` prints them
-    /// as `inf` / `NaN`, which parse as identifiers rather than numbers. The
-    /// emitter must refuse them instead of shipping a token that either fails
-    /// in naga or resolves to something the scene did not ask for.
     #[test]
     #[should_panic(expected = "non-finite")]
     fn positive_infinity_has_no_literal_and_is_rejected() {
@@ -98,8 +88,6 @@ mod tests {
         wgsl_f32(f32::NAN);
     }
 
-    /// Parsing the emitted literal must recover the exact input bits, so the
-    /// GPU evaluates the same constant the CPU holds.
     #[test]
     fn emitted_literal_round_trips_to_the_input_bits() {
         for exponent in -45..=38 {

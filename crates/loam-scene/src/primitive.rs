@@ -49,12 +49,6 @@ pub trait Primitive {
 
     /// Signed distance from `p` to `self` in the given Space, the CPU twin of
     /// [`Self::to_wgsl`]'s emitted body.
-    ///
-    /// Parity with the emitted function is bounded, not exact: the emitter
-    /// prints baked constants at six decimals while this holds the `f32`, so a
-    /// residual near 5e-7 is structural. Where a Space's WGSL prelude is a
-    /// deliberate approximation of its Rust `distance` the residual is that
-    /// Space's own divergence, which is larger and documented on the Space.
     fn eval<S: Space<Point = Vec3, Vector = Vec3>>(&self, space: &S, p: Vec3) -> f32;
 }
 

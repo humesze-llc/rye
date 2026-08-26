@@ -676,9 +676,6 @@ mod tests {
         paths(scene).len()
     }
 
-    /// Pre-order, and every enumerated path resolves to the node it was
-    /// enumerated with. A walker that pushed the wrong index would still hand
-    /// out the right count, so the identity of each row is what is asserted.
     #[test]
     fn every_enumerated_path_resolves_to_the_node_it_was_enumerated_with() {
         let scene = fixture();
@@ -716,11 +713,6 @@ mod tests {
         assert_eq!("root".parse::<NodePath>(), Ok(NodePath::root()));
     }
 
-    /// `apply` is total over the tree: at every path, every parameter the node
-    /// advertises is accepted and every one it does not is refused by name,
-    /// and neither outcome changes the tree's shape. Editing values is not
-    /// allowed to edit structure, which is the whole reason a path stays a
-    /// valid address between `Set` edits.
     #[test]
     fn set_is_total_over_every_path_and_never_changes_the_tree_shape() {
         let base = fixture();
@@ -754,9 +746,6 @@ mod tests {
         }
     }
 
-    /// The pin on walking to the wrong node, which is the defect a positional
-    /// address invites: one edit must move exactly one baked constant in the
-    /// emitted WGSL, and it must be the one whose node was addressed.
     #[test]
     fn one_edit_changes_exactly_one_emitted_constant() {
         let mut scene = fixture();
@@ -784,10 +773,6 @@ mod tests {
         assert!(differing[0].1.contains("0.125"), "{:?}", differing[0]);
     }
 
-    /// Setting a parameter to the value it already carries is not a change.
-    /// The editor recompiles a shader per reported change, so a `set` that
-    /// reported one for every repeat would turn a held slider into a compile
-    /// per frame.
     #[test]
     fn setting_the_value_a_node_already_holds_is_not_a_change() {
         let mut scene = fixture();
@@ -801,10 +786,6 @@ mod tests {
         assert_eq!(apply(&mut scene, &edit), Ok(false));
     }
 
-    /// Add, then remove at the address the add reports: the tree returns to
-    /// exactly the emitted text it started from. This is the round trip that
-    /// makes "a primitive can be added and removed" a property rather than two
-    /// separate hopes.
     #[test]
     fn an_insert_and_the_matching_remove_restore_the_original_tree() {
         let original = fixture();
@@ -841,10 +822,6 @@ mod tests {
         }
     }
 
-    /// Add, move, remove, read off the distance field itself rather than off
-    /// the tree: the field is what the marcher draws, so this is the property
-    /// behind "the primitive appears where I put it, follows the slider, and
-    /// is gone when I delete it" without anyone looking at a pixel.
     #[test]
     fn a_primitive_added_at_runtime_enters_the_field_moves_within_it_and_leaves_it() {
         let radius = 0.25_f32;
@@ -899,9 +876,6 @@ mod tests {
         );
     }
 
-    /// Removing a node collapses its parent into the surviving sibling, and
-    /// the sibling ends up at the parent's own address, which is what
-    /// `focus_after` promises a selection.
     #[test]
     fn a_remove_collapses_the_parent_into_the_sibling_at_the_parents_address() {
         let mut scene = fixture();
@@ -924,9 +898,6 @@ mod tests {
         assert_eq!(node_count(&scene), 5);
     }
 
-    /// A scene is one root node, so there is no collapse that can remove it.
-    /// Refusing by name beats emptying the tree and discovering it at the
-    /// emitter.
     #[test]
     fn the_root_cannot_be_removed() {
         let mut scene = fixture();
@@ -942,9 +913,6 @@ mod tests {
         assert_eq!(node_count(&scene), 7);
     }
 
-    /// An address the tree does not hold is an error, not a panic and not a
-    /// silent write somewhere else. Console lines and one-frame-stale panel
-    /// selections both produce these.
     #[test]
     fn an_unresolvable_path_is_refused_without_touching_the_tree() {
         let mut scene = fixture();
@@ -968,10 +936,6 @@ mod tests {
         assert_eq!(scene.to_wgsl(&EuclideanR3), before);
     }
 
-    /// Everything `apply` accepts must survive a save and a load: the loader
-    /// re-checks what the emitter asserts on, so an editor that could write a
-    /// tree the loader rejects would produce files it cannot read back.
-    /// Emitted WGSL, not the RON text, is the equality that matters.
     #[test]
     fn an_edited_tree_round_trips_through_ron_after_a_sequence_of_edits() {
         let mut scene = fixture();
@@ -987,10 +951,6 @@ mod tests {
         );
     }
 
-    /// Every edit in the sequence, replayed onto the deserialized tree at each
-    /// step, keeps the two in lockstep: load, edit, save, load is the same
-    /// tree as edit, edit, save, load. A serializer that dropped a field would
-    /// pass the single round trip above and fail here.
     #[test]
     fn a_reloaded_tree_accepts_the_rest_of_the_sequence_identically() {
         let mut live = fixture();
@@ -1051,10 +1011,6 @@ mod tests {
         ]
     }
 
-    /// The textual form is the transport between a widget and the command
-    /// queue, so it has to be exact: a value that came back a bit different
-    /// would make a slider drag a source of drift rather than a source of
-    /// edits.
     #[test]
     fn an_edit_round_trips_through_its_command_line_bit_exactly() {
         let awkward = [
@@ -1121,9 +1077,6 @@ mod tests {
         }
     }
 
-    /// The constants an editor can write are exactly the constants the emitter
-    /// can bake. Both guards live in `load`, so this pins that `apply` routes
-    /// through them rather than carrying its own copy of the rule.
     #[test]
     fn constants_the_emitter_cannot_bake_are_refused() {
         let mut scene = fixture();
@@ -1170,10 +1123,6 @@ mod tests {
         assert_eq!(scene.to_wgsl(&EuclideanR3), fixture().to_wgsl(&EuclideanR3));
     }
 
-    /// `dot(p, n) - d` is a signed distance only for unit `n`, so a normal
-    /// arriving from three independent sliders is normalized on the way in and
-    /// a direction too short to carry information is refused. Without this the
-    /// march would over- or under-step by |n| everywhere the plane is nearest.
     #[test]
     fn a_half_space_normal_stays_on_the_unit_sphere_under_every_edit() {
         let mut scene = fixture();
@@ -1222,10 +1171,6 @@ mod tests {
         }
     }
 
-    /// A leaf whose SDF is the sentinel offers no parameters, because a slider
-    /// over an invisible shape is a control that lies. The boolean
-    /// combinators offer none either; only the smooth union carries a
-    /// constant.
     #[test]
     fn sentinel_leaves_and_boolean_combinators_offer_no_parameters() {
         for shape in [
@@ -1267,8 +1212,6 @@ mod tests {
         );
     }
 
-    /// What a panel reads back has to be what the tree holds, or the first
-    /// drag of a slider would snap the value to whatever the panel guessed.
     #[test]
     fn advertised_parameter_values_are_the_ones_the_node_holds() {
         let scene = fixture();

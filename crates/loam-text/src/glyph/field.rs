@@ -122,12 +122,10 @@ impl DistanceField2D {
         overshoot.max(inside_grid - overshoot)
     }
 
-    /// Sample at grid index `(i, j)`.
     pub(super) fn at(&self, i: usize, j: usize) -> f32 {
         self.samples[j * self.samples_x + i]
     }
 
-    /// World position of grid index `(i, j)`.
     pub(super) fn corner(&self, i: usize, j: usize) -> Vec2 {
         self.origin + Vec2::new(i as f32, j as f32) * self.cell
     }
@@ -235,8 +233,6 @@ mod tests {
         Contour { points }
     }
 
-    /// Sign is negative strictly inside and positive strictly outside, and the
-    /// magnitude is the exact edge distance at grid samples.
     #[test]
     fn sign_is_negative_inside_and_magnitude_is_edge_distance() {
         let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
@@ -246,8 +242,6 @@ mod tests {
         assert!((signed_distance(&square, Vec2::new(2.0, 2.0)) - 2.0_f32.sqrt()).abs() < 1e-6);
     }
 
-    /// Winding, not orientation, decides inside: reversing every contour's
-    /// vertex order must not flip which points are inside.
     #[test]
     fn sign_is_independent_of_contour_orientation() {
         let ccw = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
@@ -258,9 +252,6 @@ mod tests {
         );
     }
 
-    /// A counter-wound inner contour cancels the outer winding, so the hole is
-    /// outside. This is the property that makes 'O', 'A' and 'P' come out with
-    /// holes instead of filled.
     #[test]
     fn counter_wound_inner_contour_is_a_hole() {
         let ring = vec![
@@ -275,8 +266,6 @@ mod tests {
         assert!(signed_distance(&ring, Vec2::new(3.0, 0.0)) > 0.0);
     }
 
-    /// A same-wound inner contour is not a hole under the nonzero rule, which
-    /// is the behaviour that separates it from an even-odd fill.
     #[test]
     fn same_wound_inner_contour_is_not_a_hole() {
         let both_ccw = vec![
@@ -286,9 +275,6 @@ mod tests {
         assert!(signed_distance(&both_ccw, Vec2::ZERO) < 0.0);
     }
 
-    /// The zero isoline never reaches the grid edge: every boundary sample is
-    /// outside. `solid` relies on this to treat non-isoline cell edges as
-    /// interior.
     #[test]
     fn grid_boundary_samples_are_all_outside() {
         let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
@@ -309,12 +295,6 @@ mod tests {
     /// costs a few times f32 epsilon of the larger operand.
     const LIPSCHITZ_SLACK: f32 = 1.0e-6;
 
-    /// Sampling is 1-Lipschitz per axis, so `|d(a) - d(b)|` is bounded by
-    /// `|a - b|` in L1 and by `sqrt(2)|a - b|` in L2, across the interior and
-    /// across the grid boundary where the clamped extrapolation takes over.
-    /// Every probe pair here is separated by a fraction of a cell: a sweep
-    /// whose spacing exceeds the cell never lands two probes in one bilinear
-    /// patch and so never sees the interpolant's worst slope.
     #[test]
     fn sampling_is_one_lipschitz_per_axis_including_off_grid() {
         let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
@@ -353,14 +333,6 @@ mod tests {
         }
     }
 
-    /// The L2 constant is sqrt(2) and not 1, and the gap is structural. Grid
-    /// samples with equal indices lie on `x = y`, which for this square is the
-    /// medial axis, so the cell between two of them has three corners at the
-    /// same distance and a fourth one cell nearer the wall. Along that cell's
-    /// diagonal the bilinear form is `d00 - cell * tx * ty`, whose gradient
-    /// runs to `(1, 1)` at the far corner. Restoring the 1-Lipschitz claim
-    /// therefore requires making `sample` conservative first, not just editing
-    /// the bound back.
     #[test]
     fn bilinear_sampling_exceeds_one_lipschitz_on_the_medial_axis() {
         let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
@@ -389,8 +361,6 @@ mod tests {
         );
     }
 
-    /// Off-grid sampling never over-reports the distance, which is the
-    /// direction that would let a sphere tracer step through the surface.
     #[test]
     fn off_grid_sampling_never_overshoots() {
         let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
@@ -406,9 +376,6 @@ mod tests {
         }
     }
 
-    /// Baking is a pure function of the contours: identical inputs give
-    /// bit-identical samples, which the fixed loop order and f32-only
-    /// arithmetic are there to guarantee.
     #[test]
     fn baking_is_bit_reproducible() {
         let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
@@ -417,10 +384,6 @@ mod tests {
         assert_eq!(a.samples, b.samples);
     }
 
-    /// Contours with no area have no field; the caller turns that into a loud
-    /// error rather than an empty letter. A contour collapsed onto a line has
-    /// nonzero extent on one axis and still bounds nothing, so extent must be
-    /// checked per axis rather than as a diagonal.
     #[test]
     fn zero_area_contours_have_no_field() {
         let collapsed = vec![Contour {

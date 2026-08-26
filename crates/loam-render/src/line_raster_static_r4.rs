@@ -80,8 +80,6 @@ pub struct LineRasterStaticR4Node {
 }
 
 impl LineRasterStaticR4Node {
-    /// Construct the pipeline.
-    ///
     /// `surface_format`, `depth`, and `sample_count` mirror
     /// [`crate::LineRasterNode::new`]; the pipeline-state knobs that have to
     /// match the attachments at draw time. See those docs for the contract.

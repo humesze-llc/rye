@@ -73,8 +73,6 @@ pub struct PointRasterNode {
 }
 
 impl PointRasterNode {
-    /// Construct the pipeline.
-    ///
     /// - `surface_format` must match the color attachment at draw time.
     /// - `depth`: see [`crate::DepthMode`]. Determines whether the pipeline
     ///   reads depth, reads + writes depth, or skips it entirely. `LessEqual`

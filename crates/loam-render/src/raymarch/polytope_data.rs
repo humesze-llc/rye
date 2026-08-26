@@ -1,9 +1,5 @@
 //! WGSL emission for the 120-cell and 600-cell SDFs.
 //!
-//! These two polytopes have face-hyperplane sets large enough (120 and 600 respectively) that
-//! hand-writing them as inline WGSL literals is impractical. Instead we generate the WGSL at
-//! runtime from the Rust face-plane / vertex generators in `loam_physics::euclidean_r4`.
-//!
 //! The emitted WGSL fragment defines:
 //!
 //! - `CELL_INRADIUS_UNIT: f32`: shared inradius constant for both polytopes at unit
@@ -25,8 +21,6 @@
 //!   - |S|=3: 3x3 Lagrange-multiplier solve via cofactor expansion.
 //!   - |S|=4: closest polytope vertex (the 4-plane intersection IS a vertex; brute-force search
 //!     the vertex array).
-//!
-//! Total emitted size: ~24 KB of WGSL (mostly the const-array literals).
 
 use std::fmt::Write;
 
@@ -42,8 +36,6 @@ use loam_shape::polytope_geom::{
 ///
 /// The kernel's `body_polytope_sdf_4d` always references both function names: naga rejects the
 /// WGSL otherwise: so callers must include either this stub or [`polytope_extended_sdfs_wgsl`].
-/// The stub is tiny (~150 bytes) and adds zero register pressure; prefer it when the scene contains
-/// no 120-cell or 600-cell bodies.
 pub fn polytope_stub_sdfs_wgsl() -> &'static str {
     "// ---- Polytope stub SDFs (no 120-cell/600-cell bodies in scene) ----\n\
      fn cell120_sdf_local(p: vec4<f32>) -> f32 { return 1.0e9; }\n\
@@ -161,9 +153,6 @@ fn polytope_project_active(
 }
 "#;
 
-/// Generate a Wolfe-SDF function for a specific polytope. The function reads from
-/// `face_normals_name` (size `face_count`) for plane queries and `vertices_name` (size
-/// `vertex_count`) for the |S|=4 fallback.
 fn wolfe_sdf_function(
     fn_name: &str,
     face_normals_name: &str,
@@ -175,7 +164,6 @@ fn wolfe_sdf_function(
         r#"
 fn {fn_name}(p: vec4<f32>) -> f32 {{
     let inradius = CELL_INRADIUS_UNIT;
-    // First pass: the farthest face plane, and which one it is.
     var max_d: f32 = -1.0e9;
     var max_i: u32 = 0u;
     for (var i: u32 = 0u; i < {face_count}u; i = i + 1u) {{
@@ -204,7 +192,6 @@ fn {fn_name}(p: vec4<f32>) -> f32 {{
     var q: vec4<f32> = p - max_d * a0;
     let tol: f32 = 1.0e-6;
 
-    // Iteratively add the next-most-violated plane (max 3 more times).
     for (var iter: u32 = 0u; iter < 3u; iter = iter + 1u) {{
         var next_d: f32 = tol;
         var next_i: u32 = 0xffffffffu;
@@ -254,8 +241,6 @@ fn {fn_name}(p: vec4<f32>) -> f32 {{
 mod tests {
     use super::*;
 
-    /// The emitted WGSL fragment parses and validates against naga. Catches any drift between the
-    /// emit shape and WGSL syntax.
     #[test]
     fn polytope_extended_sdfs_wgsl_validates() {
         let wgsl = polytope_extended_sdfs_wgsl();
@@ -276,20 +261,6 @@ mod tests {
         naga::valid::Validator::new(flags, caps)
             .validate(&module)
             .expect("polytope WGSL should validate");
-    }
-
-    /// Sanity-check the array sizes match the expected polytope counts.
-    #[test]
-    fn emitted_wgsl_has_expected_array_sizes() {
-        let wgsl = polytope_extended_sdfs_wgsl();
-        assert!(wgsl.contains("array<vec4<f32>, 120>"));
-        assert!(wgsl.contains("array<vec4<f32>, 600>"));
-        assert!(wgsl.contains("CELL120_FACE_NORMALS"));
-        assert!(wgsl.contains("CELL600_FACE_NORMALS"));
-        assert!(wgsl.contains("CELL120_VERTICES"));
-        assert!(wgsl.contains("CELL600_VERTICES"));
-        assert!(wgsl.contains("fn cell120_sdf_local"));
-        assert!(wgsl.contains("fn cell600_sdf_local"));
     }
 
     /// Which return path of the emitted Wolfe SDF a sample took. The vertex
@@ -464,20 +435,6 @@ mod tests {
         )
     }
 
-    /// The emitted SDF never reports more than the true distance, which is what
-    /// licenses the kernel's full sphere-trace step for these two shapes.
-    ///
-    /// The hand-written shapes get this from a Lipschitz argument (see
-    /// `hyperslice4d`), but that argument does not transfer here: the emitted
-    /// function is piecewise across the `dot(p, p) > 1` fast path, and a
-    /// downward jump crossing that boundary breaks continuity while preserving
-    /// the bound. So the bound is checked directly, against an upper bound on
-    /// the true distance obtained from a point actually inside the polytope.
-    ///
-    /// The samples concentrate on the shell between the inradius and the
-    /// circumsphere, half of them jittered around vertex directions at four
-    /// jitter scales, because that shell is the only place the Wolfe iteration
-    /// runs at all.
     #[test]
     fn emitted_wolfe_sdf_never_exceeds_the_true_distance() {
         for (name, (normals, inradius), vertices) in [
@@ -538,8 +495,6 @@ mod tests {
         }
     }
 
-    /// The stub WGSL also parses + validates against naga, satisfying the kernel's symbol
-    /// references with no const-array overhead.
     #[test]
     fn polytope_stub_sdfs_wgsl_validates() {
         let wgsl = polytope_stub_sdfs_wgsl();

@@ -380,28 +380,6 @@ async fn request_device() -> Result<(Device, Queue), String> {
         .map_err(|e| format!("request_device failed: {e}"))
 }
 
-/// The byte-identity harness, and the reason the cull was not taken.
-///
-/// Three claims, in the order they have to hold:
-///
-/// 1. Two independent modules built from the SHIPPED kernel render the same
-///    bytes at every slice. Without this the rig cannot tell "unchanged" from
-///    "changed" and neither of the claims below means anything.
-/// 2. The cull is bit-identical at every slice that cuts a body, where the
-///    slab test provably cannot fire (`|w_slice - b.w| <= b.polytope_size`).
-///    Two things can break it: a predicate that drifted into culling a body
-///    the ray can hit, or a shader compiler that reordered the minimum chain
-///    around the added branch. Under a bit-exactness bar both disqualify the
-///    cull, which is why this is an assertion and not a report.
-/// 3. Past every bounding ball the images diverge, which is what disqualifies
-///    the cull under a bit-exactness bar. Reported, not asserted: the
-///    divergence is tens of bytes of a 3.7 MB frame and whether a given
-///    driver lands on the same side of `hit_eps` is not this crate's contract.
-///
-/// The same loop prints each slice's occupancy against a body-free reference
-/// frame, because "the cull loses where the user is looking" is only a claim
-/// about the cells that draw a body, and the bounding ball the predicate uses
-/// is much wider in w than any of these shapes.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn the_w_slab_cull_is_bit_exact_inside_every_bounding_ball_gpu_probe() {
@@ -466,15 +444,6 @@ fn the_w_slab_cull_is_bit_exact_inside_every_bounding_ball_gpu_probe() {
     }
 }
 
-/// What the cull would buy, as wall time around submit-and-wait for one
-/// full-frame draw, against a same-kernel control that gives the noise floor.
-/// Prints rather than asserts: the numbers are hardware- and driver-specific,
-/// and the decision they feed is a judgement, recorded in the module docs.
-///
-/// Not a CI gate, and deliberately not `gpu_probe`-suffixed: the run is 14400
-/// full-frame marches, about ten seconds of discrete-GPU fragment work, which
-/// on the software adapter CI's `gpu_probe` job uses would dominate the job.
-/// `orbit_advance_perf` is excluded from that selector for the same reason.
 #[test]
 #[ignore = "perf probe; needs an adapter, run with --include-ignored"]
 fn the_w_slab_cull_frame_cost_perf() {

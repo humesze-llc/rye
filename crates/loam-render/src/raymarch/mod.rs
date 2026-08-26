@@ -1,8 +1,3 @@
-//! Ray-march render nodes: fullscreen-triangle + single UBO + user fragment shader.
-//!
-//! [`RayMarchNode`]: general Euclidean-fast path; takes a pre-compiled `ShaderModule`.
-//! [`GeodesicRayMarchNode`]: curved-space path built for the 4-layer kernel assembly.
-//!
 //! The user shader must export two entry points:
 //!
 //! ```wgsl
@@ -28,10 +23,6 @@ pub use polytope_data::{polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl};
 /// regular polychora. Returns `None` for the smooth-surface SDFs (`SHAPE_3SPHERE`,
 /// `SHAPE_DUOCYLINDER`, `SHAPE_CLIFFORD_TORUS`, `SHAPE_SPHERINDER`) which have no polytope
 /// topology -- the cross-section algorithm and per-vertex coloring don't apply to them.
-///
-/// Low-level bridge for callers that already have a raw `u32`. Higher-level call sites
-/// (catalogs, panel state) should prefer [`RaymarchShape`], which unifies the GPU shape
-/// ID and the polytope topology on one type.
 pub fn polytope4_from_shape_id(shape: u32) -> Option<loam_shape::polytope::Polytope4> {
     use loam_shape::polytope::Polytope4;
     Some(match shape {
@@ -47,35 +38,17 @@ pub fn polytope4_from_shape_id(shape: u32) -> Option<loam_shape::polytope::Polyt
 
 /// All shapes the hyperslice raymarch kernel can render, unified across the polychoral
 /// and smooth-surface families.
-///
-/// - The six convex regular polychora wrap a [`loam_shape::polytope::Polytope4`] so callers
-///   can pull topology + vertex generators alongside the GPU shape ID via
-///   [`RaymarchShape::polytope4`] / [`loam_shape::polytope::Polytope4::topology`].
-/// - The four smooth-surface SDFs (3-sphere, duocylinder, Clifford torus, spherinder) are
-///   their own variants. They have no polytope topology, so [`RaymarchShape::polytope4`]
-///   returns `None` for them.
-///
-/// Use this in app catalogs instead of raw `u32` shape IDs so adding a new shape is
-/// type-checked end-to-end. The raw `u32` for the GPU side comes from
-/// [`RaymarchShape::shape_id`]; if needed, [`From<RaymarchShape> for u32`] supplies the
-/// same conversion via `.into()`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RaymarchShape {
-    /// One of the six convex regular 4-polytopes.
     Polytope(loam_shape::polytope::Polytope4),
-    /// 4-ball boundary (a 3-sphere SDF; smooth, no topology).
     ThreeSphere,
-    /// Cartesian product of two disks; smooth.
     Duocylinder,
-    /// Flat 2-torus embedded in S³; smooth.
     CliffordTorus,
-    /// Cylinder x line, extended to 4D; smooth.
     Spherinder,
 }
 
 impl RaymarchShape {
-    /// GPU-side shape index (matches a `SHAPE_*` u32 constant). The hyperslice kernel
-    /// branches on this when computing the SDF for a body.
+    /// GPU-side shape index (matches a `SHAPE_*` u32 constant).
     pub fn shape_id(&self) -> u32 {
         use loam_shape::polytope::Polytope4;
         match self {
@@ -144,8 +117,7 @@ pub struct RayMarchUniforms {
     pub time: f32,
     /// Current sim tick as f32 (for shader-side animation).
     pub tick: f32,
-    /// Four scalar knobs exposed to the shader; semantics are up to the user shader. Handy for
-    /// live-tuning fractal parameters.
+    /// Four scalar knobs exposed to the shader; semantics are up to the user shader.
     pub params: [f32; 4],
 }
 

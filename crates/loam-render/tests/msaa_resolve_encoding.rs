@@ -279,9 +279,6 @@ fn assert_every_texel(pixels: &[u8], grey: u8, what: &str) {
     }
 }
 
-/// The scene's resolve pair. Averaging happens on linearized samples, so the
-/// resolved texel is the encoding of the mean the shader wrote, not the mean
-/// of the encodings.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn srgb_view_resolve_averages_linearized_samples_gpu_probe() {
@@ -289,9 +286,6 @@ fn srgb_view_resolve_averages_linearized_samples_gpu_probe() {
     assert_every_texel(&resolved, encoded_byte(LINEAR_MEAN), "sRGB resolve");
 }
 
-/// The UI pass's twin, which the scene resolve must never borrow: same stored
-/// bytes, averaged as if they were linear. The gap is the defect, and it is
-/// far wider than the round-trip slack either arm is allowed.
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn non_srgb_view_resolve_averages_encoded_samples_gpu_probe() {

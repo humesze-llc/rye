@@ -1,46 +1,6 @@
-//! Line rasterizer pipeline. Antialiased line-list rendering composed on top of an existing
-//! color attachment. Lines are quad-expanded in the vertex shader to give them pixel width and
-//! antialiased edges; the fragment shader smoothsteps coverage from line center to expanded
-//! edge.
-//!
-//! Lives next to [`crate::raymarch`] modules and is constructed standalone, the same way the
-//! existing `Hyperslice4DNode` is.
-//!
-//! ## Pipeline shape
-//!
-//! - **Vertex buffer**: 4 sprite-corner indices (`0u32`, `1`, `2`, `3`). Static, shared across
-//!   all segments.
-//! - **Index buffer**: `[0u32, 1, 2, 2, 1, 3]`. Static, two triangles per quad.
-//! - **Instance buffer**: per-segment `LineInstance` data (start_pos, end_pos, start_color,
-//!   end_color, width). Re-uploaded when the line mesh changes via the upload method.
-//! - **Uniform buffer**: `LineRasterUniforms` (view-projection matrix + viewport size).
-//!   Re-uploaded per frame via the camera method.
-//!
-//! ## Depth
-//!
-//! [`LineRasterNode::new`] takes a [`crate::DepthMode`]:
-//!
-//! - `Off`: no depth attachment, lines draw on top in submission order (HUD-style overlay).
-//! - `ReadWrite { format }`: standard scene-geometry depth, `depth_compare: Less` +
-//!   depth-write enabled. Use for opaque line wireframes that should occlude / be
-//!   occluded by other depth-aware geometry.
-//! - `ReadOnly { format }`: depth-test against the existing buffer but don't write. Use
-//!   for alpha-blended overlays that should be occluded by scene geometry in front of
-//!   them without burying subsequent draws behind them.
-//!
-//! When depth is active (`ReadWrite` or `ReadOnly`), [`LineRasterNode::record`] requires
-//! the matching depth attachment.
-//!
 //! The caller owns the depth texture lifecycle: examples create a swapchain-sized depth
 //! texture, recreate it on resize, and clear it via a dedicated clear pass before the
 //! rasterizer's draw (which uses `LoadOp::Load` for both color and depth).
-//!
-//! ## Current limitations
-//!
-//! - R³ + R⁴ impls only; other dimensions are additive on `RasterizableSpace<N>` and
-//!   `Visualizable<N>`.
-//! - [`Projection<N>`] variants beyond `Identity` + `Orthographic` (Perspective, Schlegel,
-//!   Stereographic, Hyperslice) are open extensions.
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
@@ -59,8 +19,6 @@ use wgpu::{
     VertexState, VertexStepMode,
 };
 
-/// WGSL source for the line rasterizer pipeline. Embedded as `&'static str` so the build is
-/// self-contained (no asset loading at startup). Naga-validated as part of the unit tests.
 const LINE_RASTER_WGSL: &str = include_str!("line_raster.wgsl");
 
 /// Camera uniform shared with the rasterizer's vertex shader. Matches the WGSL `CameraUniform`
@@ -88,9 +46,7 @@ impl Default for LineRasterUniforms {
     }
 }
 
-/// Per-instance line data uploaded to the GPU. One [`LineInstance`] per visible segment; the
-/// vertex shader expands each into a screen-space quad. Layout matches the `@location(1..=5)`
-/// attribute slots in `line_raster.wgsl`.
+/// Layout matches the `@location(1..=5)` attribute slots in `line_raster.wgsl`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
 struct LineInstance {
@@ -105,22 +61,13 @@ struct LineInstance {
 }
 
 /// Antialiased line-list rasterizer. Construct once per `RenderDevice`; reuse across frames.
-///
-/// Upload mesh data via [`Self::upload`]; draw onto a color attachment via [`Self::record`].
-/// The pipeline owns its own vertex / index / instance / uniform buffers; the caller doesn't
-/// manage GPU resources directly.
 pub struct LineRasterNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
     bind_group: BindGroup,
 
-    /// Static corner-index buffer (always `[0u32, 1, 2, 3]`). Per-vertex input to the shader's
-    /// `corner` location.
     corner_buf: Buffer,
-    /// Static index buffer (`[0u32, 1, 2, 2, 1, 3]`, two triangles per quad).
     index_buf: Buffer,
-    /// Per-instance buffer (one [`LineInstance`] per segment). Grows on demand; re-uploaded via
-    /// [`Self::upload`].
     instance_buf: Buffer,
     /// Number of segments currently uploaded. `0` means [`Self::record`] is a no-op.
     instance_count: u32,
@@ -128,14 +75,12 @@ pub struct LineRasterNode {
     /// upload exceeds this.
     instance_capacity: u32,
     /// `true` if the pipeline was created with a depth attachment; [`Self::record`] then
-    /// requires the matching depth view. Tracks the depth-or-not API contract so callers
-    /// don't silently get mismatched render passes.
+    /// requires the matching depth view.
     has_depth: bool,
     /// Per-call scratch for the instances vector built inside [`Self::upload`].
     /// Persisted on the node so the Vec's heap capacity is reused across calls;
     /// `clear()` empties the logical length without freeing the buffer, and the
-    /// next push series reuses the same allocation. Drops per-frame alloc count
-    /// for dynamic-mesh users (polytope_playground) by 1.
+    /// next push series reuses the same allocation.
     instances_scratch: Vec<LineInstance>,
 }
 
@@ -194,7 +139,6 @@ impl LineRasterNode {
             push_constant_ranges: &[],
         });
 
-        // Vertex layout: one u32 per corner-index vertex, plus per-instance line data.
         let corner_attrs = [VertexAttribute {
             format: VertexFormat::Uint32,
             offset: 0,
@@ -296,21 +240,18 @@ impl LineRasterNode {
             cache: None,
         });
 
-        // Static corner buffer: 4 vertices, one per quad corner.
         let corner_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("line_raster corner buffer"),
             contents: bytemuck::cast_slice(&[0u32, 1, 2, 3]),
             usage: BufferUsages::VERTEX,
         });
 
-        // Static index buffer: two triangles per quad.
         let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("line_raster index buffer"),
             contents: bytemuck::cast_slice(&[0u32, 1, 2, 2, 1, 3]),
             usage: BufferUsages::INDEX,
         });
 
-        // Instance buffer starts empty; grown on first upload.
         let instance_capacity = 0u32;
         let instance_buf = device.create_buffer(&BufferDescriptor {
             label: Some("line_raster instance buffer"),
@@ -363,10 +304,6 @@ impl LineRasterNode {
         S: RasterizableSpace<N>,
     {
         let samples = samples_per_segment.max(1);
-        // Build into the node-owned scratch (capacity reused across frames),
-        // then ship it to the GPU below. Factored out so the CPU-side
-        // tessellation + projection + non-finite drop is unit-testable without
-        // a GPU device (see `build_line_instances`).
         build_line_instances::<S, N>(&mut self.instances_scratch, mesh, projection, samples);
 
         let needed_capacity = self.instances_scratch.len() as u32;
@@ -495,9 +432,7 @@ fn build_line_instances<S, const N: usize>(
     // `tess_buf` stays local because it's generic over `S::Point` and the
     // node-level scratch field can't pick a single type. For flat spaces
     // (the common case) `samples = 1` so this Vec stays at capacity 2; the
-    // allocation cost is tiny (~64 bytes) and short-lived. Once a curved-
-    // space user shows real cost here, lift it into a type-erased scratch
-    // (`Vec<u8>` with `bytemuck::cast_slice_mut`) on the node.
+    // allocation cost is tiny (~64 bytes) and short-lived.
     let mut tess_buf: Vec<S::Point> = Vec::with_capacity(samples + 1);
 
     out.clear();
@@ -514,8 +449,7 @@ fn build_line_instances<S, const N: usize>(
         let p1 = S::array_to_point(seg.1);
         S::tessellate_segment(p0, p1, samples, &mut tess_buf);
 
-        // tess_buf now holds samples+1 points. Pair consecutive points into rendered
-        // sub-segments. Per-endpoint color is linearly interpolated along the original
+        // Per-endpoint color is linearly interpolated along the original
         // segment so multi-sample tessellation preserves the gradient.
         let n_sub = tess_buf.len().saturating_sub(1);
         for i in 0..n_sub {
@@ -555,9 +489,6 @@ fn lerp_color(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
 mod tests {
     use super::*;
 
-    /// The embedded WGSL parses and validates against naga, matching the kernel-validation
-    /// pattern used by the raymarch nodes. Catches drift between Rust-side attribute layouts
-    /// and the shader's `@location` declarations.
     #[test]
     fn line_raster_wgsl_validates() {
         let module = naga::front::wgsl::parse_str(LINE_RASTER_WGSL)
@@ -569,22 +500,15 @@ mod tests {
             .expect("line_raster WGSL must validate");
     }
 
-    /// `LineRasterUniforms` is 80 bytes (64 mat + 8 vec2 + 8 pad). Matches the WGSL
-    /// `CameraUniform` std140 layout exactly. Drift here means the GPU reads garbage from
-    /// the wrong offsets.
     #[test]
     fn uniforms_size_matches_wgsl() {
         assert_eq!(std::mem::size_of::<LineRasterUniforms>(), 80);
         assert_eq!(std::mem::align_of::<LineRasterUniforms>(), 4);
     }
 
-    /// `LineInstance` is 80 bytes (12 + 4 + 12 + 4 + 16 + 16 + 4 + 12 pad). Each attribute
-    /// offset in the vertex layout descriptor must match this layout exactly.
     #[test]
     fn instance_size_matches_layout() {
         assert_eq!(std::mem::size_of::<LineInstance>(), 80);
-        // Spot-check the field offsets (`memoffset::offset_of!` would be cleaner but adds a
-        // dep just for this).
         let zero = LineInstance::default();
         let base = &zero as *const _ as usize;
         let end_pos_off = &zero.end_pos as *const _ as usize - base;
@@ -597,20 +521,14 @@ mod tests {
         assert_eq!(width_off, 64);
     }
 
-    // ---- non-finite drop backstop ---------------------------------------
-    //
-    // These exercise the CPU-side instance builder directly (no GPU device):
-    // `build_line_instances` is the part of `upload` that tessellates,
-    // projects, and packs, including the `is_finite` drop guard. `EuclideanR3`
-    // + `Projection::Identity` is a bitwise pass-through, so a non-finite
-    // coordinate in the input mesh flows straight to the projected endpoint and
-    // exercises the guard without needing a projection that manufactures one.
+    // `EuclideanR3` + `Projection::Identity` is a bitwise pass-through, so a
+    // non-finite coordinate in the input mesh flows straight to the projected
+    // endpoint and exercises the drop guard without needing a projection that
+    // manufactures one.
 
     use loam_math::EuclideanR3;
     use loam_shape::LineMesh;
 
-    /// Build a single-segment R³ mesh with the given endpoints, uniform white
-    /// color, and unit width.
     fn one_segment_mesh(a: [f32; 3], b: [f32; 3]) -> LineMesh<3> {
         LineMesh {
             segments: vec![(a, b)],
@@ -619,10 +537,6 @@ mod tests {
         }
     }
 
-    /// A segment with all-finite endpoints survives; a segment carrying a NaN
-    /// endpoint is dropped, so the built instance count excludes it. Pins the
-    /// invariant that a non-finite endpoint contributes ZERO instances rather
-    /// than a poisoned one.
     #[test]
     fn upload_drops_non_finite_segments() {
         let mut scratch: Vec<LineInstance> = Vec::new();
@@ -636,15 +550,10 @@ mod tests {
         assert_eq!(scratch.len(), 0, "NaN-endpoint segment must be dropped");
     }
 
-    /// Re-running the builder over a NaN-bearing mesh leaves the scratch Vec's
-    /// heap capacity unchanged from the prior (finite) build: the drop is a
-    /// `continue`, not a `filter().collect()`, so the zero-per-frame-allocation
-    /// contract holds even when segments are culled.
     #[test]
     fn upload_drops_non_finite_without_reallocating() {
         let mut scratch: Vec<LineInstance> = Vec::new();
 
-        // Prime the scratch with several finite segments so it grows once.
         let mut many = LineMesh::<3>::default();
         for k in 0..8 {
             let f = k as f32;
@@ -656,9 +565,6 @@ mod tests {
         assert_eq!(scratch.len(), 8);
         let cap_after_growth = scratch.capacity();
 
-        // Now feed a mesh whose only segment is non-finite. The builder
-        // `clear()`s then `reserve()`s for one segment (<= current cap, so no
-        // growth) and drops the segment, leaving capacity untouched.
         let nan = one_segment_mesh([f32::NAN, 0.0, 0.0], [0.0, 0.0, 0.0]);
         build_line_instances::<EuclideanR3, 3>(&mut scratch, &nan, &Projection::Identity, 1);
         assert_eq!(scratch.len(), 0);
@@ -669,9 +575,6 @@ mod tests {
         );
     }
 
-    /// The drop predicate is `!is_finite()`, not an `== NAN` sentinel: a segment
-    /// with a `+inf` (or `-inf`) endpoint is ALSO dropped. An equality-to-NaN
-    /// test would let infinities through to poison the GPU divide.
     #[test]
     fn upload_drop_predicate_catches_infinity_not_just_nan() {
         let mut scratch: Vec<LineInstance> = Vec::new();

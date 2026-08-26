@@ -1,11 +1,7 @@
-//! Triangle rasterizer pipeline. Per-vertex color, optional depth attachment,
-//! alpha-blended. Parallel to [`crate::line_raster::LineRasterNode`]; the two
-//! share a depth attachment within a frame so fills and edges occlude correctly.
-//!
-//! Vertex buffer is per-vertex [`TriangleVertex`] (R³ position + color), uniform
-//! is [`TriangleRasterUniforms`] (view-projection only). Depth is opt-in via
-//! [`crate::DepthMode`]; the caller owns the depth texture and clears it once per
-//! frame ([`TriangleRasterNode::record`] uses `LoadOp::Load`).
+//! Parallel to [`crate::line_raster::LineRasterNode`]; the two share a depth
+//! attachment within a frame so fills and edges occlude correctly. The caller
+//! owns the depth texture and clears it once per frame
+//! ([`TriangleRasterNode::record`] uses `LoadOp::Load`).
 //!
 //! Normals are omitted because R⁴ has no standard lighting convention (see
 //! `TriangleMesh<N>`). For lit shading [`FragmentShading::FaceNormalLambert`]
@@ -28,7 +24,6 @@ use wgpu::{
     VertexState, VertexStepMode,
 };
 
-/// Embedded WGSL source. Naga-validated in tests for ABI drift detection.
 const TRIANGLE_RASTER_WGSL: &str = include_str!("triangle_raster.wgsl");
 
 /// Camera uniform for the triangle vertex shader: view-projection only, no
@@ -62,7 +57,6 @@ pub struct TriangleVertex {
 /// the entry point. Switching modes needs a new pipeline.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum FragmentShading {
-    /// Pass per-vertex color through unmodified. The default.
     #[default]
     Flat,
     /// Lambert lit by a face normal derived from screen-space derivatives of
@@ -71,7 +65,6 @@ pub enum FragmentShading {
 }
 
 impl FragmentShading {
-    /// WGSL entry-point name for the fragment stage.
     fn entry_point(self) -> &'static str {
         match self {
             Self::Flat => "fs_flat",
@@ -86,11 +79,9 @@ pub struct TriangleRasterNode {
     uniform_buf: Buffer,
     bind_group: BindGroup,
 
-    /// Per-vertex buffer. Grown on demand by [`Self::upload`].
     vertex_buf: Buffer,
     vertex_capacity: u32,
 
-    /// Index buffer (u32). Grown on demand by [`Self::upload`].
     index_buf: Buffer,
     index_capacity: u32,
     /// Number of indices currently uploaded; `0` means [`Self::record`] is a no-op.
@@ -289,7 +280,6 @@ impl TriangleRasterNode {
             });
         }
 
-        // Flatten [u32; 3] triples into one index buffer.
         let mut indices: Vec<u32> = Vec::with_capacity(mesh.indices.len() * 3);
         for tri in &mesh.indices {
             indices.extend_from_slice(tri);
@@ -402,8 +392,6 @@ impl TriangleRasterNode {
 mod tests {
     use super::*;
 
-    /// Embedded WGSL parses and validates against naga; catches drift between
-    /// the Rust vertex layout and the shader's `@location` declarations.
     #[test]
     fn triangle_raster_wgsl_validates() {
         let module = naga::front::wgsl::parse_str(TRIANGLE_RASTER_WGSL)
@@ -415,16 +403,12 @@ mod tests {
             .expect("triangle_raster WGSL must validate");
     }
 
-    /// `TriangleRasterUniforms` is exactly 64 bytes (one mat4x4, no padding). Drift here means
-    /// the GPU reads the wrong bytes for the view-projection matrix.
     #[test]
     fn uniforms_size_matches_wgsl() {
         assert_eq!(std::mem::size_of::<TriangleRasterUniforms>(), 64);
         assert_eq!(std::mem::align_of::<TriangleRasterUniforms>(), 4);
     }
 
-    /// `TriangleVertex` is 32 bytes (12 position + 4 pad + 16 color). Attribute offsets in
-    /// the vertex layout descriptor must match this layout exactly.
     #[test]
     fn vertex_size_matches_layout() {
         assert_eq!(std::mem::size_of::<TriangleVertex>(), 32);

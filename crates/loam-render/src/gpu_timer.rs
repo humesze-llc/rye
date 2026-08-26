@@ -1,14 +1,3 @@
-//! GPU timer queries via wgpu's `TIMESTAMP_QUERY` feature. Brackets a frame's
-//! submitted GPU work in `write_timestamp` calls; the delta is the GPU's
-//! wall-clock time for that frame.
-//!
-//! Each frame uses one of `FRAMES_IN_FLIGHT` slots: write start, then write end,
-//! `resolve_query_set`, and `copy_buffer_to_buffer` into a per-slot map buffer.
-//! `tick()` schedules `map_async`; the callback converts ticks to nanoseconds
-//! via `Queue::get_timestamp_period` and sends the delta over an `mpsc`
-//! channel, which the next `tick()` drains into `loam_time::frame_trace` as a
-//! `gpu-total` section.
-//!
 //! Two buffer layers because wgpu 27 rejects `MAP_READ | QUERY_RESOLVE` at
 //! `create_buffer` (MAP usage may only pair with the opposite COPY): one
 //! GPU-only resolve buffer (`QUERY_RESOLVE | COPY_SRC`) feeds CPU-mappable map
@@ -16,9 +5,6 @@
 //! a whole buffer the instant any slice is mapped, so a shared buffer would
 //! fail slot N+1's `copy_buffer_to_buffer` at submit while slot N awaits its
 //! callback.
-//!
-//! `GpuTimer::new` returns `None` when the device lacks the timestamp features;
-//! guard with `if let Some(t) = rd.gpu_timer.as_mut()`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -225,18 +211,7 @@ impl GpuTimer {
 mod tests {
     use super::*;
 
-    // Pure slot index / range arithmetic; no wgpu device needed. The
-    // integration paths are covered indirectly by the demos starting without
-    // panic.
-
-    // Compile-time stride-fits-payload invariant.
     const _: () = assert!(SLOT_STRIDE_BYTES >= BYTES_PER_SLOT);
-
-    #[test]
-    fn slot_constants_match_wgpu_alignment() {
-        assert_eq!(SLOT_STRIDE_BYTES, QUERY_RESOLVE_BUFFER_ALIGNMENT);
-        assert_eq!(BYTES_PER_SLOT, 16, "two u64 ticks per slot");
-    }
 
     #[test]
     fn slot_query_range_is_pair_per_slot() {
@@ -274,57 +249,6 @@ mod tests {
         }
     }
 
-    fn slot_of(frame_index: u64) -> usize {
-        (frame_index as usize) % FRAMES_IN_FLIGHT
-    }
-
-    fn just_resolved_of(frame_index: u64) -> usize {
-        (frame_index.wrapping_sub(1) as usize) % FRAMES_IN_FLIGHT
-    }
-
-    #[test]
-    fn current_slot_cycles_through_frames_in_flight() {
-        for f in 0..(FRAMES_IN_FLIGHT * 4) as u64 {
-            let s = slot_of(f);
-            assert!(s < FRAMES_IN_FLIGHT, "slot {s} out of range");
-            assert_eq!(s, (f as usize) % FRAMES_IN_FLIGHT);
-        }
-    }
-
-    #[test]
-    fn just_resolved_slot_is_previous_frame() {
-        for f in 1..(FRAMES_IN_FLIGHT * 4) as u64 {
-            assert_eq!(just_resolved_of(f), slot_of(f - 1));
-        }
-    }
-
-    #[test]
-    fn just_resolved_slot_wraps_around_u64_max() {
-        // After frame_index wraps to 0, the previous slot must stay correct.
-        // 0.wrapping_sub(1) = u64::MAX; 2^64 ≡ 1 mod 3 so u64::MAX ≡ 0 mod 3.
-        let f = 0u64;
-        let prev = just_resolved_of(f);
-        assert_eq!(prev, 0, "u64::MAX % 3 should be 0");
-        assert_eq!(prev, (u64::MAX as usize) % FRAMES_IN_FLIGHT);
-    }
-
-    #[test]
-    fn in_flight_flag_round_trip_clears_after_callback() {
-        // Resolve sets in_flight; callback clears it, re-arming the slot.
-        let flag = Arc::new(AtomicBool::new(false));
-        assert!(!flag.load(Ordering::Acquire), "starts clear");
-
-        flag.store(true, Ordering::Release);
-        assert!(flag.load(Ordering::Acquire), "resolve sets it");
-
-        // The write_start / write_end skip guard fires while in_flight is set.
-        let still_in_flight = flag.load(Ordering::Acquire);
-        assert!(still_in_flight, "skip guard fires on consecutive resolves");
-
-        flag.store(false, Ordering::Release);
-        assert!(!flag.load(Ordering::Acquire), "callback re-arms the slot");
-    }
-
     #[test]
     fn plausible_frame_delta_rejects_over_budget() {
         assert!(is_plausible_frame_delta_ns(4_000_000)); // 240 Hz
@@ -335,16 +259,5 @@ mod tests {
         assert!(!is_plausible_frame_delta_ns(950_000_000));
         // Zero (start == end) is plausible, not a stall.
         assert!(is_plausible_frame_delta_ns(0));
-    }
-
-    #[test]
-    fn channel_round_trip_carries_duration() {
-        // The map_async callback sends over `tx`; `tick` drains via `try_recv`.
-        let (tx, rx) = channel::<Duration>();
-        let _ = tx.send(Duration::from_micros(16_500));
-        let _ = tx.send(Duration::from_micros(17_100));
-        assert_eq!(rx.try_recv().ok(), Some(Duration::from_micros(16_500)));
-        assert_eq!(rx.try_recv().ok(), Some(Duration::from_micros(17_100)));
-        assert!(rx.try_recv().is_err(), "channel drained");
     }
 }

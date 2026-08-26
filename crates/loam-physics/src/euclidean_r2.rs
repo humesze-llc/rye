@@ -1,7 +1,3 @@
-//! `impl PhysicsSpace for EuclideanR2`, 2D Euclidean rigid-body physics.
-//!
-//! Angular velocity is a scalar ([`Bivector2`]); inertia is the scalar moment.
-
 use glam::Vec2;
 
 use loam_math::{Bivector, Bivector2, EuclideanR2, Iso2};
@@ -105,7 +101,6 @@ pub fn disk_inertia(mass: f32, radius: f32) -> f32 {
     0.5 * mass * radius * radius
 }
 
-/// Build a dynamic circular body in R².
 pub fn sphere_body(
     position: Vec2,
     velocity: Vec2,
@@ -172,11 +167,9 @@ fn sphere_sphere_r2(
     })
 }
 
-// ---------------------------------------------------------------------------
 // Polygon-polygon via SAT (Separating Axis Theorem). Axis of minimum overlap
 // gives the contact normal and penetration depth. Local vertices must be CCW;
 // outward edge normals are `(edge.y, -edge.x) / |edge|`.
-// ---------------------------------------------------------------------------
 
 use loam_math::Rotor;
 
@@ -266,7 +259,6 @@ fn polygon_polygon_r2(
     // Contact-point heuristic: deepest vertex of each polygon along the normal,
     // then whichever lies inside the other (the penetrating vertex in a
     // vertex-face contact). Edge-edge or grazing falls back to the midpoint.
-    // Imperfect; a full Sutherland-Hodgman manifold would replace it.
     let mut deepest_a = va[0];
     let mut max_proj = va[0].dot(normal);
     for &v in &va[1..] {
@@ -390,10 +382,6 @@ fn sphere_polygon_r2(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Regular polygon builders.
-// ---------------------------------------------------------------------------
-
 /// CCW vertices of a regular n-gon with circumradius `r`; first vertex on +X.
 pub fn regular_polygon_vertices(n: u32, r: f32) -> Vec<Vec2> {
     use std::f32::consts::TAU;
@@ -413,7 +401,6 @@ pub fn regular_polygon_inertia(mass: f32, n: u32, r: f32) -> f32 {
     (mass * r * r / 6.0) * (1.0 + 2.0 * c * c)
 }
 
-/// Build a dynamic regular n-gon body in R².
 pub fn polygon_body(
     position: Vec2,
     velocity: Vec2,
@@ -465,8 +452,7 @@ pub fn rectangle_body(
     )
 }
 
-/// Build a static (infinite-mass) rectangular wall. `half_extents` is
-/// (width/2, height/2).
+/// `half_extents` is (width/2, height/2).
 pub fn static_wall(center: Vec2, half_extents: Vec2) -> RigidBody<EuclideanR2> {
     RigidBody::fixed(
         center,
@@ -554,7 +540,6 @@ mod tests {
         }
     }
 
-    /// Test-local wrapper: axis-aligned box at rest.
     fn aa_box(center: Vec2, half: Vec2, mass: f32) -> RigidBody<EuclideanR2> {
         rectangle_body(center, Vec2::ZERO, half, mass)
     }
@@ -652,11 +637,6 @@ mod tests {
         )
     }
 
-    /// `Contact::normal` runs A -> B and the solver drives A along `−normal`,
-    /// so `−normal` is the direction the disk leaves along. From inside the
-    /// polygon that is the way to the nearest face, which is `closest −
-    /// centre`; `centre − closest` points at the interior instead, and a slab
-    /// thinner than the disk then holds it rather than stopping it.
     #[test]
     fn sphere_polygon_normal_leaves_through_the_nearest_face_from_inside() {
         let mut np = Narrowphase::<EuclideanR2>::new();
@@ -680,9 +660,6 @@ mod tests {
         }
     }
 
-    /// Crossing into the polygon does not change which face is nearest, so it
-    /// must not change the normal or the rate the depth grows. A sign
-    /// convention that only holds on one side reads as a reversal here.
     #[test]
     fn sphere_polygon_contact_is_continuous_across_the_face() {
         let mut np = Narrowphase::<EuclideanR2>::new();
@@ -709,10 +686,6 @@ mod tests {
         );
     }
 
-    /// A disk centred exactly on a face has no `centre − closest` to take a
-    /// direction from, so the face's own outward normal is the only signal
-    /// left. Without it the contact is finite but points wherever the fallback
-    /// constant happens to.
     #[test]
     fn sphere_polygon_centre_on_the_face_leaves_along_that_face_normal() {
         let mut np = Narrowphase::<EuclideanR2>::new();
@@ -730,9 +703,6 @@ mod tests {
         assert!((c.penetration - DISK_RADIUS).abs() < 1e-5);
     }
 
-    /// The contact boundary itself: at exactly `radius` from the face the disk
-    /// touches without overlapping, and the verdict must not oscillate within
-    /// an epsilon of it.
     #[test]
     fn sphere_polygon_grazing_at_exactly_the_radius_reports_no_contact() {
         let mut np = Narrowphase::<EuclideanR2>::new();
@@ -761,9 +731,6 @@ mod tests {
         }
     }
 
-    /// `d ≥ r_a + r_b` is the sphere-sphere no-contact test, so exactly
-    /// touching reports nothing and the first epsilon of overlap reports that
-    /// epsilon rather than a jump.
     #[test]
     fn sphere_sphere_grazing_at_exactly_the_combined_radius_reports_no_contact() {
         let mut np = Narrowphase::<EuclideanR2>::new();
@@ -785,9 +752,6 @@ mod tests {
         }
     }
 
-    /// A polygon whose vertices coincide has no boundary, so no distance to it
-    /// is a number and no depth built on one is either. Reporting nothing is
-    /// the only finite answer.
     #[test]
     fn polygon_with_no_edge_length_reports_no_contact() {
         let mut np = Narrowphase::<EuclideanR2>::new();
@@ -834,8 +798,6 @@ mod tests {
 
     #[test]
     fn off_center_impact_produces_angular_velocity() {
-        // A square hit off-center (top-right) must acquire clockwise (negative)
-        // spin; without contact torque it would only translate.
         let mut world = World::new(EuclideanR2);
         register_default_narrowphase(&mut world.narrowphase);
 
@@ -860,8 +822,6 @@ mod tests {
 
     #[test]
     fn head_on_contact_produces_no_rotation() {
-        // Head-on sphere-sphere collision must stay purely linear; angular
-        // response must not leak into axis-aligned contacts.
         let mut world = World::new(EuclideanR2);
         register_default_narrowphase(&mut world.narrowphase);
 
@@ -886,7 +846,6 @@ mod tests {
 
     #[test]
     fn polygons_settle_on_floor_without_penetration() {
-        // Polygons dropped on a static floor should rest above its surface.
         let mut world = World::new(EuclideanR2);
         register_default_narrowphase(&mut world.narrowphase);
 
@@ -945,7 +904,6 @@ mod tests {
             world.step(1.0 / 60.0);
         }
 
-        // x-velocities reverse sign on an elastic-ish bounce.
         assert!(
             world.bodies[0].velocity.x < 0.0,
             "body 0 should bounce back"
@@ -958,11 +916,9 @@ mod tests {
 
     #[test]
     fn box_stack_settles_to_rest() {
-        // Persistent manifolds + iterative PGS let the bottom box satisfy both
-        // its constraints (floor below, box above); without them the stack
-        // jitters forever. Capped at N=3: one contact per pair per frame can't
+        // Capped at N=3: one contact per pair per frame can't
         // resist tipping in a tall stack, and manifolds populate too slowly for
-        // fast-loading ones. SAT clipping (Sutherland-Hodgman) is the fix.
+        // fast-loading ones.
         let mut world = World::new(EuclideanR2);
         register_default_narrowphase(&mut world.narrowphase);
 
@@ -988,7 +944,6 @@ mod tests {
             world.step(1.0 / 60.0);
         }
 
-        // Every box at rest and the stack upright.
         for (idx, body) in world.bodies.iter().enumerate().skip(1) {
             assert!(
                 body.position.is_finite() && body.velocity.is_finite(),

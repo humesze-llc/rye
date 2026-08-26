@@ -1,7 +1,3 @@
-//! [`RigidBody<S>`], the physical object a [`crate::World`] simulates, and
-//! [`BodyArena<S>`], the generational storage that gives it an identity
-//! independent of where it currently sits in memory.
-
 use std::ops::{Add, Deref, Index, IndexMut, Mul};
 
 use loam_math::Bivector;
@@ -9,9 +5,7 @@ use loam_math::Bivector;
 use crate::collider::Collider;
 use crate::integrator::PhysicsSpace;
 
-/// A rigid body in some [`PhysicsSpace`]. Public-fields struct so the solver and user code can
-/// read and write components directly, this crate doesn't hide state, it just provides the rules
-/// for advancing it.
+/// A rigid body in some [`PhysicsSpace`].
 ///
 /// `inv_mass == 0.0` means a static body: gravity and impulses have no effect on its velocity,
 /// and [`crate::integrate_body`] skips it.
@@ -33,9 +27,8 @@ pub struct RigidBody<S: PhysicsSpace> {
 }
 
 impl<S: PhysicsSpace> RigidBody<S> {
-    /// Build a dynamic body at `position` with the given mass and collider. `space` is passed so
-    /// the caller can source an identity isometry without naming the space's [`crate::Collider`]
-    /// types directly.
+    /// `space` is passed so the caller can source an identity isometry without naming the
+    /// space's [`crate::Collider`] types directly.
     pub fn new(
         position: S::Point,
         velocity: S::Vector,
@@ -317,7 +310,6 @@ impl<S: PhysicsSpace> BodyArena<S> {
         slot.dense.map(|dense| dense as usize)
     }
 
-    /// Handle of the body at dense position `dense`.
     pub fn id_at(&self, dense: usize) -> BodyId {
         self.ids[dense]
     }
@@ -376,8 +368,7 @@ impl<S: PhysicsSpace> IndexMut<BodyId> for BodyArena<S> {
     }
 }
 
-/// Dense-position indexing, the iteration-order view. [`Deref`] already
-/// exposes the slice; this is the operator form of `arena[..][dense]`.
+/// Dense-position indexing, the iteration-order view.
 impl<S: PhysicsSpace> Index<usize> for BodyArena<S> {
     type Output = RigidBody<S>;
 
@@ -474,8 +465,6 @@ mod tests {
         assert_eq!(body.angular_velocity, Bivector3::ZERO);
     }
 
-    /// An impulse through the centre of mass is pure translation, whichever
-    /// entry point applies it.
     #[test]
     fn central_impulse_produces_no_spin_and_matches_linear_form() {
         let position = Vec3::new(2.0, -1.0, 3.0);
@@ -491,8 +480,6 @@ mod tests {
         assert_eq!(at_point.angular_velocity, Bivector3::ZERO);
     }
 
-    /// Off-centre impulse in R³: `Δω = I⁻¹(r ∧ J)`, sign included. A lever
-    /// along +y with an impulse along +x spins negatively in the xy plane.
     #[test]
     fn off_center_impulse_spins_body_by_inverse_inertia_times_lever_wedge_impulse_r3() {
         let mut body = body_r3(Vec3::ZERO, 2.0, 0.5);
@@ -507,8 +494,6 @@ mod tests {
         assert_eq!(body.angular_velocity, Bivector3::new(-12.0, 0.0, 0.0));
     }
 
-    /// The R⁴ twin, with the lever along +w so the response lands in the xw
-    /// plane: a rotation plane with no R³ analogue.
     #[test]
     fn off_center_impulse_spins_body_by_inverse_inertia_times_lever_wedge_impulse_r4() {
         let mut body = body_r4(Vec4::ZERO, 2.0, 0.5);
@@ -527,11 +512,6 @@ mod tests {
         assert_eq!(body.angular_velocity, expected);
     }
 
-    /// Equal and opposite impulses at one shared world point are an internal
-    /// interaction: total linear momentum and total angular momentum about a
-    /// fixed origin are both unchanged. Pins the lever arm and the inverse
-    /// inertia against the linear term; the absolute sign of the wedge is
-    /// pinned by the two off-centre tests above.
     #[test]
     fn equal_and_opposite_impulses_conserve_linear_and_angular_momentum() {
         let space = EuclideanR3;
@@ -586,9 +566,6 @@ mod tests {
         );
     }
 
-    /// `inv_mass == 0` is the documented static contract: impulses are inert
-    /// on both channels, including the angular one that reads `inertia`
-    /// directly.
     #[test]
     fn static_body_ignores_both_impulse_forms() {
         let mut body = RigidBody::<EuclideanR3>::fixed(
@@ -607,9 +584,6 @@ mod tests {
         assert_eq!(body.angular_velocity, Bivector3::ZERO);
     }
 
-    /// The property the generation exists for: after a slot is recycled the
-    /// old handle must fail to resolve. Positional indices alias here, which
-    /// is what silently rebinds a manifold key to a different body.
     #[test]
     fn stale_handle_never_resolves_after_its_slot_is_recycled() {
         let mut arena = BodyArena::new();
@@ -637,8 +611,6 @@ mod tests {
         );
     }
 
-    /// Despawn compacts storage, so the surviving handles must follow their
-    /// bodies rather than their old positions.
     #[test]
     fn despawn_keeps_storage_dense_and_survivor_handles_valid() {
         let mut arena = BodyArena::new();
@@ -660,11 +632,6 @@ mod tests {
         assert_eq!(positions, vec![Vec3::X, Vec3::Z]);
     }
 
-    /// The correspondence the whole indirection rests on, stated over the
-    /// public surface: every dense position resolves back through the handle
-    /// stored at it. A permutation of the dense slice that the slot table did
-    /// not follow breaks exactly this, and breaks it silently, which is why the
-    /// mutable slice does not leave the crate.
     #[test]
     fn every_dense_position_resolves_back_through_its_own_handle() {
         let mut arena = BodyArena::new();
@@ -692,8 +659,6 @@ mod tests {
         arena.spawn(body_r3(Vec3::ZERO, 1.0, 1.0));
         assert_consistent(&arena);
 
-        // Per-body mutation is the supported write path and must leave the
-        // correspondence alone.
         for (dense, body) in arena.iter_mut().enumerate() {
             body.restitution = dense as f32;
         }
@@ -702,11 +667,6 @@ mod tests {
         assert_eq!(restitutions, vec![0.0, 1.0, 2.0]);
     }
 
-    /// The residual [`BodyArena::iter_mut`] names, over the public surface a
-    /// caller has: its items borrow the slice, not the iterator, so two
-    /// coexist and swap, and the arena cannot observe the permutation. Pins
-    /// the doc against re-inflating into a seal it does not provide; work
-    /// that does close the hole fails here and has to rewrite both.
     #[test]
     fn swapping_two_iter_mut_items_desynchronizes_handles_from_storage() {
         let mut arena = BodyArena::new();
@@ -729,10 +689,6 @@ mod tests {
         assert_eq!(arena[second].position, Vec3::X);
     }
 
-    /// The cheapest route back to a permutation, and the one the type doc has
-    /// to name: `IterMut::into_slice` returns the whole `&mut [RigidBody<S>]`,
-    /// so a single expression restores every method dropping `DerefMut`
-    /// removed. Pinned so the doc cannot drift into claiming a seal.
     #[test]
     fn into_slice_reopens_every_reordering_method_in_one_expression() {
         let mut arena = BodyArena::new();
@@ -750,9 +706,6 @@ mod tests {
         assert_eq!(arena[second].position, Vec3::X);
     }
 
-    /// Handle allocation is part of the determinism contract: two arenas
-    /// driven by the same spawn/despawn sequence must mint the same handles,
-    /// or a replay keyed on handles diverges.
     #[test]
     fn handle_sequence_is_reproducible_across_identical_operation_sequences() {
         let run = || {
@@ -779,7 +732,6 @@ mod tests {
 
     #[test]
     fn static_halfspace_4d_is_allowed() {
-        // Mass = 0 means static; the guard must not fire.
         let _ = RigidBody::<EuclideanR4>::new(
             Vec4::ZERO,
             Vec4::ZERO,

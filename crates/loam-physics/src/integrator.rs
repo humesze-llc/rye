@@ -1,10 +1,3 @@
-//! The [`PhysicsSpace`] trait and the generic integration function.
-//!
-//! `PhysicsSpace` extends [`loam_math::Space`] with the rotation dynamics physics
-//! needs: an angular-velocity type, an inertia type, and an orientation-
-//! integration rule. Everything else is written against `Space` and works
-//! unchanged across E², E³, H³, S³, etc.
-
 use std::ops::Mul;
 
 use loam_math::{Bivector, IsometryGroup, Space};
@@ -18,10 +11,6 @@ use crate::body::RigidBody;
 /// isometry of the whole manifold ([`RigidBody::orientation`]), which restricts
 /// physics to the spaces that have one.
 ///
-/// New spaces opt into physics by implementing this. Sphere-sphere collision
-/// works immediately via [`loam_math::Space::distance`] and
-/// [`loam_math::Space::log`]; polygon/polyhedron collision needs per-space
-/// narrowphase functions registered in [`crate::Narrowphase`].
 pub trait PhysicsSpace: Space + IsometryGroup {
     /// Angular-velocity bivector (e.g. [`loam_math::Bivector2`],
     /// [`loam_math::Bivector3`]).
@@ -30,15 +19,14 @@ pub trait PhysicsSpace: Space + IsometryGroup {
     /// Inertia: scalar in 2D, 3×3 in 3D, 6×6 bivector map in 4D. Layout opaque.
     type Inertia: Copy;
 
-    /// Integrate orientation by angular velocity over a timestep. Returns the new orientation.
+    /// Integrate orientation by angular velocity over a timestep.
     fn integrate_orientation(&self, iso: Self::Iso, omega: Self::AngVel, dt: f32) -> Self::Iso;
 
-    /// Apply the inverse inertia to a torque-bivector. Used by the solver for `ω += I⁻¹τ dt`.
+    /// Apply the inverse inertia to a torque-bivector.
     fn apply_inv_inertia(&self, inertia: Self::Inertia, torque: Self::AngVel) -> Self::AngVel;
 
     /// Wedge product `a ∧ b` of two tangent vectors, as an angular-velocity
-    /// bivector. The angular half of an impulse response is built from it:
-    /// an impulse `J` at body offset `r` gives `ω += I⁻¹(r ∧ J)`.
+    /// bivector.
     fn wedge(&self, a: Self::Vector, b: Self::Vector) -> Self::AngVel;
 
     /// World-space velocity of `body` at world point `p`: linear plus the
@@ -92,7 +80,7 @@ where
     S::Vector: Mul<f32, Output = S::Vector>,
 {
     if body.inv_mass == 0.0 {
-        return; // static
+        return;
     }
 
     let p_old = body.position;
@@ -110,8 +98,6 @@ mod tests {
     use glam::Vec3;
     use loam_math::EuclideanR3;
 
-    /// Static (`inv_mass == 0`) bodies never advance, even with non-zero
-    /// velocity.
     #[test]
     fn static_body_skips_integration() {
         let mut body = RigidBody::<EuclideanR3>::fixed(
@@ -125,8 +111,6 @@ mod tests {
         assert_eq!(body.position, Vec3::ZERO);
     }
 
-    /// In flat E³, position advances by `velocity * dt` and velocity is
-    /// unchanged (parallel transport is the identity).
     #[test]
     fn dynamic_body_in_e3_moves_linearly() {
         let mut body = RigidBody::<EuclideanR3>::new(
@@ -142,7 +126,6 @@ mod tests {
         assert_eq!(body.velocity, Vec3::new(1.0, 2.0, -3.0));
     }
 
-    /// Zero `dt` is a no-op; catches `space.exp` mishandling a zero tangent.
     #[test]
     fn zero_dt_does_not_advance_state() {
         let mut body = RigidBody::<EuclideanR3>::new(

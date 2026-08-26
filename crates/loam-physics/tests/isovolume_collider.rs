@@ -1,13 +1,3 @@
-//! An SDF-authored shape given a physics body: extract a conservative
-//! isovolume from a torus field, spawn one static convex piece per box, and
-//! simulate against it.
-//!
-//! The torus is the case that motivates the whole path. It is smooth, so no
-//! vertex list authors it; it is non-convex, so no single hull covers it; and
-//! it has a hole, so a bounding-volume shortcut is observably wrong. The
-//! tests below check both halves of that: a body rests on the tube, and a
-//! body dropped down the axis falls straight through.
-
 use glam::Vec3;
 
 use loam_math::EuclideanR3;
@@ -37,8 +27,6 @@ fn extract() -> Isovolume<3> {
     volume
 }
 
-/// A world holding the extracted torus as static bodies plus one dynamic
-/// sphere released at `x`, under gravity.
 fn torus_world(volume: &Isovolume<3>, x: f32) -> (World<EuclideanR3>, BodyId) {
     let mut world = World::new(EuclideanR3);
     register_default_narrowphase(&mut world.narrowphase);
@@ -56,12 +44,6 @@ fn torus_world(volume: &Isovolume<3>, x: f32) -> (World<EuclideanR3>, BodyId) {
     (world, sphere)
 }
 
-/// The acceptance the node exists for: a shape that has no vertex list, only
-/// a field, produces colliders a `World` steps against. The resting position
-/// is checked against the field, not against the extraction: the sphere's
-/// centre ends between one radius and one radius plus the extraction margin
-/// from the true surface, which is exactly the band a sphere resting on a
-/// conservative cover of that surface can occupy.
 #[test]
 fn a_body_dropped_on_an_sdf_extracted_torus_rests_on_its_surface() {
     let volume = extract();
@@ -106,10 +88,6 @@ fn a_body_dropped_on_an_sdf_extracted_torus_rests_on_its_surface() {
     );
 }
 
-/// The cover reproduces the field's topology, not its bounding volume: the
-/// hole is empty, so a body dropped down the axis passes through. A cover
-/// that filled the hole would still pass every enclosure check, and would be
-/// wrong in exactly the way a convex-hull fallback is wrong.
 #[test]
 fn a_body_dropped_down_the_torus_axis_passes_through_the_hole() {
     let volume = extract();
@@ -124,10 +102,6 @@ fn a_body_dropped_down_the_torus_axis_passes_through_the_hole() {
     );
 }
 
-/// Determinism over the extracted collider set: the extraction is a fixed
-/// scan and the solver visits it in a fixed order, so two runs agree bit for
-/// bit. A hundred-body compound is the obvious place for an accidental
-/// hash-order dependency to enter, which is what this pins.
 #[test]
 fn two_runs_over_the_extracted_colliders_agree_bit_for_bit() {
     let trajectory = || {
@@ -143,9 +117,6 @@ fn two_runs_over_the_extracted_colliders_agree_bit_for_bit() {
     assert_eq!(trajectory(), trajectory());
 }
 
-/// Every static body carries a real hull: eight vertices, no extent thinner
-/// than a cell. A collapsed piece has no well-defined support direction, so
-/// GJK would return a plausible-looking wrong answer rather than fail.
 #[test]
 fn every_extracted_piece_is_a_non_degenerate_hull() {
     let volume = extract();

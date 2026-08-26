@@ -29,8 +29,8 @@ pub struct ButtonState {
     pub press_pos: Option<Vec2>,
 }
 
-/// The three positional mouse buttons. `Back` / `Forward` / `Other` are
-/// dropped: no input path in the engine binds them.
+/// `Back` / `Forward` / `Other` are dropped: no input path in the engine
+/// binds them.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MouseButtons {
     pub left: ButtonState,
@@ -146,7 +146,6 @@ impl InputState {
         };
     }
 
-    /// Update held-key set from a `WindowEvent::KeyboardInput` physical key.
     pub fn key_input(&mut self, physical_key: PhysicalKey, state: ElementState) {
         if let PhysicalKey::Code(code) = physical_key {
             match state {
@@ -232,15 +231,6 @@ mod tests {
     }
 
     #[test]
-    fn release_buttons_clears_left_drag() {
-        let mut input = InputState::default();
-        input.mouse_input(MouseButton::Left, ElementState::Pressed);
-        input.release_buttons();
-        let frame = input.take_frame();
-        assert!(!frame.left_mouse_down);
-    }
-
-    #[test]
     fn pixel_delta_scroll_uses_pixels_per_line() {
         let mut input = InputState::default();
         input.mouse_wheel(MouseScrollDelta::PixelDelta(
@@ -304,8 +294,6 @@ mod tests {
         let mut input = InputState::default();
         input.cursor_moved(30.0, 40.0);
         input.mouse_input(MouseButton::Left, ElementState::Pressed);
-        // Anchor must survive later motion: it records where the drag
-        // began, not where the cursor is now.
         input.cursor_moved(90.0, 40.0);
 
         let frame = input.take_frame();

@@ -1,6 +1,3 @@
-//! Custom-painted media-player buttons: play/pause, skip (×N rate toggle),
-//! refresh, plus, chevron.
-//!
 //! Drawn from primitive shapes rather than font glyphs because egui's default
 //! font has patchy coverage of the Mathematical Operators block (circular-arrow
 //! and several arrow glyphs are missing on most platforms), so a font-character
@@ -336,8 +333,6 @@ mod tests {
         );
     }
 
-    /// Clicking a `rate_toggle` whose value differs from `rate` sets
-    /// `rate = value`.
     #[test]
     fn rate_toggle_click_selects_value() {
         let mut rate = 1.0_f32;
@@ -351,7 +346,6 @@ mod tests {
         );
     }
 
-    /// Clicking an already-selected `rate_toggle` resets `rate` to 1.0.
     #[test]
     fn rate_toggle_click_when_selected_resets_to_one() {
         let mut rate = 2.0_f32;
@@ -395,8 +389,6 @@ mod tests {
         assert!(clicked);
     }
 
-    /// Allocated rect matches the `size` argument exactly; the contract callers
-    /// depend on for row layout.
     #[test]
     fn allocated_size_matches_size_argument() {
         let ctx = egui::Context::default();

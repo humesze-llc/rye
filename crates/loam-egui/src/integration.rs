@@ -63,7 +63,6 @@ impl UiIntegration {
         }
     }
 
-    /// Forward a winit event to egui.
     pub fn handle_event(
         &mut self,
         window: &Window,
@@ -194,7 +193,6 @@ impl UiIntegration {
     ) {
         let full_output = self.ctx.end_pass();
 
-        // Forward platform output (cursor changes, clipboard, open-link).
         self.winit_state
             .handle_platform_output(window, full_output.platform_output);
 

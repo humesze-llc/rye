@@ -14,7 +14,6 @@ pub struct AssetEvent {
     pub kind: AssetEventKind,
 }
 
-/// The nature of a filesystem change.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AssetEventKind {
     Created,
@@ -61,7 +60,6 @@ mod native {
             Ok(())
         }
 
-        /// Stop watching `path`.
         pub fn unwatch(&mut self, path: impl AsRef<Path>) -> Result<()> {
             let path = path.as_ref();
             self.watcher

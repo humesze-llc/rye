@@ -333,8 +333,7 @@ impl Playhead {
         }
     }
 
-    /// One frame per host update. The absent `dt` parameter is the whole
-    /// difference between this and the `rye-anim` playhead it revives.
+    /// One frame per host update.
     pub fn advance(&mut self) {
         if self.playing {
             self.frame = (self.frame + 1).min(self.last());
@@ -443,7 +442,6 @@ impl Director {
         self.playhead.finished()
     }
 
-    /// The slice offset at the current frame.
     pub fn w_slice(&self) -> Drive<f32> {
         self.drive(self.timeline.w_slice.as_ref())
     }

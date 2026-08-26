@@ -1,5 +1,3 @@
-//! Antisymmetric-matrix display of a [`Bivector4`].
-//!
 //! A 4D bivector maps to the antisymmetric 4×4 `M_ij = B_ij = -M_ji`, with
 //! upper-triangle entries the six components in the `e_i ∧ e_j` basis:
 //!
@@ -40,7 +38,6 @@ pub fn bivector_matrix(ui: &mut Ui, b: &Bivector4) -> Response {
         .response
 }
 
-/// Axis labels for the header row and each row's leading cell.
 const AXIS: [&str; 4] = ["x", "y", "z", "w"];
 
 /// Text for matrix cell `(row, col)`. Diagonal is `"0"`; off-diagonal is the
@@ -55,7 +52,6 @@ pub fn cell_text(b: &Bivector4, row: usize, col: usize) -> String {
     }
 }
 
-/// Maps `(row, col)` with `row < col` to its bivector basis component.
 fn upper_pair(b: &Bivector4, row: usize, col: usize) -> f32 {
     let plane = match (row, col) {
         (0, 1) => Plane4::Xy,
@@ -74,7 +70,6 @@ mod tests {
     use super::*;
     use egui::{Pos2, Rect, Vec2};
 
-    /// `Bivector4` with a single plane set to 1 radian.
     fn pure(plane: Plane4) -> Bivector4 {
         let mut b = Bivector4::ZERO;
         b.set_component(plane, 1.0);
@@ -140,7 +135,6 @@ mod tests {
         assert_eq!(cell_text(&b, 0, 1), " +0.1");
     }
 
-    /// Headless render check: non-empty rect, no panic.
     #[test]
     fn renders_in_central_panel() {
         let ctx = egui::Context::default();

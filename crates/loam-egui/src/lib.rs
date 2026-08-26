@@ -4,19 +4,6 @@
 //! Wraps egui with a wgpu paint pass plus a few widgets; a future UI-framework
 //! migration replaces this crate rather than retargeting it.
 //!
-//! ## Surface
-//!
-//! - [`UiIntegration`]: per-app egui state, owned by `loam_app::Runner`.
-//! - [`UiCapture`]: what egui is consuming this frame, split by input
-//!   device because the two answers are measured at different points in
-//!   egui's pass.
-//! - [`world_to_screen`]: egui coordinates for
-//!   [`loam_camera::Camera::pixels_from_world`], which anchors a label to a
-//!   point in whatever [`Space`](loam_math::Space) the scene lives in.
-//! - [`ConsoleUi`]: the egui frontend for [`Console`], whose registry,
-//!   scrollback, completion and dispatch live in `loam-console` and carry no
-//!   egui types.
-//!
 //! [egui]: https://github.com/emilk/egui
 //!
 //! ## Input gating

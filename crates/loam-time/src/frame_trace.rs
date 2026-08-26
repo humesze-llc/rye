@@ -206,7 +206,6 @@ pub fn end_frame() {
         _ => None,
     };
 
-    // Same pattern for alloc counters; both None when the wrapper isn't installed.
     let alloc_start = CURRENT_FRAME_ALLOC_START.with(|c| c.take());
     let alloc_end = crate::alloc::current_snapshot();
     let alloc_delta: Option<crate::alloc::AllocDelta> = match (alloc_start, alloc_end) {

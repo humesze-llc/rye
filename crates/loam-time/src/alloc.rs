@@ -10,14 +10,6 @@
 //! memory is synchronized through these counts. `ALLOC_INSTALLED` lets
 //! `frame_trace` distinguish "no allocator wired" from "no allocations this frame."
 //!
-//! ```ignore
-//! use loam_time::alloc::CountingAllocator;
-//! use std::alloc::System;
-//!
-//! #[global_allocator]
-//! static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
-//! ```
-//!
 //! Generic over the inner allocator so wasm can swap in `wee_alloc`.
 
 use std::alloc::{GlobalAlloc, Layout};

@@ -1,24 +1,11 @@
 //! `loam-shape`: the canonical geometric-primitive data model.
 //!
-//! ## Design
-//!
-//! - **One enum, all variants.** A `Shape` carries every shape either role needs. Variants that
-//!   don't apply to a particular role; e.g. [`Shape::Polygon2D`] has no 3D SDF emission,
-//!   [`Shape::Box3`] has no dedicated physics narrowphase today; are simply not implemented by
-//!   that role's trait and return `None` / no-op.
-//! - **Pose is extrinsic.** Most shapes (Sphere, Box3, the polytopes) are defined in a local
-//!   "shape frame" and positioned by the caller's transform: the physics body's
-//!   `position`+`orientation`, or an SDF scene node's transform. The one exception is
-//!   [`Shape::Sphere`], which carries a `center` field so SDF scenes can place spheres without a
-//!   transform combinator. Physics ignores that field (it always uses the body's position), the
-//!   physics sphere constructors set `center = Vec3::ZERO`.
-//! - **No behavior, but interfaces are OK.** This crate defines the [`Shape`] data and the
-//!   [`Visualizable`] trait *interface*. Trait definitions count as data-shape interfaces, not
-//!   behavior; they add zero dependencies on application-level code. Role impls live in
-//!   the role crates (`loam-scene` for `Primitive` (SDF); `loam-physics` for `Collider`).
-//!   [`Visualizable`] follows the data instead of the role, so [`polytope::Polytope4`]'s impl
-//!   sits in this crate: it reads only the topology this crate owns, which lets the renderer
-//!   draw a polychoron without depending on the simulation layer. The dep graph stays a tree.
+//! Pose is extrinsic. Most shapes (Sphere, Box3, the polytopes) are defined in a local
+//! "shape frame" and positioned by the caller's transform: the physics body's
+//! `position`+`orientation`, or an SDF scene node's transform. The one exception is
+//! [`Shape::Sphere`], which carries a `center` field so SDF scenes can place spheres without a
+//! transform combinator. Physics ignores that field (it always uses the body's position), the
+//! physics sphere constructors set `center = Vec3::ZERO`.
 
 #![warn(missing_docs)]
 
@@ -37,9 +24,7 @@ use serde::{Deserialize, Serialize};
 /// variants each role supports is documented on the per-role trait in each consumer crate.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Shape {
-    /// Sphere with a local center and radius. In SDF scenes `center` is the geodesic center; in
-    /// physics `center` is ignored (body position is the center) and conventionally set to
-    /// [`Vec3::ZERO`].
+    /// Sphere with a local center and radius.
     Sphere {
         /// Geodesic center in the shape frame. Ignored by physics.
         center: Vec3,
@@ -49,8 +34,7 @@ pub enum Shape {
     },
 
     /// A half-space `{ p : dot(p, normal) − offset ≤ 0 }`, equivalent to a totally-geodesic plane
-    /// with the "solid" side picked by sign convention. Unifies SDF's `Plane` and physics's
-    /// `HalfSpace`.
+    /// with the "solid" side picked by sign convention.
     HalfSpace {
         /// Assumed unit: `dot(p, normal) - offset` is read directly as a
         /// signed distance, which a non-unit normal rescales.
@@ -59,8 +43,7 @@ pub enum Shape {
         offset: f32,
     },
 
-    /// 4D half-space: same convention as [`Shape::HalfSpace`] but with a `Vec4` normal, used by
-    /// the 4D physics ground in the pentatope-falls demo. Only meaningful on a static body
+    /// Only meaningful on a static body
     /// (`inv_mass = 0`); a dynamic half-space isn't physically sensible.
     HalfSpace4D {
         /// Assumed unit, as in [`Shape::HalfSpace`].
@@ -69,17 +52,14 @@ pub enum Shape {
         offset: f32,
     },
 
-    /// Axis-aligned 3D box, centered at the origin of its local frame. SDF emits the standard
-    /// Euclidean-box formula; physics prefers the equivalent 8-vertex [`Shape::ConvexPolytope3D`]
-    /// today but may grow a dedicated narrowphase later.
+    /// Axis-aligned 3D box, centered at the origin of its local frame.
     Box3 {
         /// Per-axis distance from the local origin to each face, so the box
         /// spans `[-half_extents, half_extents]`.
         half_extents: Vec3,
     },
 
-    /// Convex 2D polygon, counter-clockwise vertices in the local frame. Physics 2D narrowphase
-    /// uses SAT on this.
+    /// Convex 2D polygon, counter-clockwise vertices in the local frame.
     Polygon2D {
         /// Boundary loop in the local frame. Convexity is a precondition
         /// SAT cannot detect the violation of; fewer than three vertices
@@ -87,8 +67,7 @@ pub enum Shape {
         vertices: Vec<Vec2>,
     },
 
-    /// Convex 3D polytope, arbitrary vertex list, assumed convex. Physics 3D narrowphase uses
-    /// GJK+EPA; SDF has no emission for this variant today.
+    /// Convex 3D polytope, arbitrary vertex list, assumed convex.
     ConvexPolytope3D {
         /// Unordered point set in the shape frame. The collider is its
         /// convex hull, so a non-convex list silently collides as the hull
@@ -96,18 +75,14 @@ pub enum Shape {
         vertices: Vec<Vec3>,
     },
 
-    /// Convex 4D polytope. Physics 4D narrowphase uses 4D GJK+EPA; SDF emission via
-    /// `loam_scene::Primitive4` (max-of-half-spaces).
+    /// Convex 4D polytope.
     ConvexPolytope4D {
         /// Unordered point set in R⁴; same hull semantics as
         /// [`Shape::ConvexPolytope3D`].
         vertices: Vec<Vec4>,
     },
 
-    /// 4D ball with a local centre and radius, the 4D analogue of [`Shape::Sphere`]. SDF:
-    /// `length(p - center) - radius` in `vec4`. Physics narrowphase reuses the `Sphere` path
-    /// with a `Vec4` centre via the body position; this variant is for SDF scene authoring
-    /// (`Scene4`) where pose is encoded in the shape rather than a transform combinator.
+    /// 4D ball with a local centre and radius, the 4D analogue of [`Shape::Sphere`].
     HyperSphere4D {
         /// Center in the shape frame; unlike [`Shape::Sphere`] this is the
         /// pose, since `Scene4` has no transform combinator to carry it.
@@ -133,9 +108,7 @@ impl Shape {
         }
     }
 
-    /// Convenience constructor: a sphere at the origin of its local frame. The physics
-    /// convention, where the body's `position` is the sphere's center, always constructs spheres
-    /// this way.
+    /// Convenience constructor: a sphere at the origin of its local frame.
     pub fn sphere_at_origin(radius: f32) -> Self {
         Self::Sphere {
             center: Vec3::ZERO,
@@ -180,9 +153,6 @@ mod tests {
 
     #[test]
     fn ron_roundtrip_preserves_shape() {
-        // Scenes and pair-cache files lean on this. Covers all 8 variants so
-        // adding a new one without thinking about serde surfaces here, not at
-        // runtime when the scene file fails to parse.
         for original in [
             Shape::sphere_at_origin(0.5),
             Shape::sphere_at(Vec3::new(1.0, 2.0, 3.0), 0.25),

@@ -1,29 +1,12 @@
 //! [`Visualizable`] trait + mesh data types for the rasterization tier.
 //!
-//! The rasterization-role counterpart to `Primitive` (SDF) in `loam-scene` and
-//! `Collider` (physics) in `loam-physics`. Unlike those, impls sit with the data
-//! rather than the role: `loam-text` for its glyphs, and this crate for
-//! [`crate::polytope::Polytope4`], whose impl reads only the topology next to it.
-//! [`crate::Shape`] has no impl today.
-//!
-//! The trait + mesh types live here despite `loam-shape`'s data-only charter: a
-//! trait *definition* is a data-shape interface, not behavior, and the mesh types
-//! ([`LineMesh<N>`], [`TriangleMesh<N>`], [`PointMesh<N>`]) are pure data both
-//! impl sites must see.
-//!
-//! `N` is the ambient dimension (2/3/4...). Const-generic so dimension mismatches
-//! are compile errors and vertex storage is stack-friendly (`[f32; N]`). The viral
-//! parameter is contained by `loam-scene`'s `RasterMesh` enum and `loam-render`'s
-//! generic upload path.
-//!
 //! Colors are RGBA linear `[f32; 4]`: linear because the fragment shader
 //! interpolates in linear space (sRGB conversion is at the output attachment), and
 //! alpha because it carries AA coverage at silhouettes.
 
 use serde::{Deserialize, Serialize};
 
-/// Why a shape cannot produce a particular mesh. Callers that filter can `.ok()`
-/// to an [`Option`]; callers that want diagnostics pattern-match the variant.
+/// Why a shape cannot produce a particular mesh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotVisualizable {
     /// Shape extends to infinity (e.g. [`crate::Shape::HalfSpace`]); no bounded
@@ -31,8 +14,7 @@ pub enum NotVisualizable {
     Unbounded,
 
     /// Shape's natural dimension doesn't match the requested `N` (e.g.
-    /// `Visualizable<3>` on a [`crate::Shape::HyperSphere4D`]). Pick a different
-    /// `N` or project first.
+    /// `Visualizable<3>` on a [`crate::Shape::HyperSphere4D`]).
     WrongDimension,
 
     /// Degenerate parameters: zero radius, empty/collinear vertices. Nothing to
@@ -40,13 +22,7 @@ pub enum NotVisualizable {
     Degenerate,
 }
 
-/// Anything that can emit rasterizable geometry in RN. Three orthogonal output
-/// flavors: [`to_lines`](Self::to_lines) (wireframe edges),
-/// [`to_triangles`](Self::to_triangles) (filled surfaces; often
-/// [`NotVisualizable::Unbounded`] for smooth shapes), and
-/// [`to_points`](Self::to_points) (vertex markers). Impls live in the crates that
-/// own the data (`loam-text` for glyphs, this crate for
-/// [`crate::polytope::Polytope4`]).
+/// Anything that can emit rasterizable geometry in RN.
 pub trait Visualizable<const N: usize> {
     /// Emit the shape as line segments in RN.
     fn to_lines(&self) -> Result<LineMesh<N>, NotVisualizable>;
@@ -78,8 +54,7 @@ pub struct LineMesh<const N: usize> {
 
 /// Filled triangles in RN, indexed by [`indices`](Self::indices), per-vertex
 /// color. No normals: lighting an R⁴ triangle has no standard convention and the
-/// v1 consumers (Schlegel fills, slice sections) only need color. Add `normals`
-/// when a consumer asks.
+/// v1 consumers (Schlegel fills, slice sections) only need color.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(bound(
     serialize = "[f32; N]: Serialize",

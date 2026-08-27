@@ -1,19 +1,5 @@
 //! `loam-scene`: signed-distance field primitives and scene builders for Loam.
 //!
-//! [`Primitive`] is the typed abstraction for geometric objects; each emits a
-//! WGSL `fn {name}(p: vec3<f32>) -> f32` using only `loam_*` Space-prelude
-//! functions, so SDFs stay correct across E³, H³, and S³.
-//!
-//! [`combinator`] provides Space-agnostic combinators (union, intersection,
-//! smooth-min) over the scalar distances returned by primitive SDFs.
-//!
-//! A scene is data as well as code: [`load`] deserializes [`Scene`] and
-//! [`Scene4`] from RON files, checking what the emit contract below asserts on
-//! so file input fails as an error rather than in the emitter. [`edit`] is the
-//! mutating half, a reified [`SceneEdit`] plus the one function that applies
-//! it, holding the same constant checks so an authored tree is always a
-//! loadable one.
-//!
 //! Emit contract, shared by the 3D and 4D paths: every baked constant goes
 //! through `literal::wgsl_f32`, which is shortest-round-trip and always
 //! carries a decimal point or an exponent. Parsing the emitted literal recovers
@@ -107,8 +93,6 @@ mod tests {
         let e3 = s.to_wgsl(&EuclideanR3, "sdf_0");
         let h3 = s.to_wgsl(&HyperbolicH3, "sdf_0");
         let s3 = s.to_wgsl(&SphericalS3, "sdf_0");
-        // The emitted body must be identical across spaces; only loam_distance differs at
-        // prelude link time, not in the emitted text.
         assert_eq!(e3, h3);
         assert_eq!(h3, s3);
     }
@@ -292,14 +276,13 @@ mod tests {
         assert_eq!(plane.eval(&HyperbolicH3, p), SENTINEL_DISTANCE);
     }
 
-    /// Deterministic xorshift32 point-pair sampler for Lipschitz checks.
     fn deterministic_pair_samples(seed: u32, count: usize, extent: f32) -> Vec<(Vec3, Vec3)> {
         let mut state = seed;
         let mut next_f32 = || {
             state ^= state << 13;
             state ^= state >> 17;
             state ^= state << 5;
-            (state as f32 / u32::MAX as f32) * 2.0 - 1.0 // [-1, 1]
+            (state as f32 / u32::MAX as f32) * 2.0 - 1.0
         };
         (0..count)
             .map(|_| {
@@ -318,7 +301,6 @@ mod tests {
             .collect()
     }
 
-    /// Deterministic xorshift32 single-point sampler.
     fn deterministic_samples(seed: u32, count: usize, extent: f32) -> Vec<Vec3> {
         let mut state = seed;
         let mut next_f32 = || {
@@ -442,7 +424,6 @@ mod tests {
         assert!((box3.eval(&EuclideanR3, Vec3::ZERO) + 0.4).abs() < 1e-6);
         assert!(box3.eval(&EuclideanR3, Vec3::new(0.4, 0.0, 0.0)).abs() < 1e-6);
         assert!((box3.eval(&EuclideanR3, Vec3::new(1.4, 0.0, 0.0)) - 1.0).abs() < 1e-5);
-        // Outside the corner the exact box SDF is the Euclidean distance to it.
         let corner_offset = Vec3::splat(1.0);
         assert!(
             (box3.eval(&EuclideanR3, half_extents + corner_offset) - corner_offset.length()).abs()
@@ -532,15 +513,12 @@ mod tests {
         let floor = SceneNode4::halfspace(Vec4::Y, -0.4);
 
         let union = Scene4::new(ball.clone().union(floor.clone()));
-        // Above the ball's north pole and far from the floor plane.
         let (dist, kind) = union.eval_at(Vec3::new(0.0, 0.6, 0.0), 0.0, true);
         assert!((dist - 0.1).abs() < 1e-6);
         assert_eq!(kind, PRIM_KIND_HYPERSPHERE4D);
-        // Beside the ball and just above the floor: the floor is closer.
         let (_, kind) = union.eval_at(Vec3::new(2.0, -0.3, 0.0), 0.0, true);
         assert_eq!(kind, PRIM_KIND_HALFSPACE4D);
 
-        // Intersection reports the farther (active boundary) leaf.
         let intersection = Scene4::new(ball.clone().intersect(floor.clone()));
         let (dist, kind) = intersection.eval_at(Vec3::new(0.0, 0.6, 0.0), 0.0, true);
         assert!((dist - 1.0).abs() < 1e-6);

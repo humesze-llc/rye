@@ -1,21 +1,6 @@
 //! Collider budget for a laid-out word: how many convex bodies the glyph path
 //! emits at each collider pitch, and what a solver pays to carry them. Run with
 //! `cargo run --release -p loam-text --example glyph_collider_budget`.
-//!
-//! The first table is the decomposition. `render` is the clip decomposition's
-//! piece count at the default render pitch, which is what one collider per
-//! cross-section piece used to cost. `boxes` is the [`Isovolume`] cover the
-//! collider path emits instead, at the pitch in the first column. `margin` is
-//! the cover's outward bound in em.
-//!
-//! The second table is the dynamic path. A rigid body carries one collider, so
-//! a letter that moves is a single convex prism instead of a cover: `sides` is
-//! its ring, `verts` the 4D hull, and `hull/cover` the area it adds over the
-//! cover it encloses, which is what filling the counters costs.
-//!
-//! The third measurement is the price: a settled scene of the word's boxes as
-//! static bodies with dynamic 4D spheres resting on them, timed per fixed step
-//! against a 60 Hz frame.
 
 use std::time::Instant;
 
@@ -32,8 +17,6 @@ const FIXED_HZ: f32 = 60.0;
 const SETTLE_STEPS: usize = 300;
 const TIMED_STEPS: usize = 60;
 const BALL_RADIUS: f32 = 0.04;
-/// Dynamic bodies dropped onto the word, roughly the count a title-screen beat
-/// would rain on it.
 const BALLS: usize = 30;
 
 /// Fonts are not vendored; probe the usual system locations.
@@ -158,8 +141,7 @@ fn hull_area(letter: &GlyphSolid) -> f32 {
     0.5 * doubled
 }
 
-/// Settle the word's colliders under a rain of spheres, then time the steady
-/// state. Returns the body count and the mean microseconds per fixed step.
+/// Returns the body count and the mean microseconds per fixed step.
 fn time_word(letters: &[GlyphSolid]) -> (usize, f64) {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);

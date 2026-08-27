@@ -4,16 +4,6 @@
 //! the [`crate::polytope_geom`] generators; edges and cells are derived on first
 //! access and cached for process lifetime. CPU-only; the SDF/WGSL kernel data
 //! lives in `loam_render::raymarch`.
-//!
-//! ```
-//! use loam_shape::polytope::Polytope4;
-//!
-//! let topo = Polytope4::Tesseract.topology();
-//! assert_eq!(topo.vertices.len(), 16);
-//! for v in topo.vertices {
-//!     assert!((v.length() - 1.0).abs() < 1e-5);
-//! }
-//! ```
 use std::sync::LazyLock;
 
 use glam::{Vec3, Vec4};
@@ -44,7 +34,6 @@ pub enum Polytope4 {
 }
 
 /// Full topology of a 4-polytope in canonical (unit-circumradius) coordinates.
-/// Allocated once per polytope on first access via [`std::sync::LazyLock`].
 #[derive(Debug)]
 pub struct Polytope4Topology {
     /// Vertices in canonical (unit-circumradius) coordinates; `edges` and
@@ -70,8 +59,7 @@ impl Polytope4 {
         Polytope4::Cell600,
     ];
 
-    /// Borrow this polytope's full topology. First access computes and caches
-    /// the vertex / edge / cell tables; later calls are a dereference.
+    /// Borrow this polytope's full topology.
     pub fn topology(self) -> &'static Polytope4Topology {
         match self {
             Polytope4::Pentatope => &PENTATOPE_TOPOLOGY,
@@ -89,14 +77,12 @@ impl Polytope4 {
         self.topology().vertices.len()
     }
 
-    /// Undirected edges, each counted once. Same forcing cost as
-    /// [`Self::vertex_count`].
+    /// Undirected edges, each counted once.
     pub fn edge_count(self) -> usize {
         self.topology().edges.len()
     }
 
     /// Bounding 3-cells (the polychoron's facets), not the full face lattice.
-    /// Same forcing cost as [`Self::vertex_count`].
     pub fn cell_count(self) -> usize {
         self.topology().cells.len()
     }
@@ -147,8 +133,6 @@ impl Polytope4 {
     }
 }
 
-/// Default uniform styling for [`Polytope4::to_lines`]: white at 1.5 px. For
-/// per-cell or per-position coloring see [`Polytope4::lines_colored_by_cell`].
 const DEFAULT_LINE_COLOR: [f32; 4] = [0.9, 0.9, 0.9, 1.0];
 const DEFAULT_LINE_WIDTH: f32 = 1.5;
 
@@ -191,7 +175,7 @@ impl crate::Visualizable<4> for Polytope4 {
 
 impl Polytope4 {
     /// Color each edge by the lowest-index cell its endpoints share, indexing
-    /// `palette` modulo its length. Width stays at the default.
+    /// `palette` modulo its length.
     pub fn lines_colored_by_cell(self, palette: &[[f32; 4]]) -> crate::LineMesh<4> {
         let topo = self.topology();
         let mut mesh = crate::LineMesh::<4>::default();
@@ -214,8 +198,7 @@ impl Polytope4 {
     }
 
     /// Color each edge endpoint by its 4D position via [`vertex_color_by_position`],
-    /// giving a continuous color field across the edge graph. Useful for dense
-    /// wireframes like the 600-cell where uniform white reads as a tangle.
+    /// giving a continuous color field across the edge graph.
     pub fn lines_colored_by_position(self) -> crate::LineMesh<4> {
         let topo = self.topology();
         let mut mesh = crate::LineMesh::<4>::default();
@@ -246,8 +229,7 @@ pub fn vertex_color_by_position(v: Vec4) -> [f32; 4] {
 }
 
 /// Cross-section fill: translucent white; alpha 0.55 keeps the surface behind
-/// it visible. Only the test-only by-value overlay bakes a colour in; the
-/// append forms production uses take one from the caller.
+/// it visible.
 #[cfg(test)]
 const SECTION_FILL_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.55];
 /// Cross-section perimeter: opaque bright cyan, reads against both the dim
@@ -255,17 +237,7 @@ const SECTION_FILL_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.55];
 const SECTION_EDGE_COLOR: [f32; 4] = [0.30, 0.85, 0.95, 1.0];
 const SECTION_EDGE_WIDTH: f32 = 2.0;
 
-/// Per-cell cross-section as `(translucent fill triangles, cyan perimeter
-/// edges)`, for rendering on top of an existing surface (SDF raymarch, parent
-/// wireframe). For replacing the SDF surface with opaque rasterized geometry,
-/// use [`polytope4_section_faces`]. The algorithm lives in
-/// `for_each_section_cap`; it reproduces the classical sections (5-cell
-/// midpoint -> tetrahedron, tesseract -> cube, etc.) with no special-casing.
-/// Either returned mesh may be empty if the slice misses the polytope.
 #[cfg(test)]
-/// Test-only: the append forms above are what production calls, and these
-/// by-value twins exist as their reference oracle. `pub` would be four
-/// contracts with no holder.
 fn polytope4_section_overlay(
     polytope: Polytope4,
     slice: loam_math::WPlane,
@@ -274,15 +246,7 @@ fn polytope4_section_overlay(
     polytope_section_overlay_with_vertices(topo.edges, topo.cells, topo.vertices, slice)
 }
 
-/// Overlay cross-section taking vertices, edges, and cells directly, for
-/// sectioning a transformed (rotated, world-placed) vertex set that
-/// [`polytope4_section_overlay`] cannot see. `vertices` must stay
-/// index-compatible with `edges` and `cells`; rigid transforms leave topology
-/// unchanged, so callers reuse the parent's edge / cell arrays.
 #[cfg(test)]
-/// Test-only: the append forms above are what production calls, and these
-/// by-value twins exist as their reference oracle. `pub` would be four
-/// contracts with no holder.
 fn polytope_section_overlay_with_vertices(
     edges: &[[u32; 2]],
     cells: &[&[u32]],
@@ -311,8 +275,7 @@ fn polytope_section_overlay_with_vertices(
 /// Append form of the section perimeter: writes cap-boundary segments into a
 /// caller-owned mesh and borrows the per-cell working set, so a per-frame
 /// overlay stops reaching the allocator once both have grown to their steady
-/// size. Callers wanting the translucent fill as well run
-/// [`polytope_section_faces_append`] over the same inputs.
+/// size.
 pub fn polytope_section_perimeter_append(
     edges: &[[u32; 2]],
     cells: &[&[u32]],
@@ -326,7 +289,6 @@ pub fn polytope_section_perimeter_append(
     });
 }
 
-/// Fan-triangulate one ordered cap about its centroid, uniformly colored.
 fn push_cap_fan(
     ordered: &[Vec3],
     centroid: Vec3,
@@ -348,8 +310,6 @@ fn push_cap_fan(
     }
 }
 
-/// Close one ordered cap into a segment loop.
-///
 /// Adjacent caps share face-on-slice edges, so the perimeter draws those twice;
 /// the duplication is invisible and avoids a global dedup pass.
 fn push_cap_perimeter(ordered: &[Vec3], out: &mut crate::LineMesh<3>) {
@@ -362,16 +322,7 @@ fn push_cap_perimeter(ordered: &[Vec3], out: &mut crate::LineMesh<3>) {
     }
 }
 
-/// Cross-section faces only: opaque, fan-triangulated, every vertex the same
-/// `color`. The primary surface representation for a polychoral body at a
-/// w-slice, replacing the SDF raymarch. Pair with
-/// `FragmentShading::FaceNormalLambert` in `loam-render` for per-face shading;
-/// uniform color (not [`vertex_color_by_position`]) avoids a heatmap gradient
-/// that would bleed across bodies at different world positions.
 #[cfg(test)]
-/// Test-only: the append forms above are what production calls, and these
-/// by-value twins exist as their reference oracle. `pub` would be four
-/// contracts with no holder.
 fn polytope_section_faces_with_vertices(
     edges: &[[u32; 2]],
     cells: &[&[u32]],
@@ -419,13 +370,7 @@ pub fn polytope_section_faces_append(
     );
 }
 
-/// Section faces using the polytope's own canonical (unrotated) topology
-/// vertices. Mirrors [`polytope4_section_overlay`] but returns just the opaque
-/// solid-colored triangle mesh.
 #[cfg(test)]
-/// Test-only: the append forms above are what production calls, and these
-/// by-value twins exist as their reference oracle. `pub` would be four
-/// contracts with no holder.
 fn polytope4_section_faces(
     polytope: Polytope4,
     slice: loam_math::WPlane,
@@ -503,7 +448,6 @@ fn for_each_section_cap(
             continue;
         }
 
-        // The cap is a convex 2-polygon in R³; fit its plane basis.
         let centroid: Vec3 = cap.iter().copied().sum::<Vec3>() / cap.len() as f32;
         let Some((basis_u, mut basis_v)) = fit_plane_basis(centroid, cap) else {
             continue;
@@ -545,7 +489,6 @@ fn perturb_slice_if_needed(slice: loam_math::WPlane, vertices: &[Vec4]) -> loam_
     }
 }
 
-/// Min and max w-coordinate of a cell's vertex set, for per-cell slice pruning.
 fn cell_w_range(cell: &[u32], vertices: &[Vec4]) -> (f32, f32) {
     let mut w_min = f32::INFINITY;
     let mut w_max = f32::NEG_INFINITY;
@@ -1608,7 +1551,6 @@ mod tests {
                         assert!(c.is_finite(), "{polytope:?} perim endpoint non-finite");
                     }
                 }
-                // Index-validity property: each triangle index references an in-bounds vertex.
                 for &[i0, i1, i2] in &tri.indices {
                     let n = tri.vertices.len() as u32;
                     assert!(

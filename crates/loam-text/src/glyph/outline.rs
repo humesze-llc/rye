@@ -1,5 +1,3 @@
-//! Font outline to flattened closed contours.
-//!
 //! `ab_glyph` hands back a flat `Vec<OutlineCurve>` with no contour separators:
 //! contours are delimited implicitly by a curve whose start point does not
 //! continue the previous curve's end, and each is explicitly closed by a final
@@ -56,8 +54,6 @@ pub(super) fn contours_from_curves(
     contours
 }
 
-/// Scale, drop coincident neighbours (including the explicit closing point),
-/// and keep the contour only if a nondegenerate polygon survives.
 fn close_contour(contours: &mut Vec<Contour>, raw: Vec<Vec2>, units_to_em: f32) {
     let mut points: Vec<Vec2> = Vec::with_capacity(raw.len());
     for p in raw {
@@ -255,8 +251,6 @@ mod tests {
         assert_max_deviation(&out, tolerance, |t| eval_cubic(p0, p1, p2, p3, t));
     }
 
-    /// Sample the true curve far more densely than it was subdivided and check
-    /// every sample against the flattened polyline.
     fn assert_max_deviation(polyline: &[Vec2], tolerance: f32, curve: impl Fn(f32) -> Vec2) {
         const SAMPLES: u32 = 512;
         for k in 0..=SAMPLES {

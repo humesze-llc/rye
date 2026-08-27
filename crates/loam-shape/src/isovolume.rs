@@ -156,7 +156,7 @@ impl<const D: usize> Isovolume<D> {
         }
     }
 
-    /// Number of convex pieces. This is the number a solver pays for.
+    /// Number of convex pieces.
     pub fn piece_count(&self) -> usize {
         self.boxes.len()
     }
@@ -415,9 +415,7 @@ mod tests {
     /// March out from an interior point along `dir` to the first sign change,
     /// then bisect onto the zero level. Marching rather than assuming a
     /// bracket matters for near-tangential rays, which leave the tube far
-    /// later than the minor radius would suggest. The returned point is a
-    /// genuine isosurface sample, evaluated from the field rather than
-    /// assumed from the extraction.
+    /// later than the minor radius would suggest.
     fn surface_point_3d(
         sdf: &impl Fn([f32; 3]) -> f32,
         from: [f32; 3],

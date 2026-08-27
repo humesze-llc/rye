@@ -1,15 +1,9 @@
-//! Letters as bodies a solver carries: the dynamic half of the glyph collider
-//! path, against the static half `glyph_collider_world.rs` covers.
-//!
 //! A rigid body in `loam-physics` has one collider and no per-collider offset,
 //! so the two halves need different decompositions and this file pins both
 //! sides of that split: a letter's convex hull falls, lands and holds still,
 //! and the faithful cover provably cannot, which is what makes
 //! `GlyphSolid::colliders_4d`'s static-only contract a measurement rather than
 //! a caution.
-//!
-//! Fonts are not vendored, so every test here skips cleanly when the machine
-//! has none.
 
 use ab_glyph::FontRef;
 use glam::{Vec2, Vec4, Vec4Swizzles};
@@ -123,7 +117,6 @@ fn drop_letter(world: &mut World<EuclideanR4>, letter: &GlyphSolid) -> (BodyId, 
     (id, spawn)
 }
 
-/// World-space `y` of the lowest point of a posed hull.
 fn deepest_y(world: &World<EuclideanR4>, id: BodyId) -> f32 {
     let body = &world.bodies[id];
     let Shape::ConvexPolytope4D { vertices } = &body.collider else {
@@ -278,7 +271,6 @@ fn a_letter_dropped_on_a_halfspace_settles_without_jitter() {
             "{:?} slid {slide} off its spawn column",
             letter.ch()
         );
-        // It fell rather than being spawned in contact.
         assert!(world.bodies[id].position.y < spawn.y - 0.5 * DROP_CLEARANCE);
     }
 }
@@ -414,7 +406,6 @@ fn a_whole_word_dropped_together_settles_in_its_own_line() {
         );
     }
 
-    // Reading order survives the landing.
     for pair in dropped.windows(2) {
         assert!(world.bodies[pair[1].0].position.x > world.bodies[pair[0].0].position.x);
     }

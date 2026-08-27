@@ -1,36 +1,8 @@
 //! Typed 4D scene tree, the 4D analogue of [`crate::scene::Scene`].
 //!
-//! Build a [`Scene4`] from [`SceneNode4`] combinators and emit WGSL for either:
-//!
-//! - **Native 4D**: `fn loam_scene_sdf_4d(p: vec4<f32>) -> f32` (future full-4D
-//!   ray march).
-//! - **Hyperslice**: `fn loam_scene_sdf(p: vec3<f32>) -> f32` evaluating the 4D SDF
-//!   at `vec4(p, w_slice)`. Production path today; `Hyperslice4DNode` consumes it.
-//!
 //! Parallel to [`crate::scene::Scene`] rather than `Scene<S, const DIM>`: the 3D
 //! and 4D paths share no shader code, so genericizing saves nothing and obscures
 //! the difference.
-//!
-//! ## Example
-//!
-//! ```rust
-//! use glam::Vec4;
-//! use loam_scene::scene4::{Scene4, SceneNode4};
-//!
-//! let scene = Scene4::new(
-//!     SceneNode4::hypersphere(Vec4::ZERO, 0.5)
-//!         .union(SceneNode4::halfspace(Vec4::Y, 0.0)),
-//! );
-//! // Native 4D: SDF takes vec4 directly.
-//! let wgsl_4d = scene.to_wgsl_4d();
-//! assert!(wgsl_4d.contains("fn loam_scene_sdf_4d(p: vec4<f32>) -> f32"));
-//! // Hyperslice mode: SDF takes vec3, internally evaluates at
-//! // vec4(p, u.w_slice). The `u.w_slice` uniform is supplied by
-//! // the render node.
-//! let wgsl_hs = scene.to_hyperslice_wgsl("u.w_slice");
-//! assert!(wgsl_hs.contains("fn loam_scene_sdf(p3: vec3<f32>) -> f32"));
-//! assert!(wgsl_hs.contains("u.w_slice"));
-//! ```
 
 use std::boxed::Box;
 
@@ -42,8 +14,7 @@ use crate::primitive4::Primitive4;
 use crate::SENTINEL_DISTANCE;
 pub use loam_shape::Shape;
 
-/// A node in the 4D scene tree. Mirrors [`crate::scene::SceneNode`] over 4D
-/// primitives. No smooth-min yet (math is identical; no demo needs it).
+/// A node in the 4D scene tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SceneNode4 {
     Leaf(Shape),
@@ -58,15 +29,11 @@ impl SceneNode4 {
         SceneNode4::Leaf(Shape::HyperSphere4D { center, radius })
     }
 
-    /// Half-space (hyperplane) leaf. ℝ⁴ is flat and the only 4D Space loam ships, so
-    /// [`crate::Primitive4`] emits a plain `dot(p, n) - offset` SDF; a curved 4D
-    /// Space would gate this on `Space::is_chart_flat` like the 3D path. Also
-    /// used by `loam-physics` for 4D collision walls.
     pub fn halfspace(normal: Vec4, offset: f32) -> Self {
         SceneNode4::Leaf(Shape::HalfSpace4D { normal, offset })
     }
 
-    /// Convex 4D polytope leaf. The static `Primitive4` emit returns a sentinel;
+    /// The static `Primitive4` emit returns a sentinel;
     /// the live path is `Hyperslice4DNode`'s per-frame uniform buffer (face
     /// hyperplanes computed CPU-side). Until that lands, polytope leaves are
     /// invisible.
@@ -187,7 +154,7 @@ fn scene_kind_constants() -> String {
     )
 }
 
-/// Shared emit driver for the two `to_hyperslice_wgsl*` methods. `None` produces
+/// `None` produces
 /// the ungated form; `Some` wraps every `HalfSpace4D` leaf's SDF in
 /// `select(SENTINEL_DISTANCE, raw, <expr> >= 0.5)` and skips its
 /// `loam_scene_max_t` term.
@@ -295,10 +262,8 @@ fn primitive_kind(shape: &Shape) -> (&'static str, u32) {
     }
 }
 
-/// Walk the 4D scene tree, appending helpers to `helpers` and `let` bindings to
-/// `body`. Returns `(dist_var, kind_var)`, the WGSL identifiers for this node's
-/// distance and closest-primitive kind. `Some` gate wraps each `HalfSpace4D` SDF
-/// in `select(SENTINEL_DISTANCE, raw, <expr> >= 0.5)`.
+/// Returns `(dist_var, kind_var)`, the WGSL identifiers for this node's
+/// distance and closest-primitive kind.
 fn emit_node_4d(
     node: &SceneNode4,
     counter: &mut u32,
@@ -315,8 +280,6 @@ fn emit_node_4d(
             let d_var = format!("d{idx}");
             let k_var = format!("k{idx}");
             let (kind, _kind_value) = primitive_kind(prim);
-            // Only gated halfspaces route through `select`; everything else emits
-            // the raw call (no toggle semantic on hypersphere / polytope SDFs).
             let gated = matches!(prim, Shape::HalfSpace4D { .. }) && halfspace_gate_expr.is_some();
             if gated {
                 let gate = halfspace_gate_expr.expect("gated branch implies Some");
@@ -336,7 +299,6 @@ fn emit_node_4d(
             let d_var = format!("d{idx}");
             let k_var = format!("k{idx}");
             body.push_str(&format!("\tlet {d_var} = min({ld}, {rd});\n"));
-            // Closer leaf wins.
             body.push_str(&format!(
                 "\tlet {k_var}: u32 = select({rk}, {lk}, {ld} <= {rd});\n"
             ));
@@ -348,7 +310,6 @@ fn emit_node_4d(
             let d_var = format!("d{idx}");
             let k_var = format!("k{idx}");
             body.push_str(&format!("\tlet {d_var} = max({ld}, {rd});\n"));
-            // Farther leaf is the active boundary.
             body.push_str(&format!(
                 "\tlet {k_var}: u32 = select({rk}, {lk}, {ld} >= {rd});\n"
             ));
@@ -411,7 +372,6 @@ mod tests {
         let wgsl = scene.to_hyperslice_wgsl("u.w_slice");
         assert!(wgsl.contains("fn loam_scene_sdf(p3: vec3<f32>) -> f32"));
         assert!(wgsl.contains("let p = vec4<f32>(p3, u.w_slice)"));
-        // Reuses the 4D SDF helpers, so the sphere body is still present.
         assert!(wgsl.contains("length(p"));
     }
 
@@ -469,7 +429,6 @@ mod tests {
         assert!(wgsl.contains("fn loam_scene_at(p3: vec3<f32>) -> LoamSceneHit"));
         assert!(wgsl.contains("LOAM_PRIM_HYPERSPHERE4D"));
         assert!(wgsl.contains("LOAM_PRIM_HALFSPACE4D"));
-        // Union routes kind via select: closer leaf wins.
         assert!(wgsl.contains("select("));
         assert!(wgsl.contains("<="));
     }
@@ -497,7 +456,6 @@ mod tests {
             wgsl.contains("u.params.x >= 0.5"),
             "gate expression must appear in the select"
         );
-        // Hypersphere leaf (p1 in pre-order) binds raw, no `_raw`/select wrapper.
         assert!(wgsl.contains("let d1 = sdf4_p1(p);"));
     }
 

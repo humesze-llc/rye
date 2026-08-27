@@ -1,7 +1,3 @@
-//! Scene descriptions arriving as file text: what a `.ron` file must
-//! deserialize to, and what every category of malformed input must do instead
-//! of panicking.
-
 use std::path::{Path, PathBuf};
 
 use glam::{Vec3, Vec4};

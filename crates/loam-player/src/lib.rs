@@ -1,21 +1,7 @@
-//! Space-generic first-person player controller. Reads
-//! [`loam_input::FrameInput`] and advances a position along the ambient
-//! [`loam_math::Space`]'s geodesics, with an `f32` yaw for facing.
-//!
-//! WASD drives forward/back/strafe relative to yaw; Space/Shift drive
-//! world-Y. The yaw tangent is integrated by `space.exp`, so curved Spaces
-//! bend the path without extra work in the controller. Yaw is an `f32`
-//! (not a rotor) since facing only rotates about Y.
-
 use glam::Vec3;
 use loam_input::FrameInput;
 use loam_math::Space;
 
-/// Space-generic player controller. [`PlayerState::advance`] moves along
-/// geodesics from WASD; [`PlayerState::advance_look`] updates yaw from mouse.
-///
-/// `S` must map `Vec3 -> Vec3` (point and tangent both in R³ from the Space's
-/// ambient embedding, e.g. Poincaré ball for H³).
 pub struct PlayerState<S: Space<Point = Vec3, Vector = Vec3>> {
     pub position: Vec3,
     /// Camera/facing yaw in radians; 0 = −Z (into screen), positive = left.
@@ -37,13 +23,11 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> PlayerState<S> {
         self
     }
 
-    /// Move along a geodesic for one tick. `speed` is in Space-distance units;
-    /// the tangent is the WASD axes rotated by `self.yaw`.
+    /// `speed` is in Space-distance units per tick.
     pub fn advance(&mut self, input: &FrameInput, space: &S, speed: f32) {
         let sin_y = self.yaw.sin();
         let cos_y = self.yaw.cos();
 
-        // Local basis from yaw only (pitch-independent movement plane).
         let fwd = Vec3::new(-sin_y, 0.0, -cos_y);
         let right = Vec3::new(cos_y, 0.0, -sin_y);
         let up = Vec3::Y;
@@ -57,7 +41,7 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> PlayerState<S> {
         self.position = space.exp(self.position, t);
     }
 
-    /// Update yaw from mouse delta (mouse sensitivity in radians per pixel).
+    /// `sensitivity` is radians per pixel.
     pub fn advance_look(&mut self, input: &FrameInput, sensitivity: f32) {
         self.yaw -= input.mouse_delta.x * sensitivity;
     }
@@ -76,7 +60,6 @@ mod tests {
     #[test]
     fn advance_forward_moves_in_minus_z() {
         let mut player: PlayerState<EuclideanR3> = PlayerState::new(Vec3::ZERO);
-        // yaw=0 -> forward = −Z
         player.advance(
             &FrameInput {
                 move_forward: 1.0,
@@ -143,7 +126,6 @@ mod tests {
 
     #[test]
     fn with_yaw_rotates_forward_direction() {
-        // yaw = +π/2 rotates forward from −Z to −X.
         let mut player: PlayerState<EuclideanR3> =
             PlayerState::new(Vec3::ZERO).with_yaw(std::f32::consts::FRAC_PI_2);
         player.advance(
@@ -177,7 +159,6 @@ mod tests {
             "player escaped Poincaré ball: {:?}",
             player.position
         );
-        // Forward at yaw=0 is −Z, so motion is purely in −Z.
         assert_close(player.position.x, 0.0);
         assert_close(player.position.y, 0.0);
         assert!(player.position.z < 0.0);

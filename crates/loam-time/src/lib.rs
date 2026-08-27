@@ -1,12 +1,8 @@
-//! `loam-time`: deterministic fixed-timestep scheduling for Loam.
-//!
 //! The simulation is a pure, bit-reproducible function
 //! `tick(state, input, tick_number) -> state'`; time enters only as the
-//! tick number, never wall-clock. This crate is the
-//! wall-clock-to-tick-count adapter the local render loop uses. Replays
-//! and rollback netcode drive the sim by tick number directly and never
-//! touch [`FixedTimestep`]; [`replay`] is the recorded form of that
-//! tick-indexed input stream.
+//! tick number, never wall-clock. This crate is the wall-clock-to-tick-count
+//! adapter the local render loop uses; replays and rollback netcode drive the
+//! sim by tick number directly and never touch [`FixedTimestep`].
 
 pub mod alloc;
 pub mod director;

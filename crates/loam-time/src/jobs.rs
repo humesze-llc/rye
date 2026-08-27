@@ -1,17 +1,13 @@
-//! Lives here rather than in the app crate because the sim crates must be
-//! able to take it without depending on wgpu, winit and egui, and because
-//! [`crate::frame_trace`] is the other half of the same seam: the cross-worker
+//! [`crate::frame_trace`] is the other half of this seam: the cross-worker
 //! trace merge happens at this pool's join barrier.
 
 use std::num::NonZeroUsize;
 
-/// Units per partition: `ceil(units / workers)`, floored at 1 so an empty
-/// buffer still names a legal chunk width.
-///
-/// Contiguous ascending chunks of this
-/// width tile the buffer exactly once and produce at most `workers` of them,
-/// so which units a partition owns is a pure function of `(units, workers)`
-/// and of nothing else: not of arrival order, not of how fast a worker ran.
+/// `ceil(units / workers)`, floored at 1 so an empty buffer still names a
+/// legal chunk width. Contiguous ascending chunks of this width tile the
+/// buffer exactly once and produce at most `workers` of them, so which units
+/// a partition owns is a pure function of `(units, workers)` and of nothing
+/// else: not of arrival order, not of how fast a worker ran.
 /// Work stealing is excluded by that sentence, deliberately. Under stealing
 /// the owner of a unit stops being a function of the schedule, and the
 /// moment any stage carries a per-worker partial its reduction order stops
@@ -22,9 +18,6 @@ pub fn partition_len(units: usize, workers: usize) -> usize {
     units.div_ceil(workers).max(1)
 }
 
-/// Worker budget plus the fixed partition policy, borrowed by a tick for the
-/// duration of one stage.
-///
 /// [`JobPool::run_stage`] joins every partition before it returns, so two
 /// stages never overlap and two app-level systems can therefore never run
 /// concurrently with each other.
@@ -46,7 +39,7 @@ pub struct JobPool {
 }
 
 impl JobPool {
-    /// Build a pool for `threads` workers. `0` is read as 1.
+    /// `0` is read as 1.
     ///
     /// Permanently 1 worker on wasm32. That is the platform, not a policy:
     /// the browser gives the worker one thread, and `frame_trace`'s
@@ -62,13 +55,11 @@ impl JobPool {
         }
     }
 
-    /// Worker budget this pool partitions against.
     pub fn threads(&self) -> usize {
         self.workers.get()
     }
 
-    /// Run one stage: split `units` by [`partition_len`], evaluate `kernel`
-    /// on every partition, and join before returning.
+    /// Splits `units` by [`partition_len`] and joins before returning.
     ///
     /// `kernel` receives a partition index `k` and the units it owns, which
     /// are `[k * partition_len(units.len(), self.threads()) ..]` capped at
@@ -143,10 +134,10 @@ impl JobPool {
 mod tests {
     use super::*;
 
-    /// Per-unit value with no structure a partition boundary could hide:
-    /// xorshift64 (Marsaglia 2003, "Xorshift RNGs", J. Stat. Soft. 8(14),
-    /// the 13/7/17 triple) off the index, mapped into [-1, 1) by an exact
-    /// power-of-two scale so the f32 carries no rounding of its own.
+    // Per-unit value with no structure a partition boundary could hide:
+    // xorshift64 (Marsaglia 2003, "Xorshift RNGs", J. Stat. Soft. 8(14),
+    // the 13/7/17 triple) off the index, mapped into [-1, 1) by an exact
+    // power-of-two scale so the f32 carries no rounding of its own.
     fn unit_value(index: usize) -> f32 {
         let mut x = (index as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
         x ^= x << 13;

@@ -1,9 +1,3 @@
-//! Integration tests for [`AssetWatcher`].
-//!
-//! These tests touch the real filesystem and notify backend. Event delivery has
-//! platform-dependent latency, so each assertion uses a retry loop rather than a
-//! fixed sleep.
-
 use std::fs;
 use std::path::Path;
 use std::thread::sleep;
@@ -11,8 +5,6 @@ use std::time::{Duration, Instant};
 
 use loam_asset::{AssetEvent, AssetEventKind, AssetWatcher};
 
-/// Poll until `pred` matches one of the drained events or the timeout
-/// elapses. Returns the matching event, or panics with a diagnostic.
 fn wait_for<F>(watcher: &AssetWatcher, timeout: Duration, mut pred: F) -> AssetEvent
 where
     F: FnMut(&AssetEvent) -> bool,
@@ -68,7 +60,6 @@ fn reports_modified_file() {
 
     let mut watcher = AssetWatcher::new().unwrap();
     watcher.watch(dir.path()).unwrap();
-    // Drain any stray events from the initial setup.
     let _ = watcher.poll();
 
     fs::write(&file, b"v2").unwrap();
@@ -90,7 +81,6 @@ fn reports_removed_file() {
 
     let mut watcher = AssetWatcher::new().unwrap();
     watcher.watch(dir.path()).unwrap();
-    // Drain the Created event from the initial setup.
     let _ = watcher.poll();
 
     fs::remove_file(&file).unwrap();
@@ -99,8 +89,8 @@ fn reports_removed_file() {
         if ev.kind != AssetEventKind::Removed {
             return false;
         }
-        // Match by file name; verify the parent is the watched dir
-        // (canonicalise the *parent*; that path still exists).
+        // Canonicalise the parent, not the path: the removed file is gone
+        // and `canonicalize` would fail on it.
         ev.path.file_name() == Some(&target_name)
             && ev
                 .path

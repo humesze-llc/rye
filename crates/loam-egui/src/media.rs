@@ -2,15 +2,11 @@
 //! font has patchy coverage of the Mathematical Operators block (circular-arrow
 //! and several arrow glyphs are missing on most platforms), so a font-character
 //! row renders inconsistently across platforms.
-//!
-//! Sizes come from the caller; this module imposes no layout.
 
 use egui::{
     pos2, vec2, CornerRadius, Pos2, Rect, Response, Sense, Shape, Stroke, StrokeKind, Ui, Vec2,
 };
 
-/// Button toggling between a play triangle (`playing == false`) and a pause
-/// symbol (`playing == true`).
 pub fn play_pause_button(ui: &mut Ui, size: Vec2, playing: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let style = ui.style().interact(&response);
@@ -54,9 +50,8 @@ pub fn play_pause_button(ui: &mut Ui, size: Vec2, playing: bool) -> Response {
     response
 }
 
-/// Rate "skip" button. Highlights when `*rate == value`; clicking when already
-/// selected resets `rate = 1.0`. `double` paints two adjacent triangles, and
-/// `forward` points them right.
+/// Highlights when `*rate == value`; clicking it while selected resets
+/// `rate` to 1.0.
 pub fn rate_toggle(
     ui: &mut Ui,
     size: Vec2,
@@ -117,7 +112,6 @@ pub fn rate_toggle(
     response.on_hover_text(format!("Set rate to ×{value} (click again to reset to ×1)"))
 }
 
-/// `+` button painted as two crossed bars on a button-styled rect.
 pub fn add_button(ui: &mut Ui, size: Vec2) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let style = ui.style().interact(&response);
@@ -146,7 +140,6 @@ pub fn add_button(ui: &mut Ui, size: Vec2) -> Response {
     response
 }
 
-/// Retry button: a clockwise arc with an arrowhead, painted from primitives.
 pub fn refresh_button(ui: &mut Ui, size: Vec2) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let style = ui.style().interact(&response);
@@ -200,8 +193,6 @@ pub fn refresh_button(ui: &mut Ui, size: Vec2) -> Response {
     response
 }
 
-/// Button with a custom-painted up- or down-chevron (two stroked line
-/// segments). `hover` is the tooltip string.
 pub fn chevron_button(ui: &mut Ui, size: Vec2, up: bool, hover: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let style = ui.style().interact(&response);
@@ -231,9 +222,8 @@ pub fn chevron_button(ui: &mut Ui, size: Vec2, up: bool, hover: &str) -> Respons
     response.on_hover_text(hover)
 }
 
-/// Two vertically-stacked chevrons, a detach/dock affordance for floating
-/// panels. `pointing_up` flips them up; `hover` is the tooltip string. Choose a
-/// `size` taller than wide; 12×16 is the canonical title-row footprint.
+/// Choose a `size` taller than wide; 12×16 is the canonical title-row
+/// footprint.
 pub fn dock_chevrons(ui: &mut Ui, size: Vec2, pointing_up: bool, hover: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let style = ui.style().interact(&response);
@@ -273,9 +263,8 @@ mod tests {
         Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0))
     }
 
-    /// Lays out `widget` to capture its rect, then drives a press + release at
-    /// the rect centre in a second frame and re-runs `widget` so its `Response`
-    /// sees the click.
+    // The press and release land in a second frame, after the first has
+    // captured the rect, so the re-run `widget` sees the click.
     fn click_at_centre<R>(
         mut widget: impl FnMut(&mut Ui) -> Response,
         result: impl Fn(&Response) -> R,

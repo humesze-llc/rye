@@ -1,8 +1,3 @@
-//! `loam-egui`: integration glue between `loam-app` and the [egui] immediate-mode UI
-//! library.
-//!
-//! [egui]: https://github.com/emilk/egui
-//!
 //! Gameplay code gates on [`UiCapture`], reached through
 //! `loam_app::FrameCtx::ui_capture`: mouselook and picking on
 //! `capture.pointer`, hotkeys on `capture.keyboard`.

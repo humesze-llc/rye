@@ -1,16 +1,8 @@
-//! egui + wgpu + winit integration owned by `loam-app::Runner`.
-//!
-//! Per-frame lifecycle: window events feed
-//! `egui_winit::State::on_window_event`; [`UiIntegration::begin_frame`]
-//! drains input before `App::ui`; [`UiIntegration::paint`] overlays the
-//! egui output onto the scene pass's color attachment.
-
 use std::sync::Arc;
 
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use winit::window::Window;
 
-/// Per-window egui state, owned by `loam-app::Runner`.
 pub struct UiIntegration {
     ctx: egui::Context,
     winit_state: egui_winit::State,
@@ -19,9 +11,9 @@ pub struct UiIntegration {
 }
 
 impl UiIntegration {
-    /// Construct from the device and window. `surface_format` is the format of
-    /// the view [`UiIntegration::paint`] will be handed, which is not
-    /// necessarily the swapchain's; callers pass `RenderDevice::ui_format`.
+    /// `surface_format` is the format of the view [`UiIntegration::paint`]
+    /// will be handed, which is not necessarily the swapchain's; callers pass
+    /// `RenderDevice::ui_format`.
     ///
     /// An sRGB format selects egui-wgpu's linear-framebuffer fragment entry
     /// point (and its warning), blending the feathered alpha ramp in linear
@@ -70,9 +62,8 @@ impl UiIntegration {
         self.winit_state.on_window_event(window, event)
     }
 
-    /// Force egui-wgpu's lazy pipeline compilation up front to kill the
-    /// first-paint stall, by running one minimal frame into a 1×1 dummy
-    /// attachment.
+    /// Forces egui-wgpu's lazy pipeline compilation up front, which is
+    /// otherwise a first-paint stall.
     ///
     /// `target_format` and `sample_count` MUST match the values
     /// `UiIntegration::new` was constructed with, or the warm compiles the
@@ -153,10 +144,9 @@ impl UiIntegration {
         queue.submit(Some(encoder.finish()));
     }
 
-    /// Drain accumulated input and start a fresh egui frame. The runner
-    /// calls this ahead of `App::update` and reads [`crate::UiCapture`] from
-    /// the returned context: the hit test behind the pointer clock is
-    /// refreshed here, not in [`Self::paint`].
+    /// The runner calls this ahead of `App::update` and reads
+    /// [`crate::UiCapture`] from the returned context: the hit test behind
+    /// the pointer clock is refreshed here, not in [`Self::paint`].
     pub fn begin_frame(&mut self, window: &Window) -> &egui::Context {
         let raw_input = self.winit_state.take_egui_input(window);
         self.pixels_per_point = window.scale_factor() as f32;
@@ -164,17 +154,13 @@ impl UiIntegration {
         &self.ctx
     }
 
-    /// Finish the egui frame and paint onto `view`; pairs with `begin_frame`.
-    /// Overlays with `LoadOp::Load`, so the caller must have already rendered
-    /// the scene into the same attachment. `viewport` is `(width_px,
-    /// height_px)`.
+    /// Pairs with `begin_frame`. Overlays with `LoadOp::Load`, so the caller
+    /// must have already rendered the scene into the same attachment.
+    /// `viewport` is `(width_px, height_px)`.
     ///
-    /// `view` is the caller's UI-pass view of that attachment and carries the
-    /// format `new` was constructed with: on the direct-to-swapchain paths the
-    /// swapchain texture's non-sRGB reinterpretation, whatever the scene's
-    /// sample count; on the composite path the offscreen scene texture's own
-    /// view, the one the scene pass drew through, with the swapchain reached
-    /// later by the composite pass rather than here.
+    /// `view` carries the format `new` was constructed with: the swapchain
+    /// texture's non-sRGB reinterpretation on the direct paths, the offscreen
+    /// scene texture's own view on the composite path.
     ///
     /// `resolve_target` is `Some` only when `view` is multisampled.
     #[allow(clippy::too_many_arguments)]

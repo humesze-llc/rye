@@ -1,9 +1,7 @@
-//! [`Camera<S>`] stores a `position: S::Point` and three tangent basis
-//! vectors (`right`, `up`, `forward`); the frame is the orientation,
-//! there is no separate rotation field. This orthonormal-frame-bundle
-//! form avoids the per-Space convention questions of the `Iso` types:
-//! [`loam_math::Space::parallel_transport_along`] moves the frame
-//! correctly for any Space.
+//! The frame is the orientation, not a separate rotation field: that
+//! avoids the per-Space convention questions of the `Iso` types, since
+//! [`loam_math::Space::parallel_transport_along`] moves a frame in any
+//! Space.
 
 use glam::{Vec2, Vec3};
 use loam_math::Space;
@@ -11,21 +9,16 @@ use std::ops::Mul;
 
 use crate::CameraView;
 
-/// A geodesic ray: a point on the manifold plus the initial velocity of
-/// the geodesic leaving it. `direction` is Euclidean-unit in the Space's
-/// embedding, matching [`Camera`]'s frame convention, so
-/// `Space::exp(origin, direction * t)` walks the ray.
+/// `direction` is Euclidean-unit in the Space's embedding, matching
+/// [`Camera`]'s frame convention, so `Space::exp(origin, direction * t)`
+/// walks the ray.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ray {
     pub origin: Vec3,
     pub direction: Vec3,
 }
 
-/// Position + orthonormal tangent frame at that position. Generic over
-/// any [`Space`]; `view` and `translate` require `S::Point = S::Vector =
-/// Vec3`.
-///
-/// ## Invariants (caller-maintained, not type-enforced)
+/// Invariants, caller-maintained and not type-enforced:
 ///
 /// - `right`, `up`, `forward` are pairwise-orthogonal Euclidean-unit
 ///   vectors in the Space's embedding; the WGSL prelude applies the
@@ -49,8 +42,6 @@ pub struct Camera<S: Space> {
 }
 
 impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
-    /// Origin camera looking down −Z, 60° vertical FOV, near/far for
-    /// unit-scale scenes.
     pub fn at_origin() -> Self {
         Self {
             position: Vec3::ZERO,
@@ -64,14 +55,9 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
         }
     }
 
-    /// Place the camera at `position` looking toward `target`, with
-    /// `world_up` as the up hint. Forward is the normalised
-    /// `Space::log(position, target)`: the initial geodesic velocity from
-    /// `position` to `target`.
     pub fn looking_at(position: Vec3, target: Vec3, world_up: Vec3, space: &S) -> Self {
         let log = space.log(position, target);
         let forward = log.try_normalize().unwrap_or(-Vec3::Z);
-        // Right-handed: right = forward × world_up, up = right × forward.
         let right = forward.cross(world_up).try_normalize().unwrap_or(Vec3::X);
         let up = right.cross(forward);
         Self {
@@ -97,10 +83,9 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
         }
     }
 
-    /// Inverse of the perspective projection: the primary ray through the
-    /// normalised device coordinate `ndc`, both components in [-1, 1] with
-    /// y up. Pixel-space callers must flip y, since window coordinates are
-    /// y-down.
+    /// `ndc` components are in [-1, 1] with y up, so pixel-space callers
+    /// must flip y; window coordinates are y-down. `ndc` outside [-1, 1] is
+    /// meaningful and returns the ray through that off-screen point.
     ///
     /// A point at depth `d` along `forward` projects to
     /// `ndc.x = x / (aspect · tan(fov_y/2) · d)` and
@@ -109,9 +94,6 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
     /// ed, 2018, §4.7); solving for the view-space offsets and dropping the
     /// depth scale gives the direction below. The raymarch shaders build
     /// their primary rays from the same three coefficients.
-    ///
-    /// `ndc` outside [-1, 1] is meaningful and returns the ray through that
-    /// off-screen point.
     pub fn ray_from_ndc(&self, ndc: Vec2) -> Ray {
         let tan_half_fov_y = (self.fov_y * 0.5).tan();
         let direction = self.forward
@@ -126,9 +108,8 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
         }
     }
 
-    /// Where `world` lands in normalised device coordinates, y up: the
-    /// inverse of [`Self::ray_from_ndc`]. `None` when the point is outside
-    /// the frustum, which is a caller anchoring UI to it drawing nothing.
+    /// `None` when the point is outside the frustum, which is a caller
+    /// anchoring UI to it drawing nothing.
     ///
     /// An image in a curved Space is formed by the geodesics through the eye
     /// (Gunn, *Discrete Groups and Visualization of Three-Dimensional
@@ -159,11 +140,9 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
         (ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0).then_some(ndc)
     }
 
-    /// [`Self::ndc_from_world`] in window pixels, top-left origin and y down.
-    /// `viewport` is `(width, height)` in those same pixels and sets the
-    /// scale only: the framing comes from `self.aspect`, so a caller whose
-    /// viewport ratio has drifted from it gets the camera's framing, not the
-    /// window's.
+    /// Window pixels, top-left origin and y down. `viewport` sets the scale
+    /// only: the framing comes from `self.aspect`, so a caller whose viewport
+    /// ratio has drifted from it gets the camera's framing, not the window's.
     pub fn pixels_from_world(&self, world: Vec3, viewport: (u32, u32), space: &S) -> Option<Vec2> {
         if viewport.0 == 0 || viewport.1 == 0 {
             return None;
@@ -175,9 +154,8 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
         ))
     }
 
-    /// Move along the geodesic from `v * dt`, parallel-transporting the
-    /// frame so it stays orthonormal at the new point. Identity on the
-    /// basis in flat space; a holonomy rotation in H³ / S³.
+    /// Transport of the frame is the identity in flat space and a holonomy
+    /// rotation in H³ / S³.
     pub fn translate(&mut self, v: S::Vector, dt: f32, space: &S)
     where
         S::Vector: Mul<f32, Output = S::Vector>,
@@ -370,7 +348,6 @@ mod tests {
     fn looking_at_collapsed_target_falls_back_to_finite_frame() {
         let cam = Camera::<EuclideanR3>::looking_at(Vec3::ZERO, Vec3::ZERO, Vec3::Y, &EuclideanR3);
         assert!(cam.forward.is_finite() && cam.right.is_finite() && cam.up.is_finite());
-        // Direction is unspecified under fallback; only length is pinned.
         assert!((cam.forward.length() - 1.0).abs() < 1e-6);
         assert!((cam.right.length() - 1.0).abs() < 1e-6);
         assert!((cam.up.length() - 1.0).abs() < 1e-6);

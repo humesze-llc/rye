@@ -1,6 +1,3 @@
-/// egui's claim on this frame's input, read once per frame between
-/// `egui::Context::begin_pass` and the build.
-///
 /// The two fields are deliberately not one bool: they are measured at
 /// different points in egui's pass and a caller that gates on the wrong one
 /// gets a defect that shows up on one input device only. Gate pointer-driven
@@ -77,11 +74,6 @@ mod tests {
             });
     }
 
-    /// Drives one runner frame: `begin_pass`, read the capture where the
-    /// runner reads it (before `App::update`, so before the build), then
-    /// build. Returns that capture alongside the value the pre-`UiCapture`
-    /// runners used, which was sampled after the *previous* `end_pass`
-    /// exactly as `UiIntegration::paint` sampled it.
     struct Host {
         ctx: egui::Context,
         text: String,
@@ -89,9 +81,9 @@ mod tests {
     }
 
     impl Host {
-        /// Two warm-up builds before any test input: egui hit-tests against
-        /// the previous build's widget rects, and the bool this replaces is
-        /// sampled from the pass before that one.
+        // Two warm-up builds before any test input: egui hit-tests against
+        // the previous build's widget rects, and the stale bool is sampled
+        // from the pass before that one.
         fn new() -> Self {
             let mut host = Self {
                 ctx: egui::Context::default(),
@@ -103,7 +95,6 @@ mod tests {
             host
         }
 
-        /// `(capture read this frame, the one-frame-stale bool it replaces)`.
         fn frame(&mut self, events: Vec<egui::Event>) -> (UiCapture, bool) {
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SCREEN)),

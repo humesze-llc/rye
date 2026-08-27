@@ -1,14 +1,11 @@
-//! Deterministic replay: a versioned input tape indexed by tick, and the
-//! hash mixer a recorder and a verifier have to share.
-
 use std::fmt;
 
 use thiserror::Error;
 
-/// FNV-1a 64-bit (Fowler/Noll/Vo 1991; reference offset basis and prime,
-/// <http://www.isthe.com/chongo/tech/comp/fnv/>). `std`'s `DefaultHasher` is
-/// documented as unstable across releases, so a hash that gets committed as a
-/// constant or written into a tape needs its own mixer.
+// FNV-1a 64-bit (Fowler/Noll/Vo 1991; reference offset basis and prime,
+// <http://www.isthe.com/chongo/tech/comp/fnv/>). `std`'s `DefaultHasher` is
+// documented as unstable across releases, so a hash that gets committed as a
+// constant or written into a tape needs its own mixer.
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -71,7 +68,6 @@ impl StateHash {
     }
 }
 
-/// Leading bytes of an encoded [`Tape`].
 pub const TAPE_MAGIC: [u8; 8] = *b"LOAMTAPE";
 
 /// Bumped whenever an existing tape would be misread rather than merely
@@ -79,7 +75,7 @@ pub const TAPE_MAGIC: [u8; 8] = *b"LOAMTAPE";
 /// words, or to what a state hash covers.
 pub const TAPE_FORMAT_VERSION: u32 = 1;
 
-/// magic + version + hz + seed + words_per_tick + ticks + checkpoint count.
+// magic + version + hz + seed + words_per_tick + ticks + checkpoint count.
 const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 4 + 8 + 4;
 const CHECKPOINT_LEN: usize = 16;
 
@@ -104,12 +100,8 @@ pub enum TapeError {
     CheckpointOrder { index: usize },
 }
 
-/// A recorded run: the per-tick input stream, the seed it started from, and the
-/// state hashes it passed through.
-///
-/// `words_per_tick` may be zero: an
-/// input-free run (an attract-mode loop, a physics fixture) still has a seed, a
-/// tick count, and hashes worth pinning.
+/// `words_per_tick` may be zero: an input-free run (an attract-mode loop, a
+/// physics fixture) still has a seed, a tick count, and hashes worth pinning.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tape {
     tick_hz: u32,
@@ -148,8 +140,6 @@ impl Tape {
         self.ticks
     }
 
-    /// Append one tick's input.
-    ///
     /// Panics if `input.len()` is not `words_per_tick`: a short frame would
     /// shift every later tick's input by the shortfall, and the shift is
     /// undetectable once the tape is encoded.
@@ -173,8 +163,6 @@ impl Tape {
         Some(&self.inputs[start..start + width])
     }
 
-    /// Record the state hash observed after `tick`.
-    ///
     /// Panics unless `tick` is beyond the last checkpoint: a verifier walks
     /// checkpoints in order against a single forward replay, and an
     /// out-of-order entry would silently never be checked.

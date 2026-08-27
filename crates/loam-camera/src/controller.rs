@@ -22,32 +22,20 @@ const FIRST_PERSON_MOUSE_SENSITIVITY: f32 = 0.002;
 const FIRST_PERSON_MIN_PITCH: f32 = -FRAC_PI_2 + 0.02;
 const FIRST_PERSON_MAX_PITCH: f32 = FRAC_PI_2 - 0.02;
 
-/// Drives camera state from per-frame input. Implementations own their own
-/// controller-specific state (orbit angles, etc.) and write the resulting pose into
-/// the [`Camera`] each call.
+/// `dt` is wall-clock seconds since the previous `advance`; orbit ignores it.
 pub trait CameraController<S: Space> {
-    /// Read the frame's input, update internal controller state, and write the
-    /// resulting position + tangent frame into `camera`. `dt` is the wall-clock
-    /// seconds since the last `advance` call (frame-rate-independent controllers can
-    /// use it; orbit ignores it).
     fn advance(&mut self, input: FrameInput, camera: &mut Camera<S>, space: &S, dt: f32);
 }
 
-/// Spherical-coordinate orbit camera that circles a target point. Left-drag orbits;
-/// scroll zooms.
-///
 /// In flat space this is plain spherical-coordinate framing. In H³ / S³ the camera
 /// position is computed by `Space::exp` from the target along the orbit-direction
 /// tangent vector, and the camera basis parallel-transports from the target to the
 /// camera position so it arrives orthonormal in any geometry.
 #[derive(Clone, Copy, Debug)]
 pub struct OrbitController<S: Space> {
-    /// Orbit centre in the manifold's coordinates.
     pub target: S::Point,
-    /// Yaw around `world_up` (tangent direction at `target`).
     pub yaw: f32,
-    /// Pitch about the right axis. Clamped to `[-1.45, 1.45]` so the camera doesn't
-    /// flip through poles.
+    /// Clamped to `[-1.45, 1.45]`, short of the poles the frame degenerates at.
     pub pitch: f32,
     /// Geodesic distance from `target` to the camera position.
     pub distance: f32,
@@ -69,8 +57,6 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Default for OrbitController<S> {
 }
 
 impl<S: Space<Point = Vec3, Vector = Vec3>> OrbitController<S> {
-    /// Build an orbit controller around `target` at the default pose. `target` is in
-    /// the Space's own coordinates.
     pub fn around(target: Vec3) -> Self {
         Self {
             target,
@@ -88,9 +74,6 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> OrbitController<S> {
         self.yaw += delta;
     }
 
-    /// Local "back" tangent vector at `target`: the direction pointing from `target`
-    /// toward the camera. Encodes the orbit angles in canonical xyz so the same
-    /// yaw/pitch convention works in any Space.
     fn back_at_target(&self) -> Vec3 {
         let yaw_q = Quat::from_rotation_y(self.yaw);
         let pitch_q = Quat::from_rotation_x(self.pitch);
@@ -155,21 +138,15 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for OrbitControl
     }
 }
 
-/// Free-look first-person controller. The caller owns the position (typically
-/// `loam_player::PlayerState`'s `position`); this controller only manages the look
-/// direction.
-///
-/// `advance` always integrates the mouse delta; pointer-locked windows just call it
-/// every frame.
+/// The caller owns the position (typically `loam_player::PlayerState`'s
+/// `position`); this controller writes only the look direction.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FirstPersonController<S: Space> {
     pub yaw: f32,
     pub pitch: f32,
-    /// When `true`, integrate [`FrameInput::mouse_raw_delta`] instead of
-    /// `mouse_delta`. Pair with a grabbed cursor (see `loam_app::cursor`):
-    /// the OS reports raw device motion that doesn't cap at the screen
-    /// edge, so a fast horizontal flick can yaw the camera arbitrarily far
-    /// without the cursor "running out of room."
+    /// Integrates [`FrameInput::mouse_raw_delta`] instead of `mouse_delta`.
+    /// Pair with a grabbed cursor (see `loam_app::cursor`): raw device motion
+    /// does not cap at the screen edge, so a fast flick keeps yawing.
     pub use_raw_delta: bool,
     _marker: PhantomData<S>,
 }
@@ -302,8 +279,6 @@ mod tests {
             "camera escaped the Poincaré ball: {:?}",
             camera.position
         );
-        // Frame is finite and unit-ish (some f32 wobble OK; we just rule out NaN /
-        // unbounded drift).
         assert!(camera.right.is_finite() && camera.up.is_finite() && camera.forward.is_finite());
         assert!((camera.right.length() - 1.0).abs() < 1e-3);
         assert!((camera.up.length() - 1.0).abs() < 1e-3);
@@ -317,7 +292,7 @@ mod tests {
         let mut ctrl: OrbitController<SphericalS3> = OrbitController::around(Vec3::ZERO);
         ctrl.distance = 0.5;
         ctrl.advance(FrameInput::default(), &mut camera, &SphericalS3, 0.0);
-        // S³ embeds the upper hemisphere with `|p| < 1`; same domain check as H³.
+        // S³ embeds the upper hemisphere with `|p| < 1`.
         assert!(camera.position.length() < 1.0);
         assert!(camera.right.is_finite() && camera.up.is_finite() && camera.forward.is_finite());
         assert!((camera.right.length() - 1.0).abs() < 1e-3);

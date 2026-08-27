@@ -26,10 +26,10 @@ pub trait Rotor: Copy + Mul<Output = Self> {
 
     fn apply(&self, v: Self::Vector) -> Self::Vector;
 
-    // Inverse of [`Bivector::exp`]. Which of a rotation's two rotors the
-    // result is anchored to is per-impl: [`Rotor2`] and [`Rotor3`] generate
-    // the rotor itself, [`Rotor4`] generates the rotation by the shortest
-    // path and so may generate `−self`.
+    /// Inverse of [`Bivector::exp`]. Which of a rotation's two rotors the
+    /// result is anchored to is per-impl: [`Rotor2`] and [`Rotor3`] generate
+    /// the rotor itself, [`Rotor4`] generates the rotation by the shortest
+    /// path and so may generate `−self`.
     fn log(self) -> Self::Bivector;
 }
 

@@ -36,9 +36,9 @@ pub trait SectionableSpace<const N: usize>: Space {
 
     type Hyperplane;
 
-    // Intersect geodesic edge `(p0, p1)` with `slice`. Returns the lerp `t in
-    // [0, 1]` and the point in [`Self::SectionSpace`], or `None` if the edge
-    // misses the slice or is parallel within [`EDGE_PARALLEL_EPSILON`].
+    /// Intersect geodesic edge `(p0, p1)` with `slice`. Returns the lerp `t in
+    /// [0, 1]` and the point in [`Self::SectionSpace`], or `None` if the edge
+    /// misses the slice or is parallel within [`EDGE_PARALLEL_EPSILON`].
     fn edge_section(
         slice: &Self::Hyperplane,
         p0: Self::Point,

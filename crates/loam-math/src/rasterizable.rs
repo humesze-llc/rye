@@ -208,12 +208,12 @@ pub trait RasterizableSpace<const N: usize>: Space {
 
     fn project_point(point: Self::Point, projection: &Projection<N>) -> Vec3;
 
-    // `samples` is the subdivision count, not the point count: `samples == 1`
-    // appends `[p0, p1]`; `samples == 4` appends 5 points. Flat spaces lerp;
-    // curved spaces sample along [`Space::exp`] / [`Space::log`].
-    //
-    // **Writer pattern:** the upload loop reuses one `Vec` across segments, so
-    // impls `push` and never `clear` (the caller owns the buffer).
+    /// `samples` is the subdivision count, not the point count: `samples == 1`
+    /// appends `[p0, p1]`; `samples == 4` appends 5 points. Flat spaces lerp;
+    /// curved spaces sample along [`Space::exp`] / [`Space::log`].
+    ///
+    /// **Writer pattern:** the upload loop reuses one `Vec` across segments, so
+    /// impls `push` and never `clear` (the caller owns the buffer).
     fn tessellate_segment(
         p0: Self::Point,
         p1: Self::Point,

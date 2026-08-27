@@ -13,13 +13,13 @@ use crate::space::{Space, WgslSpace};
 /// integrator works in the coordinates `Space::Point` actually carries, so only
 /// that chart's metric counts.
 pub trait ConformallyFlat: Space {
-    // Positive and finite inside the chart; chart-boundary points (Poincaré
-    // |p| -> 1) may return `f32::INFINITY`, which the integrator clamps.
+    /// Positive and finite inside the chart; chart-boundary points (Poincaré
+    /// |p| -> 1) may return `f32::INFINITY`, which the integrator clamps.
     fn conformal_factor(&self, p: Vec3) -> f32;
 
-    // Scalar curvature R(p). For a 3D conformally flat metric:
-    // R = -(4/f(p))·[∇²φ + (1/2)|∇φ|²]. Default is finite-difference; every
-    // constant-curvature Space overrides with the closed form.
+    /// Scalar curvature R(p). For a 3D conformally flat metric:
+    /// R = -(4/f(p))·[∇²φ + (1/2)|∇φ|²]. Default is finite-difference; every
+    /// constant-curvature Space overrides with the closed form.
     fn scalar_curvature(&self, p: Vec3) -> f32 {
         const EPS: f32 = 5.0e-3;
         let phi_at = self.conformal_log_half(p);
@@ -40,7 +40,7 @@ pub trait ConformallyFlat: Space {
         -(4.0 / f_p) * (lap + 0.5 * grad_sq)
     }
 
-    // Logarithm of the conformal factor: φ(p) = (1/2) ln f(p).
+    /// Logarithm of the conformal factor: φ(p) = (1/2) ln f(p).
     fn conformal_log_half(&self, p: Vec3) -> f32 {
         0.5 * self.conformal_factor(p).ln()
     }
@@ -466,7 +466,7 @@ where
 /// merely-continuous field (e.g. a clamped linear ramp) produces artifacts at
 /// its breakpoints; use a smoothstep or equivalent C¹ profile.
 pub trait BlendingField: Copy + Send + Sync + 'static {
-    // Implementations must clamp to `[0, 1]`.
+    /// Implementations must clamp to `[0, 1]`.
     fn weight(&self, p: Vec3) -> f32;
 
     fn gradient(&self, p: Vec3) -> Vec3 {

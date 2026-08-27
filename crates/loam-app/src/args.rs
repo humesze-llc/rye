@@ -1,9 +1,3 @@
-//! Cross-platform `key=value` parameter access.
-//!
-//! Single API ([`Args`]) backed by `std::env::args` on native and
-//! `window.location.search` on wasm32, for recompile-free knobs like
-//! `?shape=tesseract`, `?seed=42`.
-
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Default)]
@@ -29,8 +23,7 @@ impl Args {
                 parse_query_into(&hash, &mut map);
             }
         }
-        // Workers have no `window`; the init message forwards the page's
-        // query (see set_query_override).
+        // Workers have no `window`; the init message forwards the page query.
         QUERY_OVERRIDE.with(|q| {
             if let Some((search, hash)) = q.borrow().as_ref() {
                 parse_query_into(search, &mut map);
@@ -46,8 +39,8 @@ impl Args {
     }
 
     /// Non-`--key=value` arguments are ignored rather than errored: a parent
-    /// harness (cargo test, a wrapper) may add positionals we shouldn't fail
-    /// on. A bare `--key` is kept for [`Args::has_bare_flag`].
+    /// harness may add positionals. A bare `--key` is kept for
+    /// [`Args::has_bare_flag`].
     pub fn from_argv<I, S>(argv: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -63,8 +56,7 @@ impl Args {
                 Some((k, v)) if !k.is_empty() => {
                     map.insert(k.to_string(), v.to_string());
                 }
-                // A lone `--` is the conventional end-of-flags marker, not
-                // a flag named "".
+                // A lone `--` is the end-of-flags marker, not a flag named "".
                 None if !stripped.is_empty() => bare_flags.push(stripped.to_string()),
                 _ => {}
             }
@@ -87,11 +79,9 @@ impl Args {
         }
     }
 
-    /// Whether `--key` was passed without an attached `=value`.
-    ///
-    /// The value such a flag meant to carry stays a positional and is
-    /// dropped, so a caller that requires the key can diagnose the syntax
-    /// instead of silently taking its default. Always false on wasm32.
+    /// The value such a flag meant to carry stays a positional and is dropped, so
+    /// a caller that requires the key can diagnose the syntax instead of silently
+    /// taking its default. Always false on wasm32.
     pub fn has_bare_flag(&self, key: &str) -> bool {
         self.bare_flags.iter().any(|flag| flag == key)
     }
@@ -100,15 +90,13 @@ impl Args {
         self.map.get(key).map(String::as_str)
     }
 
-    /// Returns `None` if the key was
-    /// missing OR the value failed to parse; distinguish these with `get`
-    /// if your demo needs a specific error message.
+    /// `None` when the key is missing or the value failed to parse; `get`
+    /// distinguishes the two.
     pub fn parse<T: std::str::FromStr>(&self, key: &str) -> Option<T> {
         self.get(key)?.parse().ok()
     }
 
-    /// Comma-split helper for multi-value keys. Empty segments are filtered
-    /// (so `?shapes=a,,b` yields `["a", "b"]`).
+    /// Empty segments are filtered, so `?shapes=a,,b` yields `["a", "b"]`.
     pub fn get_many<'a>(&'a self, key: &str) -> Vec<&'a str> {
         match self.get(key) {
             Some(v) => v.split(',').filter(|s| !s.is_empty()).collect(),
@@ -116,7 +104,7 @@ impl Args {
         }
     }
 
-    /// All (key, value) pairs. Order is HashMap-arbitrary.
+    /// Order is HashMap-arbitrary.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.map.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
@@ -124,24 +112,19 @@ impl Args {
 
 #[cfg(target_arch = "wasm32")]
 thread_local! {
-    /// Page query forwarded into a worker via the init message; workers have
-    /// no `window.location`.
+    // Workers have no `window.location`; the init message forwards the query.
     static QUERY_OVERRIDE: std::cell::RefCell<Option<(String, String)>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Called by the worker entry before `App::setup`; hash wins on collision,
-/// matching the main-thread parse order.
+/// Hash wins on collision, matching the main-thread parse order.
 #[cfg(target_arch = "wasm32")]
 pub fn set_query_override(search: String, hash: String) {
     QUERY_OVERRIDE.with(|q| *q.borrow_mut() = Some((search, hash)));
 }
 
-/// Repeated keys resolve last-write-wins, which is what makes the caller's
-/// search-then-hash order mean "hash wins".
-///
-/// Pure `str` parsing with no `web_sys` dependency, so the `test` arm keeps
-/// it compiled and exercised on the host even though only wasm32 calls it.
+// Repeated keys resolve last-write-wins, which is what makes the caller's
+// search-then-hash order mean "hash wins".
 #[cfg(any(target_arch = "wasm32", test))]
 fn parse_query_into(raw: &str, map: &mut HashMap<String, String>) {
     let trimmed = raw.trim_start_matches(['?', '#']);
@@ -151,9 +134,8 @@ fn parse_query_into(raw: &str, map: &mut HashMap<String, String>) {
     for pair in trimmed.split('&') {
         if let Some((k, v)) = pair.split_once('=') {
             if !k.is_empty() {
-                // Only `+` -> space; skipping full percent-decode (an extra
-                // wasm-bindgen call per key) since values are simple ASCII
-                // identifiers. Demos needing more can use `urlencoding`.
+                // Only `+` to space; a full percent-decode costs an extra
+                // wasm-bindgen call per key and values are ASCII identifiers.
                 let value = v.replace('+', " ");
                 map.insert(k.to_string(), value);
             }
@@ -189,8 +171,8 @@ mod tests {
         assert_eq!(args.get("state"), Some("a=b"));
         assert_eq!(args.get("a"), Some("1=2=3"));
         assert_eq!(args.get("eq"), Some("="));
-        // Base64 padding is the value shape that reaches a command line with
-        // a trailing '=' and no encoding to hide it.
+        // Base64 padding is the value shape that reaches a command line with a
+        // trailing '=' and no encoding to hide it.
         assert_eq!(args.get("t"), Some("abc=="));
 
         // Splitting on the last '=' instead would mint these keys.
@@ -202,8 +184,8 @@ mod tests {
     #[test]
     fn a_bare_flag_is_recorded_and_its_value_is_not_absorbed() {
         let args = Args::from_argv(["--shapes", "5-cell,8-cell", "--seed=42"]);
-        // The value the user meant to attach is gone, so a missing key
-        // alone cannot be read as "the user asked for nothing".
+        // The value the user meant to attach is gone, so a missing key alone
+        // cannot be read as "the user asked for nothing".
         assert_eq!(args.get("shapes"), None);
         assert!(args.has_bare_flag("shapes"));
 
@@ -223,8 +205,8 @@ mod tests {
         assert!(args.get_many("missing").is_empty());
     }
 
-    /// Fold fragments into one map in caller order (search, then hash) and
-    /// sort, so the assertions below can be exact rather than key-by-key.
+    // Fold fragments into one map in caller order (search, then hash) and sort,
+    // so the assertions below can be exact rather than key-by-key.
     fn parse_all(fragments: &[&str]) -> Vec<(String, String)> {
         let mut map = HashMap::new();
         for fragment in fragments {
@@ -287,7 +269,7 @@ mod tests {
         assert_eq!(parse_all(&["?eq=="]), pairs(&[("eq", "=")]));
 
         // Base64 padding is the value shape that reaches a share link with a
-        // trailing '=' without any percent-encoding to hide it.
+        // trailing '=' and no percent-encoding to hide it.
         assert_eq!(parse_all(&["?t=abc=="]), pairs(&[("t", "abc==")]));
         assert_eq!(parse_all(&["?t=YQ="]), pairs(&[("t", "YQ=")]));
 

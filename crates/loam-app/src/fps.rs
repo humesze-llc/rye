@@ -1,13 +1,9 @@
-//! Console command that reads / writes the target framerate via
-//! [`crate::frame_pacing`].
-
 use loam_egui::{cmd, Console};
 
 use crate::frame_pacing;
 
-/// Maximum accepted fps. Above this we reject the input so a stray `fps 999999`
-/// doesn't silently make the cap a no-op. 1000 fps (1 ms period) is well past
-/// any practical display refresh rate.
+// 1000 fps (1 ms period) is well past any practical refresh rate; above it a
+// stray `fps 999999` would silently make the cap a no-op.
 const MAX_ACCEPTED_FPS: f32 = 1000.0;
 
 fn print_current(out: &mut loam_egui::ConsoleWriter) {
@@ -19,7 +15,6 @@ fn print_current(out: &mut loam_egui::ConsoleWriter) {
     }
 }
 
-/// Register the `fps` console command.
 pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
     console.register(
         cmd(
@@ -55,10 +50,8 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
 mod tests {
     use super::*;
     use crate::frame_pacing;
-    // Tests touch the process-global `frame_pacing` atomic. Default cargo
-    // test parallelism would race the writes against each others' reads;
-    // every test in this crate that touches the pacing atomics shares
-    // `frame_pacing::TEST_LOCK`.
+    // Tests touch the process-global `frame_pacing` atomics, so they share
+    // `frame_pacing::TEST_LOCK` against cargo's parallel runner.
     use crate::frame_pacing::TEST_LOCK;
 
     fn build_console() -> loam_egui::Console<()> {

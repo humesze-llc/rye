@@ -1,10 +1,5 @@
-//! Web Worker mode for loam demos. Moves the render loop into a worker so V8's
-//! GC pauses don't block the visible page.
-//!
 //! winit 0.30 has no `WorkerGlobalScope` support (issue #1518):
-//! `web_sys::window()` panics in worker context, so this path is rolled
-//! ourselves; the pieces we need (RAF, surface creation, message passing)
-//! are all available without winit.
+//! `web_sys::window()` panics there, so this path is rolled by hand.
 
 use anyhow::{anyhow, Context, Result};
 use std::cell::RefCell;
@@ -28,8 +23,8 @@ use loam_time::FixedTimestep;
 use winit::event::{ElementState, MouseScrollDelta};
 use winit::keyboard::PhysicalKey;
 
-/// Worker entry. Returns synchronously; the work happens in the
-/// message + RAF callbacks, which the `forget()` calls keep alive.
+/// Returns synchronously; the message and RAF callbacks the `forget()` calls
+/// keep alive do the work.
 pub fn run<A: App + 'static>() -> Result<()> {
     install_logging_idempotent();
 
@@ -38,9 +33,8 @@ pub fn run<A: App + 'static>() -> Result<()> {
     let scope = worker_scope()?;
     let scope_for_handler = scope.clone();
 
-    // `addEventListener` over `set_onmessage`: the former reliably delivers
-    // messages queued before the listener installs; the latter has spec
-    // ambiguity about when queued messages flush.
+    // `addEventListener` over `set_onmessage`: only the former reliably delivers
+    // messages queued before the listener installs.
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
         tracing::debug!("loam_app::wasm::worker: message handler firing");
         if let Err(e) = handle_message::<A>(&scope_for_handler, event) {
@@ -52,9 +46,8 @@ pub fn run<A: App + 'static>() -> Result<()> {
         .map_err(|e| anyhow!("addEventListener('message'): {e:?}"))?;
     on_message.forget();
 
-    // Signal readiness before main posts Init. Firefox empirically drops
-    // messages posted to a worker before its listener installs; this
-    // handshake makes the ordering explicit across browsers.
+    // Firefox empirically drops messages posted to a worker before its listener
+    // installs; this handshake makes the ordering explicit.
     let ready_msg = js_sys::Object::new();
     js_sys::Reflect::set(
         &ready_msg,
@@ -81,9 +74,6 @@ fn handle_message<A: App + 'static>(
         .ok()
         .and_then(|v| v.as_string());
     if kind.as_deref() == Some("start") {
-        // If init stashed the kickoff, run it; otherwise flag the request
-        // so init_renderer self-triggers when ready (no-op if already
-        // started).
         if let Some(kickoff) = RAF_KICKOFF.with(|k| k.borrow_mut().take()) {
             tracing::info!("loam_app::wasm::worker: Start received, kicking off RAF loop");
             kickoff();
@@ -94,9 +84,8 @@ fn handle_message<A: App + 'static>(
         return Ok(());
     }
     if kind.as_deref() == Some("pause") {
-        // Synthetic focus-loss releases buttons held at pause time; drained
-        // on the first resumed frame. Only on the paused edge: a repeat
-        // pause would push onto a queue no frame is draining.
+        // Synthetic focus-loss releases buttons held at pause time. Only on the
+        // paused edge: a repeat would push onto a queue no frame is draining.
         if !PAUSED.with(|p| p.replace(true)) {
             input_queue::enqueue(InputMessage::Focus(false));
         }
@@ -105,9 +94,9 @@ fn handle_message<A: App + 'static>(
     }
     if kind.as_deref() == Some("resume") {
         let was_paused = PAUSED.with(|p| p.replace(false));
-        // Restart only a halted chain: pause+resume within one frame gap
-        // leaves the original RAF pending, and resume before Start must not
-        // bypass the launch flow.
+        // Restart only a halted chain: pause+resume within one frame gap leaves
+        // the original RAF pending, and resume before Start must not bypass the
+        // launch flow.
         if was_paused && LOOP_STARTED.with(|s| s.get()) && !RAF_PENDING.with(|p| p.get()) {
             RAF_RESTART.with(|r| {
                 if let Some(restart) = r.borrow().as_ref() {
@@ -118,9 +107,8 @@ fn handle_message<A: App + 'static>(
         }
         return Ok(());
     }
-    // No frame drains the queue while paused: drop pointer/key/wheel so
-    // stale input cannot replay on resume. Resize still queues; the queue's
-    // own cap is what keeps a paused embed's arrivals bounded.
+    // No frame drains the queue while paused, so pointer/key/wheel drop rather
+    // than replay on resume. Resize still queues, bounded by the queue's cap.
     if PAUSED.with(|p| p.get())
         && matches!(
             kind.as_deref(),
@@ -189,8 +177,7 @@ async fn init_renderer<A: App + 'static>(
         ..Default::default()
     });
 
-    // Clone is a JsValue ref-count bump (shared ownership, not a pixel
-    // copy) so the WorkerRunner keeps its own handle for resize calls.
+    // Clone is a JsValue ref-count bump, not a pixel copy.
     let canvas_for_runner = canvas.clone();
     let surface = instance
         .create_surface(wgpu::SurfaceTarget::OffscreenCanvas(canvas))
@@ -200,7 +187,7 @@ async fn init_renderer<A: App + 'static>(
     let rd = RenderDevice::from_surface(
         instance, surface, size,
         // No MSAA: the non-sRGB browser-WebGPU composite pass forces
-        // sample_count=1 anyway (RenderDevice::new's `effective_msaa`).
+        // sample_count=1 anyway.
         1,
     )
     .await
@@ -216,14 +203,10 @@ async fn init_renderer<A: App + 'static>(
             .await
             .context("WorkerRunner::setup")?;
 
-    // The warmup frames force wgpu's lazy pipeline
-    // compilation (browser WebGPU defers `create_render_pipeline` until
-    // first use) up front so the click -> running transition has no second
-    // hitch. Safe because the default `rotate` state is false, so warmup
-    // advances no simulation state.
-    //
-    // 11 frames (1 + 10) empirically covers polytope_playground's
-    // first-frame compilation on Chrome and Firefox WebGPU.
+    // Browser WebGPU defers `create_render_pipeline` until first use, so warmup
+    // frames force compilation before the click. The default `rotate` state is
+    // false, so warmup advances no simulation state. 11 frames (1 + 10)
+    // empirically covers polytope_playground on Chrome and Firefox WebGPU.
     const WARMUP_FRAMES: usize = 10;
     const TOTAL_FRAMES: usize = 1 + WARMUP_FRAMES;
     let post_progress = |step: usize| {
@@ -250,8 +233,7 @@ async fn init_renderer<A: App + 'static>(
         "loam_app::wasm::worker: preview + {WARMUP_FRAMES} warmup frames rendered; \
          awaiting Start to begin RAF loop"
     );
-    // Preview frame is on the canvas and pipelines are warm; main promotes
-    // the launch overlay to `.ready`.
+    // Main promotes the launch overlay to `.ready` on this message.
     {
         let msg = js_sys::Object::new();
         let _ = js_sys::Reflect::set(
@@ -292,9 +274,8 @@ async fn init_renderer<A: App + 'static>(
         }
     }) as Box<dyn FnMut(f64)>));
 
-    // Stash the kickoff for the `Start` handler instead of starting RAF
-    // now: the canvas keeps showing the preview frame until the user
-    // clicks.
+    // Stashed for the `Start` handler instead of starting RAF now: the canvas
+    // keeps showing the preview frame until the user clicks.
     let scope_for_kickoff = scope.clone();
     let raf_cb_for_kickoff = raf_cb.clone();
     let kickoff: Box<dyn FnOnce()> = Box::new(move || {
@@ -326,9 +307,8 @@ async fn init_renderer<A: App + 'static>(
     });
     RAF_RESTART.with(|r| *r.borrow_mut() = Some(restart));
 
-    // If a Start landed during setup (click before wgpu init finished),
-    // self-trigger now; otherwise the demo would freeze on the preview
-    // frame with the overlay already removed.
+    // A Start that landed during setup must self-trigger, or the demo freezes
+    // on the preview with the overlay already gone.
     if START_REQUESTED.with(|s| s.replace(false)) {
         if let Some(kickoff) = RAF_KICKOFF.with(|k| k.borrow_mut().take()) {
             tracing::info!(
@@ -338,8 +318,7 @@ async fn init_renderer<A: App + 'static>(
         }
     }
 
-    // Both must outlive this function: the closure + runner state survive
-    // across RAF callbacks and the wait-for-Start window.
+    // Both must outlive this call: they live across RAF callbacks.
     Box::leak(Box::new(raf_cb));
     Box::leak(Box::new(runner));
 
@@ -347,35 +326,32 @@ async fn init_renderer<A: App + 'static>(
 }
 
 thread_local! {
-    /// One-shot RAF-loop kickoff. Populated by `init_renderer` after the
-    /// preview frame, consumed by `handle_message` on `Start`; `None` after
-    /// (subsequent Start messages no-op).
+    // Consumed by `handle_message` on `Start`; `None` after, so a repeat Start
+    // is a no-op.
     static RAF_KICKOFF: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
 
-    /// Set when a Start arrives before `init_renderer` stashed the kickoff.
-    /// Checked at the end of setup so an eager click during the wgpu+egui
-    /// setup window still starts the loop instead of freezing the preview.
+    // Set when a Start arrives before the kickoff was stashed, so an eager click
+    // during the setup window still starts the loop.
     static START_REQUESTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 
-    /// Embed deactivated: the RAF chain halts and input messages drop.
+    // Embed deactivated: the RAF chain halts and input messages drop.
     static PAUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 
-    /// A RAF callback is scheduled. Resume must not re-request while the
-    /// original chain is alive (pause+resume within one frame gap), or two
-    /// interleaved chains run forever.
+    // Resume must not re-request while the original chain is alive, or two
+    // interleaved chains run forever.
     static RAF_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 
-    /// Resume before Start must not bypass the launch flow.
+    // Resume before Start must not bypass the launch flow.
     static LOOP_STARTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 
-    /// Restarts a halted chain on `resume`, re-anchoring the frame clock
-    /// first. Unlike `RAF_KICKOFF`, reusable across pause cycles.
+    // Restarts a halted chain on `resume`, re-anchoring the frame clock. Unlike
+    // `RAF_KICKOFF`, reusable across pause cycles.
     static RAF_RESTART: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
 struct WorkerRunner<A: App + 'static> {
     rd: RenderDevice,
-    /// Held so resize can set the OffscreenCanvas backing-store dimensions
+    /// Resize sets the OffscreenCanvas backing-store dimensions through this
     /// before reconfiguring the surface; without it the render stretches.
     canvas: OffscreenCanvas,
     #[allow(dead_code)] // held alive so cached pipeline/shader handles stay valid
@@ -384,42 +360,34 @@ struct WorkerRunner<A: App + 'static> {
     watcher: Option<AssetWatcher>,
     app: A,
     input: InputState,
-    /// Corrects `input`'s derived modifier set against the flags the
-    /// browser stamps on every key event.
+    /// Corrects `input`'s derived modifier set against the browser's own flags.
     modifier_sync: ModifierSync,
     ui: WorkerUi,
-    /// Read at each frame's `begin_frame`. Input messages are applied
-    /// outside the pass, so the `on_key` path serves this frame's value.
+    /// Read at each frame's `begin_frame`. Input applies outside the pass, so
+    /// the `on_key` path serves this frame's value.
     ui_capture: UiCapture,
     width_px: u32,
     height_px: u32,
-    /// Physical pixels per CSS pixel. Doubles as egui's
-    /// `pixels_per_point` (egui points are CSS pixels here) and as the
-    /// scale from the DOM's CSS-pixel cursor stream to the physical
-    /// pixels `FrameInput::cursor_pos` is specified in.
+    /// Physical pixels per CSS pixel. Doubles as egui's `pixels_per_point` and
+    /// as the scale from the DOM's cursor stream to physical pixels.
     device_pixel_ratio: f32,
     start: web_time::Instant,
     last_update_at: Option<web_time::Instant>,
-    /// FPS-cap anchor: the previous frame's IDEAL deadline (not its wake-up
-    /// time), so RAF jitter doesn't compound into alternating-skip at the
-    /// target-period / refresh-rate boundary. Mirrors the native runner's
-    /// `last_redraw_at`. `None` when uncapped.
+    /// The previous frame's ideal deadline, not its wake-up, so RAF jitter does
+    /// not compound into alternating-skip. `None` when uncapped.
     last_redraw_anchor: Option<web_time::Instant>,
     tick_index: u64,
-    /// Fixed-timestep accumulator at 60Hz with the catch-up cap at
-    /// `DEFAULT_MAX_TICKS_PER_FRAME`, both matching `RunConfig::default()` so
-    /// demos reading `FrameCtx::n_ticks` see the native cadence.
+    /// 60Hz with the catch-up cap at `DEFAULT_MAX_TICKS_PER_FRAME`, matching
+    /// `RunConfig::default()` so `FrameCtx::n_ticks` shows the native cadence.
     timestep: FixedTimestep,
-    /// Resolved through the same `resolve_sim_threads` the native runner
-    /// uses, which is why the knob is an `Args` key: `RunConfig` never
-    /// crosses the init message but the page query is forwarded before
-    /// `A::setup`. `JobPool` then clamps to one worker here, so a page asking
-    /// for more gets the platform's answer rather than a divergent schedule.
+    /// Resolved through the same `resolve_sim_threads` the native runner uses,
+    /// which is why the knob is an `Args` key: `RunConfig` never crosses the init
+    /// message. `JobPool` then clamps to one worker here.
     jobs: JobPool,
 }
 
 impl<A: App + 'static> WorkerRunner<A> {
-    /// Async because `A::setup` may await on asset loading.
+    // Async because `A::setup` may await on asset loading.
     async fn setup(
         rd: RenderDevice,
         canvas: OffscreenCanvas,
@@ -448,8 +416,7 @@ impl<A: App + 'static> WorkerRunner<A> {
         };
         let app = A::setup(&mut ctx).map_err(|e| e.context("App::setup"))?;
 
-        // Constructed after A::setup so the App's pipeline-warming runs
-        // first.
+        // Constructed after A::setup so the App's pipeline-warming runs first.
         let ui = WorkerUi::new(
             &rd.device,
             rd.target_format(),
@@ -480,16 +447,13 @@ impl<A: App + 'static> WorkerRunner<A> {
         })
     }
 
-    /// Re-anchor after a pause so the first resumed frame sees a normal dt.
-    /// Anchors on `now`, not `None`: `last_update_at == None` doubles as the
-    /// pre-Start preview flag in `apply_message`. `FixedTimestep` needs no
-    /// reset; `advance` bounds catch-up and drains excess itself.
+    // Anchors on `now`, not `None`: `last_update_at == None` doubles as the
+    // pre-Start preview flag in `apply_message`.
     fn reset_frame_clock(&mut self) {
         self.last_update_at = Some(web_time::Instant::now());
         self.last_redraw_anchor = None;
     }
 
-    /// Zero-sized resizes are no-ops.
     fn resize(&mut self, width: u32, height: u32, device_pixel_ratio: f32) {
         if width == 0 || height == 0 {
             return;
@@ -506,21 +470,19 @@ impl<A: App + 'static> WorkerRunner<A> {
         );
     }
 
-    /// `App::on_event` (winit `WindowEvent`s) is deliberately not plumbed
-    /// here: constructing winit's `KeyEvent` needs private platform fields.
+    // `App::on_event` is deliberately not plumbed here: constructing winit's
+    // `KeyEvent` needs private platform fields.
     fn apply_message(&mut self, msg: InputMessage) {
-        // Fan out to egui first; it filters by pointer position vs widget
-        // bounds, so double-feeding with InputState below is fine.
+        // Fan out to egui first; it filters by pointer position, so
+        // double-feeding InputState below is fine.
         self.ui.record_input(&msg);
 
         match msg {
             InputMessage::Resize { width, height, dpr } => {
                 self.resize(width, height, dpr);
-                // Render once only in pre-Start preview mode (to refresh the
-                // backdrop-blur thumbnail). Once the RAF loop runs, the next
-                // tick renders at the new size; calling frame() here would
-                // re-drain queued Resize events recursively and overflow
-                // wgpu's command queue under a sustained drag.
+                // Pre-Start preview only. Once the RAF loop runs, calling frame()
+                // here would re-drain queued Resize events recursively and
+                // overflow wgpu's command queue under a drag.
                 if self.last_update_at.is_none() {
                     if let Err(e) = self.frame() {
                         tracing::error!(
@@ -530,9 +492,8 @@ impl<A: App + 'static> WorkerRunner<A> {
                 }
             }
             InputMessage::MouseMove { x, y, dx, dy, .. } => {
-                // `dx`/`dy` are `movementX/Y` summed across coalesced events;
-                // correct raw-motion source under Pointer Lock too, where
-                // `offsetX/Y` pins to the locked center and would read zero.
+                // `movementX/Y` summed across coalesced events; correct under
+                // Pointer Lock, where `offsetX/Y` pins to the locked center.
                 self.input.accumulate_raw_motion(dx as f64, dy as f64);
                 let (x, y) = input_queue::physical_cursor(x, y, self.device_pixel_ratio);
                 self.input.cursor_moved(x, y);
@@ -543,11 +504,9 @@ impl<A: App + 'static> WorkerRunner<A> {
                 button,
                 pressed,
             } => {
-                // Position the cursor from the button event itself before
-                // recording the transition: `mouse_input` anchors
-                // `press_pos` at the current position, and the move stream
-                // is rAF-coalesced, so its last sample can predate the
-                // click by a frame of motion.
+                // Position the cursor from the button event before recording the
+                // transition: `mouse_input` anchors `press_pos` at the current
+                // position, and the rAF-coalesced move stream can lag a frame.
                 let (x, y) = input_queue::physical_cursor(x, y, self.device_pixel_ratio);
                 self.input.cursor_moved(x, y);
                 let button = crate::keymap::mouse_button_winit(button);
@@ -578,10 +537,9 @@ impl<A: App + 'static> WorkerRunner<A> {
                     }
                 };
                 let state = to_state(pressed);
-                // The flags are the browser's own view of what is held, so
-                // they outrank the transition stream: the OS eats the keyup
-                // when a chord switches windows (Alt+Tab), and `keymap` has
-                // no code for Meta at all.
+                // The flags are the browser's own view of what is held, so they
+                // outrank the transition stream: the OS eats the keyup when a
+                // chord switches windows, and `keymap` has no Meta code.
                 let (modifier_sync, input) = (&mut self.modifier_sync, &mut self.input);
                 modifier_sync.reconcile(
                     ModifierFlags {
@@ -610,42 +568,35 @@ impl<A: App + 'static> WorkerRunner<A> {
             }
             InputMessage::Focus(focused) => {
                 if !focused {
-                    // loam-input focus-loss convention: drop held buttons +
-                    // invalidate cursor delta so re-focus doesn't snap.
+                    // loam-input focus-loss convention: drop held buttons and
+                    // invalidate the cursor delta so re-focus does not snap.
                     self.input.release_buttons();
                     self.input.cursor_invalidated();
                 }
             }
             InputMessage::Visibility(_) => {}
             InputMessage::Start => {
-                // Handled in `handle_message`: Start must fire before the
-                // RAF loop exists, but the per-frame queue only drains
-                // inside that loop.
+                // Handled in `handle_message`: Start must fire before the RAF
+                // loop exists, but the queue only drains inside that loop.
             }
             InputMessage::PointerLockChanged(locked) => {
-                // Mirror the browser's actual lock state (set by the main
-                // thread's `pointerlockchange` listener) into the cursor
-                // module so `current_state()` reads the truth, including
-                // releases the demo didn't request (Esc, tab switch).
+                // Mirror the browser's real lock state so `current_state()` sees
+                // releases the demo did not request (Esc, tab switch).
                 let grab = if locked {
                     crate::cursor::GrabMode::Locked
                 } else {
                     crate::cursor::GrabMode::None
                 };
-                // On wasm, visibility tracks lock state: lock auto-hides,
-                // release auto-shows.
+                // On wasm, visibility tracks lock state.
                 crate::cursor::mark_applied(grab, !locked);
             }
         }
     }
 
     fn frame(&mut self) -> Result<()> {
-        // Anchoring on the ideal
-        // deadline, not the wake-up time, absorbs RAF jitter; otherwise a
-        // target matching the refresh rate suffers alternating-skip (jitter
-        // skips a callback, the next fires a period late, half-rate).
-        // Can only lower the rate below the
-        // browser RAF cadence.
+        // Anchor on the ideal deadline, not the wake-up, to absorb RAF jitter;
+        // otherwise a target matching the refresh rate alternating-skips. Can
+        // only lower the rate below the browser RAF cadence.
         let now_raf = web_time::Instant::now();
         match crate::frame_pacing::target_period() {
             Some(target) => {
@@ -654,9 +605,8 @@ impl<A: App + 'static> WorkerRunner<A> {
                     if now_raf < deadline {
                         return Ok(());
                     }
-                    // Clamp catch-up after a backgrounded tab: snap to at
-                    // most one period behind `now_raf` instead of queueing
-                    // every missed frame at once.
+                    // Clamp catch-up after a backgrounded tab: snap to at most
+                    // one period behind `now_raf`, not every missed frame.
                     let catch_up_floor = now_raf.checked_sub(target).unwrap_or(now_raf);
                     self.last_redraw_anchor = Some(deadline.max(catch_up_floor));
                 } else {
@@ -682,8 +632,7 @@ impl<A: App + 'static> WorkerRunner<A> {
         };
         self.last_update_at = Some(now);
 
-        // Command queue, drained immediately before the ticks and stamped with
-        // the index they start from.
+        // Drained before the ticks and stamped with the index they start from.
         crate::command::apply_drained(&mut self.app, &self.rd, self.tick_index);
 
         let n_ticks = crate::drive_fixed_ticks(
@@ -695,9 +644,8 @@ impl<A: App + 'static> WorkerRunner<A> {
             &self.jobs,
         );
 
-        // Open the egui pass ahead of `App::update`, matching the windowed
-        // runner: this frame's input is hit-tested against the last build's
-        // layout instead of gating gameplay on a capture that predates it.
+        // Opened ahead of `App::update`, matching the windowed runner, so input
+        // hit-tests the last build's layout.
         let egui_ctx = {
             let _scope = loam_time::frame_trace::scope("ui-begin");
             let ctx = self.ui.begin_frame().clone();
@@ -726,9 +674,8 @@ impl<A: App + 'static> WorkerRunner<A> {
             self.app.ui(&egui_ctx, &mut fctx);
         }
 
-        // Scoped for the same reason as the windowed runner: browser surfaces
-        // advertise only `Fifo`, so the compositor's backpressure arrives here
-        // and would otherwise sit in the frame's unattributed remainder.
+        // Scoped like the windowed runner: browser surfaces advertise only
+        // `Fifo`, so the compositor's backpressure arrives here.
         let (frame, swap_view) = {
             let _scope = loam_time::frame_trace::scope("surface-acquire");
             self.rd.begin_frame()
@@ -757,8 +704,7 @@ impl<A: App + 'static> WorkerRunner<A> {
             self.app.record(&mut ctx).context("App::record")?;
         }
 
-        // Scene MSAA resolve, matching the windowed runner. Dead at
-        // sample_count 1, which the browser's non-sRGB surface forces today.
+        // Dead at sample_count 1, which the browser's non-sRGB surface forces.
         if self.rd.sample_count() > 1 {
             let _scope = loam_time::frame_trace::scope("scene-resolve");
             self.rd.resolve_scene_to_swap(&mut encoder, &swap_view);
@@ -782,9 +728,8 @@ impl<A: App + 'static> WorkerRunner<A> {
             frame.present();
         }
 
-        // Drain this frame's cursor / DOM-action requests and post them as
-        // one batched `host_action`. After `present()` so postMessage
-        // latency stays off the GPU submission path (matches native).
+        // After `present()` so postMessage latency stays off the GPU submission
+        // path, matching native.
         let (pending_grab, _pending_visible) = crate::cursor::take_pending();
         if let Some(grab) = pending_grab {
             let action = match grab {
@@ -795,9 +740,8 @@ impl<A: App + 'static> WorkerRunner<A> {
             };
             super::host_action::queue(action);
         }
-        // Drained to clear the flag: warp-to-center is a no-op on wasm
-        // (no cursor-position write) but leaving it set would leak to a
-        // later native build.
+        // Drained to clear the flag: a no-op on wasm, but leaving it set would
+        // leak to a later native build.
         let _ = crate::cursor::take_pending_warp_center();
         if let Ok(scope) = worker_scope() {
             if let Err(e) = super::host_action::post_pending_actions(&scope) {
@@ -816,10 +760,8 @@ fn worker_scope() -> Result<DedicatedWorkerGlobalScope> {
         .map_err(|_| anyhow!("not running in a DedicatedWorkerGlobalScope"))
 }
 
-/// Install the console panic hook + tracing-to-DevTools routing once per JS
-/// context (main and worker each have their own; `Once` is per-process).
-/// `tracing_wasm::set_as_global_default` panics on a second call, so the
-/// guard is required.
+// `tracing_wasm::set_as_global_default` panics on a second call, and main and
+// worker are separate JS contexts, so the `Once` guard is required.
 pub(super) fn install_logging_idempotent() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {

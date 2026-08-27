@@ -1,7 +1,3 @@
-//! Console command that surfaces [`loam_time::frame_trace`] aggregates into
-//! the dev console. Collection is already wired into `Runner::redraw`; this
-//! is the read side.
-//!
 //! The summary carries a synthetic `unscoped` row: `frame` minus the sections
 //! the frame loop opens inside it (`crate::FRAME_LOOP_SECTIONS`, crate-private
 //! so not linkable from here).
@@ -10,7 +6,6 @@ use loam_egui::{cmd, Console};
 use loam_time::frame_trace;
 use std::time::Duration;
 
-/// Compact duration string: ns < 1us, us < 1ms, ms < 1s, s otherwise.
 fn fmt_dur(d: std::time::Duration) -> String {
     let ns = d.as_nanos();
     if ns < 1_000 {
@@ -24,13 +19,10 @@ fn fmt_dur(d: std::time::Duration) -> String {
     }
 }
 
-/// Time inside one frame's `frame` scope that no frame-loop section covers.
-/// `None` when the frame carries no `frame` section, which is any frame
-/// recorded outside a frame loop.
-///
-/// Saturating: parent and children are sampled from independent `Instant`
-/// reads, so a child sum a few nanoseconds over the parent is a measurement
-/// artifact, not a reason to panic on `Duration` underflow.
+// `None` when the frame carries no `frame` section, which is any frame recorded
+// outside a frame loop. Saturating: parent and children are sampled from
+// independent `Instant` reads, so a child sum a few nanoseconds over the parent
+// is a measurement artifact, not a reason to panic on `Duration` underflow.
 fn unscoped(frame: &frame_trace::FrameTrace) -> Option<Duration> {
     let mut total = None;
     let mut covered = Duration::ZERO;
@@ -44,8 +36,7 @@ fn unscoped(frame: &frame_trace::FrameTrace) -> Option<Duration> {
     total.map(|t| t.saturating_sub(covered))
 }
 
-/// [`unscoped`] aggregated over the rolling window, shaped as a table row.
-/// Nearest-rank percentiles, matching [`frame_trace::aggregate`].
+// Nearest-rank percentiles, matching `frame_trace::aggregate`.
 fn unscoped_stats() -> Option<frame_trace::SectionStats> {
     let mut samples: Vec<Duration> =
         frame_trace::with_history(|history| history.iter().filter_map(unscoped).collect());
@@ -66,7 +57,6 @@ fn unscoped_stats() -> Option<frame_trace::SectionStats> {
     })
 }
 
-/// Recorded sections plus the synthetic `unscoped` row, p95 descending.
 fn summary_rows() -> Vec<frame_trace::SectionStats> {
     let mut stats = frame_trace::aggregate();
     if let Some(residual) = unscoped_stats() {
@@ -112,7 +102,6 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Print the most recent frame's section breakdown, in scope-open order.
 fn print_last(out: &mut loam_egui::ConsoleWriter) {
     let Some(frame) = frame_trace::last_frame() else {
         out.line("trace: no frames in window yet");
@@ -139,9 +128,8 @@ fn print_last(out: &mut loam_egui::ConsoleWriter) {
     }
 }
 
-/// Multi-line summary text. Used by the `dump` subcommand so the same data
-/// reaches the browser DevTools console (selectable/copyable), which the
-/// pixel-rendered in-canvas console is not.
+// Used by the `dump` subcommand so the same data reaches the browser DevTools
+// console, selectable and copyable, which the in-canvas console is not.
 fn format_summary() -> String {
     let stats = summary_rows();
     if stats.is_empty() {
@@ -171,7 +159,6 @@ fn format_summary() -> String {
     s
 }
 
-/// Register the `trace` console command.
 pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
     console.register(
         cmd(
@@ -182,9 +169,9 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
                     None | Some("summary") => print_summary(out),
                     Some("last") => print_last(out),
                     Some("dump") => {
-                        // tracing::info! so the block lands in the browser
-                        // DevTools console (copyable) on wasm and stdout on
-                        // native; one event keeps the newlines grouped.
+                        // tracing::info! so the block lands in DevTools on
+                        // wasm and stdout on native; one event keeps the
+                        // newlines grouped.
                         let summary = format_summary();
                         tracing::info!("\n{summary}");
                         out.line("trace: dumped to browser console (open DevTools to copy)");
@@ -222,19 +209,13 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
     );
 }
 
-/// Live FPS / frame-time overlay, F3-toggled. Reads `frame_trace`'s rolling
-/// history and paints FPS, between-frames cadence, frame CPU work, and a
-/// sparkline. Opt in by calling [`PerfOverlay::show`] from `App::ui`.
-///
-/// Hand-painted rather than the egui `Plot` widget: `Plot` adds pipeline
-/// state to egui's compile-time pipeline count (a suspected stutter source);
-/// direct `ui.painter()` calls cost one rect plus a few segments per frame.
+/// Reads `frame_trace`'s rolling history; opt in from `App::ui`. Hand-painted
+/// rather than the egui `Plot` widget: `Plot` adds pipeline state to egui's
+/// compile-time pipeline count, a suspected stutter source.
 pub struct PerfOverlay {
     visible: bool,
-    /// Toggle hotkey. `F3` by default; change with [`Self::with_toggle_key`].
     toggle_key: loam_egui::egui::Key,
-    /// Recent frames the readout summarizes over. Larger = smoother numbers,
-    /// slower reaction.
+    /// Recent frames the readout summarizes over.
     window: usize,
 }
 
@@ -248,16 +229,13 @@ impl Default for PerfOverlay {
     }
 }
 
-/// Body width of the readout; also the right-inset basis for its boot seat.
 const OVERLAY_WIDTH: f32 = 260.0;
 
-/// Gap between the overlay and the edges of the space panels leave.
 const OVERLAY_MARGIN: f32 = 12.0;
 
-/// Boot position of the draggable overlay: inset from the top-right of the
-/// space the host's panels leave. `available_rect` and not `content_rect`,
-/// which is the viewport minus OS safe-area insets and is panel-unaware, so
-/// seating against it puts the readout behind the shell's menu bar.
+// `available_rect`, not `content_rect`: the latter is the viewport minus OS
+// safe-area insets and is panel-unaware, so seating against it puts the readout
+// behind the shell's menu bar.
 fn perf_overlay_seat(ctx: &loam_egui::egui::Context) -> loam_egui::egui::Pos2 {
     let area = ctx.available_rect();
     loam_egui::egui::pos2(
@@ -271,24 +249,18 @@ impl PerfOverlay {
         Self::default()
     }
 
-    /// Override the toggle key (for demos where F3 is taken).
     pub fn with_toggle_key(mut self, key: loam_egui::egui::Key) -> Self {
         self.toggle_key = key;
         self
     }
 
-    /// Force the overlay visible regardless of toggle state.
     pub fn always_visible(mut self) -> Self {
         self.visible = true;
         self
     }
 
-    /// Render the overlay once per frame from `App::ui`; handles the toggle
-    /// key internally.
-    ///
-    /// Zero-alloc per call: history read via [`frame_trace::with_history`],
-    /// samples into a fixed-size stack buffer ([`MAX_WINDOW`] cap),
-    /// percentile sort in place.
+    /// Zero-alloc per call: a fixed-size stack buffer capped at [`MAX_WINDOW`],
+    /// with the percentile sort done in place.
     pub fn show(&mut self, ctx: &loam_egui::egui::Context) {
         use loam_egui::egui;
 
@@ -354,8 +326,8 @@ impl PerfOverlay {
         let idle_mean = idles.mean();
         let idle_p99 = idles.percentile(0.99);
 
-        // Session-lifetime maxima: a freeze that aged out of the rolling
-        // window still shows here, where a window-bounded max would lie.
+        // Session-lifetime maxima: a freeze that aged out of the rolling window
+        // still shows here, where a window-bounded max would lie.
         let cadence_max_ever = frame_trace::max_ever("between-frames");
         let idle_max_ever = frame_trace::max_ever("idle");
         let frame_max_ever = frame_trace::max_ever("frame");
@@ -366,8 +338,8 @@ impl PerfOverlay {
             0.0
         };
 
-        // `default_pos` (not `anchor`, which ignores drag) so `.movable`
-        // works and egui persists the dragged offset.
+        // `default_pos`, not `anchor`, which ignores drag, so `.movable` works
+        // and egui persists the dragged offset.
         egui::Area::new(egui::Id::new("loam-perf-overlay"))
             .default_pos(perf_overlay_seat(ctx))
             .movable(true)
@@ -453,10 +425,9 @@ impl PerfOverlay {
                             .font(mono.clone())
                             .color(worst_color(frame_max_ever)),
                         );
-                        // Alloc section (demo opted into CountingAllocator).
-                        // alloc count is tracked separately from bytes because
-                        // many tiny allocs cost more in wasm JS-interop than
-                        // one large alloc of the same total size.
+                        // Count is tracked separately from bytes: many tiny
+                        // allocs cost more in wasm JS-interop than one large
+                        // alloc of the same total size.
                         if alloc_frames > 0 {
                             ui.separator();
                             ui.label(
@@ -508,9 +479,8 @@ impl PerfOverlay {
                                 .color(byte_color(alloc_net_bytes)),
                             );
                         }
-                        // Heap section (Chromium only). Skipped when no
-                        // samples (Firefox/native) rather than showing zeroes
-                        // a reader might misread as "no allocations."
+                        // Chromium only. Skipped when no samples rather than
+                        // showing zeroes a reader might read as no allocations.
                         if heap_count > 0 {
                             ui.separator();
                             ui.label(
@@ -552,16 +522,13 @@ impl PerfOverlay {
     }
 }
 
-/// Max window size for the overlay's percentile stats; sizes the inline
-/// stack array in `StackBuf`. 256 x 16 B/Duration = 4 KB per buffer, three
-/// buffers = 12 KB, well inside the 1 MB main-thread stack. The cap keeps
-/// the buffer fixed-size; `frame_trace`'s own capacity is independent and
-/// may be larger, in which case the overlay silently uses this cap to
-/// preserve its zero-alloc property.
+/// 256 x 16 B/Duration = 4 KB per buffer, three buffers = 12 KB, well inside the
+/// 1 MB main-thread stack. `frame_trace`'s own capacity is independent and may be
+/// larger; the overlay uses this cap to preserve its zero-alloc property.
 pub const MAX_WINDOW: usize = 256;
 
-/// Fixed-capacity stack sample buffer; zero-alloc replacement for a
-/// per-frame `Vec<Duration>`. Push drops silently at [`MAX_WINDOW`].
+// Zero-alloc replacement for a per-frame `Vec<Duration>`. Push drops silently
+// at `MAX_WINDOW`.
 #[derive(Clone)]
 struct StackBuf {
     samples: [Duration; MAX_WINDOW],
@@ -595,8 +562,8 @@ impl StackBuf {
         sum / self.len as u32
     }
 
-    /// `q`-percentile (nearest-rank). Order-preserving on `self`: sorts a
-    /// stack-local copy so the sparkline downstream keeps its time order.
+    // Order-preserving on `self`: sorts a stack-local copy so the sparkline
+    // downstream keeps its time order.
     fn percentile(&self, q: f32) -> Duration {
         if self.len == 0 {
             return Duration::ZERO;
@@ -617,7 +584,7 @@ fn draw_sparkline(ui: &mut loam_egui::egui::Ui, gaps: &[Duration]) {
     let painter = ui.painter();
     painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(18, 18, 24));
 
-    // Clamp the top at 50ms so a single 200ms outlier doesn't squash the
+    // Clamp the top at 50ms so a single 200ms outlier does not squash the
     // baseline; outliers draw to the top of the rect at full color.
     let y_max_ms = 50.0_f32;
     let y_for_ms = |ms: f32| {
@@ -732,9 +699,8 @@ mod tests {
 
     #[test]
     fn unscoped_ignores_the_sections_that_do_not_nest_in_the_frame() {
-        // `between-frames` and `idle` bracket the frame and `gpu-total` is
-        // device time; subtracting any of them drives the remainder to zero
-        // and hides the very gap the row exists to show.
+        // `between-frames` and `idle` bracket the frame and `gpu-total` is device
+        // time; subtracting any of them drives the remainder to zero.
         let frame = frame_of(&[
             ("frame", 4000),
             ("app-record", 130),
@@ -759,9 +725,8 @@ mod tests {
 
     #[test]
     fn surface_acquire_leaves_the_unscoped_remainder() {
-        // The diagnosis this row supports depends on the acquire block being
-        // attributable by name: once scoped, its time must move out of the
-        // remainder rather than staying pooled there.
+        // The diagnosis this row supports needs the acquire block attributable
+        // by name: once scoped, its time must leave the remainder.
         let frame = frame_of(&[("frame", 4000), ("surface-acquire", 3400)]);
         assert_eq!(unscoped(&frame), Some(Duration::from_micros(600)));
     }
@@ -784,18 +749,16 @@ mod tests {
         );
     }
 
-    /// Enough frames that the nearest-rank indices for p50, p95 and p99 are
-    /// three distinct slots (12, 23, 24), so a quantile that drifted between
-    /// the two implementations cannot hide behind a shared index.
+    // Enough frames that the nearest-rank indices for p50, p95 and p99 are three
+    // distinct slots (12, 23, 24), so a drifted quantile cannot hide behind a
+    // shared index.
     const RANK_SPREAD_FRAMES: u32 = 25;
 
     #[test]
     fn unscoped_percentiles_agree_with_the_aggregate_they_are_shown_beside() {
-        // With no child sections the residual is the `frame` duration itself,
-        // so the two rows aggregate an identical sample set and any
-        // difference is a divergence in the percentile rule, not noise. The
-        // spin makes the samples distinct, which is what gives an index
-        // mismatch somewhere to show up.
+        // With no child sections the residual is the `frame` duration itself, so
+        // the two rows aggregate an identical sample set and any difference is a
+        // divergence in the percentile rule. The spin makes the samples distinct.
         for i in 0..RANK_SPREAD_FRAMES {
             frame_trace::begin_frame();
             {
@@ -900,21 +863,21 @@ mod seat_tests {
     use super::*;
     use loam_egui::egui;
 
-    /// Any bar taller than `OVERLAY_MARGIN` separates the two rects; an exact
-    /// height keeps the assertion independent of font metrics.
+    // Any bar taller than `OVERLAY_MARGIN` separates the two rects; an exact
+    // height keeps the assertion independent of font metrics.
     const BAR_HEIGHT: f32 = 64.0;
 
     const PANEL_WIDTH: f32 = 120.0;
 
-    /// Wide enough that the seat's left clamp stays untaken.
+    // Wide enough that the seat's left clamp stays untaken.
     const VIEWPORT: egui::Vec2 = egui::vec2(1280.0, 800.0);
 
-    /// Narrower than `PANEL_WIDTH + OVERLAY_MARGIN + OVERLAY_WIDTH`, so the
-    /// band a side panel leaves cannot hold the readout and the clamp fires.
+    // Narrower than `PANEL_WIDTH + OVERLAY_MARGIN + OVERLAY_WIDTH`, so the band a
+    // side panel leaves cannot hold the readout and the clamp fires.
     const NARROW_VIEWPORT: egui::Vec2 = egui::vec2(200.0, 400.0);
 
-    /// egui's fallback viewport is ~10000px wide, so a default `RawInput`
-    /// leaves the clamp unreachable no matter what the panels do.
+    // egui's fallback viewport is ~10000px wide, so a default `RawInput` leaves
+    // the clamp unreachable no matter what the panels do.
     fn viewport(size: egui::Vec2) -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
@@ -924,8 +887,8 @@ mod seat_tests {
 
     #[test]
     fn perf_overlay_boots_into_the_top_right_of_the_panel_band() {
-        // One frame of history, so `show` gets past its "no samples" early
-        // return. The store is thread-local and each test owns its thread.
+        // One frame of history, so `show` gets past its no-samples early return.
+        // The store is thread-local and each test owns its thread.
         frame_trace::begin_frame();
         frame_trace::end_frame();
 
@@ -953,8 +916,8 @@ mod seat_tests {
             "overlay top {} must clear the menu bar bottom {bar_bottom}",
             rect.top(),
         );
-        // Halves rather than exact insets: egui constrains a placed area to
-        // the viewport, so frame padding can shift the right edge inward.
+        // Halves rather than exact insets: egui constrains a placed area to the
+        // viewport, so frame padding can shift the right edge inward.
         assert!(
             rect.center().x > band.center().x,
             "overlay center x {} must sit in the band's right half of {band:?}",

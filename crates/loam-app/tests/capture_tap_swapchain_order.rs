@@ -1,13 +1,8 @@
-//! What a capture tap can read out of the swapchain on the non-sRGB surface
-//! path, where the frame's pixels reach it only through the composite pass.
-//!
 //! `Runner`'s frame loop needs a window, so these pin the GPU-side contract it
-//! is ordered against rather than the loop itself: the swapchain still holds
-//! whatever it held before the frame's passes until `CompositeNode` runs, and
-//! once it has run the swapchain holds the scene's sRGB-encoded bits, which is
-//! what the readback in `capture::read_texture_rgba` turns into PNG bytes. A
-//! tap ordered ahead of the composite therefore captures the first state; the
-//! runner puts a composite in front of both taps.
+//! is ordered against: the swapchain holds whatever it held before the frame's
+//! passes until `CompositeNode` runs, and after it holds the scene's
+//! sRGB-encoded bits, which is what `capture::read_texture_rgba` turns into PNG
+//! bytes. A tap ordered ahead of the composite captures the first state.
 //!
 //! The `gpu_probe` suffix is what CI's software-adapter job selects on.
 
@@ -19,38 +14,37 @@ use wgpu::{
     TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
 };
 
-/// Square side in texels. 64 * 4 bytes hits `COPY_BYTES_PER_ROW_ALIGNMENT`
-/// exactly, so the readback needs no row unpadding.
+// 64 * 4 bytes hits `COPY_BYTES_PER_ROW_ALIGNMENT` exactly, so the readback
+// needs no row unpadding.
 const SIZE: u32 = 64;
 
-/// The linear canvas format browser-WebGPU advertises, and the sRGB sibling
-/// `RenderDevice` gives the offscreen scene target (`add_srgb_suffix`).
+// The linear canvas format browser-WebGPU advertises; `RenderDevice` gives the
+// offscreen scene target the sRGB sibling (`add_srgb_suffix`).
 const SWAP_FORMAT: TextureFormat = TextureFormat::Bgra8Unorm;
 const SCENE_FORMAT: TextureFormat = TextureFormat::Bgra8UnormSrgb;
 
-/// Scene colour in linear space, per channel. Three distinct values so a
-/// channel swap cannot pass, none of them near the transfer function's
-/// linear segment.
+// Three distinct values so a channel swap cannot pass, none of them near the
+// transfer function's linear segment.
 const SCENE_LINEAR: [f64; 3] = [0.25, 0.5, 0.75];
 
-/// Stand-in for what the UI pass leaves in the scene target after the pre-egui
-/// tap has already composited. Shares no channel value with `SCENE_LINEAR`, so
-/// a composite that republished stale bits fails on every channel.
+// What the UI pass leaves in the scene target after the pre-egui tap has
+// composited. Shares no channel value with `SCENE_LINEAR`, so a composite that
+// republished stale bits fails on every channel.
 const SCENE_LINEAR_AFTER_UI: [f64; 3] = [0.9, 0.1, 0.4];
 
-/// Swapchain contents before any of the frame's passes touch it, in the
-/// attachment's BGRA byte order. Opaque magenta: nothing the scene colour
-/// could be confused with.
+// Swapchain contents before any of the frame's passes touch it, in the
+// attachment's BGRA byte order. Opaque magenta: nothing the scene colour could
+// be confused with.
 const UNWRITTEN_BGRA: [u8; 4] = [255, 0, 255, 255];
 
-/// One 8-bit code point of slack, spent on the encode-decode-encode
-/// round trip: the scene attachment stores encoded bytes, the composite's
-/// sampler decodes them, and the shader encodes again.
+// One 8-bit code point of slack, spent on the encode-decode-encode round trip:
+// the scene attachment stores encoded bytes, the composite's sampler decodes
+// them, and the shader encodes again.
 const TOLERANCE: u8 = 1;
 
-/// IEC 61966-2-1 linear -> sRGB, mirroring `composite.wgsl`'s `linear_to_srgb`.
-/// Restated here so the expectation is a closed form rather than a second
-/// reading of the shader under test.
+// IEC 61966-2-1 linear to sRGB, mirroring `composite.wgsl`'s `linear_to_srgb`.
+// Restated here so the expectation is a closed form rather than a second
+// reading of the shader under test.
 fn linear_to_srgb(c: f64) -> f64 {
     if c <= 0.003_130_8 {
         12.92 * c
@@ -63,7 +57,7 @@ fn encoded_byte(linear: f64) -> u8 {
     (linear_to_srgb(linear) * 255.0).round() as u8
 }
 
-/// A linear triple after encoding, in the attachments' BGRA byte order.
+// A linear triple after encoding, in the attachments' BGRA byte order.
 fn expected_bgra(linear: [f64; 3]) -> [u8; 4] {
     [
         encoded_byte(linear[2]),
@@ -103,9 +97,8 @@ impl Probe {
         }
     }
 
-    /// Stand-in for `App::record`: fill a target with a flat colour. On the
-    /// sRGB scene target the clear value is linear and the hardware encodes it
-    /// on write, which is the same path a shader's linear output takes.
+    // On the sRGB scene target the clear value is linear and the hardware
+    // encodes it on write, the same path a shader's linear output takes.
     fn fill(&self, view: &TextureView, color: Color) {
         let mut encoder = self
             .device
@@ -142,8 +135,8 @@ impl Probe {
         );
     }
 
-    /// The state both attachments are in once the scene pass has run and
-    /// before anything writes the swapchain.
+    // The state both attachments are in once the scene pass has run and before
+    // anything writes the swapchain.
     fn record_scene(&self) {
         self.fill(&self.swap_view, unwritten_color());
         self.fill_scene(SCENE_LINEAR);
@@ -160,8 +153,7 @@ impl Probe {
     }
 }
 
-/// `UNWRITTEN_BGRA` as the clear value that produces it. `Bgra8Unorm` stores
-/// clear channels verbatim, so 1.0 and 0.0 land on 255 and 0.
+// `Bgra8Unorm` stores clear channels verbatim, so 1.0 and 0.0 land on 255 and 0.
 fn unwritten_color() -> Color {
     Color {
         r: 1.0,
@@ -213,8 +205,8 @@ async fn request_device() -> Result<(Device, Queue), String> {
         .map_err(|e| format!("request_device failed: {e}"))
 }
 
-/// Raw stored bytes, no format interpretation: the same thing
-/// `capture::read_texture_rgba` copies out before its BGRA swizzle.
+// Raw stored bytes, no format interpretation: what `capture::read_texture_rgba`
+// copies out before its BGRA swizzle.
 fn read_back(probe: &Probe, texture: &Texture) -> Vec<u8> {
     let bytes_per_row = SIZE * 4;
     let buffer = probe.device.create_buffer(&wgpu::BufferDescriptor {
@@ -264,8 +256,8 @@ fn read_back(probe: &Probe, texture: &Texture) -> Vec<u8> {
     data
 }
 
-/// Every texel, so a pass that covered part of the target fails here rather
-/// than passing on a lucky sample.
+// Every texel, so a pass that covered part of the target fails here rather than
+// passing on a lucky sample.
 fn assert_every_texel(pixels: &[u8], expected: [u8; 4], tolerance: u8, what: &str) {
     for (index, texel) in pixels.chunks_exact(4).enumerate() {
         for channel in 0..4 {

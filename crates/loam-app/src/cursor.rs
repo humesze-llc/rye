@@ -1,33 +1,26 @@
-//! Cursor grab + visibility request channel between the App and the Runner.
+//! Process-global atomics the App pokes from anywhere, applied once per redraw
+//! by the Runner: `Window::set_cursor_grab` must run on the main thread, which a
+//! console command does not reach.
 //!
-//! Same shape as [`crate::frame_pacing::request_vsync_on`]: process-global
-//! atomics the App pokes from anywhere, applied once per redraw by the
-//! Runner. `Window::set_cursor_grab` must run on the main thread, which the
-//! App (especially a console command) doesn't always reach directly.
-//!
-//! Pointer Lock requires transient activation; the console keystroke's
-//! ~5-second window survives the sub-millisecond worker round-trip. Esc
-//! release (browser-hardcoded) surfaces as `PointerLockChanged(false)`; a
-//! canvas click re-engages. [`GrabMode::Confined`] has no browser
-//! equivalent and maps to Pointer Lock. Visibility is implicit on wasm:
-//! lock auto-hides, release auto-shows.
+//! Pointer Lock requires transient activation; the console keystroke's ~5-second
+//! window survives the sub-millisecond worker round-trip. Esc release
+//! (browser-hardcoded) surfaces as `PointerLockChanged(false)`; a canvas click
+//! re-engages. [`GrabMode::Confined`] has no browser equivalent and maps to
+//! Pointer Lock. Visibility is implicit on wasm: lock auto-hides.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-/// Mirrors `winit::window::CursorGrabMode` so
-/// the engine API doesn't leak winit into demo code.
+/// Mirrors `winit::window::CursorGrabMode` so winit stays out of demo code.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum GrabMode {
     #[default]
     None,
     Confined,
     /// Pinned at window center, motion reported as raw device delta
-    /// (`FrameInput::mouse_raw_delta`). Pairs with `visible = false` for
-    /// FPS mouse-look.
+    /// (`FrameInput::mouse_raw_delta`).
     Locked,
 }
 
-/// Snapshot of the last cursor state the runner applied.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct CursorState {
     pub grab: GrabMode,
@@ -35,7 +28,7 @@ pub struct CursorState {
 }
 
 impl CursorState {
-    /// Runner default before any request lands: released + visible.
+    /// Runner default before any request lands: released and visible.
     pub const RELEASED: Self = Self {
         grab: GrabMode::None,
         visible: true,
@@ -43,7 +36,7 @@ impl CursorState {
 }
 
 // Encoded pending requests; `0` = none. Runner swaps to 0 after reading so
-// unchanged state isn't re-applied each redraw.
+// unchanged state is not re-applied each redraw.
 const NONE: u8 = 0;
 const GRAB_NONE: u8 = 1;
 const GRAB_CONFINED: u8 = 2;
@@ -55,8 +48,8 @@ const VIS_SHOW: u8 = 1;
 const VIS_HIDE: u8 = 2;
 static PENDING_VISIBLE: AtomicU8 = AtomicU8::new(VIS_NONE);
 
-// Warp-to-center flag, paired with grab release so the OS-cached cursor
-// doesn't reappear at a stale spot on un-grab.
+// Warp-to-center flag, paired with grab release so the OS-cached cursor does
+// not reappear at a stale spot on un-grab.
 static PENDING_WARP_CENTER: AtomicBool = AtomicBool::new(false);
 
 static APPLIED_GRAB: AtomicU8 = AtomicU8::new(GRAB_NONE);
@@ -86,9 +79,8 @@ pub fn request_cursor_visible(visible: bool) {
     PENDING_VISIBLE.store(if visible { VIS_SHOW } else { VIS_HIDE }, Ordering::Release);
 }
 
-/// Pair with grab release so the cursor reappears where the user
-/// was aiming, not at the OS-cached position. No-op on wasm (browser owns
-/// cursor positioning).
+/// Pair with grab release so the cursor reappears where the user was aiming.
+/// No-op on wasm: the browser owns cursor positioning.
 pub fn request_warp_to_center() {
     PENDING_WARP_CENTER.store(true, Ordering::Release);
 }
@@ -103,8 +95,7 @@ pub fn request_release() {
     request_cursor_visible(true);
 }
 
-/// Runner-internal;
-/// each element is `Some(new_value)` if a request landed, else `None`.
+/// Each element is `Some(new_value)` if a request landed, else `None`.
 #[doc(hidden)]
 pub fn take_pending() -> (Option<GrabMode>, Option<bool>) {
     let grab_code = PENDING_GRAB.swap(NONE, Ordering::AcqRel);
@@ -141,12 +132,9 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, PoisonError};
 
-    /// The request/take pairs below drive process-global atomics, and cargo
-    /// runs tests in one binary on parallel threads, so without this every
-    /// test in this module races every other for the same pending slot.
-    /// Recover from poisoning rather than propagate it, so one failing test
-    /// reports its own assertion instead of poisoning its four siblings into
-    /// a confusing cascade.
+    // The request/take pairs below drive process-global atomics and cargo runs
+    // tests on parallel threads. Recover from poisoning rather than propagate it,
+    // so one failing test does not cascade into its siblings.
     static CURSOR_GLOBALS: Mutex<()> = Mutex::new(());
 
     fn serialized() -> std::sync::MutexGuard<'static, ()> {

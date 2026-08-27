@@ -1,25 +1,18 @@
-//! Console command that toggles the surface present mode, the upstream side of
-//! the [`crate::frame_pacing`] fps cap.
-//!
-//! The [`fps`] command alone cannot exceed the display refresh rate when the
-//! surface uses `PresentMode::Fifo` (the default), because the presentation
-//! engine paces the loop at vsync. The block lands on the swapchain acquire in
+//! The [`crate::fps`] cap alone cannot exceed the display refresh rate while the
+//! surface uses `PresentMode::Fifo`: the presentation engine paces the loop at
+//! vsync, and that block lands on the swapchain acquire in
 //! `RenderDevice::begin_frame`, not on `present`, which only queues the flip.
-//! `vsync off` swaps the surface to `Mailbox` (or `Immediate` as
-//! fallback) so the cap can drive cadence above the display rate; useful for
-//! benchmarking, perf profiling, or chasing input latency.
-//!
-//! [`fps`]: crate::fps
+//! `vsync off` swaps to `Mailbox` (or `Immediate`) so the cap can drive cadence
+//! above the display rate.
 
 use loam_egui::{cmd, Console, ConsoleWriter};
 
 use crate::frame_pacing;
 
-/// Apply `vsync`. The runner's verb table
-/// ([`crate::command`]) reaches this before any App hook does, so this is where
-/// the verb's behaviour lives; [`register_command`] exists so `help` and tab
-/// completion still know the name, and so a console driven without a loam-app
-/// runner still works.
+/// The runner's verb table ([`crate::command`]) reaches this before any App
+/// hook, so the verb's behaviour lives here; [`register_command`] exists so
+/// `help` and tab completion know the name, and so a console driven without a
+/// loam-app runner still works.
 pub(crate) fn apply(args: &[&str], out: &mut ConsoleWriter) {
     match args.first().copied() {
         None => {
@@ -46,7 +39,6 @@ pub(crate) fn apply(args: &[&str], out: &mut ConsoleWriter) {
     }
 }
 
-/// Register the `vsync` console command.
 pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
     console.register(
         cmd(
@@ -68,8 +60,8 @@ mod tests {
     use crate::frame_pacing::TEST_LOCK;
     use loam_egui::ConsoleWriter;
 
-    /// Run the verb's one body, which is what both the runner's table and the
-    /// console registration reach.
+    // The verb's one body, which both the runner's table and the console
+    // registration reach.
     fn run(args: &[&str]) -> Option<bool> {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = frame_pacing::take_pending_vsync();

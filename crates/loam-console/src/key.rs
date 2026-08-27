@@ -1,10 +1,7 @@
-//! The console names its own keys so binds carry no UI-framework type. A
-//! frontend translates its own key events into these at the input boundary
-//! (`loam_egui::console` holds the egui table).
+//! The console names its own keys so binds carry no UI-framework type; a
+//! frontend translates at the input boundary.
 
-/// A physical key the console can bind or toggle on. Modifiers are not
-/// representable: binds fire on unmodified presses only.
-///
+/// Modifiers are not representable: binds fire on unmodified presses only.
 /// Declaration order is the [`Key::ALL`] order and the [`Ord`] order, which is
 /// also the order bound keys fire in when several land in one frame.
 #[repr(u8)]
@@ -84,9 +81,7 @@ pub enum Key {
 }
 
 impl Key {
-    /// Every variant, in declaration order, so a frontend can exhaustively
-    /// exercise its own key table. `ALL[i] as usize == i` holds; adding a
-    /// variant means adding it here.
+    /// `ALL[i] as usize == i` holds; adding a variant means adding it here.
     pub const ALL: &'static [Key] = &[
         Key::Escape,
         Key::Tab,

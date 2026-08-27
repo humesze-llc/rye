@@ -1,23 +1,15 @@
-//! Translation tables between DOM event identifiers and the typed
-//! event enums used by `winit` (for loam-input's `InputState`) and `egui`
-//! (for `WorkerUi`'s `RawInput`).
+//! Two tables, not one: the receiver libraries each have their own key enum
+//! (`winit::keyboard::KeyCode`, `egui::Key`), overlapping in coverage but
+//! diverging in naming (`winit::KeyCode::KeyA` vs `egui::Key::A`), so a shared
+//! table would lose information.
 //!
-//! Why two tables: the receiver libraries each have their own key enum
-//! (`winit::keyboard::KeyCode`, `egui::Key`). They overlap in coverage
-//! but diverge in naming conventions (`winit::KeyCode::KeyA` vs
-//! `egui::Key::A`), so a single shared table would lose information.
-//!
-//! Coverage is **partial**: every key tesseract_demo + polytope_playground
-//! plausibly touch is here, plus the standard set (alpha + digits +
-//! function keys + arrows + common control keys). Unmapped codes return
-//! `None`; the caller silently drops the event.
+//! Coverage is partial. Unmapped codes return `None` and the caller drops the
+//! event silently.
 
 use loam_egui::egui;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
-/// Map a DOM `MouseEvent.button` index to a `winit::event::MouseButton`.
-///
 /// DOM convention: 0=primary, 1=middle, 2=secondary, 3=back, 4=forward.
 /// Anything else lands in `MouseButton::Other(button as u16)`.
 pub fn mouse_button_winit(button: u8) -> MouseButton {
@@ -31,10 +23,8 @@ pub fn mouse_button_winit(button: u8) -> MouseButton {
     }
 }
 
-/// Map a DOM `MouseEvent.button` index to an `egui::PointerButton`.
-///
-/// `None` for buttons egui doesn't model. Egui's `Extra1` / `Extra2`
-/// cover the browser's back/forward buttons.
+/// `None` for buttons egui does not model. Egui's `Extra1` / `Extra2` cover the
+/// browser's back and forward buttons.
 pub fn mouse_button_egui(button: u8) -> Option<egui::PointerButton> {
     match button {
         0 => Some(egui::PointerButton::Primary),
@@ -46,9 +36,7 @@ pub fn mouse_button_egui(button: u8) -> Option<egui::PointerButton> {
     }
 }
 
-/// Map a DOM `KeyboardEvent.code` string to a `winit::keyboard::KeyCode`.
-/// Returns `None` for unmapped codes; the caller is expected to drop
-/// the event silently.
+/// `None` for unmapped codes; the caller drops the event silently.
 pub fn keycode_winit(code: &str) -> Option<KeyCode> {
     if let Some(k) = letter_winit(code) {
         return Some(k);
@@ -91,8 +79,6 @@ pub fn keycode_winit(code: &str) -> Option<KeyCode> {
     }
 }
 
-/// Map a DOM `KeyboardEvent.code` to an `egui::Key`. Same coverage
-/// principle as [`keycode_winit`].
 pub fn keycode_egui(code: &str) -> Option<egui::Key> {
     if let Some(k) = letter_egui(code) {
         return Some(k);

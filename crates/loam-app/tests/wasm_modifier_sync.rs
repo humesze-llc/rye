@@ -1,5 +1,5 @@
-//! `crate::wasm` is wasm32-gated, so the reconciler is included by path
-//! and driven against the real `InputState` it exists to correct.
+//! `crate::wasm` is wasm32-gated, so the reconciler is included by path and
+//! driven against the real `InputState` it exists to correct.
 
 #[path = "../src/wasm/modifier_sync.rs"]
 mod modifier_sync;
@@ -9,7 +9,6 @@ use modifier_sync::{ModifierFlags, ModifierSync};
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 
-/// The 16 combinations of the four DOM modifier flags.
 fn all_flag_combinations() -> impl Iterator<Item = ModifierFlags> {
     (0u8..16).map(|bits| ModifierFlags {
         ctrl: bits & 1 != 0,
@@ -28,9 +27,9 @@ fn expected(flags: ModifierFlags) -> Modifiers {
     }
 }
 
-/// Mirrors the worker's `InputMessage::Key` branch: the browser's flags
-/// reconcile first, then the physical key lands (`None` for the codes
-/// `keymap::keycode_winit` does not carry).
+// Mirrors the worker's `InputMessage::Key` branch: the browser's flags reconcile
+// first, then the physical key lands (`None` for codes `keymap::keycode_winit`
+// does not carry).
 fn key_event(
     sync: &mut ModifierSync,
     input: &mut InputState,

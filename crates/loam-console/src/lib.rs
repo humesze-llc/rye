@@ -1,6 +1,4 @@
-//! Quake-style developer console: command registry, scrollback, hotkey binding
-//! and tab autocomplete, with no UI-framework dependency. Interaction model
-//! follows the idTech console (Quake, 1996).
+//! Interaction model follows the idTech console (Quake, 1996).
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
@@ -15,8 +13,7 @@ pub const MAX_INPUT_HISTORY: usize = 100;
 #[cfg(target_arch = "wasm32")]
 static ECHO_TO_BROWSER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Enable / disable scrollback echo to the browser DevTools console (wasm32
-/// only); no-op on native so demos can call it unconditionally.
+/// wasm32 only; a no-op on native so demos can call it unconditionally.
 pub fn set_console_echo(enabled: bool) {
     #[cfg(target_arch = "wasm32")]
     ECHO_TO_BROWSER.store(enabled, std::sync::atomic::Ordering::Relaxed);
@@ -76,9 +73,8 @@ pub enum LineKind {
     System,
 }
 
-/// Per-invocation output sink. The two-phase design sidesteps the borrow
-/// conflict between the command's mutable registry slot and the console's
-/// mutable scrollback during one `execute`.
+/// Two-phase by necessity: a command's registry slot and the console scrollback
+/// cannot both be borrowed mutably during one `execute`.
 pub struct ConsoleWriter {
     lines: Vec<HistoryLine>,
 }
@@ -112,28 +108,25 @@ pub trait Command<Ctx>: 'static {
 
     fn help(&self) -> &str;
 
-    /// `\n` breaks paint as separate scrollback entries.
+    // `\n` breaks paint as separate scrollback entries.
     fn long_help(&self) -> String {
         self.help().to_string()
     }
 
-    /// Tab-completion choices for the `arg_index`-th positional argument. Default is
-    /// empty (free-form arg).
+    // Default is empty: a free-form arg.
     fn arg_choices(&self, arg_index: usize) -> &[&'static str] {
         let _ = arg_index;
         &[]
     }
 
-    /// Context-aware variant of [`Command::arg_choices`]. `prior` carries the arg
-    /// tokens parsed before the cursor (`prior.len() == arg_index`). The explicit
-    /// `'a` ties the returned slice to `&self` past the nested-reference elision.
+    // `prior` carries the arg tokens before the cursor (`prior.len() ==
+    // arg_index`). The explicit `'a` defeats nested-reference elision.
     fn arg_choices_ctx<'a>(&'a self, arg_index: usize, prior: &[&str]) -> &'a [&'static str] {
         let _ = prior;
         self.arg_choices(arg_index)
     }
 
-    /// Enumerable values for a `key=value` arg at `arg_index` with key `key` (no
-    /// trailing `=`). Drives two-step tab completion; empty means free-form.
+    // `key` carries no trailing `=`; empty means free-form.
     fn arg_value_choices(&self, arg_index: usize, key: &str) -> &[&'static str] {
         let _ = (arg_index, key);
         &[]
@@ -149,8 +142,7 @@ pub trait Command<Ctx>: 'static {
         self.arg_value_choices(arg_index, key)
     }
 
-    /// Run the command. `args` are tokens after the command name. Output goes to
-    /// `out`; recoverable issues get `out.error(..)`, unrecoverable ones return `Err`.
+    // Recoverable issues go to `out.error(..)`; unrecoverable ones return `Err`.
     fn run(&mut self, args: &[&str], ctx: &mut Ctx, out: &mut ConsoleWriter) -> anyhow::Result<()>;
 }
 
@@ -164,15 +156,13 @@ pub struct FnCommand<F> {
 }
 
 impl<F> FnCommand<F> {
-    /// Declare positional-argument choices for tab-completion, one inner slice per
-    /// position. Trailing free-form args can be omitted.
+    /// One inner slice per position; trailing free-form args may be omitted.
     pub fn with_args(mut self, choices: &[&[&'static str]]) -> Self {
         self.arg_choices = choices.iter().map(|s| s.to_vec()).collect();
         self
     }
 
-    /// Declare enumerable values for a `key=value` arg: first Tab completes to
-    /// `key=`, subsequent Tabs cycle these values.
+    /// First Tab completes to `key=`, subsequent Tabs cycle these values.
     pub fn with_value_choices(mut self, key: &'static str, values: &[&'static str]) -> Self {
         self.value_choices.insert(key, values.to_vec());
         self
@@ -269,9 +259,8 @@ pub struct SubcommandSet<Ctx> {
 }
 
 impl<Ctx: 'static> SubcommandSet<Ctx> {
-    /// Register an on/off subcommand. The value slot parses
-    /// `on|off|true|false|1|0` to `Some(bool)`; bare invocation passes `None` so the
-    /// handler flips the field in place.
+    /// The value slot parses `on|off|true|false|1|0`; a bare invocation passes
+    /// `None` so the handler flips the field in place.
     pub fn toggle<F>(mut self, name: &'static str, help: &'static str, handler: F) -> Self
     where
         F: FnMut(&mut Ctx, Option<bool>) -> anyhow::Result<()> + 'static,
@@ -288,8 +277,7 @@ impl<Ctx: 'static> SubcommandSet<Ctx> {
         self
     }
 
-    /// Register a fixed-choice subcommand. The value slot completes from `choices`;
-    /// the handler receives the raw value string (not validated against `choices`).
+    /// The handler receives the raw value string, unvalidated against `choices`.
     pub fn choice<F>(
         mut self,
         name: &'static str,
@@ -313,10 +301,8 @@ impl<Ctx: 'static> SubcommandSet<Ctx> {
         self
     }
 
-    /// Register a custom-grammar subcommand for multiple positionals, kv pairs, or
-    /// both. `arg_choices[i]` lists completion choices for the i-th arg after the
-    /// subcommand name (include `key=` entries for kv prefixes); `value_choices[k]`
-    /// lists enumerable values for key `k`; `handler` owns parsing of the raw args.
+    /// `arg_choices[i]` lists completions for the i-th arg after the subcommand
+    /// name (include `key=` entries for kv prefixes); the handler owns parsing.
     pub fn custom<F>(
         mut self,
         name: &'static str,
@@ -346,8 +332,7 @@ impl<Ctx: 'static> SubcommandSet<Ctx> {
         self
     }
 
-    /// Attach a bare-invocation handler: typing just the command name runs `handler`
-    /// instead of returning a usage error (e.g. `wireframe` flips the overlay on/off).
+    /// Typing just the command name runs `handler` instead of a usage error.
     pub fn on_bare<F>(mut self, handler: F) -> Self
     where
         F: FnMut(&mut Ctx) -> anyhow::Result<()> + 'static,
@@ -417,8 +402,8 @@ impl<Ctx: 'static> Command<Ctx> for SubcommandSet<Ctx> {
         };
         let sub_slot = arg_index - 1;
         match &entry.kind {
-            // Empty by design: bare-flip is the canonical UX, `on|off` accepted but
-            // not surfaced.
+            // Empty by design: bare-flip is the UX, `on|off` accepted but not
+            // surfaced.
             SubcommandKind::Toggle { .. } => &[],
             SubcommandKind::Choice { choices, .. } => {
                 if sub_slot == 0 {
@@ -527,8 +512,7 @@ struct TabState {
     ctx: CompletionContext,
 }
 
-/// `prefix` is the partial token under the cursor; empty `prefix` with
-/// trailing whitespace means a fresh token is starting.
+// An empty `prefix` with trailing whitespace means a fresh token is starting.
 #[derive(Clone, Debug)]
 enum CompletionContext {
     Command {
@@ -583,21 +567,18 @@ impl<Ctx: 'static> Console<Ctx> {
         self
     }
 
-    /// Register a command. Silently replaces any existing command of the same name;
-    /// pre-check via [`Console::has_command`] if needed.
+    /// Silently replaces any existing command of the same name.
     pub fn register<C: Command<Ctx> + 'static>(&mut self, command: C) {
         let name = command.name().to_string();
         self.commands.insert(name, Box::new(command));
     }
 
-    /// True if this name reaches a handler: a registered command, or one of the
-    /// built-ins.
+    /// True for a registered command or a built-in.
     pub fn has_command(&self, name: &str) -> bool {
         Builtin::from_name(name).is_some() || self.commands.contains_key(name)
     }
 
-    /// Bind `key` (no modifiers) to run `command_line` when the console is closed.
-    /// Re-binding overwrites.
+    /// No modifiers; fires only while the console is closed. Re-binding overwrites.
     pub fn bind(&mut self, key: Key, command_line: impl Into<String>) {
         self.binds.insert(key, command_line.into());
     }
@@ -654,8 +635,7 @@ impl<Ctx: 'static> Console<Ctx> {
         self.toggle_key
     }
 
-    /// Bound keys and the command lines they run, in [`Key`] order. Binds fire
-    /// only while the console is closed, so they never hijack typing.
+    /// In [`Key`] order.
     pub fn binds(&self) -> impl Iterator<Item = (Key, &str)> {
         self.binds.iter().map(|(key, line)| (*key, line.as_str()))
     }
@@ -668,8 +648,8 @@ impl<Ctx: 'static> Console<Ctx> {
         &self.input
     }
 
-    /// The live input line, for a frontend text field to edit in place. Any edit
-    /// made through this handle must be followed by [`Console::cancel_tab_cycle`].
+    /// Any edit through this handle must be followed by
+    /// [`Console::cancel_tab_cycle`].
     pub fn input_mut(&mut self) -> &mut String {
         &mut self.input
     }
@@ -693,8 +673,6 @@ impl<Ctx: 'static> Console<Ctx> {
         self.tab = None;
     }
 
-    /// Invalidate an in-progress Tab cycle. Call after any input edit that did not
-    /// come from [`Console::tab_complete`].
     pub fn cancel_tab_cycle(&mut self) {
         self.tab = None;
     }
@@ -703,14 +681,12 @@ impl<Ctx: 'static> Console<Ctx> {
         std::mem::take(&mut self.pending_focus)
     }
 
-    /// True while the console should hold keyboard focus every frame: the docked
-    /// panel is modal by design, until the user clicks out to the app.
+    /// The docked panel is modal by design until the user clicks out to the app.
     pub fn wants_persistent_focus(&self) -> bool {
         !self.detached && !self.user_defocused
     }
 
-    /// Record whether the user clicked outside the docked panel; `true` releases
-    /// focus to the app while the console stays visible.
+    /// `true` releases focus to the app while the console stays visible.
     pub fn set_user_defocused(&mut self, defocused: bool) {
         self.user_defocused = defocused;
     }
@@ -782,10 +758,9 @@ impl<Ctx: 'static> Console<Ctx> {
     }
 
     fn push_history(&mut self, line: HistoryLine) {
-        // Bypasses `tracing` on
-        // purpose: routing through it would feed back via `loam_app::log::ConsoleLayer`
-        // (tracing -> scrollback -> re-echo -> ...). Direct console.log has no Rust
-        // subscriber, so no loop.
+        // Bypasses `tracing` on purpose: routing through it feeds back via
+        // `loam_app::log::ConsoleLayer` (tracing, scrollback, re-echo). Direct
+        // console.log has no Rust subscriber, so no loop.
         #[cfg(target_arch = "wasm32")]
         if ECHO_TO_BROWSER.load(std::sync::atomic::Ordering::Relaxed) {
             web_sys::console::log_1(&line.text.as_str().into());
@@ -900,8 +875,7 @@ impl<Ctx: 'static> Console<Ctx> {
         }
     }
 
-    /// Suffix of the first (sort-order) completion matching the input, painted as
-    /// dim ghost text showing what the next `Tab` inserts.
+    /// Suffix of the first (sort-order) completion; what the next Tab inserts.
     pub fn tab_preview(&self) -> Option<String> {
         let ctx = self.completion_context()?;
         let matches = self.completion_matches(&ctx);
@@ -914,12 +888,9 @@ impl<Ctx: 'static> Console<Ctx> {
         }
     }
 
-    /// Accept a command line: record input history, then either run a built-in
-    /// on the spot or park the line for [`Console::drain_pending`].
-    ///
-    /// The echo goes wherever the line runs, which is what keeps it ahead of
-    /// that line's own output: here for a built-in, in [`Console::dispatch`] for
-    /// everything else.
+    /// Records input history, then runs a built-in on the spot or parks the line
+    /// for [`Console::drain_pending`]. The echo goes wherever the line runs, so it
+    /// stays ahead of that line's own output.
     pub fn execute(&mut self, line: &str) {
         let line = line.trim();
         if line.is_empty() {
@@ -952,13 +923,9 @@ impl<Ctx: 'static> Console<Ctx> {
         std::mem::take(&mut self.pending)
     }
 
-    /// Echo a parsed command, run it, and drain its output into the scrollback.
-    ///
-    /// Built-ins resolve here too. The queue carries lines from producers that
-    /// hold no console (`--script`, a bound key routed through the host, a menu
-    /// item), and a built-in name arriving that way has to reach the same
-    /// handler a typed one does or it reports as unregistered and the line
-    /// silently does nothing.
+    /// Built-ins resolve here too: the queue carries lines from producers that
+    /// hold no console (`--script`, a bound key, a menu item), and a built-in
+    /// arriving that way must reach the same handler a typed one does.
     pub fn dispatch(&mut self, name: &str, args: &[&str], ctx: &mut Ctx) {
         self.push_history(HistoryLine::input(format!("> {}", render_line(name, args))));
         if let Some(builtin) = Builtin::from_name(name) {
@@ -1048,8 +1015,8 @@ impl<Ctx: 'static> Console<Ctx> {
     }
 }
 
-/// Framework-owned commands that mutate `Console` state directly (history, detached
-/// flag). They can't go through [`Command<Ctx>`], which only sees `&mut Ctx`.
+// These mutate `Console` state directly, which `Command<Ctx>` cannot do: it only
+// sees `&mut Ctx`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Builtin {
     Help,
@@ -1059,8 +1026,8 @@ enum Builtin {
 }
 
 impl Builtin {
-    /// Keep sorted by `name()`; iteration order is alphabetical to match Tab cycling
-    /// and the help listing.
+    // Keep sorted by `name()`; iteration order is alphabetical to match Tab
+    // cycling and the help listing.
     const ALL: &'static [Builtin] = &[
         Builtin::Clear,
         Builtin::Detach,
@@ -1097,9 +1064,8 @@ impl Builtin {
     }
 }
 
-/// Split a line into `(command_name, args)` or `None` if empty. Quote-aware:
-/// double quotes honor `\"` / `\\` escapes, single quotes are literal (shell
-/// convention). Unterminated quotes consume to end-of-line for interactive typing.
+/// Quote-aware: double quotes honor `\"` / `\\` escapes, single quotes are
+/// literal (shell convention). Unterminated quotes consume to end-of-line.
 pub fn parse_line(line: &str) -> Option<(String, Vec<String>)> {
     let mut tokens = tokenize(line);
     if tokens.is_empty() {
@@ -1109,9 +1075,8 @@ pub fn parse_line(line: &str) -> Option<(String, Vec<String>)> {
     Some((name, tokens))
 }
 
-/// Inverse of [`parse_line`]: a name and its args joined back into one line
-/// that re-tokenizes to the same invocation. A token is quoted only when the
-/// grammar would otherwise split or swallow it.
+/// Inverse of [`parse_line`]: the line re-tokenizes to the same invocation. A
+/// token is quoted only when the grammar would otherwise split or swallow it.
 pub fn render_line(name: &str, args: &[&str]) -> String {
     let mut line = quote_token(name);
     for arg in args {
@@ -1121,8 +1086,8 @@ pub fn render_line(name: &str, args: &[&str]) -> String {
     line
 }
 
-/// A bare backslash needs no quoting: outside quotes [`tokenize`] takes it
-/// literally, and escaping it would round-trip to two.
+// A bare backslash needs no quoting: outside quotes `tokenize` takes it
+// literally, and escaping it would round-trip to two.
 fn quote_token(token: &str) -> String {
     let bare = !token.is_empty()
         && !token
@@ -1218,10 +1183,8 @@ mod tests {
 
     type Ctx = u32;
 
-    /// Accept a line and immediately dispatch whatever it queued, standing in for
-    /// the host that normally owns the gap. Tests about what a command does are
-    /// not tests about when it runs; the ones that are call `execute` and
-    /// `drain_pending` themselves.
+    // Stands in for the host that owns the gap between execute and dispatch.
+    // Tests about when a line runs call `execute` and `drain_pending` themselves.
     fn run<C: 'static>(console: &mut Console<C>, line: &str, ctx: &mut C) {
         console.execute(line);
         drain_and_dispatch(console, ctx);
@@ -1411,10 +1374,8 @@ mod tests {
         let mut ctx: Ctx = 0;
         run(&mut c, "echo hello world", &mut ctx);
 
-        // Invariant: one Input then one Output line; Input carries the line as
-        // issued, Output the joined args. Exact prompt prefix is not pinned.
-        // The record is written by `dispatch`, not `execute`: a registry line
-        // has not run yet when `execute` parks it.
+        // Input carries the line as issued, Output the joined args. The record is
+        // written by `dispatch`, not `execute`: a registry line has not run yet.
         let lines: Vec<&HistoryLine> = c.history.iter().collect();
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].kind, LineKind::Input);
@@ -1680,8 +1641,6 @@ mod tests {
         assert_eq!(c.input_history.len(), 1);
     }
 
-    /// Holds a single `Ctx: u32` slot plus a `last_choice` string so tests can verify
-    /// which branch ran.
     type SubCtx = (u32, String);
 
     fn sample_subset() -> SubcommandSet<SubCtx> {
@@ -1761,10 +1720,8 @@ mod tests {
         let mut con = Console::<SubCtx>::new();
         con.register(sample_subset());
         let mut ctx: SubCtx = (0, String::new());
-        // First bare invocation: 0 != 1 -> on.
         run(&mut con, "tests axes", &mut ctx);
         assert_eq!(ctx, (1, "axes=true".into()));
-        // Second bare invocation: 1 == 1 -> off.
         run(&mut con, "tests axes", &mut ctx);
         assert_eq!(ctx, (0, "axes=false".into()));
     }

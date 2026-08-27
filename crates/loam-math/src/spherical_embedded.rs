@@ -1,6 +1,13 @@
 //! Spherical 3-space (S³) in the **full ambient embedding**: points are unit
 //! 4-vectors in R⁴, not a chart.
 //!
+//! [`crate::SphericalS3`] is the upper-hemisphere chart (`Vec3`, `vec3<f32>`
+//! WGSL ABI for the fractal demo) and cannot represent `w ≤ 0`, so it collapses
+//! every `w < 0` polytope vertex onto the equator. [`SphericalS3Embedded`] takes
+//! `Point = Vec4` on the unit sphere: full coverage, no chart seam, exact
+//! great-circle geodesics, but no WGSL ABI, so it serves the CPU rasterizer
+//! wireframe path, not the SDF ray-marcher.
+//!
 //! The exp / log / transport
 //! maps are the standard unit-sphere forms (Absil, Mahony & Sepulchre,
 //! *Optimization Algorithms on Matrix Manifolds*, 2008, §3.6, Example 8.1.1);

@@ -633,7 +633,6 @@ pub struct Rotor4 {
     pub xw: f32,
     pub yz: f32,
     pub yw: f32,
-    /// Grade-2 coefficient on `e3∧e4`.
     pub zw: f32,
     /// Pseudoscalar coefficient on `I = e1∧e2∧e3∧e4`, equal to
     /// `sin(θ₁/2)·sin(θ₂/2)`; zero for a simple rotation.

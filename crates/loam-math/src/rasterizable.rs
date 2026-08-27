@@ -3,13 +3,6 @@
 //! Pairs with the `Visualizable<N>` trait in `loam-shape`: that produces mesh
 //! data in R^N, this maps it to screen-ready R³ vertices. The rasterizer
 //! pipeline in `loam-render` composes them.
-//!
-//! [`RasterizableSpace<N>`] is generic over [`Space`] rather than the array
-//! type because the [`Space`] impls use `glam::Vec3` / `Vec4` as `Point`;
-//! [`RasterizableSpace::point_to_array`] / [`RasterizableSpace::array_to_point`]
-//! bridge to `[f32; N]` mesh storage. The flat / curved distinction lives only
-//! in [`RasterizableSpace::tessellate_segment`] (lerp vs geodesic), so the
-//! pipeline is identical for both and curved-space impls drop in additively.
 
 use glam::{Vec3, Vec4};
 
@@ -46,12 +39,6 @@ pub const STEREOGRAPHIC_POLE_EPSILON: f32 = 1e-4;
 /// Using this frame instead of a naive drop of the `n`-aligned coordinate is
 /// what keeps the diagram faithful for a non-axis-aligned cell normal: an oblique
 /// drop-w flattens the boundary cell and breaks nesting.
-///
-/// The frame depends on `n` alone, so it is identical across a projection's
-/// vertices, yet rebuilt per [`RasterizableSpace::project_point`] call. The
-/// rebuild is a few allocation-free f32 ops yielding a byte-identical frame, so
-/// it is left un-hoisted until a measurement shows the redundancy is real (see
-/// [`Projection::Schlegel`]).
 fn perp_frame(n: Vec4) -> (Vec4, Vec4, Vec4) {
     // Dropping the most-aligned axis keeps the remaining three independent in the
     // 3-flat; ties resolve toward the earliest axis for determinism.
@@ -89,9 +76,7 @@ fn perp_frame(n: Vec4) -> (Vec4, Vec4, Vec4) {
 }
 
 /// Stereographic map of `p` on S³ to R³ from unit `pole` (Wikipedia,
-/// *Stereographic projection*). Shared by the `EuclideanR4` and
-/// `SphericalS3Embedded` impls so the map and its clamp discipline have one
-/// definition.
+/// *Stereographic projection*).
 ///
 /// `image = (p - dot(p, pole)*pole) / (1 - dot(p, pole))`, read out in the
 /// `perp_frame` of the `pole`-perpendicular 3-flat. The numerator is truncated
@@ -118,17 +103,6 @@ pub(crate) fn stereographic_to_r3(p: Vec4, pole: Vec4) -> Vec3 {
 /// Variants are dimension-generic in the type system but each makes sense only
 /// for specific `N`; impls return `Vec3::ZERO` rather than panic on an
 /// unsupported variant.
-///
-/// - [`Identity`](Self::Identity): first 3 components, zero-pad if `N < 3`,
-///   truncate if `N > 3`. Bitwise identity at `N == 3`; drop-w at `N == 4`.
-/// - [`Orthographic`](Self::Orthographic): drop one axis by index.
-/// - [`Perspective4D`](Self::Perspective4D): R⁴ pinhole from `w = focal_distance`
-///   looking in -w; the canonical "cube within a cube" tesseract view.
-/// - [`Schlegel`](Self::Schlegel): R⁴ central projection from just outside a
-///   chosen cell onto its 3-flat; that cell becomes the outer boundary and the
-///   rest nest inside (Coxeter, *Regular Polytopes*, ch. 13).
-/// - [`Stereographic`](Self::Stereographic): conformal S³ to R³ map from a chosen
-///   pole (Wikipedia, *Stereographic projection*).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Projection<const N: usize> {
     /// First 3 components, zero-pad if `N < 3`, truncate if `N > 3`. Bitwise
@@ -154,7 +128,7 @@ pub enum Projection<const N: usize> {
     ///
     /// Only meaningful for `N == 4`; other `N` return `Vec3::ZERO`.
     Perspective4D {
-        /// Viewer position along the w-axis. Typical for unit polytopes: `2.0`.
+        /// Viewer position along the w-axis.
         focal_distance: f32,
     },
 
@@ -176,8 +150,7 @@ pub enum Projection<const N: usize> {
     /// **Precondition: `cell_normal` is the *outward* unit normal and
     /// `viewpoint_distance > cell_offset`.** The inward normal breaks nesting. The
     /// denominator is sign-preservingly clamped so a vertex on the viewer's 3-flat
-    /// stays finite. `cell_normal` / `cell_offset` are pre-resolved by the demo
-    /// once per cell selection, never in the per-frame upload.
+    /// stays finite.
     ///
     /// Only meaningful for `N == 4`; other `N` return `Vec3::ZERO`.
     Schlegel {
@@ -208,10 +181,6 @@ pub enum Projection<const N: usize> {
     /// `STEREOGRAPHIC_POLE_EPSILON` so a vertex at the reachable pole stays
     /// finite. The antipode `-pole` is the safe far point (`dot = -1`, maps to
     /// the origin).
-    ///
-    /// `EuclideanR4`'s impl normalizes onto S³ first (demo vertices are
-    /// `body_size`-scaled); [`crate::SphericalS3Embedded`] computes the map
-    /// directly. The frame is rebuilt per call like [`Schlegel`](Self::Schlegel).
     ///
     /// Only meaningful for `N == 4`; other `N` return `Vec3::ZERO`.
     Stereographic {
@@ -248,8 +217,7 @@ impl Projection<4> {
 /// R³ plus segment tessellation.
 ///
 /// `N` is the const-generic ambient dimension matching the `Visualizable<N>` mesh
-/// data in `loam-shape`. Impls bridge the Space's native `Point` (typically `Vec3`
-/// or `Vec4`) and `[f32; N]` mesh storage.
+/// data in `loam-shape`.
 pub trait RasterizableSpace<const N: usize>: Space {
     /// Convert a space-native point to the mesh storage representation `[f32; N]`.
     fn point_to_array(p: Self::Point) -> [f32; N];
@@ -294,7 +262,6 @@ impl RasterizableSpace<3> for EuclideanR3 {
                 2 => Vec3::new(point.x, point.y, 0.0),
                 _ => Vec3::ZERO,
             },
-            // Meaningful only for `N == 4`; zero per the enum contract.
             Projection::Perspective4D { .. }
             | Projection::Schlegel { .. }
             | Projection::Stereographic { .. } => Vec3::ZERO,
@@ -322,7 +289,6 @@ impl RasterizableSpace<4> for EuclideanR4 {
 
     fn project_point(point: Vec4, projection: &Projection<4>) -> Vec3 {
         match projection {
-            // Drop-w.
             Projection::Identity => Vec3::new(point.x, point.y, point.z),
             Projection::Orthographic { drop_axis } => match *drop_axis {
                 0 => Vec3::new(point.y, point.z, point.w),
@@ -359,8 +325,6 @@ impl RasterizableSpace<4> for EuclideanR4 {
                 };
                 let t = (*cell_offset - n_dot_eye) / denom;
                 let result = eye + t * (point - eye);
-                // Caller-supplied frame keeps a stable in-flat orientation while
-                // the body rotates.
                 let [e1, e2, e3] = *basis;
                 Vec3::new(result.dot(e1), result.dot(e2), result.dot(e3))
             }

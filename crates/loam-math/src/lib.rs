@@ -8,10 +8,6 @@
 //!   globally enabled),
 //! - this crate's exact version,
 //! - call ordering (single-threaded sim).
-//!
-//! We commit to `f32` for v0. Hyperbolic distances grow as `acosh` and lose precision near the
-//! horizon; if that becomes a problem we'll add a `Scalar` associated type rather than rewrite
-//! call sites.
 
 #![warn(missing_docs)]
 

@@ -5,13 +5,6 @@
 //! This keeps the WGSL ABI at `vec3<f32>` (the v0 `WgslSpace` contract) at the
 //! cost of upper-hemisphere-only coverage: an isometry that pushes a point below
 //! the equator returns out-of-domain (a debug warning fires).
-//!
-//! Isometries are SO(4) matrices: composition is matmul, inverse is transpose.
-//! Curvature `K = +1`; geodesic triangles have positive angle excess.
-//!
-//! Domain `|p|² < 1`. The boundary `|p| = 1` is the equator where `w = 0` and the
-//! tangent formula `vw = −dot(v,p)/w` blows up; methods clamp to a saturation
-//! shell at `SPHERE_R2_MAX`, so out-of-domain inputs degrade finitely, never NaN.
 
 use std::borrow::Cow;
 
@@ -87,14 +80,11 @@ fn clamp_to_hemisphere(p: Vec3) -> Vec3 {
     }
 }
 
-/// Lift a upper-hemisphere point `p` to its unit 4-vector on S³.
 fn to_sphere(p: Vec3) -> Vec4 {
     let r2 = p.length_squared().min(SPHERE_R2_MAX);
     Vec4::new(p.x, p.y, p.z, (1.0 - r2).sqrt())
 }
 
-/// Project a 4D sphere point back to upper-hemisphere coords by discarding w.
-/// Only correct when `q.w ≥ 0`; warns on lower-hemisphere points.
 fn from_sphere(q: Vec4) -> Vec3 {
     #[cfg(debug_assertions)]
     if q.w < 0.0 {
@@ -164,9 +154,6 @@ impl Iso4 {
 }
 
 /// Spherical 3-space, upper hemisphere model, curvature `K = +1`.
-///
-/// Stateless unit struct. See the [module docs](self) for the representation and
-/// domain constraint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SphericalS3;
 
@@ -201,7 +188,6 @@ impl Space for SphericalS3 {
         let qf = to_sphere(clamp_to_hemisphere(from));
         let qt = to_sphere(clamp_to_hemisphere(to));
         let d_dot = qf.dot(qt).clamp(-1.0, 1.0);
-        // Component of qt perpendicular to qf, along the geodesic.
         let perp4 = qt - d_dot * qf;
         let n = perp4.length();
         if n < LOG_PERP_MIN {
@@ -253,7 +239,6 @@ impl IsometryGroup for SphericalS3 {
     }
 
     fn iso_inverse(&self, a: Iso4) -> Iso4 {
-        // SO(4) matrices are orthogonal: M⁻¹ = Mᵀ.
         Iso4 {
             matrix: a.matrix.transpose(),
         }
@@ -264,7 +249,6 @@ impl IsometryGroup for SphericalS3 {
     }
 
     fn iso_transport(&self, iso: Iso4, at: Vec3, v: Vec3) -> Vec3 {
-        // Exact via the geodesic round-trip identity.
         let target = self.exp(at, v);
         let m_at = self.iso_apply(iso, at);
         let m_target = self.iso_apply(iso, target);

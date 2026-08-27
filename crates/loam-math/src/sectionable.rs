@@ -3,9 +3,6 @@
 //!
 //! A cross-section is what an inhabitant at the slice would see: the `N`-space's
 //! intersection with a hyperplane, expressed in the `(N-1)`-space of the slice.
-//! It is a Space-level trait, not a polytope helper, because the assembly above
-//! [`SectionableSpace::edge_section`] (cap-polygon, plane fit, fan triangulation)
-//! is space-agnostic; only the per-edge solve is flat-vs-curved.
 
 use glam::{Vec3, Vec4};
 
@@ -65,13 +62,10 @@ impl SectionableSpace<4> for EuclideanR4 {
 
     fn edge_section(slice: &WPlane, p0: Vec4, p1: Vec4) -> Option<(f32, Vec3)> {
         let dw = p1.w - p0.w;
-        // Parallel within roundoff: whole-edge or empty, both left to the
-        // caller's slice perturbation.
         if dw.abs() < EDGE_PARALLEL_EPSILON {
             return None;
         }
         let t = (slice.w_slice - p0.w) / dw;
-        // Closed `[0, 1]`: an endpoint on the slice counts as an intersection.
         if !(0.0..=1.0).contains(&t) {
             return None;
         }

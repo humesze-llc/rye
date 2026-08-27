@@ -4,11 +4,6 @@
 //! conformal and shader-compatible); isometries as 4×4 Lorentz matrices acting
 //! on the **hyperboloid** model so composition is matmul (see [`Iso3H`]).
 //! `iso_apply` round-trips Poincaré -> hyperboloid -> matmul -> Poincaré.
-//!
-//! Domain: Poincaré points must satisfy `|p| < 1`; the boundary sphere is the
-//! point at infinity where distances diverge. Out-of-domain input is clamped
-//! internally to a degraded-but-finite result rather than panicking; keeping
-//! points interior is the caller's responsibility.
 
 use std::borrow::Cow;
 
@@ -94,7 +89,6 @@ impl Iso3H {
         let sh = rapidity.sinh();
         let k = ch - 1.0;
         let (dx, dy, dz) = (dir.x, dir.y, dir.z);
-        // Symmetric boost: spatial block I + k·dir⊗dir, coupling sh·dir, tt ch.
         Self {
             matrix: Mat4::from_cols(
                 Vec4::new(1.0 + k * dx * dx, k * dx * dy, k * dx * dz, sh * dx),
@@ -106,8 +100,7 @@ impl Iso3H {
     }
 }
 
-/// Hyperbolic 3-space, Poincaré ball model, `K = -1`. Stateless unit struct; see
-/// the [module docs](self) for the dual representation and domain constraint.
+/// Hyperbolic 3-space, Poincaré ball model, `K = -1`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HyperbolicH3;
 
@@ -150,8 +143,7 @@ impl Space for HyperbolicH3 {
     }
 
     fn parallel_transport(&self, from: Vec3, to: Vec3, v: Vec3) -> Vec3 {
-        // Geodesic PT: (λ_from / λ_to) · gyr[to, −from] v. Conformal factor
-        // rescales for the metric at source vs destination.
+        // Geodesic PT: (λ_from / λ_to) · gyr[to, −from] v.
         let from = clamp_to_ball(from);
         let to = clamp_to_ball(to);
         let conformal = (1.0 - to.length_squared()) / (1.0 - from.length_squared());
@@ -309,8 +301,6 @@ fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> 
 }
 "#;
 
-/// `artanh(x)`. Caller ensures `|x| < 1`; boundary saturation is handled at the
-/// call sites.
 fn artanh(x: f32) -> f32 {
     0.5 * ((1.0 + x) / (1.0 - x)).ln()
 }
@@ -378,8 +368,6 @@ fn gyr_apply(a: Vec3, b: Vec3, v: Vec3) -> Vec3 {
     v + (2.0 / norm2) * (scalar * axis.cross(v) + axis.cross(axis.cross(v)))
 }
 
-/// Lift a Poincaré point (`|p|² = r²`) to the hyperboloid:
-/// `(2p / (1 − r²), (1 + r²) / (1 − r²))`.
 fn poincare_to_hyperboloid(p: Vec3) -> Vec4 {
     let r2 = p.length_squared().min(POINCARE_R2_MAX);
     let den = 1.0 - r2;
@@ -391,15 +379,13 @@ fn poincare_to_hyperboloid(p: Vec3) -> Vec4 {
     )
 }
 
-/// Project a hyperboloid point back to the Poincaré ball: `(x, y, z) / (1 + w)`.
 /// The floor on `1 + w` keeps off-sheet inputs finite.
 fn hyperboloid_to_poincare(h: Vec4) -> Vec3 {
     let den = (1.0 + h.w).max(1e-7);
     Vec3::new(h.x / den, h.y / den, h.z / den)
 }
 
-/// Differential of [`poincare_to_hyperboloid`] at `p`, applied to `v`. The
-/// time-like component and the radial part of the space-like one share the
+/// The time-like component and the radial part of the space-like one share the
 /// factor `4 (p·v) / (1 - r²)²`.
 fn poincare_to_hyperboloid_tangent(p: Vec3, v: Vec3) -> Vec4 {
     let r2 = p.length_squared().min(POINCARE_R2_MAX);
@@ -409,8 +395,7 @@ fn poincare_to_hyperboloid_tangent(p: Vec3, v: Vec3) -> Vec4 {
     Vec4::new(space.x, space.y, space.z, radial)
 }
 
-/// Differential of [`hyperboloid_to_poincare`] at `h`, applied to `dh`. Same
-/// floor on `1 + w`, for the same reason.
+/// Same floor on `1 + w`, for the same reason.
 fn hyperboloid_to_poincare_tangent(h: Vec4, dh: Vec4) -> Vec3 {
     let den = (1.0 + h.w).max(1e-7);
     let space = Vec3::new(h.x, h.y, h.z);

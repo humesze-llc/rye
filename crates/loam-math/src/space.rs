@@ -64,8 +64,6 @@ pub trait Space {
 /// A [`Space`] that has isometries: metric-preserving self-maps forming a
 /// group under composition.
 ///
-/// Split from [`Space`] because not every Space has any.
-///
 /// The laws, stated as actions on points because `Iso` carries no equality
 /// bound and a rotor representation double-covers its rotation group:
 /// `iso_compose` is associative with `iso_identity` neutral and `iso_inverse`
@@ -95,9 +93,6 @@ pub trait IsometryGroup: Space {
 
 /// A [`Space`] that additionally exposes its primitives as WGSL for inlining
 /// into shaders by `loam-shader`.
-///
-/// Split from [`Space`] so the stable math trait and the volatile shader ABI do
-/// not share a release cadence.
 pub trait WgslSpace: Space {
     /// WGSL source providing this space's primitives. The v0 ABI is tiny and
     /// single-space (`vec3<f32>` point/vector only):
@@ -108,9 +103,6 @@ pub trait WgslSpace: Space {
     /// fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32>
     /// fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32>
     /// ```
-    ///
-    /// Stateless geometries return `Cow::Borrowed`; parametric ones `format!`
-    /// constants in and return `Cow::Owned`.
     fn wgsl_impl(&self) -> Cow<'static, str>;
 }
 

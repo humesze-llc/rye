@@ -1,19 +1,5 @@
 //! Bivectors and rotors, the N-dim rotation primitive.
 //!
-//! A bivector is an oriented plane of rotation times a magnitude; its
-//! exponential is a rotor, which acts via the sandwich product and composes
-//! via Clifford multiplication.
-//!
-//! Two traits ([`Bivector`], [`Rotor`]) let consumers be generic over
-//! dimension. Concrete impls ship per-N: [`Bivector2`] / [`Rotor2`],
-//! [`Bivector3`] / [`Rotor3`], [`Bivector4`] / [`Rotor4`].
-//!
-//! Per-N hand-rolled (not `generic_const_exprs`): the Clifford tables are
-//! dimension-specific and the exp/log derivations differ qualitatively (3D
-//! is always single-plane; 4D needs invariant decomposition).
-//!
-//! ## Convention
-//!
 //! `R = exp(B/2)`, so a bivector of magnitude θ in plane `e_i ∧ e_j` rotates
 //! by θ from `e_i` toward `e_j`. Rotor application is the sandwich
 //! `v' = R̃ · v · R`.
@@ -25,9 +11,7 @@ use glam::{Vec2, Vec3, Vec4};
 /// A bivector in G(N, 0): an oriented plane of rotation times magnitude;
 /// exponentiates to a rotor.
 pub trait Bivector: Copy + Add<Output = Self> + Mul<f32, Output = Self> {
-    /// Rotor produced by [`Bivector::exp`]. The reciprocal bound pins one
-    /// rotor per dimension, so mixing `Bivector3` with `Rotor4` cannot
-    /// typecheck.
+    /// Rotor produced by [`Bivector::exp`].
     type Rotor: Rotor<Bivector = Self>;
 
     /// Zero bivector; `zero().exp()` is the identity rotor.
@@ -44,7 +28,6 @@ pub trait Rotor: Copy + Mul<Output = Self> {
     type Bivector: Bivector<Rotor = Self>;
 
     /// Vector space the sandwich product acts on, `R^N` for this rotor's `N`.
-    /// [`Rotor::apply`] is closed on it: rotors never change dimension.
     type Vector: Copy;
 
     /// Identity rotor.
@@ -62,8 +45,6 @@ pub trait Rotor: Copy + Mul<Output = Self> {
     /// path and so may generate `−self`.
     fn log(self) -> Self::Bivector;
 }
-
-// 2D: Bivector2 is the e1∧e2 coefficient; Rotor2 is a unit complex number.
 
 /// 2D bivector: scalar coefficient on `e1∧e2`, a rotation angle in radians
 /// from `x` toward `y`.
@@ -123,7 +104,6 @@ impl Default for Rotor2 {
 
 impl Mul for Rotor2 {
     type Output = Self;
-    /// Complex multiplication, equivalent to Clifford product in 2D.
     fn mul(self, rhs: Self) -> Self {
         Self {
             a: self.a * rhs.a - self.b * rhs.b,
@@ -148,7 +128,6 @@ impl Rotor for Rotor2 {
     }
 
     fn apply(&self, v: Vec2) -> Vec2 {
-        // cos(θ) = a² − b², sin(θ) = 2ab.
         let c = self.a * self.a - self.b * self.b;
         let s = 2.0 * self.a * self.b;
         Vec2::new(c * v.x - s * v.y, s * v.x + c * v.y)
@@ -158,10 +137,6 @@ impl Rotor for Rotor2 {
         Bivector2(2.0 * self.b.atan2(self.a))
     }
 }
-
-// 3D: Rotor3 is the even subalgebra element `s + xy·e12 + yz·e23 + zx·e31`,
-// isomorphic to a quaternion but with the sign convention of the sandwich
-// `v' = R̃·v·R` rather than the quaternion `q·v·q*`.
 
 /// 3D bivector with coefficients on `e1∧e2`, `e2∧e3`, `e3∧e1`. Magnitude
 /// encodes rotation angle.
@@ -224,7 +199,7 @@ impl Bivector for Bivector3 {
         Self::ZERO
     }
 
-    /// Exponential map. Every 3D bivector is simple (single plane), so
+    /// Every 3D bivector is simple (single plane), so
     /// `exp(B/2) = cos(θ/2) + sin(θ/2)·B̂` directly, no decomposition.
     fn exp(self) -> Rotor3 {
         let mag_sq = self.xy * self.xy + self.yz * self.yz + self.zx * self.zx;
@@ -283,7 +258,6 @@ impl Default for Rotor3 {
 
 impl Mul for Rotor3 {
     type Output = Self;
-    /// Geometric product of two rotors in G(3,0).
     fn mul(self, rhs: Self) -> Self {
         let (s1, a1, b1, c1) = (self.s, self.xy, self.yz, self.zx);
         let (s2, a2, b2, c2) = (rhs.s, rhs.xy, rhs.yz, rhs.zx);
@@ -305,7 +279,6 @@ impl Rotor for Rotor3 {
     }
 
     fn inverse(self) -> Self {
-        // Reverse: flip grade-2 sign.
         Self {
             s: self.s,
             xy: -self.xy,
@@ -314,8 +287,6 @@ impl Rotor for Rotor3 {
         }
     }
 
-    /// Apply via the sandwich `R̃ · v · R`. Two stages: `R̃ · v`
-    /// (vector + trivector), then `· R` (trivector cancels for unit R).
     fn apply(&self, v: Vec3) -> Vec3 {
         let (s, a, b, c) = (self.s, self.xy, self.yz, self.zx);
         let (vx, vy, vz) = (v.x, v.y, v.z);
@@ -334,7 +305,6 @@ impl Rotor for Rotor3 {
     }
 
     fn log(self) -> Bivector3 {
-        // Inverse of exp: θ = 2·atan2(|bivector part|, scalar).
         let mag_sq = self.xy * self.xy + self.yz * self.yz + self.zx * self.zx;
         if mag_sq < 1e-16 {
             // Near-identity: log ≈ 2·bivector_part.
@@ -355,17 +325,7 @@ impl Rotor for Rotor3 {
     }
 }
 
-// 4D: Rotor4 is the even-graded element of G(4,0), eight components (scalar +
-// six bivectors + pseudoscalar). Unlike 3D, a generic 4D bivector is not
-// simple: it splits uniquely into two orthogonal simple parts B = B_a + B_b
-// in complementary 2-planes, and the rotor is the product of their
-// exponentials. `B ∧ B = 0` is the simple case.
-
 /// 4D bivector, six components on the basis planes `e_i ∧ e_j` (`i < j`).
-///
-/// Unlike [`Bivector3`], a 4D bivector can describe a double rotation (two
-/// independent planes); the exponential handles this via the invariant
-/// decomposition.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Bivector4 {
     /// `e1∧e2` coefficient; positive turns `x` toward `y`.
@@ -458,7 +418,7 @@ impl Bivector4 {
 
     /// Euclidean inner product on the 6 coefficients (positive definite),
     /// not the Clifford scalar part (which carries the `e_ij·e_ij = -1`
-    /// sign). Projects one bivector onto another's direction.
+    /// sign).
     pub fn dot(self, other: Self) -> f32 {
         self.xy * other.xy
             + self.xz * other.xz
@@ -474,8 +434,7 @@ impl Bivector4 {
         2.0 * (self.xy * self.zw - self.xz * self.yw + self.xw * self.yz)
     }
 
-    /// Wedge product `u ∧ v` as a bivector. Physics builds the torque
-    /// bivector `r ∧ f` with this.
+    /// Wedge product `u ∧ v` as a bivector.
     pub fn wedge(u: Vec4, v: Vec4) -> Self {
         Self {
             xy: u.x * v.y - u.y * v.x,
@@ -502,7 +461,7 @@ impl Bivector4 {
     }
 
     /// Hodge dual `B* = B · I`, swapping each plane with its orthogonal
-    /// complement. Used inside the invariant decomposition.
+    /// complement.
     pub fn dual(self) -> Self {
         Self {
             xy: -self.zw,
@@ -518,11 +477,6 @@ impl Bivector4 {
 /// One of the six elementary 4D rotation planes; a basis bivector of
 /// [`Bivector4`]. Index and label match `Bivector4`'s field order
 /// (`0=xy, 1=xz, 2=xw, 3=yz, 4=yw, 5=zw`).
-///
-/// The w-planes (`xw`, `yw`, `zw`) pull visible axes into the 4th dimension;
-/// the pure-3D planes act on the 3D cross-section. Sum-of-bivectors
-/// composition is commutative, so `omega.exp()` depends only on the set of
-/// active planes, not their order.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub enum Plane4 {
@@ -833,9 +787,6 @@ impl Rotor4 {
     /// basis vectors. Column-major `[col0..col3]`, matching glam's `Mat4` and
     /// WGSL's `mat4x4<f32>` so it casts into a GPU slot without transposition.
     ///
-    /// Four [`Rotor::apply`] calls; lets the shader do a plain
-    /// `mat4x4 * vec4` instead of the full Clifford reduction.
-    ///
     /// Reference: the "matrix from rotation operator" construction
     /// (Hestenes, *New Foundations for Classical Mechanics*, 2nd ed., §2.5).
     pub fn to_mat4(&self) -> [[f32; 4]; 4] {
@@ -849,8 +800,6 @@ impl Rotor4 {
 
 impl Mul for Rotor4 {
     type Output = Self;
-    /// Geometric product of two 4D rotors in the even-graded basis
-    /// `{1, e12, e13, e14, e23, e24, e34, I}`, by direct Clifford reduction.
     fn mul(self, rhs: Self) -> Self {
         let (a0, a12, a13, a14, a23, a24, a34, a_i) = (
             self.s, self.xy, self.xz, self.xw, self.yz, self.yw, self.zw, self.xyzw,
@@ -919,7 +868,6 @@ impl Rotor for Rotor4 {
     }
 
     /// Reverse `R̃`: flips grades with `k(k−1)/2` odd, i.e. grade 2 only.
-    /// Scalar and pseudoscalar keep their sign.
     fn inverse(self) -> Self {
         Self {
             s: self.s,
@@ -933,9 +881,6 @@ impl Rotor for Rotor4 {
         }
     }
 
-    /// Apply via the sandwich `R̃ · v · R`. Stage 1 is `R̃ · v` (1-vector +
-    /// 3-vector); stage 2 multiplies by `R` and extracts the 1-vector part.
-    /// All basis-element products are direct Clifford reductions in G(4,0).
     fn apply(&self, v: Vec4) -> Vec4 {
         let (vx, vy, vz, vw) = (v.x, v.y, v.z, v.w);
         let rs = self.s;

@@ -137,15 +137,6 @@ impl Demo {
         });
         loam_egui::sticky_menu(ui, "View", |ui| {
             ui.checkbox(&mut self.show_controls, "Rotation controls (H)");
-            ui.checkbox(&mut self.gimbal.enabled, "Transform handles")
-                .on_hover_text(
-                    "Six interlocked rings, one per rotation plane, from the \
-                     stereographic projection of the 16-cell, plus four \
-                     arrows, one per translation axis. Drag a ring to rotate \
-                     in its plane; drag an arrowhead to slide along its axis. \
-                     The violet arrow is w: it moves the body off the 3D \
-                     slice, so the shape changes rather than travels.",
-                );
             ui.checkbox(&mut self.show_formula, "Formula popup");
             ui.checkbox(&mut self.example_callout.open, "Example callout");
             ui.separator();
@@ -433,7 +424,8 @@ impl Demo {
                          stereographic projection of a 16-cell; the ring under \
                          the cursor lights up. Rings sharing a hue are a \
                          plane and its orthogonal complement, so xy and zw \
-                         face each other. Toggle them off under View.",
+                         face each other. They are off unless the console \
+                         verb `handles` turns them on.",
                 );
                 ui.label(
                     "• Drag an arrowhead: slide the selected body along that \

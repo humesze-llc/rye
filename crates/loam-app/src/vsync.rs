@@ -8,6 +8,7 @@
 //! `vsync off` swaps the surface to `Mailbox` (or `Immediate` as
 //! fallback) so the cap can drive cadence above the display rate; useful for
 //! benchmarking, perf profiling, or chasing input latency.
+//!
 //! [`fps`]: crate::fps
 
 use loam_egui::{cmd, Console, ConsoleWriter};

@@ -17,13 +17,11 @@ use wgpu::{
 
 const POINT_RASTER_WGSL: &str = include_str!("point_raster.wgsl");
 
-/// Camera uniform handed to the point shader.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct PointRasterUniforms {
     pub view_projection: [[f32; 4]; 4],
-    /// Render target size in pixels. Used by the vertex shader to convert pixel radii into NDC
-    /// offsets.
+    /// Render target size in pixels; the vertex shader turns pixel radii into NDC.
     pub viewport_size: [f32; 2],
     /// Padding to round the struct to 16-byte alignment for `std140` uniform layout.
     pub _pad: [f32; 2],
@@ -39,11 +37,11 @@ impl Default for PointRasterUniforms {
     }
 }
 
-/// Layout matches the `@location(1..=3)` attribute slots in `point_raster.wgsl`.
+// Layout matches the `@location(1..=3)` attribute slots in `point_raster.wgsl`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
 struct PointInstance {
-    /// World-space (post-projection-to-R³) position.
+    /// Post-projection R³ position.
     pos: [f32; 3],
     /// Screen-space pixel radius. AA falloff adds ~1 px beyond this.
     radius_px: f32,
@@ -51,9 +49,7 @@ struct PointInstance {
     color: [f32; 4],
 }
 
-/// Antialiased point-disc rasterizer. Parallel to [`crate::line_raster::LineRasterNode`] and
-/// [`crate::triangle_raster::TriangleRasterNode`]; construct once per `RenderDevice` and reuse
-/// across frames.
+/// Antialiased point-disc rasterizer. Construct once per `RenderDevice`.
 pub struct PointRasterNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
@@ -64,20 +60,14 @@ pub struct PointRasterNode {
     instance_buf: Buffer,
     /// Number of points currently uploaded; `0` means [`Self::record`] is a no-op.
     instance_count: u32,
-    /// Allocated capacity of `instance_buf` in instances. The buffer is re-created if a future
-    /// upload exceeds this.
     instance_capacity: u32,
-    /// Tracks whether the pipeline was created with a depth attachment so [`Self::record`]
-    /// can validate the caller's depth-view argument.
     has_depth: bool,
 }
 
 impl PointRasterNode {
     /// - `surface_format` must match the color attachment at draw time.
-    /// - `depth`: see [`crate::DepthMode`]. Determines whether the pipeline
-    ///   reads depth, reads + writes depth, or skips it entirely. `LessEqual`
-    ///   is the compare convention; same reasoning as in `LineRasterNode`
-    ///   (points drawn on top of co-located polygons stay visible).
+    /// - `depth`: see [`crate::DepthMode`]. `LessEqual` is the compare convention,
+    ///   for the reason `LineRasterNode` gives.
     /// - `sample_count` must match the attachment's MSAA sample count.
     pub fn new(
         device: &Device,
@@ -250,11 +240,9 @@ impl PointRasterNode {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Upload a [`PointMesh`] for rendering. Projects each position from R^N to R³ via
-    /// [`RasterizableSpace::project_point`]; copies the color and size attributes verbatim.
-    ///
-    /// Positions / colors / sizes must have the same length per the [`PointMesh`] invariant;
-    /// empty meshes upload nothing and make the next [`Self::record`] a no-op.
+    /// Projects each position from R^N to R³ via
+    /// [`RasterizableSpace::project_point`]; colors and sizes are copied verbatim.
+    /// An empty mesh uploads nothing and makes the next [`Self::record`] a no-op.
     pub fn upload<S, const N: usize>(
         &mut self,
         device: &Device,
@@ -285,14 +273,11 @@ impl PointRasterNode {
         {
             let p_native = S::array_to_point(*p);
             let p3 = S::project_point(p_native, projection);
-            // Same CPU-side backstop as `LineRasterNode::upload`: a central
-            // projection (Schlegel, Stereographic, Perspective4D) can map a
-            // vertex on the projection center / pole to a NaN or infinity, and
-            // a single non-finite point poisons the GPU view-projection divide
-            // into a full-screen garbage quad rather than a missing dot.
-            // `is_finite` rejects every quiet-NaN bit pattern AND both
-            // infinities; `continue` drops the offending point without
-            // emitting it.
+            // Same CPU-side backstop as `LineRasterNode::upload`: a central projection
+            // (Schlegel, Stereographic, Perspective4D) can map a vertex on the projection
+            // center or pole to a NaN or infinity, and one non-finite point poisons the
+            // GPU view-projection divide into a full-screen garbage quad rather than a
+            // missing dot. `is_finite` rejects quiet NaNs and both infinities.
             if !p3.is_finite() {
                 continue;
             }
@@ -321,16 +306,11 @@ impl PointRasterNode {
         self.instance_count = instances.len() as u32;
     }
 
-    /// Record a pass drawing the uploaded points into `view` on the caller's
-    /// `encoder`. **Does NOT call `encoder.finish()` or `queue.submit`**; the
-    /// runner owns one encoder per frame and submits it once.
-    ///
-    /// `LoadOp::Load` for both color and depth, matching the other rasterizer
-    /// nodes so multiple passes share one cleared color + depth buffer within a
-    /// frame.
-    ///
-    /// `depth_view` must be `Some` when the pipeline was constructed with a depth format and
-    /// `None` otherwise. Mismatch panics with a descriptive message.
+    /// Does not call `encoder.finish()` or `queue.submit`: the runner owns one
+    /// encoder per frame and submits it once. `LoadOp::Load` for both color and
+    /// depth, matching the other rasterizer nodes so several passes share one
+    /// cleared buffer within a frame. `depth_view` must be `Some` when the
+    /// pipeline has a depth format and `None` otherwise; a mismatch panics.
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,

@@ -1,5 +1,3 @@
-//! Thin wgpu wrapper plus a tiny render-graph harness.
-
 pub mod composite;
 pub mod depth;
 pub mod device;
@@ -24,9 +22,8 @@ pub use triangle_raster::{
     FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,
 };
 
-/// How a rasterizer pipeline interacts with depth. Three states only -- avoids the
-/// invalid-combination problem an `Option<TextureFormat> + bool depth_write` API would
-/// have. Shared by [`LineRasterNode`] and [`TriangleRasterNode`].
+/// Three states rather than `Option<TextureFormat>` plus a `depth_write`
+/// bool, which would admit invalid combinations.
 #[derive(Copy, Clone, Debug)]
 pub enum DepthMode {
     Off,
@@ -35,7 +32,6 @@ pub enum DepthMode {
 }
 
 impl DepthMode {
-    /// Format of the depth attachment, if any.
     pub fn format(&self) -> Option<wgpu::TextureFormat> {
         match self {
             DepthMode::Off => None,
@@ -43,12 +39,10 @@ impl DepthMode {
         }
     }
 
-    /// `true` for any depth-aware mode (read-only or read-write).
     pub fn is_active(&self) -> bool {
         !matches!(self, DepthMode::Off)
     }
 
-    /// Whether the pipeline should write depth.
     pub fn writes(&self) -> bool {
         matches!(self, DepthMode::ReadWrite { .. })
     }

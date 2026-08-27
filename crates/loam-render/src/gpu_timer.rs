@@ -15,53 +15,47 @@ use wgpu::{
     QuerySetDescriptor, QueryType, Queue, QUERY_RESOLVE_BUFFER_ALIGNMENT,
 };
 
-/// Submitted, on-GPU, staged-for-mapping: one slot each, matching the typical
-/// WebGPU latency profile. More slots delay displayed timings; fewer risk
-/// map-vs-write contention.
+/// Submitted, on-GPU, staged-for-mapping: one slot each. More slots delay
+/// displayed timings; fewer risk map-vs-write contention.
 const FRAMES_IN_FLIGHT: usize = 3;
 
 /// Upper bound on a believable single-frame GPU time; beyond this is a desynced
 /// slot, not a stall.
 const MAX_PLAUSIBLE_FRAME_NS: u64 = 1_000_000_000 / 10;
 
-/// Whether a resolved delta is small enough to be a real frame time. Above
-/// ~120 Hz the triple-buffer cycle can race on some drivers, pairing a start
-/// tick with an end tick several cycles later; the resulting deltas grow with
-/// wall time. Dropping them keeps `gpu-total` honest. Free function so the
-/// threshold is testable without a GPU.
+// Above ~120 Hz the triple-buffer cycle can race on some drivers, pairing a
+// start tick with an end tick several cycles later; the resulting deltas grow
+// with wall time. Dropping them keeps `gpu-total` honest. A free function so
+// the threshold is testable without a GPU.
 fn is_plausible_frame_delta_ns(delta_ns: u64) -> bool {
     delta_ns <= MAX_PLAUSIBLE_FRAME_NS
 }
 
-/// Bytes per resolved slot pair (two `u64` ticks).
+// Two `u64` ticks.
 const BYTES_PER_SLOT: u64 = 16;
 
-/// `resolve_query_set` requires a `QUERY_RESOLVE_BUFFER_ALIGNMENT`-aligned
-/// destination offset, so each slot's 16-byte payload starts at
-/// `slot * SLOT_STRIDE_BYTES`.
+// `resolve_query_set` requires a `QUERY_RESOLVE_BUFFER_ALIGNMENT`-aligned
+// destination offset, so each slot's 16-byte payload starts at
+// `slot * SLOT_STRIDE_BYTES`.
 const SLOT_STRIDE_BYTES: u64 = QUERY_RESOLVE_BUFFER_ALIGNMENT;
 
-/// Per-slot state. `in_flight` is set on resolve and cleared by the `map_async`
-/// callback once the timing is sent. `map_buffer` is per-slot so a mapped slot
-/// doesn't block another's `Queue::submit`.
+// `in_flight` is set on resolve and cleared by the `map_async` callback once
+// the timing is sent. `map_buffer` is per-slot so a mapped slot does not
+// block another's `Queue::submit`.
 struct SlotState {
     in_flight: Arc<AtomicBool>,
     map_buffer: Buffer,
 }
 
-/// Triple-buffered timestamp recorder owned by `RenderDevice`.
 pub struct GpuTimer {
     /// One query set with `FRAMES_IN_FLIGHT * 2` slots (start + end per frame).
     query_set: QuerySet,
-    /// GPU-only resolve buffer striped by `SLOT_STRIDE_BYTES`.
     resolve_buffer: Buffer,
     /// Slot at `frame_index % FRAMES_IN_FLIGHT` is the current frame's.
     slots: [SlotState; FRAMES_IN_FLIGHT],
-    /// Strictly increasing frame counter. Wraps after `u64::MAX`.
     frame_index: u64,
     /// `Queue::get_timestamp_period()` snapshot; ticks to nanoseconds.
     timestamp_period_ns: f32,
-    /// Async result channel: callbacks send `Duration`, `tick` drains.
     rx: Receiver<Duration>,
     tx: Sender<Duration>,
 }
@@ -120,8 +114,8 @@ impl GpuTimer {
         base..(base + BYTES_PER_SLOT)
     }
 
-    /// Write the start-of-frame timestamp into `encoder`. Skips silently when
-    /// the current slot is still in flight rather than corrupting its data.
+    /// Skips silently when the current slot is still in flight, rather than
+    /// corrupting its data.
     pub fn write_start(&self, encoder: &mut CommandEncoder) {
         let slot = self.current_slot();
         if self.slots[slot].in_flight.load(Ordering::Acquire) {
@@ -131,8 +125,7 @@ impl GpuTimer {
         encoder.write_timestamp(&self.query_set, range.start);
     }
 
-    /// Write the end-of-frame timestamp, resolve the slot pair, and stage it
-    /// into the map buffer. Marks the slot in-flight for the next `tick` to map.
+    /// Marks the slot in-flight for the next [`Self::tick`] to map.
     pub fn write_end_and_resolve(&self, encoder: &mut CommandEncoder) {
         let slot = self.current_slot();
         if self.slots[slot].in_flight.load(Ordering::Acquire) {
@@ -157,9 +150,7 @@ impl GpuTimer {
         self.slots[slot].in_flight.store(true, Ordering::Release);
     }
 
-    /// Advance the frame counter, drain completed results into
-    /// `loam_time::frame_trace`, then schedule the just-resolved slot's
-    /// `map_async`. Call once per redraw, after the end-of-frame queue submit.
+    /// Call once per redraw, after the end-of-frame queue submit.
     pub fn tick(&mut self) {
         self.frame_index = self.frame_index.wrapping_add(1);
 

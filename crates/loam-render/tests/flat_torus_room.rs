@@ -3,11 +3,10 @@
 //!
 //! `loam-math` pins the quotient's algebra on the CPU. What cannot be pinned
 //! there is that the *unmodified* march kernel crosses the gluing: it never
-//! mentions a portal, it only calls `loam_exp`, and the claim that this is
-//! sufficient is a claim about WGSL that has to be executed to be believed.
+//! mentions a portal, it only calls `loam_exp`, and that claim is about WGSL
+//! and has to be executed to be believed.
 //!
-//! The `gpu_probe`-suffixed tests need an adapter and are ignored by default,
-//! matching `raymarch_chain_smoke.rs`; run with `--include-ignored`.
+//! The `gpu_probe`-suffixed tests need an adapter and are ignored by default.
 
 use glam::Vec3;
 use loam_math::{FlatTorus3, QuotientSpace, Space, WgslSpace};
@@ -15,15 +14,14 @@ use loam_scene::{Scene, SceneNode};
 use loam_shader::{validate_wgsl, GEODESIC_MARCH_KERNEL};
 use wgpu::util::DeviceExt;
 
-/// Side lengths of the room. Deliberately unequal so a swapped axis in the
-/// wrap shows up as a wrong hit distance rather than as a symmetry.
+// Side lengths of the room. Deliberately unequal so a swapped axis in the
+// wrap shows up as a wrong hit distance rather than as a symmetry.
 const CELL: Vec3 = Vec3::new(2.0, 2.6, 1.7);
 
-/// Three spheres at unrelated offsets: enough landmarks that an observer can
-/// tell which copy of the cell they are looking at, which is the whole point of
-/// the room. Spheres because `Shape::Sphere` is the one primitive that routes
-/// through `loam_distance` and is therefore lattice-periodic; a box or a
-/// half-space emits raw chart arithmetic and would tear at the gluing.
+// Enough landmarks that an observer can tell which copy of the cell they are
+// looking at. Spheres because `Shape::Sphere` is the one primitive that
+// routes through `loam_distance` and is therefore lattice-periodic; a box or
+// a half-space emits raw chart arithmetic and would tear at the gluing.
 fn room() -> Scene {
     Scene::new(
         SceneNode::sphere(Vec3::ZERO, 0.36)
@@ -36,9 +34,8 @@ fn torus() -> FlatTorus3 {
     FlatTorus3::new(CELL)
 }
 
-/// Marches one ray per invocation and reports, per ray, how far the marcher's
-/// wrapped position drifted from the straight covering ray's wrap, plus the
-/// arclength at which it hit.
+// Reports, per ray, how far the marcher's wrapped position drifted from the
+// straight covering ray's wrap, plus the arclength at which it hit.
 const PROBE_WGSL: &str = r#"
 struct Ray {
     origin: vec3<f32>,
@@ -112,9 +109,8 @@ struct GpuRay {
     _pad1: f32,
 }
 
-/// Deterministic ray fan: origins on a lattice inside the fundamental domain,
-/// directions on a fixed spiral. Seeded-by-construction rather than by an RNG,
-/// so the probe set is identical on every machine.
+// Origins on a lattice inside the fundamental domain, directions on a fixed
+// spiral, so the probe set is identical on every machine.
 fn probe_rays(origin_offset: Vec3) -> Vec<GpuRay> {
     let mut rays = Vec::with_capacity(16 * 64);
     for oi in 0..16 {
@@ -164,8 +160,8 @@ async fn request_device() -> (wgpu::Device, wgpu::Queue) {
         .expect("wgpu device")
 }
 
-/// One dispatch of a `@workgroup_size(64)` entry point over `input` at binding
-/// 0, reading one `O` per element back from binding 1.
+// One dispatch of a `@workgroup_size(64)` entry point over `input` at binding
+// 0, reading one `O` per element back from binding 1.
 fn dispatch<I: bytemuck::Pod, O: bytemuck::Pod>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -243,14 +239,13 @@ fn dispatch<I: bytemuck::Pod, O: bytemuck::Pod>(
     results
 }
 
-/// Runs `PROBE_WGSL` over `rays` and returns one `(residual, arclength)` pair
-/// per ray, both negative where the ray missed.
+// Returns one `(residual, arclength)` pair per ray, both negative on a miss.
 fn run_probe(device: &wgpu::Device, queue: &wgpu::Queue, rays: &[GpuRay]) -> Vec<[f32; 2]> {
     dispatch(device, queue, &assemble_probe_source(), "probe", rays)
 }
 
-/// The emitted prelude's fold into the fundamental domain, evaluated on the GPU
-/// so it can be compared against `QuotientSpace::wrap_to_domain`.
+// The emitted prelude's fold into the fundamental domain, evaluated on the GPU
+// so it can be compared against `QuotientSpace::wrap_to_domain`.
 const WRAP_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read> lifts: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> wrapped: array<vec4<f32>>;

@@ -1,6 +1,5 @@
 //! A [`Viewport`] is a rectangle in pixel coordinates (origin top-left, +y down).
 
-/// A pixel rectangle within a framebuffer.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Viewport {
     pub x: u32,
@@ -10,7 +9,6 @@ pub struct Viewport {
 }
 
 impl Viewport {
-    /// The whole framebuffer.
     pub fn full(framebuffer: [u32; 2]) -> Self {
         Self {
             x: 0,
@@ -20,8 +18,7 @@ impl Viewport {
         }
     }
 
-    /// The region to the right of a left-side panel of width `panel_width` pixels. Returns the
-    /// empty viewport if the panel covers the framebuffer (degenerate, but well-defined).
+    /// Empty when the panel covers the framebuffer.
     pub fn right_of_left_panel(panel_width: u32, framebuffer: [u32; 2]) -> Self {
         let panel = panel_width.min(framebuffer[0]);
         Self {
@@ -44,15 +41,13 @@ impl Viewport {
         );
     }
 
-    /// `[width, height]` as `[f32; 2]`, the format the hyperslice kernel's `u.resolution`
-    /// uniform expects.
+    /// The layout the hyperslice kernel's `u.resolution` uniform expects.
     pub fn resolution_f32(&self) -> [f32; 2] {
         [self.width as f32, self.height as f32]
     }
 
-    /// Cells are sized as `width / n` pixels each; the trailing cell absorbs any rounding
-    /// remainder so the entire strip covers `self` without seams. Returns an empty `Vec`
-    /// when `n == 0`.
+    /// Cells are `width / n` pixels; the trailing cell absorbs the rounding
+    /// remainder so the strip covers `self` without seams. Empty when `n == 0`.
     pub fn split_horizontal(&self, n: u32) -> Vec<Viewport> {
         if n == 0 {
             return Vec::new();
@@ -72,8 +67,7 @@ impl Viewport {
             .collect()
     }
 
-    /// Companion to [`Self::split_horizontal`]; same trailing-cell remainder rule, so the
-    /// strip covers `self` without seams.
+    /// Same trailing-cell remainder rule as [`Self::split_horizontal`].
     pub fn split_vertical(&self, n: u32) -> Vec<Viewport> {
         if n == 0 {
             return Vec::new();

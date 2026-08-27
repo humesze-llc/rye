@@ -18,15 +18,15 @@ use loam_scene::{Scene, SceneNode};
 use loam_shader::{validate_wgsl, ShaderDb, GEODESIC_MARCH_KERNEL};
 use wgpu::{Device, TextureFormat};
 
-/// Two leaves and one combinator: enough for the emitter to produce both a
-/// helper function and a `let` binding, which is the whole shape of the emit.
+// Two leaves and one combinator: enough for the emitter to produce both a
+// helper function and a `let` binding, which is the whole shape of the emit.
 fn probe_scene() -> Scene {
     Scene::new(SceneNode::sphere(Vec3::ZERO, 0.5).union(SceneNode::plane(Vec3::Y, -0.5)))
 }
 
-/// Mirror of `RayMarchUniforms` in WGSL. The Rust struct pads each `vec3` to
-/// 16 bytes by hand; WGSL's `vec3<f32>` alignment produces the same offsets,
-/// so the explicit `_padN` fields have no counterpart here.
+// Mirror of `RayMarchUniforms` in WGSL. The Rust struct pads each `vec3` to
+// 16 bytes by hand; WGSL's `vec3<f32>` alignment produces the same offsets,
+// so the explicit `_padN` fields have no counterpart here.
 const UNIFORMS_WGSL: &str = r#"
 struct RayMarchUniforms {
     camera_pos: vec3<f32>,
@@ -56,8 +56,8 @@ fn ray_direction(pos: vec4<f32>) -> vec3<f32> {
 }
 "#;
 
-/// Calls every symbol `GEODESIC_MARCH_KERNEL` exports, so a kernel rename is a
-/// validation failure rather than a black screen.
+// Calls every symbol `GEODESIC_MARCH_KERNEL` exports, so a kernel rename is a
+// validation failure rather than a black screen.
 const GEODESIC_SHADING_WGSL: &str = r#"
 @fragment
 fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
@@ -71,8 +71,8 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// The kernel-free path: the user shader calls the scene emit directly, which
-/// is the contract `ShaderDb::load_with_scene` exists to satisfy.
+// The kernel-free path: the user shader calls the scene emit directly, which
+// is the contract `ShaderDb::load_with_scene` exists to satisfy.
 const SCENE_SHADING_WGSL: &str = r#"
 @fragment
 fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
@@ -90,11 +90,10 @@ fn scene_user_shader() -> String {
     format!("{UNIFORMS_WGSL}{SCENE_SHADING_WGSL}")
 }
 
-/// `ShaderDb`'s assembler is crate-private, so reproduce its ordering contract
-/// (Space prelude, then scene module, then user source) here. The ordering
-/// itself is pinned inside loam-shader by
-/// `assemble_includes_scene_between_space_and_user`, and the `gpu_probe` test
-/// below runs the real assembler, so a divergence cannot hide in both places.
+// `ShaderDb`'s assembler is crate-private, so reproduce its ordering contract
+// (Space prelude, then scene module, then user source) here. loam-shader pins
+// the ordering itself and the `gpu_probe` test below runs the real assembler,
+// so a divergence cannot hide in both places.
 fn assemble(space_wgsl: &str, scene_wgsl: &str, user_wgsl: &str) -> String {
     format!("{space_wgsl}\n{scene_wgsl}\n{user_wgsl}")
 }
@@ -140,8 +139,7 @@ fn scene_chain_assembles_into_valid_wgsl() {
     validate_wgsl(&source).expect("scene raymarch chain should validate");
 }
 
-/// Runtime wiring for the geodesic path, as an app's `setup` would write it.
-/// Compiled unconditionally; executed only by the `gpu_probe` test.
+// Compiled unconditionally; executed only by the `gpu_probe` test.
 fn build_geodesic_node(
     device: &Device,
     surface_format: TextureFormat,
@@ -163,7 +161,6 @@ fn build_geodesic_node(
     ))
 }
 
-/// Runtime wiring for the kernel-free path.
 fn build_raymarch_node(
     device: &Device,
     surface_format: TextureFormat,

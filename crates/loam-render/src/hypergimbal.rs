@@ -6,11 +6,6 @@
 //! six circles in R³. Grabbing one and dragging along it asks for a rotation
 //! in that plane, by the arc the drag swept.
 //!
-//! In 3D a gimbal works because the Hodge dual of a 2-plane is an axis, and
-//! an axis is something to grab as a ring. In 4D the dual of a 2-plane is
-//! another 2-plane, so there is no axis left; the projected great circle is
-//! the replacement handle.
-//!
 //! # Projection
 //!
 //! For `p ∈ S³` and a pole `n ∈ S³`, `σ(p) = (p − (p·n)n)/(1 − p·n)`, read
@@ -88,14 +83,12 @@ use glam::{Vec3, Vec4};
 use loam_math::{Bivector, Plane4, Rotor4};
 use loam_shape::LineMesh;
 
-/// Stereographic pole: a cell centre of the 16-cell, `(1,1,1,1)/2`.
-///
-/// It lies on none of the six coordinate great circles, so every ring is a
-/// finite circle, and `|proj_P(n)| = 1/√2` for all six planes, so the six
-/// rings are congruent: radius `√2`, centre at distance `1`. Projecting from
-/// `±ê₄` instead puts the pole inside the `xw`, `yw` and `zw` planes and
-/// sends those three rings to straight lines through the origin, leaving
-/// three grabbable rings and three that run off to infinity.
+/// A cell centre of the 16-cell, `(1,1,1,1)/2`. It lies on none of the six
+/// coordinate great circles, so every ring is a finite circle, and
+/// `|proj_P(n)| = 1/√2` on all six planes, so the rings are congruent:
+/// radius `√2`, centre at distance `1`. Projecting from `±ê₄` instead puts
+/// the pole inside the `xw`, `yw` and `zw` planes and sends those three
+/// rings to straight lines through the origin.
 pub const POLE: Vec4 = Vec4::new(0.5, 0.5, 0.5, 0.5);
 
 /// Sine of the smallest ray-to-ring-plane angle the plane hit is trusted at.
@@ -108,25 +101,20 @@ const MIN_PLANE_INCIDENCE: f32 = 1e-2;
 const MIN_POLE_DISTANCE: f32 = 1e-4;
 
 /// Orthonormal frame of [`POLE`]'s orthogonal complement, read as the image
-/// R³'s x, y, z. These are the other three 16-cell cell centres orthogonal
-/// to `POLE`, so all four are vertices of the dual tesseract and the frame
-/// is as canonical as the pole is.
-///
-/// It also lands the six ring centres exactly on `±x̂, ±ŷ, ±ẑ`, one
-/// orthogonal-plane pair per axis, so each Hopf link reads as a pair of
-/// antipodal rings. `det[u₁,u₂,u₃,POLE] = +1`, so the image inherits R⁴'s
-/// orientation. A frame with a zero component (Helmert contrasts, say) puts
-/// a ring plane on an image axis, where the default camera sees it exactly
-/// edge-on and cannot grab it at all.
+/// R³'s x, y, z: the other three 16-cell cell centres orthogonal to `POLE`.
+/// It lands the six ring centres exactly on `±x̂, ±ŷ, ±ẑ`, one
+/// orthogonal-plane pair per axis, and `det[u₁,u₂,u₃,POLE] = +1`, so the
+/// image inherits R⁴'s orientation. A frame with a zero component puts a
+/// ring plane on an image axis, where the default camera sees it edge-on
+/// and cannot grab it at all.
 const IMAGE_AXES: [Vec4; 3] = [
     Vec4::new(0.5, 0.5, -0.5, -0.5),
     Vec4::new(0.5, -0.5, 0.5, -0.5),
     Vec4::new(0.5, -0.5, -0.5, 0.5),
 ];
 
-/// Coordinates of a vector in `POLE`'s orthogonal complement, read in
-/// [`IMAGE_AXES`]. The pole-parallel part is dropped, which is exactly what
-/// stereographic projection does with it.
+// The pole-parallel part is dropped, which is exactly what stereographic
+// projection does with it.
 fn to_r3(q: Vec4) -> Vec3 {
     Vec3::new(
         IMAGE_AXES[0].dot(q),
@@ -135,8 +123,8 @@ fn to_r3(q: Vec4) -> Vec3 {
     )
 }
 
-/// The plane's two basis directions, in the `p(θ) = a cos θ + b sin θ`
-/// order that [`Plane4::unit_bivector`] rotates `a` toward `b`.
+// In the `p(θ) = a cos θ + b sin θ` order that `Plane4::unit_bivector`
+// rotates `a` toward `b`.
 fn plane_axes(plane: Plane4) -> (Vec4, Vec4) {
     match plane {
         Plane4::Xy => (Vec4::X, Vec4::Y),
@@ -158,10 +146,8 @@ fn wrap_pi(angle: f32) -> f32 {
     }
 }
 
-/// Placement of the widget in world R³.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Hypergimbal {
-    /// World position of the 16-cell's centre.
     pub center: Vec3,
     /// World length of one unit of the stereographic image. Rings come out
     /// at radius `√2·scale`, centred `scale` from [`Self::center`].
@@ -169,8 +155,7 @@ pub struct Hypergimbal {
 }
 
 impl Hypergimbal {
-    /// Stereographic image of a point on S³, in world R³. `None` within f32
-    /// noise of [`POLE`], where the image is unbounded.
+    /// `None` within f32 noise of [`POLE`], where the image is unbounded.
     pub fn project(&self, p: Vec4) -> Option<Vec3> {
         let denom = 1.0 - p.dot(POLE);
         if denom.abs() < MIN_POLE_DISTANCE {
@@ -184,7 +169,6 @@ impl Hypergimbal {
         Plane4::ALL.map(|plane| self.ring(plane))
     }
 
-    /// The ring handling one rotation plane.
     pub fn ring(&self, plane: Plane4) -> Ring {
         let (a, b) = plane_axes(plane);
         let alpha = a.dot(POLE);
@@ -211,14 +195,11 @@ impl Hypergimbal {
         }
     }
 
-    /// Nearest ring whose circle passes within `tolerance` of the ray, or
-    /// `None` if the ray misses all six. Ties break by hit depth, so the
-    /// front ring wins where two overlap on screen.
+    /// Nearest ring within `tolerance` of the ray; ties break by hit depth.
     ///
-    /// The test is against the plane hit, not the true ray-to-circle
-    /// distance (a quartic): a ring seen edge-on is rejected by
-    /// [`Ring::ray_hit`] rather than grabbed at a distance the drag cannot
-    /// track.
+    /// The test is against the plane hit, not the true ray-to-circle distance (a
+    /// quartic): [`Ring::ray_hit`] rejects an edge-on ring rather than grabbing
+    /// it at a distance the drag cannot track.
     pub fn pick(&self, ray_origin: Vec3, ray_direction: Vec3, tolerance: f32) -> Option<Ring> {
         let mut best: Option<(f32, Ring)> = None;
         for ring in self.rings() {
@@ -236,8 +217,7 @@ impl Hypergimbal {
         best.map(|(_, ring)| ring)
     }
 
-    /// Append all six rings as chord runs. Existing contents are kept, so
-    /// the widget can share a mesh with other overlay geometry.
+    /// Existing contents are kept, so the widget can share a mesh.
     pub fn append_line_mesh(&self, style: &RingStyle, out: &mut LineMesh<3>) {
         let step = std::f32::consts::TAU / style.segments as f32;
         for ring in self.rings() {
@@ -254,19 +234,16 @@ impl Hypergimbal {
     }
 }
 
-/// One plane's handle: the stereographic image of its great circle, plus the
-/// two parameters of the ring-angle-to-arc-angle map derived in the module docs.
+/// The stereographic image of one plane's great circle, plus the two
+/// parameters of the map derived in the module docs.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Ring {
-    /// Rotation plane this ring drives.
     pub plane: Plane4,
-    /// Circle centre in world R³.
     pub center: Vec3,
     /// In-plane unit axis `χ` is measured from.
     pub u: Vec3,
     /// In-plane unit axis `χ` is measured toward.
     pub v: Vec3,
-    /// Circle radius in world units.
     pub radius: f32,
     /// `ρ`: length of the pole's projection onto this rotation plane, the
     /// eccentricity of the ring-angle-to-arc-angle map.
@@ -282,7 +259,6 @@ impl Ring {
         self.u.cross(self.v)
     }
 
-    /// Point at ring angle `χ`.
     pub fn point(&self, chi: f32) -> Vec3 {
         self.center + (self.u * chi.cos() + self.v * chi.sin()) * self.radius
     }
@@ -293,8 +269,7 @@ impl Ring {
         offset.dot(self.v).atan2(offset.dot(self.u))
     }
 
-    /// Great-circle parameter `θ` at ring angle `χ`: the rotation angle in
-    /// this plane that puts the subject's grabbed point here.
+    /// Great-circle parameter `θ` at ring angle `χ`.
     pub fn arc_angle(&self, chi: f32) -> f32 {
         let s = (1.0 - self.pole_overlap * self.pole_overlap).sqrt();
         (s * chi.sin()).atan2(chi.cos() + self.pole_overlap) + self.phase
@@ -313,36 +288,29 @@ impl Ring {
         (t > 0.0).then(|| ray_origin + ray_direction * t)
     }
 
-    /// Rotation angle a drag from `grab` to `cursor` asks for, wrapped to
-    /// `(−π, π]`. Both points are taken on the circle's plane; their
-    /// distance from the circle is irrelevant, only their bearing from the
-    /// centre.
+    /// Wrapped to `(−π, π]`. Both points are taken on the circle's plane; only
+    /// their bearing from the centre matters, not their distance from it.
     pub fn drag_angle(&self, grab: Vec3, cursor: Vec3) -> f32 {
         wrap_pi(self.arc_angle(self.ring_angle(cursor)) - self.arc_angle(self.ring_angle(grab)))
     }
 
-    /// [`Self::drag_angle`] as a rotor in this ring's plane. Compose onto
-    /// the subject's pose; this type holds no pose of its own.
+    /// Compose onto the subject's pose; this type holds no pose of its own.
     pub fn drag_rotor(&self, grab: Vec3, cursor: Vec3) -> Rotor4 {
         (self.plane.unit_bivector() * self.drag_angle(grab, cursor)).exp()
     }
 }
 
-/// Tessellation and colour for [`Hypergimbal::append_line_mesh`].
 #[derive(Clone, Debug)]
 pub struct RingStyle {
-    /// Chords per ring.
     pub segments: usize,
-    /// Screen-space line width.
     pub width_px: f32,
     /// RGBA per plane, in [`Plane4::ALL`] order.
     pub colors: [[f32; 4]; 6],
 }
 
 impl RingStyle {
-    /// One hue per orthogonal-plane pair, so the three Hopf links read as
-    /// three colours; within a pair the pure-3D ring is the bright one and
-    /// the w-coupled ring the dim one.
+    /// One hue per orthogonal-plane pair, so the three Hopf links read as three
+    /// colours; within a pair the pure-3D ring is bright and the w-coupled dim.
     pub const PAIRED_HUE_COLORS: [[f32; 4]; 6] = [
         [0.95, 0.30, 0.32, 1.0],
         [0.35, 0.85, 0.40, 1.0],
@@ -374,7 +342,6 @@ mod tests {
         scale: 0.8,
     };
 
-    /// Point at great-circle parameter `θ` on the plane's coordinate circle.
     fn great_circle_point(plane: Plane4, theta: f32) -> Vec4 {
         let (a, b) = plane_axes(plane);
         a * theta.cos() + b * theta.sin()
@@ -644,9 +611,8 @@ mod tests {
             .iter()
             .map(|(start, _)| (Vec3::from_array(*start) - WIDGET.center).length())
             .collect();
-        // Every chord endpoint sits on some ring; all six share a radius, so
-        // the distance from the widget centre is bounded by the ring's own
-        // reach either side of its offset centre.
+        // All six rings share a radius, so a chord endpoint's distance from the
+        // widget centre is bounded by the ring's reach either side of its centre.
         for radius in radii {
             assert!(
                 (radius - WIDGET.scale).abs() <= WIDGET.scale * 2.0_f32.sqrt() + 1e-4,

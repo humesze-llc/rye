@@ -61,7 +61,6 @@ impl ShaderDb {
     /// from [`ShaderDb::new_owner`] instead.
     pub const ROOT_OWNER: ShaderOwner = ShaderOwner(0);
 
-    /// `device` is cloned on recompile (wgpu's Device is refcounted).
     pub fn new(device: Device) -> Self {
         Self {
             device,
@@ -390,14 +389,12 @@ fn main() {
         validate_wgsl(&src).expect("EuclideanR4 WGSL prelude should validate");
     }
 
-    // Minimal stub of loam_scene_sdf so the kernel has something to call.
     const KERNEL_SCENE: &str = r#"
 fn loam_scene_sdf(p: vec3<f32>) -> f32 {
     return loam_distance(p, vec3<f32>(0.0, 0.0, 0.0)) - 0.25;
 }
 "#;
 
-    // Compute probe that exercises all three kernel entry points.
     const KERNEL_PROBE: &str = r#"
 @compute @workgroup_size(1)
 fn main() {
@@ -718,8 +715,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-    /// One probe triple, labelled by the corner of the chart's domain it sits
-    /// in so a failure names the regime instead of an array index.
     struct ParityCase {
         corner: &'static str,
         a: Vec3,
@@ -1029,7 +1024,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     /// Dispatch one workgroup per element of `inputs` against a two-binding
     /// compute shader (`read` at 0, `read_write` at 1) and read the output back.
-    /// Shared by the Space-ABI probe and the scene-SDF probe.
     async fn run_compute_probe<In: Pod, Out: Pod>(
         source: &str,
         label: &str,
@@ -1581,9 +1575,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             .collect()
     }
 
-    /// Run every probe scene through the GPU and against `Scene::eval`,
-    /// returning the largest absolute residual seen. Fails on the first sample
-    /// exceeding `tolerance`.
     fn assert_scene_parity<S>(space: &S, label: &str, extent: f32, tolerance: f32) -> f32
     where
         S: WgslSpace + Space<Point = Vec3, Vector = Vec3>,

@@ -1,6 +1,3 @@
-//! The 4D transform handle set: four translation shafts and six rotation
-//! rings as one grabbable widget.
-//!
 //! The rotation half is [`crate::hypergimbal`], whose six rings are the
 //! stereographic images of the six coordinate great circles of S³; the
 //! derivation lives there and is not repeated. This module adds the
@@ -31,28 +28,6 @@
 //! rate. There is nothing to scale it against, and any other rate would make
 //! the one handle with no visible motion also the one with no predictable
 //! size.
-//!
-//! # What a user finds without being told
-//!
-//! Reaching a handle and predicting what it does are separate questions.
-//! Every one of the ten is reachable: each ring is the front-most grab over
-//! more than half its own circumference from a generic eye, and each shaft's
-//! head clears the ring shell entirely. Prediction splits three ways.
-//!
-//! - Discoverable: `x`, `y`, `z` translation and the `xy`, `xz`, `yz`
-//!   rings. Those rotors fix `ê₄`, so the subject turns rigidly inside the
-//!   3D the user is already looking at, and the arrows run along the scene's
-//!   own axes. Dragging teaches them.
-//! - Discoverable as a structure, not individually: `xw`, `yw`, `zw`. Those
-//!   rotors move `ê₄`, so the subject's 3D image deforms instead of turning
-//!   and nothing about a ring's place on screen says which of the three it
-//!   is. What the user can read off is that the six come in three antipodal
-//!   pairs sharing a hue, one plane and its orthogonal complement per hue,
-//!   so finding `xy` locates `zw`.
-//! - Not discoverable: the `w` shaft. It points along no scene axis and its
-//!   drag produces no R³ motion at all, only a change in which slice of the
-//!   subject is on screen. A user who does not already know R⁴ has a fourth
-//!   axis reads it as a dead handle, so it needs a label from the host.
 
 use glam::{Vec3, Vec4};
 use loam_math::{Bivector, Plane4, Rotor4};
@@ -78,7 +53,6 @@ const SHAFT_HEAD: f32 = 0.28;
 /// two arrowhead lengths, so no head is ever drawn over a ring.
 const SHAFT_CLEARANCE: f32 = 2.0 * SHAFT_HEAD;
 
-/// Shaft tip, in `scale` units, and the whole widget's reach.
 const SHAFT_OUTER: f32 = RING_REACH + SHAFT_CLEARANCE;
 
 /// `1/√3`, the component size of the `w` shaft's world direction.
@@ -141,7 +115,6 @@ impl Axis4 {
 /// the R⁴ axis a slide along it moves.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Shaft {
-    /// R⁴ axis this shaft translates.
     pub axis: Axis4,
     /// Widget centre, the origin the shaft parameter is measured from.
     pub origin: Vec3,
@@ -157,7 +130,6 @@ pub struct Shaft {
 }
 
 impl Shaft {
-    /// Point at distance `along` from the widget centre.
     pub fn point(&self, along: f32) -> Vec3 {
         self.origin + self.direction * along
     }
@@ -165,9 +137,7 @@ impl Shaft {
     /// Where the grabbable arrowhead begins.
     ///
     /// The head is the handle; the stem behind it is a rail showing where
-    /// the drag will run, not a grab surface. Four straight bands as wide as
-    /// a ring's would blank out most of the six rings they cross on their
-    /// way out of the widget, and the head is what a user aims at anyway.
+    /// the drag will run, not a grab surface.
     pub fn head_start(&self) -> f32 {
         self.outer - self.head
     }

@@ -1,5 +1,3 @@
-//! [`Hyperslice4DNode`], render node for 4D scenes via hyperslicing.
-//!
 //! The user assembles the WGSL by concatenating [`HYPERSLICE_KERNEL_WGSL`]
 //! with `Scene4::to_hyperslice_wgsl("u.w_slice")` (which defines
 //! `loam_scene_sdf`).
@@ -63,8 +61,6 @@ pub struct BodyUniform {
 
 impl Default for BodyUniform {
     fn default() -> Self {
-        // `Invalid` has no kernel dispatch branch, so the slot stays inert
-        // rather than collapsing to a zero-radius sphere at the origin.
         Self {
             position: [0.0; 4],
             kind: BodyKind::Invalid as i32 as f32,
@@ -260,8 +256,6 @@ fn body_sphere_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
     return length(p4 - b.position) - b.radius_or_shape;
 }
 
-// ---- Rotor4 sandwich (inverse rotation: world -> body local) ----
-//
 // `Rotor4::apply` (CPU) computes the forward sandwich `R̃ · v · R`,
 // rotating a body-local vector into world coordinates. To go the
 // other way (world -> body local) we flip the bivector signs of `R`
@@ -315,8 +309,6 @@ fn rotor4_inverse_apply(rotor_lo: vec4<f32>, rotor_hi: vec4<f32>, v: vec4<f32>) 
     return vec4<f32>(q1, q2, q3, q4);
 }
 
-// ---- Convex polytope SDFs (body-local, unit circumradius) ----
-//
 // Per-shape SDFs assume the polytope is centered at the origin and
 // oriented in its canonical frame. The dispatcher transforms world
 // coordinates into body-local coordinates first (translate +
@@ -487,7 +479,6 @@ fn body_polytope_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
     return d * size;
 }
 
-// Returns +infinity if no body is active or none cover the slice.
 fn loam_dynamic_bodies_sdf(p3: vec3<f32>) -> f32 {
     let p4 = vec4<f32>(p3, u.w_slice);
     let body_count = u32(u.body_count + 0.5);
@@ -504,7 +495,6 @@ fn loam_dynamic_bodies_sdf(p3: vec3<f32>) -> f32 {
     return sdf;
 }
 
-// Returns +infinity for invalid indices or kinds.
 fn loam_body_sdf_at(p3: vec3<f32>, body_idx: u32) -> f32 {
     if (body_idx >= MAX_BODIES) { return 1.0e9; }
     let p4 = vec4<f32>(p3, u.w_slice);
@@ -525,8 +515,6 @@ struct HitInfo {
     body_idx: u32,
 };
 
-// Returns the distance to the closer surface plus the body index it came
-// from (MAX_BODIES if the static scene is closer).
 fn loam_total_sdf(p3: vec3<f32>) -> HitInfo {
     let scene_d = loam_scene_sdf(p3);
 
@@ -760,8 +748,6 @@ pub struct Hyperslice4DNode {
     bind_group: BindGroup,
     bind_group_layout: BindGroupLayout,
     clear_color: Color,
-    /// Allocated on the first [`Self::execute_strip`] call; the single-slice
-    /// path never touches it.
     strip_cells: Option<StripCellUniforms>,
 }
 
@@ -900,9 +886,7 @@ impl Hyperslice4DNode {
     /// Like [`RenderNode::execute`] but records into the caller's `encoder` and
     /// restricts the fragment shader to a sub-region (the clear still covers the
     /// whole attachment). **Does NOT submit**; the runner owns one encoder per
-    /// frame. For an egui side-panel layout: pass the panel-aware viewport
-    /// (typically [`crate::Viewport::right_of_left_panel`]) and update
-    /// `u.resolution` to match so the camera aspect stays correct.
+    /// frame.
     pub fn record_in_viewport(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1074,18 +1058,13 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("fn fs_main"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("struct Uniforms"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("@group(0) @binding(0)"));
-        // The scene's `loam_scene_sdf` is the contract the kernel expects, the scene module must
-        // define it.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("loam_scene_sdf("));
-        // Dynamic-body machinery.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BodyUniform"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("loam_dynamic_bodies_sdf"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_SPHERE"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_POLYTOPE"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_INVALID"));
-        // Floor-checker helper used for static-scene shading.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("fn ground_color"));
-        // Polytope-rendering chunk is now in the kernel.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("body_polytope_sdf_4d"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("pentatope_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("tesseract_sdf_local"));
@@ -1098,14 +1077,11 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("clifford_torus_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("spherinder_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("rotor4_inverse_apply"));
-        // Per-body SDF for normal sampling (issue #17).
         assert!(HYPERSLICE_KERNEL_WGSL.contains("loam_body_sdf_at"));
-        // Floor classification by primitive kind, not normal/y.
         assert!(
             HYPERSLICE_KERNEL_WGSL.contains("loam_scene_at(p_hit).kind == LOAM_PRIM_HALFSPACE4D")
         );
         assert!(!HYPERSLICE_KERNEL_WGSL.contains("abs(p_hit.y) < 0.01"));
-        // Analytical far-clip from HalfSpace4D leaves.
         assert!(HYPERSLICE_KERNEL_WGSL.contains("loam_scene_max_t(ro, rd)"));
     }
 
@@ -1282,7 +1258,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         outside + dxyz.max(dw).min(0.0)
     }
 
-    /// A kernel body SDF in its own body-local frame at unit circumradius.
     type LocalSdf = fn(Vec4) -> f32;
 
     /// Every hand-written body SDF in the kernel, paired with its name. The
@@ -1614,9 +1589,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         body_idx: u32,
     }
 
-    /// `steps` counts SDF evaluations whether or not the ray converged; it is
-    /// what a march costs, and the miss paths (budget exhausted, `max_t`
-    /// exceeded) are where a step-scale change shows up most.
     struct MarchResult {
         hit: Option<HyperHit>,
         steps: u32,
@@ -1655,8 +1627,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         }
     }
 
-    /// Test scene: three hyperspheres at `w = 0` plus a `y = 0` floor. All hits attribute to
-    /// static scene (`body_idx = MAX_BODIES`).
     fn overlapping_sdfs_scene(p: Vec3, w_slice: f32) -> (f32, u32) {
         use glam::Vec4;
         let p4 = Vec4::new(p.x, p.y, p.z, w_slice);
@@ -1750,14 +1720,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         assert!(hit.is_none(), "ray into sky should miss the scene");
     }
 
-    // ---- March cost: the full step against the superseded 0.85 under-step ----
-    //
-    // A pixel grid marched through the CPU port, standing in for a playground
-    // frame: four unit-circumradius bodies in a row at `BODY_SIZE` 0.7 and
-    // `BODY_Y` 0.9 over a `y = 0` floor, camera back along +Z. Everything these
-    // tests assert is an iteration count or a depth, both of which the port
-    // computes exactly as the kernel does.
-
     /// The step scale the kernel used before the Lipschitz certification, kept
     /// only so the tests below can measure what replacing it bought.
     const SUPERSEDED_UNDER_STEP: f32 = 0.85;
@@ -1814,8 +1776,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         (dist, idx)
     }
 
-    /// Marched depth, hit mask and per-pixel primitive attribution over a pixel
-    /// grid, plus the total step count. `NO_PRIMITIVE` marks a miss.
     struct ProbeFrame {
         depth: Vec<f32>,
         hit: Vec<bool>,
@@ -2143,7 +2103,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             .map_err(|e| format!("request_device failed: {e}"))
     }
 
-    /// Read `texture` back as tightly-packed RGBA8 rows.
     fn read_back_rgba(
         device: &Device,
         queue: &Queue,

@@ -214,7 +214,6 @@ impl TriangleRasterNode {
             cache: None,
         });
 
-        // Placeholders; grown on first upload.
         let vertex_buf = device.create_buffer(&BufferDescriptor {
             label: Some("triangle_raster vertex buffer"),
             size: 64,

@@ -243,7 +243,6 @@ impl LineRasterStaticR4Node {
 
         let instance_buf = device.create_buffer(&BufferDescriptor {
             label: Some("line_raster_static_r4 instance buffer"),
-            // Placeholder; grown on first upload_mesh call.
             size: 64,
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
             mapped_at_creation: false,

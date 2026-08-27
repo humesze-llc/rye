@@ -78,9 +78,7 @@ pub struct LineRasterNode {
     /// requires the matching depth view.
     has_depth: bool,
     /// Per-call scratch for the instances vector built inside [`Self::upload`].
-    /// Persisted on the node so the Vec's heap capacity is reused across calls;
-    /// `clear()` empties the logical length without freeing the buffer, and the
-    /// next push series reuses the same allocation.
+    /// Persisted on the node so the Vec's heap capacity is reused across calls.
     instances_scratch: Vec<LineInstance>,
 }
 
@@ -224,8 +222,7 @@ impl LineRasterNode {
                 // outline use case puts the line at *exactly* the polygon's depth. Strict
                 // `Less` would discard the line in that case (`line_depth < tri_depth` fails
                 // when they're equal), making outlines invisible wherever they coincide with
-                // their own polygon. `LessEqual` keeps them visible. Lines geometrically
-                // behind a filled surface still fail the test and are correctly occluded.
+                // their own polygon. `LessEqual` keeps them visible.
                 depth_compare: CompareFunction::LessEqual,
                 stencil: StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -286,11 +283,6 @@ impl LineRasterNode {
     /// [`RasterizableSpace::tessellate_segment`] (for flat spaces with `samples_per_segment ==
     /// 1` this is just the endpoints), projects each tessellated point through `projection` to
     /// R³, and packs the result into the instance buffer.
-    ///
-    /// `samples_per_segment` controls geodesic-space sampling density; for flat impls
-    /// (`EuclideanR3`) any value >= 1 produces visually identical results since interior lerp
-    /// points are still collinear with the endpoints. Use `1` for flat spaces, higher values
-    /// for future curved-space impls.
     pub fn upload<S, const N: usize>(
         &mut self,
         device: &Device,
@@ -405,11 +397,6 @@ impl LineRasterNode {
 /// the steady state) and `reserve`-d for the worst-case segment count, so the
 /// only allocation is the first-call growth or a growth past the prior high
 /// watermark.
-///
-/// Each input segment is tessellated via [`RasterizableSpace::tessellate_segment`]
-/// (for flat spaces with `samples == 1` this is just the two endpoints) and the
-/// resulting consecutive points are paired into rendered sub-segments with a
-/// linear color gradient along the original segment.
 ///
 /// Sub-segments with a non-finite projected endpoint are dropped: a central
 /// projection (Schlegel, Stereographic, Perspective4D) can map a vertex on the

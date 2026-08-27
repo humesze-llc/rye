@@ -220,7 +220,6 @@ impl PointRasterNode {
             usage: BufferUsages::INDEX,
         });
 
-        // Instance buffer starts empty; grown on first upload.
         let instance_buf = device.create_buffer(&BufferDescriptor {
             label: Some("point_raster instance buffer"),
             size: 64,

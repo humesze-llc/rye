@@ -186,6 +186,8 @@ fn draw_scrollback<Ctx: 'static>(
     // defeats the wrap heuristic) plus an explicit `TextWrapMode::Wrap`
     // (default elides). Side padding comes from a `Frame::inner_margin` so it
     // sits inside the wrap-width constraint.
+    // No hanging indent on continuation lines: it breaks copy-paste of code
+    // blocks.
     ui.allocate_ui_with_layout(
         egui::vec2(width, height),
         Layout::top_down(egui::Align::Min),
@@ -371,6 +373,10 @@ mod tests {
             (LineKind::System, "sys"),
         ]);
         let job = scrollback_layout_job(&h);
+        // Order: input, "
+", output, "
+", error, "
+", system.
         let input_section = &job.sections[0];
         let output_section = &job.sections[2];
         let error_section = &job.sections[4];

@@ -200,6 +200,9 @@ mod tests {
         let mut ctrl: OrbitController<EuclideanR3> = OrbitController::default();
         ctrl.advance(FrameInput::default(), &mut camera, &EuclideanR3, 0.0);
         close(camera.position, Vec3::new(3.5, 0.6, 0.0), 1e-5);
+        // Default yaw of π/2 sends the local +X to -Z, so a sign flip in the
+        // yaw quaternion or a swapped basis axis shows up here and not in the
+        // position, which is symmetric under that swap.
         close(camera.right, Vec3::new(0.0, 0.0, -1.0), 1e-5);
         assert!((camera.right.length() - 1.0).abs() < 1e-5);
         assert!((camera.up.length() - 1.0).abs() < 1e-5);

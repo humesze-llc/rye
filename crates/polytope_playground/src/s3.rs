@@ -1,16 +1,13 @@
 //! `loam-shape` stores every 4-polytope at unit circumradius, so its vertices
-//! are already points of S³ and nothing needs mapping onto the sphere.
-//! The motion is isoclinic: equal angles in the two orthogonal invariant
-//! planes `e₁∧e₂` and `e₃∧e₄`. On S³ that is a Clifford translation. For
-//! `B = θ(e₁₂ + e₃₄)` and any unit `v`,
+//! are already points of S³. The motion is isoclinic: equal angles in the two
+//! orthogonal invariant planes `e₁∧e₂` and `e₃∧e₄`. On S³ that is a Clifford
+//! translation. For `B = θ(e₁₂ + e₃₄)` and any unit `v`,
 //!
 //! ```text
 //!   ⟨v, Rv⟩ = cos θ·(v₁² + v₂²) + cos θ·(v₃² + v₄²) = cos θ
 //! ```
 //!
-//! so every point is displaced by exactly `θ`, with no fixed point and no
-//! axis. No rotation of R³ behaves that way, which is why the figure reads as
-//! flowing through itself rather than spinning.
+//! so every point is displaced by exactly `θ`, with no fixed point and no axis.
 //! <https://en.wikipedia.org/wiki/Rotations_in_4-dimensional_Euclidean_space>
 
 use std::borrow::Cow;
@@ -34,20 +31,19 @@ const PROJECTION: Projection<4> = Projection::Stereographic { pole: Vec4::W };
 
 const DEFAULT_RATE: f32 = 0.35;
 
-/// Cut radius for the stereographic image, as a fraction of the live camera
-/// distance. Every polychoron needs it here, not just the 16-cell the flat
-/// scene special-cases: the pole is ambient-fixed while the figure turns
-/// under it, so each vertex in turn sweeps the pole and its image diverges.
+// Every polychoron needs it here, not just the 16-cell the flat scene
+// special-cases: the pole is ambient-fixed while the figure turns under it, so
+// each vertex in turn sweeps the pole and its image diverges.
 const CLIP_RADIUS_FRACTION: f32 = 0.75;
 
-/// Floor on the cut, so a close zoom never eats the figure: a unit-
-/// circumradius polychoron's honest stereographic image already reaches
-/// radius ~1.7 at a `w = 0.5` vertex.
+// Floor on the cut, so a close zoom never eats the figure: a unit-circumradius
+// polychoron's honest stereographic image already reaches radius ~1.7 at a
+// `w = 0.5` vertex.
 const CLIP_RADIUS_FLOOR: f32 = 2.5;
 
-/// Ceiling on the cut. Past this the arcs run into the steep near-pole
-/// region, where the fixed sample count `push_blended_edge` uses is too
-/// coarse and consecutive samples jump several-fold, faceting the curve.
+// Past this the arcs run into the steep near-pole region, where the fixed
+// sample count `push_blended_edge` uses is too coarse and consecutive samples
+// jump several-fold, faceting the curve.
 const CLIP_RADIUS_MAX: f32 = 10.0;
 
 const LINE_WIDTH_PX: f32 = 1.4;
@@ -62,24 +58,22 @@ const BACKGROUND: wgpu::Color = wgpu::Color {
 const BOOT_ORBIT_DISTANCE: f32 = 6.0;
 const BOOT_ORBIT_PITCH: f32 = -0.18;
 
-/// Isoclinic generator: `theta` in both `e₁∧e₂` and `e₃∧e₄`. Equal
-/// magnitudes on a pair of orthogonal planes is what makes the exponential
-/// land on `Bivector4::exp`'s isoclinic branch.
+// Equal magnitudes on a pair of orthogonal planes is what makes the
+// exponential land on `Bivector4::exp`'s isoclinic branch.
 fn clifford_generator(theta: f32) -> Bivector4 {
     Bivector4::new(theta, 0.0, 0.0, 0.0, 0.0, theta)
 }
 
-/// The rotor read as the S³ isometry it already is. `Rotor4::to_mat4` is
-/// column-major to match glam, so `Iso4`'s SO(4) matrix takes it verbatim.
+// `Rotor4::to_mat4` is column-major to match glam, so `Iso4`'s SO(4) matrix
+// takes it verbatim.
 fn iso_from_rotor(rotor: Rotor4) -> Iso4 {
     Iso4 {
         matrix: Mat4::from_cols_array_2d(&rotor.to_mat4()),
     }
 }
 
-/// Pose every vertex through the Space's isometry group rather than the
-/// rotor's sandwich. Same map, but `iso_apply` re-normalizes, so a pose is an
-/// S³ point by construction however far the angle has run.
+// `iso_apply` re-normalizes, so a pose is an S³ point by construction however
+// far the angle has run.
 fn pose_vertices(iso: Iso4, source: &[Vec4], out: &mut Vec<Vec4>) {
     out.clear();
     out.extend(
@@ -93,10 +87,6 @@ fn clip_radius(camera_distance: f32) -> f32 {
     (camera_distance * CLIP_RADIUS_FRACTION).clamp(CLIP_RADIUS_FLOOR, CLIP_RADIUS_MAX)
 }
 
-/// Rebuild `mesh` from already-posed vertices. `curved` picks which Space
-/// answers for the edge: `true` is the `SphericalS3Embedded` great-circle
-/// arc, `false` the `EuclideanR4` chord between the same two projected
-/// endpoints.
 fn build_wireframe(
     polytope: Polytope4,
     posed: &[Vec4],
@@ -116,10 +106,9 @@ fn build_wireframe(
             mesh,
             a,
             b,
-            // This scene has no bodies: the posed vertices are points of the
-            // ambient S³ itself, so the arc centre is the origin.
+            // The posed vertices are points of the ambient S³ itself, so the
+            // arc centre is the origin.
             Vec4::ZERO,
-            // Unit circumradius, so `w` spans exactly [-1, 1].
             w_depth_color(a.w, 1.0),
             w_depth_color(b.w, 1.0),
             LINE_WIDTH_PX,
@@ -132,11 +121,9 @@ fn build_wireframe(
     }
 }
 
-/// Pose `polytope` at `angle` and rebuild `mesh` from the result, reusing
-/// `posed` as scratch. One entry point so the pose and the mesh always come
-/// from the same polychoron: the panel can switch polychora between the
-/// frame's update and its record, and a pose left over from a larger one
-/// would index past the new vertex list.
+// One entry point so the pose and the mesh always come from the same
+// polychoron: a pose left over from a larger one would index past the new
+// vertex list.
 fn build_frame(
     polytope: Polytope4,
     angle: f32,
@@ -154,9 +141,6 @@ fn build_frame(
 pub(crate) struct S3Scene {
     camera: Camera<EuclideanR3>,
     orbit: OrbitController<EuclideanR3>,
-    /// Only the shell's `scene` command lives here, so the context is `()`;
-    /// this scene's own controls are all in its panel. Without it, booting
-    /// `?scene=s3&embed=1` would be a one-way trip.
     console: Console<()>,
     lines: LineRasterNode,
     mesh: LineMesh<3>,

@@ -8,16 +8,15 @@ use loam_text::TextRenderer;
 use crate::state::Demo;
 
 const HUD_SIZE_PT: f32 = 16.0;
-/// Atlas rasterization size, in physical pixels: four times the draw size, so
-/// the quads still minify at a 4x scale factor. loam-text has no mip chain,
-/// and magnification is the visibly worse direction.
+// Four times the draw size, so the quads still minify at a 4x scale factor.
+// loam-text has no mip chain, and magnification is the visibly worse direction.
 const HUD_BAKE_PX: f32 = 4.0 * HUD_SIZE_PT;
 const HUD_INSET_PT: f32 = 16.0;
 const HUD_COLOR: [f32; 4] = [0.92, 0.96, 1.0, 1.0];
 const HUD_SHADOW_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.7];
 const HUD_SHADOW_OFFSET_PT: f32 = 1.0;
 
-/// Plane order matches `Plane4::ALL`: xy, xz, xw, yz, yw, zw.
+// Plane order matches `Plane4::ALL`: xy, xz, xw, yz, yw, zw.
 const PLANE_NAMES: [&str; 6] = ["xy", "xz", "xw", "yz", "yw", "zw"];
 const PLANE_OFF: &str = "..";
 
@@ -43,9 +42,8 @@ impl Readout {
     }
 }
 
-/// Values are right-aligned in a fixed-width column. loam-text lays out on
-/// advance widths only, so column alignment is available exclusively through a
-/// monospace face plus padded formatting.
+// loam-text lays out on advance widths only, so column alignment is available
+// exclusively through a monospace face plus padded formatting.
 fn write_readout(out: &mut String, r: &Readout) {
     out.clear();
     let _ = writeln!(out, "{:<6} {:>+8.3}", "w", r.w_slice);
@@ -66,13 +64,10 @@ fn write_readout(out: &mut String, r: &Readout) {
     }
 }
 
-/// Where the readout sits for one frame, in physical pixels.
-///
-/// loam-text positions and sizes in physical pixels and has no scale-factor
-/// notion, so the point-to-pixel conversion happens here. A fixed pixel inset
-/// (what the pre-shell version used) seats the block under the menu bar on any
-/// display whose scale factor exceeds one, because the bar's height is in
-/// points and the inset was not.
+// loam-text positions and sizes in physical pixels and has no scale-factor
+// notion, so the point-to-pixel conversion happens here. A fixed pixel inset
+// seats the block under the menu bar on any display whose scale factor exceeds
+// one, because the bar's height is in points and the inset was not.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct HudSeat {
     origin_px: [f32; 2],
@@ -106,16 +101,15 @@ pub(crate) fn hud_seat(free: egui::Rect, pixels_per_point: f32) -> HudSeat {
     }
 }
 
-/// The advance box, not the ink box; see `loam_text::TextMetrics::measure`.
+// The advance box, not the ink box; see `loam_text::TextMetrics::measure`.
 #[cfg(test)]
 fn hud_rect(free: egui::Rect, metrics: &loam_text::TextMetrics, readout: &str) -> egui::Rect {
     let [w, h] = metrics.measure(readout, HUD_SIZE_PT);
     egui::Rect::from_min_size(hud_origin(free), egui::vec2(w, h))
 }
 
-/// One queued string. loam-text has no draw-call concept, so the readout's
-/// draw list is the ordered set of `queue` calls a frame makes; every entry
-/// carries the same formatted string.
+// loam-text has no draw-call concept, so the readout's draw list is the ordered
+// set of `queue` calls a frame makes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct HudDraw {
     origin_px: [f32; 2],
@@ -123,7 +117,7 @@ struct HudDraw {
     color: [f32; 4],
 }
 
-/// Shadow first so the body paints over it.
+// Shadow first so the body paints over it.
 fn draw_list(seat: HudSeat) -> [HudDraw; 2] {
     let offset = HUD_SHADOW_OFFSET_PT * seat.pixels_per_point;
     [
@@ -161,9 +155,9 @@ impl TextHud {
         })
     }
 
-    /// Recorded, not submitted: a nested submit would reach the GPU before the
-    /// scene passes already sitting in this encoder, painting the readout under
-    /// the scene instead of over it.
+    // Recorded, not submitted: a nested submit would reach the GPU before the
+    // scene passes already sitting in this encoder, painting the readout under
+    // the scene instead of over it.
     pub(crate) fn record(&mut self, ctx: &mut RenderCtx<'_>, demo: &Demo, seat: HudSeat) {
         if !demo.show_text_hud {
             return;
@@ -184,8 +178,8 @@ impl TextHud {
     }
 }
 
-/// The crate contains no egui code, so this does not re-couple the
-/// first-party text path to egui.
+// The crate contains no egui code, so this does not re-couple the first-party
+// text path to egui.
 fn hud_font_bytes() -> &'static [u8] {
     epaint_default_fonts::HACK_REGULAR
 }

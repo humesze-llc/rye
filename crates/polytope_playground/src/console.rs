@@ -20,9 +20,8 @@ impl RotateScene {
                 Ok(())
             },
         ));
-        // Scripted counterpart to clicking a body: the same selection the
-        // press ray sets, without a hand on the mouse, so a rotation a bug
-        // report or a capture describes can be reproduced exactly.
+        // The same selection the press ray sets, without a hand on the mouse,
+        // so a rotation a bug report describes can be reproduced exactly.
         c.register(loam_egui::cmd(
             "select",
             "aim the rotation controls at one body: `select <slot>` (a click on the body does the same)",
@@ -42,9 +41,8 @@ impl RotateScene {
                 Ok(())
             },
         ));
-        // Scripted flick. Takes the drag in pixels rather than an impulse so
-        // there is exactly one drag-to-impulse mapping in the demo, and so a
-        // capture or a bug report can name the same gesture the mouse makes.
+        // Takes the drag in pixels rather than an impulse, so there is exactly
+        // one drag-to-impulse mapping in the demo.
         c.register(loam_egui::cmd(
             "throw",
             "throw a body: `throw <slot> <drag_x_px> <drag_y_px>` through the mouse flick's own mapping",
@@ -317,8 +315,8 @@ impl RotateScene {
                                         anyhow!("invalid thickness `{token}`: {e}")
                                     })?;
                                     // Floor is the predicate's razor band; the
-                                    // `2 * W_RANGE` cap covers every reachable w, so
-                                    // the filter no-ops there (same as "off").
+                                    // `2 * W_RANGE` cap covers every reachable
+                                    // w, so the filter no-ops there.
                                     let max = 2.0 * consts::W_RANGE;
                                     if !(HYPERSLICE_MIN_THICKNESS..=max).contains(&t) {
                                         return Err(anyhow!(
@@ -521,12 +519,11 @@ impl RotateScene {
                                     ));
                                 }
                                 demo.surface_scale = parsed;
-                                // Rebuild SDF body uniforms so the kernel sees the new
-                                // radius immediately; raster paths read effective_body_size()
-                                // every frame and don't need a rebuild.
+                                // Raster paths read `effective_body_size()`
+                                // each frame; only the SDF kernel needs this.
                                 demo.rebuild_bodies();
-                                // Clamp the current w-slice into the new scaled range so
-                                // a shrink doesn't leave the slider off the visible body.
+                                // Clamp the w-slice into the new scaled range
+                                // so a shrink does not leave the slider off it.
                                 let w_range = demo.effective_w_range();
                                 demo.w_slice = demo.w_slice.clamp(-w_range, w_range);
                                 out.line(format!(
@@ -551,8 +548,8 @@ impl RotateScene {
                     }
                     if next != demo.surface_mode {
                         demo.surface_mode = next;
-                        // Re-emit the SDF body list: switching INTO Sdf mode makes the
-                        // polychora live in the kernel, switching OUT marks them inert.
+                        // Switching INTO Sdf mode makes the polychora live in
+                        // the kernel, switching OUT marks them inert.
                         demo.rebuild_bodies();
                     }
                     Ok(())
@@ -739,10 +736,9 @@ impl RotateScene {
             ]),
         );
 
-        // The SDF kernel reads `u.params[0]` (set in `Demo::update`); when 0.0
-        // the wrapper around `loam_scene_sdf` (injected into the shader at
-        // setup time) short-circuits to a huge distance, so the marcher
-        // never converges on the floor and the checkerboard never paints.
+        // The SDF kernel reads `u.params[0]`; when 0.0 the wrapper around
+        // `loam_scene_sdf` short-circuits to a huge distance, so the marcher
+        // never converges on the floor.
         c.register(
             loam_egui::cmd::<Demo, _>(
                 "floor",

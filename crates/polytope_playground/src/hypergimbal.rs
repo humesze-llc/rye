@@ -1,9 +1,5 @@
 //! Handle geometry, picking and the drag-to-delta map are engine machinery in
-//! [`loam_render::gizmo`], derivation included. This module places the widget
-//! in the scene, arbitrates the left button against the flick gesture, and
-//! turns a held handle into either an edit of the same per-plane angle the
-//! Active-set slider writes or a move of the selected body in the physics
-//! world.
+//! [`loam_render::gizmo`], derivation included.
 
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use loam_app::Input;
@@ -19,22 +15,20 @@ use crate::consts::BASE_ROTATION_RATE;
 use crate::physics::{ndc_from_pixels, PlaygroundPhysics};
 use crate::state::{Demo, RotationMode, ViewMode};
 
-/// Rings reach `(1 + √2)·scale` and arrow tips just under `3·scale`, so this
-/// puts the widget's outer edge at 1.64 world units: inside
-/// `BODY_X_SPACING`, so no handle reaches the centre of the neighbouring
-/// column, and enough to enclose the shape it stands on.
+// Rings reach `(1 + √2)·scale` and arrow tips just under `3·scale`, so this
+// puts the widget's outer edge at 1.64 world units: inside `BODY_X_SPACING`,
+// so no handle reaches the centre of the neighbouring column.
 const SCALE: f32 = 0.55;
 
-/// Grab radius in world units, about seven pixels at the startup framing
-/// (720 rows, 60° fov, 8 units out). World-space rather than screen-space,
-/// which is what makes grabbing fussier as the camera pulls back.
+// Grab radius in world units, about seven pixels at the startup framing (720
+// rows, 60° fov, 8 units out). World-space rather than screen-space, which is
+// what makes grabbing fussier as the camera pulls back.
 const PICK_TOLERANCE: f32 = 0.09;
 
 const HIGHLIGHT: [f32; 4] = [1.0, 0.94, 0.55, 1.0];
 
-/// Widget placement. The handles are the ambient rotation planes and the
-/// ambient axes, so their shape never tracks the subject's orientation; only
-/// where they stand does.
+// The handles are the ambient rotation planes and axes, so their shape never
+// tracks the subject's orientation; only where they stand does.
 pub(crate) fn widget(center: Vec3) -> TransformGizmo {
     TransformGizmo {
         center,
@@ -46,8 +40,8 @@ pub(crate) fn gimbal_center(physics: &PlaygroundPhysics, slot: usize, slots: usi
     physics.pose(slot, slots, Rotor4::IDENTITY).position_r3()
 }
 
-/// A held handle, anchored at the press edge so the whole drag is measured
-/// against one origin rather than accumulated frame by frame.
+// Anchored at the press edge so the whole drag is measured against one origin
+// rather than accumulated frame by frame.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct GimbalDrag {
     held: HandleDrag,
@@ -56,29 +50,14 @@ pub(crate) struct GimbalDrag {
     base_position: Vec4,
 }
 
+#[derive(Default)]
 pub(crate) struct GimbalUi {
+    /// Off at startup, by the maintainer's call.
     pub(crate) enabled: bool,
     pub(crate) drag: Option<GimbalDrag>,
     hover: Option<HandleId>,
-    /// Highlighted handle the retained mesh was built for. The handles never
-    /// move relative to the widget, so this is the only thing that can dirty
-    /// it.
     built_highlight: Option<HandleId>,
     mesh: LineMesh<3>,
-}
-
-impl Default for GimbalUi {
-    /// Off at startup, by the maintainer's call: ten rings and arrows drawn
-    /// over every body read as clutter before they read as an answer.
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            drag: None,
-            hover: None,
-            built_highlight: None,
-            mesh: LineMesh::<3>::default(),
-        }
-    }
 }
 
 fn grab_handle(gizmo: &TransformGizmo, ray: &Ray) -> Option<HandleDrag> {
@@ -86,19 +65,16 @@ fn grab_handle(gizmo: &TransformGizmo, ray: &Ray) -> Option<HandleDrag> {
     HandleDrag::press(handle, ray.origin, ray.direction)
 }
 
-/// Active-mode `base_angles` entry a ring drag asks for. The displayed angle
-/// is `base + spin(t)`, so the drag has to hand back the spin it does not
-/// own; this is the same solve the Active slider does on a change.
+// The displayed angle is `base + spin(t)`, so the drag has to hand back the
+// spin it does not own; this is the same solve the Active slider does.
 fn dragged_base_angle(base_displayed: f32, drag_angle: f32, spin_contribution: f32) -> f32 {
     base_displayed + drag_angle - spin_contribution
 }
 
 impl Demo {
-    /// Whether the handles are on screen this frame. Filmstrip composes its
-    /// own per-cell viewports around a single subject with no shared world
-    /// origin, so the widget has nowhere to stand; drawing and grabbing are
-    /// gated together, because a handle that is grabbable while invisible is
-    /// worse than no handle.
+    // Filmstrip composes its own per-cell viewports with no shared world
+    // origin, so the widget has nowhere to stand; drawing and grabbing are
+    // gated together, because a grabbable invisible handle is worse than none.
     fn gimbal_visible(&self) -> bool {
         self.gimbal.enabled && self.view_mode != ViewMode::Filmstrip
     }
@@ -121,12 +97,10 @@ impl Demo {
             .position
     }
 
-    /// Update the gizmo against this frame's input. Returns `true` while a
-    /// handle is held, which is what keeps the flick gesture and the orbit
-    /// off the left button for the rest of the drag.
-    ///
-    /// Reads `left_was_down` before [`Demo::update_throw`] refreshes it, so
-    /// this must stay ahead of that call.
+    // Returns `true` while a handle is held, which keeps the flick gesture and
+    // the orbit off the left button for the rest of the drag. Reads
+    // `left_was_down` before [`Demo::update_throw`] refreshes it, so this must
+    // stay ahead of that call.
     pub(crate) fn update_gimbal(
         &mut self,
         enabled: bool,
@@ -176,8 +150,8 @@ impl Demo {
             return false;
         };
         // A cursor that left the window, or a camera that swung the handle
-        // edge-on, leaves the drag held at its last delta rather than
-        // snapping the subject somewhere arbitrary.
+        // edge-on, leaves the drag held at its last delta rather than snapping
+        // the subject somewhere arbitrary.
         if let Some(delta) = cursor_ray.and_then(|ray| drag.held.delta(ray.origin, ray.direction)) {
             self.apply_gimbal_drag(&drag, delta);
         }
@@ -208,10 +182,9 @@ impl Demo {
                 let slot = self.selected_slot();
                 let body = &mut self.physics.world.bodies[slot];
                 body.position = drag.base_position + delta.translation();
-                // A held shaft owns the subject's position for the whole
-                // drag, so it takes the velocity with it: otherwise the
-                // frame's physics step integrates the body out from under
-                // the cursor and the drag never catches up.
+                // A held shaft owns the subject's position for the whole drag,
+                // so it takes the velocity with it: otherwise the frame's
+                // physics step integrates the body out from under the cursor.
                 body.velocity = Vec4::ZERO;
                 // The upload gate keys on a moving world and on changed
                 // rotors, and a teleport is neither.
@@ -220,14 +193,10 @@ impl Demo {
         }
     }
 
-    /// Draw the handles. Last pass of the frame and depth-free: a
-    /// manipulator the scene can hide is a manipulator that cannot be
-    /// grabbed.
-    ///
-    /// The mesh is built about the ORIGIN and carried to the selected body by
-    /// a translation folded into the view-projection, so following a body that
-    /// moves every frame costs a matrix multiply rather than a mesh rebuild
-    /// and upload. Only the highlight can dirty the geometry.
+    // Last pass of the frame and depth-free: a manipulator the scene can hide
+    // is a manipulator that cannot be grabbed. The mesh is built about the
+    // ORIGIN and carried to the selected body by a translation folded into the
+    // view-projection, so only the highlight can dirty the geometry.
     pub(crate) fn record_gimbal(
         &mut self,
         rd: &RenderDevice,

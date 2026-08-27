@@ -1,21 +1,19 @@
-//! Orientation is derived each frame, not stored: the truth is
-//! `base_angles[6]` plus `rot_time`, giving displayed angle
-//! `base_angles[i] + (rot_time * rate if active[i])`. The rotor is
-//! the ordered product `∏ᵢ exp(planeᵢ · displayed_angle[i])`. Because
-//! non-commuting planes make this a product, not a sum (Baker-
-//! Campbell-Hausdorff), each slider stays an independent factor; the
-//! cost is `log(R)` does NOT recover the set angles, so Active
-//! mode never reads back through `log`. Composer mode keeps the sum-of-
-//! bivectors model instead.
+//! Orientation is derived each frame, not stored: the truth is `base_angles[6]`
+//! plus `rot_time`, giving displayed angle
+//! `base_angles[i] + (rot_time * rate if active[i])`. The rotor is the ordered
+//! product `∏ᵢ exp(planeᵢ · displayed_angle[i])`. Non-commuting planes make
+//! this a product, not a sum (Baker-Campbell-Hausdorff), so each slider stays
+//! an independent factor; the cost is that `log(R)` does NOT recover the set
+//! angles, so Active mode never reads back through `log`. Composer mode keeps
+//! the sum-of-bivectors model instead.
 
 use loam_app::egui;
 use loam_math::Plane4;
 
 use crate::consts::CONTROL_H;
 
-/// Wrap a degree value into `(-720, 720]` so the slider handle stays
-/// in range while continuous spin advances the raw angle past one
-/// period. `1440` is the two-cycle span.
+// Wrap into `(-720, 720]` so the slider handle stays in range while continuous
+// spin advances the raw angle past one period. `1440` is the two-cycle span.
 fn wrap_slider_deg(d: f32) -> f32 {
     let m = d.rem_euclid(1440.0);
     if m > 720.0 {
@@ -104,8 +102,8 @@ impl Demo {
         value_w: f32,
     ) {
         let plane = Plane4::ALL[plane_idx];
-        // Captured before the checkbox below flips `active[plane_idx]`,
-        // so the toggle can be absorbed without teleporting the body.
+        // Captured before the checkbox below flips `active[plane_idx]`, so the
+        // toggle can be absorbed without teleporting the body.
         let displayed_before = self.active_displayed_angle(plane_idx);
         // Wrap is display-only: the rotor is composed from the raw angle, and
         // `exp(plane * (x + 2π·k))` is the same rotor for a unit bivector.
@@ -116,7 +114,7 @@ impl Demo {
         );
         if checkbox_resp.changed() {
             // Re-solve base so the displayed angle is continuous across the
-            // toggle: base = displayed_before - spin_contribution(active_after).
+            // toggle: `base = displayed_before - spin_contribution(after)`.
             let spin_contribution = if self.spins.selected_spin().active[plane_idx] {
                 self.rot_time * crate::consts::BASE_ROTATION_RATE
             } else {

@@ -1,33 +1,27 @@
-//! Per-slot UI rotation: the orientation the rotation controls author for one
-//! rendered row slot, held apart from that body's physics orientation and
-//! composed with it at [`crate::physics::composed_rotor`].
-//! Every
-//! rotation control writes exactly one slot, [`SlotSpins::selected`], which a
-//! press on a body picks; the animation path advances all of them, each from
-//! its own baseline and plane mask, which is what lets two polychora in one
-//! row hold different orientations at the same time.
+//! Every rotation control writes exactly one slot, [`SlotSpins::selected`];
+//! the animation path advances all of them, each from its own baseline and
+//! plane mask, which is what lets two polychora in one row hold different
+//! orientations at the same time.
 
 use loam_math::Rotor4;
 
 use crate::state::{active_plane_angle, compose_active_rotor};
 
-/// Whether `directed` hands `slot` to a writer other than the UI spin. A mask
-/// shorter than the row leaves its tail to the spin, which is what a timeline
-/// naming only the leading slots means.
+// A mask shorter than the row leaves its tail to the spin, which is what a
+// timeline naming only the leading slots means.
 pub(crate) fn is_directed(directed: &[bool], slot: usize) -> bool {
     directed.get(slot).copied().unwrap_or(false)
 }
 
 const DEFAULT_ACTIVE: [bool; 6] = [false, false, true, false, false, false];
 
-/// Orientation is derived, not stored: `rotor` is a cache of
-/// [`compose_active_rotor`] over `base_angles`, `active` and the shared
-/// `rot_time`, refreshed by [`SlotSpins::recompose_active`]. Composer mode
-/// integrates `rotor` directly instead and leaves the other two alone.
+// Orientation is derived, not stored: `rotor` is a cache of
+// [`compose_active_rotor`]. Composer mode integrates `rotor` directly instead
+// and leaves the other two alone.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SlotSpin {
-    /// Baseline angle per plane in radians. Plane `i`'s displayed angle is
-    /// `base_angles[i] + rot_time * RATE * active[i]`.
+    /// Plane `i`'s displayed angle is `base_angles[i] + rot_time * RATE *
+    /// active[i]`, in radians.
     pub(crate) base_angles: [f32; 6],
     pub(crate) active: [bool; 6],
     pub(crate) rotor: Rotor4,
@@ -52,17 +46,15 @@ impl SlotSpin {
         compose_active_rotor(&self.base_angles, &self.active, t)
     }
 
-    /// Zeroing `base_angles` is the load-bearing half: Active recomposes
-    /// `rotor` from them on the next frame, so clearing `rotor` alone is undone
-    /// before it can draw.
+    // Zeroing `base_angles` is the load-bearing half: Active recomposes `rotor`
+    // from them on the next frame, so clearing `rotor` alone is undone.
     fn clear_orientation(&mut self) {
         self.base_angles = [0.0; 6];
         self.rotor = Rotor4::IDENTITY;
     }
 }
 
-/// Never empty: the shape row keeps at least one card, and the rotation UI
-/// always needs a subject to write to.
+// Never empty: the rotation UI always needs a subject to write to.
 pub(crate) struct SlotSpins {
     slots: Vec<SlotSpin>,
     selected: usize,
@@ -85,11 +77,9 @@ impl SlotSpins {
         spins
     }
 
-    /// Reconcile with a rendered row of `slots` bodies, preserving every
-    /// surviving slot's authored rotation. Resizes rather than rebuilding the
-    /// way [`crate::physics::PlaygroundPhysics::respawn`] does: a layout
-    /// position is a function of the slot count, an authored rotation is not,
-    /// so a row edit must not wipe the rotations set on the shapes that stayed.
+    // Resizes rather than rebuilding the way
+    // [`crate::physics::PlaygroundPhysics::respawn`] does: a layout position is
+    // a function of the slot count, an authored rotation is not.
     pub(crate) fn sync(&mut self, slots: usize) {
         self.slots.resize_with(slots.max(1), SlotSpin::default);
         self.selected = self.selected.min(self.slots.len() - 1);
@@ -111,26 +101,16 @@ impl SlotSpins {
         &mut self.slots[self.selected]
     }
 
-    /// A ray that entered no body leaves the selection where it was: the
-    /// controls must always have a subject, and a press on empty space is a
-    /// camera drag, not a request to rotate nothing. Out-of-range slots are
-    /// ignored on the same terms [`crate::physics::PlaygroundPhysics::throw`]
-    /// ignores them: a row edit can retire the slot a press names.
     pub(crate) fn select_picked(&mut self, picked: Option<usize>) {
         if let Some(slot) = picked.filter(|slot| *slot < self.slots.len()) {
             self.selected = slot;
         }
     }
 
-    /// Recompose each slot's rotor from its own baselines and mask at time
-    /// `t`, skipping every slot `directed` hands to another writer. Active
-    /// mode's orientation is an absolute function of `t`, so this runs every
-    /// frame; two slots whose masks differ diverge here.
-    ///
-    /// The mask is a parameter rather than a field because it is the whole
-    /// suppression: `t` is the UI spin's wall clock, a directed slot is on the
-    /// director's frame index, and a slot recomposed here after the director
-    /// wrote it is the two-clock defect with extra steps.
+    // The mask is a parameter rather than a field because it is the whole
+    // suppression: `t` is the UI spin's wall clock, a directed slot is on the
+    // director's frame index, and a slot recomposed here after the director
+    // wrote it is the two-clock defect with extra steps.
     pub(crate) fn recompose_active(&mut self, t: f32, directed: &[bool]) {
         for (slot, spin) in self.slots.iter_mut().enumerate() {
             if !is_directed(directed, slot) {
@@ -143,19 +123,14 @@ impl SlotSpins {
         (0..self.slots.len()).any(|slot| !is_directed(directed, slot))
     }
 
-    /// Write one slot's rotor from outside the UI spin. Out-of-range slots are
-    /// ignored on the same terms [`Self::select_picked`] ignores them: a row
-    /// edit can retire the slot a timeline names.
     pub(crate) fn set_rotor(&mut self, slot: usize, rotor: Rotor4) {
         if let Some(spin) = self.slots.get_mut(slot) {
             spin.rotor = rotor;
         }
     }
 
-    /// Whether the GPU's copy of the row's rotors is stale. The length is part
-    /// of the test: a row edit that changed the slot count changed which body
-    /// each rotor belongs to, so an elementwise compare alone would let a
-    /// stale upload through.
+    // The length is part of the test: a row edit that changed the slot count
+    // changed which body each rotor belongs to.
     pub(crate) fn rotors_differ_from(&self, uploaded: &[Rotor4]) -> bool {
         self.slots.len() != uploaded.len()
             || self
@@ -191,12 +166,12 @@ mod tests {
     use loam_camera::Ray;
     use loam_math::{Plane4, Rotor};
 
-    /// Angle a rotor turns a probe vector through, as the chord half-angle
-    /// `2·asin(|a - b| / 2)` on the unit sphere. The chord form is
-    /// well-conditioned near zero where `acos(dot)` loses half its digits
-    /// (Kahan, *Mindless Assessments of Roundoff*, 2006, §12). The clamp is
-    /// the antipodal guard: a chord of exactly 2 rounds past 1 in f32 and
-    /// `asin` would answer NaN, which `f32::max` then swallows.
+    // Angle a rotor turns a probe vector through, as the chord half-angle
+    // `2·asin(|a - b| / 2)` on the unit sphere. The chord form is
+    // well-conditioned near zero where `acos(dot)` loses half its digits
+    // (Kahan, *Mindless Assessments of Roundoff*, 2006, §12). The clamp is
+    // the antipodal guard: a chord of exactly 2 rounds past 1 in f32 and
+    // `asin` would answer NaN, which `f32::max` then swallows.
     fn probe_separation(a: Rotor4, b: Rotor4) -> f32 {
         let probe = Vec4::new(0.5, -0.3, 0.7, 0.4).normalize();
         2.0 * ((a.apply(probe) - b.apply(probe)).length() * 0.5)

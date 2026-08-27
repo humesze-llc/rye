@@ -112,10 +112,8 @@ impl Demo {
         }
     }
 
-    /// Single mode renders
-    /// one `strip_subject` with no w/t fan, which is why it exists: the
-    /// Schlegel boundary-cell stepper's `cell_count()` bound is well-
-    /// defined only against one unambiguous polytope.
+    // The Schlegel boundary-cell stepper's `cell_count()` bound is well-defined
+    // only against one unambiguous polytope.
     pub(crate) fn render_single_body(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         let heavy = matches!(
@@ -153,8 +151,8 @@ impl Demo {
                 "120/600-cell SDFs are heavy; expect <60 fps.",
             );
         }
-        // Invariant: at least one of `strip_w`/`strip_t` stays on, so
-        // toggling off the last active axis is a no-op.
+        // At least one of `strip_w` / `strip_t` stays on, so toggling off the
+        // last active axis is a no-op.
         ui.horizontal(|ui| {
             let mut w_on = self.strip_w;
             let mut t_on = self.strip_t;

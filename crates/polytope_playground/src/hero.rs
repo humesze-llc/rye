@@ -1,10 +1,6 @@
-//! **Which decomposition a letter collides as.** `glyph-collider-isovolume`
-//! scoped [`GlyphSolid::colliders_4d`], the faithful box cover, to STATIC
-//! letters, and that scope holds unwidened: falling letters here take
-//! [`GlyphSolid::rigid_hull_4d`], the one convex prism per letter that
-//! `glyph-letter-bodies` built for exactly this. Nothing in the scene needs a
-//! moving faithful cover, so nothing here asks `loam-physics` for the compound
-//! collider that would be required to give it one.
+//! Falling letters take [`GlyphSolid::rigid_hull_4d`], the one convex prism per
+//! letter, and not [`GlyphSolid::colliders_4d`]'s faithful box cover: a moving
+//! faithful cover would need a compound collider `loam-physics` does not have.
 
 use std::borrow::Cow;
 
@@ -27,44 +23,41 @@ const WORD: &str = "LOAM";
 
 const TICK_HZ: u32 = 60;
 
-/// Solver sub-steps per host tick. `glyph-letter-bodies` measured that a
-/// letter hull dropped on a half-space settles at 240 Hz and does NOT at
-/// 120 Hz, where the same drops skid 0.45 to 0.61 em and end tipped on a
-/// corner: `polytope_halfspace_r4` reports one deepest vertex per step, a
-/// manifold holds four, and halving the rate halves the constraints the
-/// solver has accumulated by the time a letter rocks over. Four sub-steps of
-/// a 60 Hz tick is that rate, reached without moving the host clock.
+// `glyph-letter-bodies` measured that a letter hull dropped on a half-space
+// settles at 240 Hz and does NOT at 120 Hz, where the same drops skid 0.45 to
+// 0.61 em and end tipped on a corner: `polytope_halfspace_r4` reports one
+// deepest vertex per step, a manifold holds four, and halving the rate halves
+// the constraints the solver has accumulated by the time a letter rocks over.
+// Four sub-steps of a 60 Hz tick is that rate, reached without moving the host
+// clock.
 const SUBSTEPS_PER_TICK: usize = 4;
 
-/// Solver step. Fixed and never derived from wall time.
+// Fixed and never derived from wall time.
 const SOLVER_DT: f32 = 1.0 / (TICK_HZ as f32 * SUBSTEPS_PER_TICK as f32);
 
 const GRAVITY: f32 = -9.8;
 
 const ASSEMBLE_TICKS: u32 = 90;
 
-/// Ticks between one letter's slide starting and the next one's. The last
-/// letter must still finish inside [`ASSEMBLE_TICKS`], which
-/// `the_assembly_slides_every_letter_onto_its_mark_before_the_release` pins.
+// The last letter must still finish inside [`ASSEMBLE_TICKS`], which
+// `the_assembly_slides_every_letter_onto_its_mark_before_the_release` pins.
 const LETTER_STAGGER_TICKS: u32 = 12;
 
 const LETTER_SLIDE_TICKS: u32 = 36;
 
 const ENTRY_SPAN: f32 = 3.2;
 
-/// Height of the lowest hull vertex above the floor at release, in em. The
-/// fall is short by design: `glyph-letter-bodies` sampled drop clearance from
-/// 0.01 to 0.17 em and found the landing is not monotone in height, because a
-/// level 4D landing has more tied deepest corners than the one contact per
-/// step the narrowphase reports. This value is inside the band that settles;
-/// widening it is a multi-contact narrowphase in `loam-physics`, not a change
-/// here.
+// Height of the lowest hull vertex above the floor at release, in em. The fall
+// is short by design: `glyph-letter-bodies` sampled drop clearance from 0.01 to
+// 0.17 em and found the landing is not monotone in height, because a level 4D
+// landing has more tied deepest corners than the one contact per step the
+// narrowphase reports. This value is inside the band that settles; widening it
+// is a multi-contact narrowphase in `loam-physics`, not a change here.
 const RELEASE_CLEARANCE: f32 = 0.05;
 
-/// Ticks after release before the first polychoron is spawned. Every letter is
-/// at rest well inside this, which the test
-/// `every_letter_is_at_rest_on_the_floor_before_the_rain_starts` pins at the
-/// last tick before the spawn.
+// Every letter is at rest well inside this, which
+// `every_letter_is_at_rest_on_the_floor_before_the_rain_starts` pins at the
+// last tick before the spawn.
 const SETTLE_TICKS: u32 = 120;
 
 const RAIN_START_TICK: u32 = ASSEMBLE_TICKS + SETTLE_TICKS;
@@ -76,9 +69,9 @@ const RAIN_COUNT: usize = 14;
 const RAIN_INTERVAL_TICKS: u32 = 7;
 const RAIN_INTERVAL_JITTER: u32 = 4;
 
-/// Shortest gap between two spawns. Written as the difference of the two
-/// above so a jitter wider than the interval is a compile error rather than a
-/// wrap to a spawn tick four billion ticks away.
+// Written as the difference of the two above so a jitter wider than the
+// interval is a compile error rather than a wrap to a spawn tick four billion
+// ticks away.
 const RAIN_INTERVAL_MIN: u32 = RAIN_INTERVAL_TICKS - RAIN_INTERVAL_JITTER;
 
 const RAIN_SIZE: f32 = 0.30;
@@ -87,26 +80,24 @@ const LETTER_MASS: f32 = 1.0;
 
 const RAIN_MASS: f32 = 1.5;
 
-/// Spawn height band above the floor, in em. The lower bound clears the tops
-/// of the letters, so nothing is ever spawned inside one.
+// The lower bound clears the tops of the letters, so nothing is ever spawned
+// inside one.
 const RAIN_HEIGHT: (f32, f32) = (2.6, 3.6);
 
-/// Downward speed a drop is spawned with, on top of what gravity adds. Small:
-/// most of the impact speed is the fall, and a spawn speed large enough to
-/// matter would also be the one that tunnels.
+// Small: most of the impact speed is the fall, and a spawn speed large enough
+// to matter would also be the one that tunnels.
 const RAIN_ENTRY_SPEED: f32 = 1.0;
 
-/// Half-width of the spawn band in `w`, in em. A letter prism spans only the
-/// glyph slab in `w` (0.15 em), so a drop whose centre strays much further
-/// than its own circumradius would pass the letters by in the fourth
-/// dimension rather than hit them.
+// A letter prism spans only the glyph slab in `w` (0.15 em), so a drop whose
+// centre strays much further than its own circumradius would pass the letters
+// by in the fourth dimension rather than hit them.
 const RAIN_W_SPREAD: f32 = 0.10;
 
 const RAIN_Z_SPREAD: f32 = 0.20;
 
-/// Per-plane ceiling on a drop's spawn tumble, rad/s. At [`RAIN_SIZE`] the
-/// fastest material point then travels `6 · 0.30 · SOLVER_DT = 0.0075` em per
-/// step, two orders inside the band the narrowphase resolves.
+// Per-plane ceiling on a drop's spawn tumble, rad/s. At [`RAIN_SIZE`] the
+// fastest material point then travels `6 · 0.30 · SOLVER_DT = 0.0075` em per
+// step, two orders inside the band the narrowphase resolves.
 const RAIN_TUMBLE: f32 = 6.0;
 
 const RESTITUTION: f32 = 0.0;
@@ -169,8 +160,8 @@ pub(crate) struct HeroSequence {
     director: Director,
     letters: Vec<HeroLetter>,
     drops: Vec<HeroDrop>,
-    /// xorshift64* state. Advanced only by a spawn, so the draw a given drop
-    /// gets does not depend on how many ticks passed before it.
+    // Advanced only by a spawn, so the draw a given drop gets does not depend
+    // on how many ticks passed before it.
     rng: u64,
     tick: u32,
     next_spawn_tick: u32,
@@ -210,8 +201,6 @@ impl HeroSequence {
         })
     }
 
-    /// The single entry point for time. Nothing else in this module steps the
-    /// world, so a trace is a function of the tick index alone.
     pub(crate) fn tick(&mut self) {
         if self.tick < ASSEMBLE_TICKS {
             self.director.advance();
@@ -225,8 +214,8 @@ impl HeroSequence {
         }
         self.tick += 1;
         // The handover closes the assemble phase rather than opening the fall
-        // one, so [`Self::phase`] and the world's body count never disagree
-        // about who owns a letter at a tick boundary.
+        // one, so `Self::phase` and the world's body count never disagree about
+        // who owns a letter at a tick boundary.
         if self.tick == ASSEMBLE_TICKS {
             self.release_letters();
         }
@@ -284,7 +273,6 @@ impl HeroSequence {
         }
     }
 
-    /// After this the director is never read for a letter again.
     fn release_letters(&mut self) {
         for letter in &mut self.letters {
             debug_assert!(letter.body.is_none(), "released twice");
@@ -340,8 +328,7 @@ impl HeroSequence {
         body.angular_velocity = tumble;
         // The exact uniform-solid moment, not `polytope_body_r4`'s bounding
         // ball: every one of these symmetry groups acts irreducibly on R⁴, so
-        // the scalar inertia slot is exact rather than an approximation. See
-        // `loam_physics::euclidean_r4::regular_polytope4_inertia`.
+        // the scalar inertia slot is exact rather than an approximation.
         if let Some(inertia) = regular_polytope4_inertia(polytope, RAIN_MASS, RAIN_SIZE) {
             body.inertia = inertia;
         }
@@ -354,9 +341,8 @@ impl HeroSequence {
         self.next_spawn_tick = self.tick + RAIN_INTERVAL_MIN + jitter;
     }
 
-    /// xorshift64* (Vigna 2016, *An experimental exploration of Marsaglia's
-    /// xorshift generators, scrambled*, §4). The same generator the physics
-    /// determinism fixture draws its scripted throws from.
+    // xorshift64* (Vigna 2016, *An experimental exploration of Marsaglia's
+    // xorshift generators, scrambled*, §4).
     fn draw(&mut self) -> u64 {
         self.rng ^= self.rng >> 12;
         self.rng ^= self.rng << 25;
@@ -367,7 +353,7 @@ impl HeroSequence {
 
 #[cfg(test)]
 impl HeroSequence {
-    /// Backwards is a no-op: the solver has no inverse.
+    // Backwards is a no-op: the solver has no inverse.
     fn run_to(&mut self, tick: u32) {
         while self.tick < tick {
             self.tick();
@@ -406,14 +392,14 @@ impl HeroSequence {
     }
 }
 
-/// Draw in `[0, 1)`. The top 24 bits convert to `f32` exactly and the scale is
-/// a power of two, so the value is identical on any host that rounds
-/// IEEE-754.
+// Draw in `[0, 1)`. The top 24 bits convert to `f32` exactly and the scale is
+// a power of two, so the value is identical on any host that rounds
+// IEEE-754.
 fn unit(draw: u64) -> f32 {
     ((draw >> 40) as u32) as f32 * (1.0 / 16_777_216.0)
 }
 
-/// Draw in `[-1, 1)`, same exactness argument as the unit draw above.
+// Draw in `[-1, 1)`, same exactness argument as the unit draw above.
 fn signed_unit(draw: u64) -> f32 {
     2.0 * unit(draw) - 1.0
 }
@@ -491,13 +477,12 @@ const LETTER_COLOR: [f32; 4] = [0.92, 0.90, 0.86, 1.0];
 
 const FLOOR_HALF_EXTENT: f32 = 14.0;
 
-/// Slicing hyperplane the caps are cut at. The letters live in a slab about
-/// `w = 0`, so this is where their neighbours have to be cut to share a scene
-/// with them.
+// The letters live in a slab about `w = 0`, so this is where their neighbours
+// have to be cut to share a scene with them.
 const W_SLICE: f32 = 0.0;
 
-/// Depth format for the one raster pass. 32-bit float: the caps of a tumbling
-/// 24-cell are thin and densely stacked, and 24-bit depth cracks them.
+// 32-bit float: the caps of a tumbling 24-cell are thin and densely stacked,
+// and 24-bit depth cracks them.
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 const BOOT_ORBIT_DISTANCE: f32 = 7.5;
@@ -511,11 +496,9 @@ const BACKGROUND: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// Hack Regular, the same face the HUD bakes its atlas from and for the same
-/// reason: it is already in the dependency tree, so the scene's geometry does
-/// not depend on which fonts the machine happens to have installed. A system
-/// font would make the letters, and therefore the whole trajectory, differ
-/// between two machines running the same binary.
+// Hack Regular, the same face the HUD bakes its atlas from and for the same
+// reason: a system font would make the letters, and therefore the whole
+// trajectory, differ between two machines running the same binary.
 pub(crate) fn hero_font_bytes() -> &'static [u8] {
     epaint_default_fonts::HACK_REGULAR
 }
@@ -539,13 +522,10 @@ fn push_floor(mesh: &mut TriangleMesh<3>) {
     mesh.indices.push([base, base + 2, base + 3]);
 }
 
-/// The two solids reach R³ by different maps, and deliberately. A drop is
-/// SLICED, `polytope_section_faces_append` cutting its posed 4D hull at
-/// [`W_SLICE`], so a tumble through a `w` plane visibly changes its
-/// cross-section. A letter is PROJECTED, its render mesh posed and its `w`
-/// dropped: the letter solid is a product with the glyph slab, so its true
-/// slice is the same cross-section at every `w` the slab covers, and slicing
-/// it would cost a re-extraction per frame to produce the mesh already baked.
+// A drop is SLICED at [`W_SLICE`], so a tumble through a `w` plane visibly
+// changes its cross-section. A letter is PROJECTED: its solid is a product with
+// the glyph slab, so its true slice is the same cross-section at every `w` the
+// slab covers, and slicing it would cost a re-extraction per frame.
 fn build_frame_mesh(
     sequence: &HeroSequence,
     local: &mut Vec<Vec4>,
@@ -576,9 +556,6 @@ fn push_letters(sequence: &HeroSequence, mesh: &mut TriangleMesh<3>) {
     }
 }
 
-/// Append each drop's cross-section at [`W_SLICE`]. A drop whose `w` extent
-/// has been knocked clear of the slice contributes nothing, which is the
-/// honest 4D answer and not a dropped body.
 fn push_drop_caps(
     sequence: &HeroSequence,
     local: &mut Vec<Vec4>,
@@ -618,8 +595,6 @@ pub(crate) struct HeroScene {
     seed: u64,
     camera: Camera<EuclideanR3>,
     orbit: OrbitController<EuclideanR3>,
-    /// Only the shell's `scene` command lives here, so the context is `()`.
-    /// Without it, booting `?scene=hero&embed=1` would be a one-way trip.
     console: Console<()>,
     triangles: TriangleRasterNode,
     depth: Option<DepthBuffer>,
@@ -675,8 +650,6 @@ impl HeroScene {
     }
 
     fn panel(&mut self, ctx: &egui::Context) {
-        // Deferred out of the closure: the window body borrows `self`, and a
-        // rebuild replaces the sequence it is reading.
         let mut replay: Option<u64> = None;
         egui::Window::new("Hero")
             .id(egui::Id::new("hero-scene-controls"))
@@ -722,9 +695,6 @@ impl loam_app::shell::Scene for HeroScene {
         Ok(())
     }
 
-    /// One sequence tick per host sim tick, so the scene runs at the fixed
-    /// rate it was measured at and a slow frame replays as several ticks
-    /// rather than as one long one.
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
         if !self.paused {
             for _ in 0..ctx.n_ticks {
@@ -848,38 +818,35 @@ mod tests {
 
     const SEED: u64 = 0x10a3_5eed;
 
-    /// Ticks over which a settled letter must hold still, and the position
-    /// spread allowed across them. The bound is `glyph-letter-bodies`'s, and
-    /// the measured worst here is 0.0063 em on `L`. What is left at rest is
-    /// the Baumgarte limit cycle: gravity sinks the letter over a step and the
-    /// positional bias pushes it back out, forever, at the slop's amplitude.
+    // Ticks over which a settled letter must hold still, and the position
+    // spread allowed across them. The bound is `glyph-letter-bodies`'s, and the
+    // measured worst here is 0.0063 em on `L`. What is left at rest is the
+    // Baumgarte limit cycle: gravity sinks the letter over a step and the
+    // positional bias pushes it back out, forever, at the slop's amplitude.
     const REST_WINDOW_TICKS: u32 = 60;
     const REST_SPREAD: f32 = 0.02;
 
-    /// Displacement, in em, that counts as a letter having been knocked aside
-    /// rather than nudged. Measured at this seed by the test
-    /// `the_quoted_figures_are_the_ones_the_scene_produces`: the rain moves
-    /// `L` 0.770, `O` 0.940, `A` 1.384 and `M` 1.751 em, so the criterion has
-    /// 3x of margin on the least-moved letter and the threshold is not the
-    /// measurement.
+    // Displacement, in em, that counts as a letter having been knocked aside
+    // rather than nudged. Measured at this seed by
+    // `the_quoted_figures_are_the_ones_the_scene_produces`: the rain moves `L`
+    // 0.770, `O` 0.940, `A` 1.384 and `M` 1.751 em, so the criterion has 3x of
+    // margin on the least-moved letter; the threshold is not the measurement.
     const SCATTER_THRESHOLD: f32 = 0.25;
 
-    /// How far below the floor any collider vertex may reach. This is a
-    /// tunneling bound, not a contact bound: the resting overlap the solver
-    /// holds is `PENETRATION_SLOP`, and an impact transiently reaches 0.034,
-    /// so a body 0.075 under would be one that the contact never caught.
+    // A tunneling bound, not a contact bound: the resting overlap the solver
+    // holds is `PENETRATION_SLOP`, and an impact transiently reaches 0.034, so
+    // a body 0.075 under would be one that the contact never caught.
     const TUNNEL_DEPTH: f32 = 0.075;
 
-    /// Ceiling on the frame mesh, in vertices. 1.5x the measured 21342 at
-    /// the fullest tick: the mesh is rebuilt and re-uploaded every frame, so
-    /// its size is a per-frame bandwidth cost and not a one-time bake.
+    // 1.5x the measured 21342 at the fullest tick: the mesh is rebuilt and
+    // re-uploaded every frame, so its size is a per-frame bandwidth cost and
+    // not a one-time bake.
     const MESH_VERTEX_BUDGET: u32 = 32_000;
 
-    /// Per-step travel, in em, the R⁴ narrowphase still resolves against a
-    /// thin static wall, as recorded by `loam_physics::world`'s tunneling
-    /// gate. Sampling the floor test once per tick is sound only if no body
-    /// can cross and return inside a tick, which is what bounding the travel
-    /// below this buys.
+    // Per-step travel, in em, the R⁴ narrowphase still resolves against a thin
+    // static wall, as recorded by `loam_physics::world`'s tunneling gate.
+    // Sampling the floor test once per tick is sound only if no body can cross
+    // and return inside a tick, which is what bounding the travel buys.
     const RESOLVABLE_STEP_TRAVEL: f32 = 0.150;
 
     fn scene() -> HeroSequence {
@@ -967,10 +934,9 @@ mod tests {
             scene.letters().len() + 1,
             "the release did not hand every letter to the solver"
         );
-        // The handover is continuous: each body starts at the pose the
-        // director's last key put its letter in, so nothing jumps on the
-        // release tick. The slides have all finished by then, so the last two
-        // director frames are the same pose and the equality is exact.
+        // Each body starts at the pose the director's last key put its letter
+        // in. The slides have all finished by then, so the last two director
+        // frames are the same pose and the equality is exact.
         for (index, before) in directed.iter().enumerate() {
             assert_eq!(scene.letter_pose(index).position, *before);
         }

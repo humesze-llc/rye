@@ -1,6 +1,5 @@
-// Cool/warm diverging palette for the w-depth color mode, keyed on SIGNED w so
-// a +w and a -w vertex read as different colors. Matches the depth cue in the
-// LineRasterStaticR4 shader.
+// Keyed on SIGNED w so a +w and a -w vertex read as different colors. Matches
+// the depth cue in the LineRasterStaticR4 shader.
 const W_DEPTH_BACK: [f32; 3] = [0.30, 0.42, 0.58];
 const W_DEPTH_FRONT: [f32; 3] = [1.00, 0.78, 0.45];
 
@@ -20,8 +19,8 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
     [r + m, g + m, b + m]
 }
 
-/// Deterministic per-index color: golden-ratio hue spacing plus an S/V cycle so
-/// adjacent indices land far apart in HSV.
+// Golden-ratio hue spacing plus an S/V cycle, so adjacent indices land far
+// apart in HSV.
 fn unique_edge_palette_color(idx: usize) -> [f32; 4] {
     const PHI_INV: f32 = 0.618_034;
     let h = ((idx as f32) * PHI_INV).fract();
@@ -31,8 +30,8 @@ fn unique_edge_palette_color(idx: usize) -> [f32; 4] {
     [r, g, b, 1.0]
 }
 
-/// Per-edge RGBA via greedy first-fit coloring of the edge line-graph: edges
-/// sharing a vertex get different colors. Deterministic in `edges` order.
+// Greedy first-fit coloring of the edge line-graph: edges sharing a vertex get
+// different colors. Deterministic in `edges` order.
 pub(crate) fn unique_edge_palette(edges: &[[u32; 2]]) -> Vec<[f32; 4]> {
     let n = edges.len();
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -67,9 +66,8 @@ pub(crate) fn unique_edge_palette(edges: &[[u32; 2]]) -> Vec<[f32; 4]> {
         .collect()
 }
 
-/// Per-vertex w-depth color: cool at -w, warm at +w, neutral on the slice
-/// plane. `w_extent_local` is the fixed post-scale |w| bound, so the gradient
-/// is orientation-stable.
+// Cool at -w, warm at +w, neutral on the slice plane. `w_extent_local` is the
+// fixed post-scale |w| bound, so the gradient is orientation-stable.
 pub(crate) fn w_depth_color(w: f32, w_extent_local: f32) -> [f32; 4] {
     let denom = w_extent_local.max(1e-6);
     let t = ((w / denom) * 0.5 + 0.5).clamp(0.0, 1.0);

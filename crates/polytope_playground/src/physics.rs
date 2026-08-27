@@ -1,7 +1,6 @@
-//! The playground's rigid-body layer: a [`World<EuclideanR4>`] holding one
-//! dynamic body per rendered row slot. The four Shapes-view render paths (SDF
-//! upload, section caps, wireframe overlay, point sprites) source their pose
-//! here, so they cannot disagree about where a body is.
+//! The four Shapes-view render paths (SDF upload, section caps, wireframe
+//! overlay, point sprites) source their pose here, so they cannot disagree
+//! about where a body is.
 
 use glam::{Vec2, Vec3, Vec4};
 use loam_app::Input;
@@ -17,110 +16,97 @@ use crate::catalog::ShapeEntry;
 use crate::spins::SlotSpins;
 use crate::state::{body_position, CameraMode, Demo};
 
-/// Physics tick, matching the app's fixed 60 Hz sim tick. The world advances
-/// `FrameCtx::n_ticks` steps of this rather than one step of the frame's wall
-/// time, so a trajectory is reproducible across frame rates.
+// Must match the app's fixed sim tick rate.
 const PHYSICS_DT: f32 = 1.0 / 60.0;
 
-/// Uniform body mass. Density is unmodelled, so the four hull colliders do
-/// not carry the volume ratios their solids have: a 5-cell massing the same
-/// as a 24-cell is the chamber's choice, not an oversight.
+// Density is unmodelled: a 5-cell hull masses the same as a 24-cell.
 const BODY_MASS: f32 = 1.0;
 
-/// Largest per-step displacement the R⁴ step still resolves against a thin
-/// static wall, as measured by the tunneling gate in `loam_physics::world`
-/// (`RECORDED_R4`, scanned over 64 launch alignments). The bound is geometric
-/// (`wall_half_thickness + body_radius` for the fixture that recorded it), so
-/// no impulse magnitude or solver iteration count moves it: the only way to
-/// stay inside it is to bound the speed a throw can leave a body at.
+// Largest per-step displacement the R⁴ step still resolves against a thin
+// static wall, as measured by the tunneling gate in `loam_physics::world`
+// (`RECORDED_R4`, scanned over 64 launch alignments). The bound is geometric
+// (`wall_half_thickness + body_radius` for the fixture that recorded it), so
+// no impulse magnitude or solver iteration count moves it: the only way to
+// stay inside it is to bound the speed a throw can leave a body at.
 const MAX_PER_STEP_DISPLACEMENT: f32 = 0.150;
 
-/// Fraction of [`MAX_PER_STEP_DISPLACEMENT`] a throw is allowed to use. The
-/// recorded bound is a scanned FLOOR at 0.0025 resolution, not a two-sided
-/// pin, and it was measured against a 0.1-radius projectile rather than this
-/// row's bodies; a throw sized exactly at it would have no margin for either.
+// Fraction of [`MAX_PER_STEP_DISPLACEMENT`] a throw is allowed to use. The
+// recorded bound is a scanned FLOOR at 0.0025 resolution, not a two-sided
+// pin, and it was measured against a 0.1-radius projectile rather than this
+// row's bodies; a throw sized exactly at it would have no margin for either.
 const TUNNELING_MARGIN: f32 = 0.9;
 
-/// Speed ceiling for a thrown body: the usable share of the tunneling
-/// displacement spread over one [`PHYSICS_DT`]. Enforced on the post-impulse
-/// velocity rather than on the impulse, so repeated flicks at a body already
-/// in flight cannot sum past it.
+// Enforced on the post-impulse velocity rather than on the impulse, so
+// repeated flicks at a body already in flight cannot sum past it.
 pub(crate) const MAX_THROW_SPEED: f32 = TUNNELING_MARGIN * MAX_PER_STEP_DISPLACEMENT / PHYSICS_DT;
 
-/// Per-step displacement the R⁴ narrowphase still resolves BODY against BODY
-/// at [`crate::consts::BODY_SIZE`]. The chamber holds no static geometry, so
-/// this, not the wall figure above, is the band a spinning body's rim has to
-/// stay inside. It is the 8-cell pair's number rather than the sphere pair's,
-/// because a convex polychoron presents twice its own width along the launch
-/// axis where a bounding ball presents twice the circumradius, and the tighter
-/// of the two is what a ceiling is worth deriving against.
-///
-/// `the_body_tunneling_band_is_one_the_narrowphase_resolves` scans every
-/// collider the row can install, rather than the two the number was set from,
-/// and still finds a contact at this displacement per step at all sixteen
-/// launch alignments it samples.
-///
-/// What it is NOT is a lower bound on the overlap window. Scanning centre
-/// separation at 0.0025 puts the tightest same-collider window across ball and
-/// hulls at the 8-cell's 1.395 at the unrotated pose, under this number, so a
-/// step of exactly one band can in principle fall either side of an 8-cell
-/// pair. What keeps [`MAX_ANGULAR_SPEED`] sound is that a body only ever
-/// spends `TUNNELING_MARGIN` of the band, 1.2668, which clears that window and
-/// clears the 1.335 the tightest mixed-collider pair in the same scan
-/// presented. Tightening the band onto the measured window is the honest form
-/// and costs angular ceiling, so it is a decision, not a repair.
+// Per-step displacement the R⁴ narrowphase still resolves BODY against BODY
+// at [`crate::consts::BODY_SIZE`]. The chamber holds no static geometry, so
+// this, not the wall figure above, is the band a spinning body's rim has to
+// stay inside. It is the 8-cell pair's number rather than the sphere pair's,
+// because a convex polychoron presents twice its own width along the launch
+// axis where a bounding ball presents twice the circumradius, and the tighter
+// of the two is what a ceiling is worth deriving against.
+//
+// `the_body_tunneling_band_is_one_the_narrowphase_resolves` scans every
+// collider the row can install, rather than the two the number was set from,
+// and still finds a contact at this displacement per step at all sixteen
+// launch alignments it samples.
+//
+// What it is NOT is a lower bound on the overlap window. Scanning centre
+// separation at 0.0025 puts the tightest same-collider window across ball and
+// hulls at the 8-cell's 1.395 at the unrotated pose, under this number, so a
+// step of exactly one band can in principle fall either side of an 8-cell
+// pair. What keeps [`MAX_ANGULAR_SPEED`] sound is that a body only ever
+// spends `TUNNELING_MARGIN` of the band, 1.2668, which clears that window and
+// clears the 1.335 the tightest mixed-collider pair in the same scan
+// presented. Tightening the band onto the measured window is the honest form
+// and costs angular ceiling, so it is a decision, not a repair.
 const BODY_TUNNELING_BAND: f32 = 1.4075;
 
-/// Angular speed ceiling for a thrown body, derived against the same budget as
-/// [`MAX_THROW_SPEED`] and in the same units. The fastest material point on a
-/// body of radius `R` covers `(|v| + |ω|·R) · PHYSICS_DT` per step, and the
-/// linear ceiling already spends `MAX_THROW_SPEED · PHYSICS_DT` of that, so
-/// the rotation gets what is left of `TUNNELING_MARGIN · BODY_TUNNELING_BAND`:
-/// 97.0 rad/s at `R = BODY_SIZE`. Without it, a full-scale flick landing at
-/// the bounding sphere's rim turns its whole impulse into spin at a rate the
-/// body's inertia sets and the clamp on linear speed cannot see; at a quarter
-/// of `ball4_inertia` that is 138.9 rad/s, 1.62 of rim travel per step from
-/// the rotation alone, outside the band.
-///
-/// `R` is the authored [`crate::consts::BODY_SIZE`] and not the live
-/// `effective_body_size`: `surface scale` multiplies the band and the rim
-/// radius alike, so the rotation's share of the band is scale-invariant at
-/// 80%, and the linear term is the only one whose share moves.
+// Angular speed ceiling for a thrown body, derived against the same budget as
+// [`MAX_THROW_SPEED`] and in the same units. The fastest material point on a
+// body of radius `R` covers `(|v| + |ω|·R) · PHYSICS_DT` per step, and the
+// linear ceiling already spends `MAX_THROW_SPEED · PHYSICS_DT` of that, so
+// the rotation gets what is left of `TUNNELING_MARGIN · BODY_TUNNELING_BAND`:
+// 97.0 rad/s at `R = BODY_SIZE`. Without it, a full-scale flick landing at
+// the bounding sphere's rim turns its whole impulse into spin at a rate the
+// body's inertia sets and the clamp on linear speed cannot see; at a quarter
+// of `ball4_inertia` that is 138.9 rad/s, 1.62 of rim travel per step from
+// the rotation alone, outside the band.
+//
+// `R` is the authored [`crate::consts::BODY_SIZE`] and not the live
+// `effective_body_size`: `surface scale` multiplies the band and the rim
+// radius alike, so the rotation's share of the band is scale-invariant at
+// 80%, and the linear term is the only one whose share moves.
 const MAX_ANGULAR_SPEED: f32 = (TUNNELING_MARGIN * BODY_TUNNELING_BAND
     - MAX_THROW_SPEED * PHYSICS_DT)
     / (crate::consts::BODY_SIZE * PHYSICS_DT);
 
-/// Cursor travel, in physical pixels, that a flick needs to reach
-/// [`MAX_THROW_SPEED`]. Roughly a quarter of a 1080p window's height, so a
-/// full-power throw is a deliberate gesture and an idle click is nearly zero.
+// Roughly a quarter of a 1080p window's height, so a full-power throw is a
+// deliberate gesture and an idle click is nearly zero.
 const FULL_SCALE_DRAG_PIXELS: f32 = 240.0;
 
-/// Time constant of the velocity decay, in seconds. Zero-g and frictionless,
-/// a thrown body would otherwise never re-enter the exact-zero fixpoint
-/// [`PlaygroundPhysics::at_rest`] tests for, so the step's skip would never
-/// re-engage and the body would leave the chamber for good. Travel from a
-/// throw is bounded by `speed · TAU`, which at [`MAX_THROW_SPEED`] is 4.9
-/// units: under the width of a full eight-slot row, so a flick stays in frame.
+// Time constant of the velocity decay, in seconds. Zero-g and frictionless,
+// a thrown body would otherwise never re-enter the exact-zero fixpoint
+// [`PlaygroundPhysics::at_rest`] tests for, so the step's skip would never
+// re-engage and the body would leave the chamber for good. Travel from a
+// throw is bounded by `speed · TAU`, which at [`MAX_THROW_SPEED`] is 4.9
+// units: under the width of a full eight-slot row, so a flick stays in frame.
 const VELOCITY_DECAY_TAU: f32 = 0.6;
 
-/// Speeds under which a decaying body is snapped to exact rest. Exponential
-/// decay approaches zero without reaching it, and `at_rest` compares against
-/// exact zero; these are the thresholds that close the gap. Sized well under
-/// one pixel of motion per second at the demo's framing.
+// Speeds under which a decaying body is snapped to exact rest. Exponential
+// decay approaches zero without reaching it, and `at_rest` compares against
+// exact zero; these are the thresholds that close the gap. Sized well under
+// one pixel of motion per second at the demo's framing.
 const REST_SPEED: f32 = 0.02;
 const REST_ANGULAR_SPEED: f32 = 0.02;
 
-/// Impulse for a flick of `drag_pixels` under the camera's screen basis.
-///
-/// The mapping, in one line: **direction is the drag projected onto the camera
-/// plane, speed is linear in drag length and saturates at
-/// [`FULL_SCALE_DRAG_PIXELS`] pixels = [`MAX_THROW_SPEED`]**. Window
-/// coordinates are y-down, so the vertical term negates `up`; the impulse is
-/// `m · speed · direction` because [`loam_physics::RigidBody::apply_impulse`]
-/// divides by the same mass.
+// Window coordinates are y-down, so the vertical term negates `up`. Speed is
+// linear in drag length and saturates at FULL_SCALE_DRAG_PIXELS. The impulse
+// is `m · speed · direction` because
+// `loam_physics::RigidBody::apply_impulse` divides by the same mass.
 pub(crate) fn throw_impulse(drag_pixels: Vec2, right: Vec3, up: Vec3) -> Vec4 {
-    // `right` and `up` are orthonormal, so this has length `drag_pixels`
-    // and a zero drag is the only input `try_normalize` has to reject.
     let Some(direction) = (right * drag_pixels.x - up * drag_pixels.y).try_normalize() else {
         return Vec4::ZERO;
     };
@@ -128,19 +114,15 @@ pub(crate) fn throw_impulse(drag_pixels: Vec2, right: Vec3, up: Vec3) -> Vec4 {
     (direction * (speed * BODY_MASS)).extend(0.0)
 }
 
-/// Normalised device coordinates of a window-relative pixel position, y up.
-/// The inverse of what [`loam_camera::Camera::ray_from_ndc`] consumes.
+// y-up NDC: the inverse of what `loam_camera::Camera::ray_from_ndc` consumes.
 pub(crate) fn ndc_from_pixels(pixels: Vec2, viewport: (u32, u32)) -> Vec2 {
     let (width, height) = (viewport.0 as f32, viewport.1 as f32);
     Vec2::new(2.0 * pixels.x / width - 1.0, 1.0 - 2.0 * pixels.y / height)
 }
 
-/// Ray parameter at which `ray` first enters the sphere `(centre, radius)`, or
-/// `None` when it misses. A ray starting inside returns the exit distance, so
-/// a click from within a body still picks it.
-///
-/// Ericson, *Real-Time Collision Detection* (2005), §5.3.2; `ray.direction` is
-/// unit, which is what drops the quadratic's leading coefficient.
+// Ericson, *Real-Time Collision Detection* (2005), §5.3.2; `ray.direction` is
+// unit, which is what drops the quadratic's leading coefficient. A ray
+// starting inside returns the exit distance.
 fn ray_sphere_distance(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
     let offset = ray.origin - centre;
     let along = offset.dot(ray.direction);
@@ -158,10 +140,8 @@ fn ray_sphere_distance(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
     Some(near.max(0.0))
 }
 
-/// Rendered orientation for a body: that slot's UI rotation applied first,
-/// then the body's physics orientation. [`Rotor4`] multiplies left-first
-/// (`apply(a * b, v) == apply(b, apply(a, v))`), so the world-frame physics
-/// rotor is the right factor.
+// `Rotor4` multiplies left-first (`apply(a * b, v) == apply(b, apply(a, v))`),
+// so the world-frame physics rotor is the right factor.
 pub(crate) fn composed_rotor(spin: Rotor4, orientation: Rotor4) -> Rotor4 {
     spin * orientation
 }
@@ -173,18 +153,15 @@ pub(crate) struct BodyPose {
 }
 
 impl BodyPose {
-    /// The R³ translation the raster paths apply AFTER projection, so a
-    /// Perspective4D divide never scales the body's x-position.
+    // The R³ translation the raster paths apply AFTER projection, so a
+    // Perspective4D divide never scales the body's x-position.
     pub(crate) fn position_r3(&self) -> Vec3 {
         self.position.truncate()
     }
 
-    /// The `w` offset moves the frame off the origin, so the body's vertices
-    /// stop sharing a radius about it. The wireframe's S³ arc path
-    /// ([`crate::wireframe_geom::push_blended_edge`]) takes no precondition on
-    /// that: it arcs in the body's own centred frame, about the point
-    /// `body_local(Vec4::ZERO, size)` returns. No caller may read an endpoint's
-    /// `length()` as its circumradius.
+    // The `w` offset moves the frame off the origin, so the body's vertices
+    // stop sharing a radius about it. No caller may read an endpoint's
+    // `length()` as its circumradius.
     pub(crate) fn body_local(&self, canonical: Vec4, size: f32) -> Vec4 {
         size * self.rotor.apply(canonical) + Vec4::W * self.position.w
     }
@@ -215,14 +192,10 @@ impl PlaygroundPhysics {
         physics
     }
 
-    /// Drop every body back onto the static layout at rest. Manifolds go with
-    /// them: their keys name the despawned handles, so every surviving entry
-    /// is unreachable warm-start state the next step would walk for nothing.
     pub(crate) fn respawn(&mut self, slots: usize, radius: f32) {
         // Despawn rather than replace the arena: a fresh arena restarts
         // generations at 0, so a handle held across a respawn would alias
-        // whichever body lands in its slot next, which is the exact aliasing
-        // the generation counter exists to prevent.
+        // whichever body lands in its slot next.
         while let Some(last) = self.world.bodies.len().checked_sub(1) {
             let id = self.world.bodies.id_at(last);
             self.world.bodies.despawn(id);
@@ -236,19 +209,9 @@ impl PlaygroundPhysics {
         }
     }
 
-    /// Reconcile with the rendered `row`. A slot-count change respawns the
-    /// row, because the layout position is a function of the count and so
-    /// every body moves. Otherwise only the collider and its inertia are
-    /// refreshed, which is what makes this safe to run on any frame: a throw
-    /// in flight survives.
-    /// The polychora that fit under the narrowphase's vertex cap collide as
-    /// their own hull, with the slot's UI spin BAKED into the vertex list
-    /// rather than carried as a second rotor. `world_vertices4_into` applies
-    /// `body.orientation.rotation` alone, so baking is what makes the
-    /// collider the shape on screen: the narrowphase reconstructs
-    /// [`composed_rotor`] to f32 rounding. What the solver still does not see
-    /// is that the spin is MOVING the rim; that velocity is unmodelled, and
-    /// at the default rate it is 16% of [`MAX_THROW_SPEED`].
+    // The slot's UI spin is BAKED into the hull's vertex list, because
+    // `world_vertices4_into` applies `body.orientation.rotation` alone. The
+    // spin's rim velocity stays unmodelled: 16% of MAX_THROW_SPEED by default.
     pub(crate) fn sync(&mut self, row: &[ShapeEntry], spins: &SlotSpins, size: f32) {
         if self.world.bodies.len() != row.len() {
             self.respawn(row.len(), size);
@@ -270,9 +233,6 @@ impl PlaygroundPhysics {
                 spin,
             });
             let body = &mut self.world.bodies[slot];
-            // One gate, not two: a shape earns a hull only if its vertex list
-            // fits the narrowphase cap AND its uniform-solid moment is
-            // derived, and the same two polychora fail both.
             let hull = entry
                 .collider_polytope()
                 .and_then(|p| regular_polytope4_inertia(p, body.mass, size).map(|i| (p, i)));
@@ -281,10 +241,6 @@ impl PlaygroundPhysics {
                 body.inertia = ball4_inertia(body.mass, size);
                 continue;
             };
-            // Take the vertex buffer out and refill it rather than assigning a
-            // fresh `Vec`: the spin rewrites it on every animating frame and
-            // the count is fixed per shape, so `clear` keeps an allocation a
-            // new one would repeat once per body per frame.
             let mut vertices =
                 match std::mem::replace(&mut body.collider, Collider::sphere_at_origin(size)) {
                     Collider::ConvexPolytope4D { vertices } => vertices,
@@ -297,10 +253,6 @@ impl PlaygroundPhysics {
         }
     }
 
-    /// True while no body carries motion. Exact zero rather than a sleep
-    /// threshold, which the decay in [`Self::damp`] is what makes reachable:
-    /// a resting row is an exact fixpoint of the integrator, so this reads as
-    /// "nothing is moving right now".
     pub(crate) fn at_rest(&self) -> bool {
         self.world
             .bodies
@@ -308,17 +260,13 @@ impl PlaygroundPhysics {
             .all(|b| b.velocity == Vec4::ZERO && b.angular_velocity.magnitude_squared() == 0.0)
     }
 
-    /// Advance `ticks` fixed steps, skipped entirely while at rest. The skip
-    /// is load-bearing rather than an optimization: `surface scale` past
-    /// `BODY_X_SPACING / (2 · BODY_SIZE)` overlaps neighbouring bounding
-    /// spheres, and solving that overlap would push a row nobody threw off its
-    /// layout.
+    // The skip is load-bearing, not an optimization: `surface scale` past
+    // `BODY_X_SPACING / (2 · BODY_SIZE)` overlaps neighbouring bounding
+    // spheres, and solving that would push a row nobody threw off its layout.
     pub(crate) fn step(&mut self, ticks: usize) {
         if self.at_rest() {
             return;
         }
-        // One `exp` per call rather than per tick; the exponent is a pair of
-        // constants, so this is the same number every frame.
         let decay = (-PHYSICS_DT / VELOCITY_DECAY_TAU).exp();
         for _ in 0..ticks {
             self.world.step(PHYSICS_DT);
@@ -339,9 +287,6 @@ impl PlaygroundPhysics {
         }
     }
 
-    /// Slot whose bounding sphere `ray` enters first, or `None` when it enters
-    /// none. `slots` and `radius` are the rendered row's, so a pick agrees
-    /// with what the render paths drew rather than with the static layout.
     pub(crate) fn pick(&self, ray: &Ray, slots: usize, radius: f32) -> Option<usize> {
         let mut nearest: Option<(usize, f32)> = None;
         for slot in 0..slots {
@@ -356,9 +301,6 @@ impl PlaygroundPhysics {
         nearest.map(|(slot, _)| slot)
     }
 
-    /// Throw `slot`: apply `impulse` and clamp what the body is left carrying
-    /// to the tunneling budget. Out-of-range slots are ignored, because a row
-    /// edit can retire the slot a drag started on.
     pub(crate) fn throw(&mut self, slot: usize, impulse: Vec4) {
         if slot >= self.world.bodies.len() {
             return;
@@ -367,17 +309,11 @@ impl PlaygroundPhysics {
         self.clamp_to_tunneling_budget(slot);
     }
 
-    /// Clamp `slot`'s linear speed to [`MAX_THROW_SPEED`] and its angular
-    /// speed to [`MAX_ANGULAR_SPEED`], the two halves of the per-step rim
-    /// travel the narrowphase can still resolve. Enforced on the resulting
-    /// velocities rather than on an impulse, so repeated flicks at a body
-    /// already in motion cannot sum past either.
-    ///
-    /// Clamping `Bivector4::magnitude` is conservative for a double rotation:
-    /// it is `sqrt(θ₁² + θ₂²)` while the fastest material point turns at
-    /// `max(θ₁, θ₂)`, so an isoclinic spin is held to `1/sqrt(2)` of the rim
-    /// speed a simple one gets. The alternative is the invariant
-    /// decomposition per throw, which buys nothing a user could perceive.
+    // Clamping `Bivector4::magnitude` is conservative for a double rotation:
+    // it is `sqrt(θ₁² + θ₂²)` while the fastest material point turns at
+    // `max(θ₁, θ₂)`, so an isoclinic spin is held to `1/sqrt(2)` of the rim
+    // speed a simple one gets. The alternative is the invariant decomposition
+    // per throw, which buys nothing a user could perceive.
     fn clamp_to_tunneling_budget(&mut self, slot: usize) {
         let body = &mut self.world.bodies[slot];
         let speed = body.velocity.length();
@@ -390,10 +326,6 @@ impl PlaygroundPhysics {
         }
     }
 
-    /// `slots` is the caller's own row length and is checked, not trusted: the
-    /// layout is frozen into each body at [`Self::respawn`] time, so a world
-    /// that missed a row edit would draw every body at another slot's layout
-    /// position and index past the end on the tail.
     pub(crate) fn pose(&self, slot: usize, slots: usize, spin: Rotor4) -> BodyPose {
         assert_eq!(
             self.world.bodies.len(),
@@ -407,10 +339,6 @@ impl PlaygroundPhysics {
         }
     }
 
-    /// The single seam between the world and the raster passes: points,
-    /// section caps, and the wireframe take all of their per-body geometry
-    /// from here, which is what stops a pass from quietly falling back to the
-    /// authored spin rotor over the static layout.
     pub(crate) fn body_frame(
         &self,
         slot: usize,
@@ -427,10 +355,8 @@ impl PlaygroundPhysics {
     }
 }
 
-/// A flick in progress: the slot the press ray picked and the drag it has
-/// travelled so far, both in window-relative physical pixels. Held across
-/// frames because the release edge is the only frame that knows the gesture
-/// is finished, and `FrameInput` drops its press anchor at that edge.
+// Drag is in window-relative physical pixels. Held across frames because the
+// release edge is the only frame that knows the gesture is finished.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct ThrowDrag {
     pub(crate) slot: usize,
@@ -449,10 +375,6 @@ impl ThrowDrag {
 }
 
 impl Demo {
-    /// Freecam holds the cursor, so it has no position a ray can be built
-    /// from; the caller passes `enabled = false` there and while egui has the
-    /// pointer, and the button edges are still tracked so the next viewport
-    /// press is a press and not the tail of a click that landed elsewhere.
     pub(crate) fn update_throw(
         &mut self,
         enabled: bool,

@@ -23,8 +23,7 @@ use loam_shape::polytope::{
     SectionScratch,
 };
 
-/// Depth-attachment format for the rasterized section-faces pass. 32-bit
-/// float depth-sorts the 600-cell's densely-packed caps without artifacting.
+// 24-bit depth cracks the 600-cell's densely-packed caps.
 const SECTION_FACES_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 use loam_scene::{Scene4, SceneNode4};
@@ -77,10 +76,8 @@ use state::{
 };
 use wireframe_geom::*;
 
-/// Per-cell "crossing strength" in `[0, 1]`: 1 at the cell's w-midpoint
-/// (widest cap), 0 outside its w-range, linear in `|w_slice - midpoint|`
-/// over the half-extent. A cheap proxy for cap area, shared by
-/// `render_wireframe_overlay` and `render_points`.
+// 1 at the cell's w-midpoint (widest cap), 0 outside its w-range, linear in
+// `|w_slice - midpoint|` over the half-extent. A cheap proxy for cap area.
 fn compute_cell_strengths(
     cells: &[&[u32]],
     local_vertices: &[Vec4],
@@ -109,11 +106,9 @@ use loam_egui::dnd::{drag_source_collapsing as dnd_drag_source_collapsing, make_
 #[cfg(test)]
 use loam_egui::media::add_button;
 
-/// Boot position of the draggable formula popup: inset from the top-right of
-/// the space the shell's menu-bar panel leaves. `available_rect` and not
-/// `content_rect`, which is the viewport minus OS safe-area insets and does
-/// not shrink for a panel, so seating against it hides the popup's first rows
-/// behind the bar.
+// `available_rect` and not `content_rect`, which is the viewport minus OS
+// safe-area insets and does not shrink for a panel, so seating against it
+// hides the popup's first rows behind the menu bar.
 fn formula_popup_seat(ctx: &egui::Context) -> egui::Pos2 {
     const RIGHT_INSET: f32 = 280.0;
     const TOP_INSET: f32 = 16.0;
@@ -121,10 +116,8 @@ fn formula_popup_seat(ctx: &egui::Context) -> egui::Pos2 {
     egui::pos2(area.right() - RIGHT_INSET, area.top() + TOP_INSET)
 }
 
-/// Always includes every shape's WGSL so any can be added at runtime. Floor
-/// visibility is gated at runtime via `u.params.x` (set each frame in
-/// `update`): 0.0 makes the halfspace SDF return 1e9 so the marcher never
-/// paints the checkerboard. See [`Scene4::to_hyperslice_wgsl_gated`].
+// Floor visibility is gated at runtime via `u.params.x`: 0.0 makes the
+// halfspace SDF return 1e9 so the marcher never paints the checkerboard.
 fn shader_source() -> String {
     let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, 0.0));
     format!(
@@ -198,8 +191,8 @@ impl Demo {
             ctx.rd.sample_count(),
         );
 
-        // A ReadOnly test hid a vertex behind its own cap, since
-        // drop-w projects it to the cap's (x, y, z) at slightly farther depth.
+        // A ReadOnly test hid a vertex behind its own cap: drop-w projects it
+        // to the cap's (x, y, z) at slightly farther depth.
         let points_node = PointRasterNode::new(
             &ctx.rd.device,
             ctx.rd.target_format(),
@@ -352,23 +345,15 @@ impl Demo {
             (cfg.width, cfg.height)
         };
 
-        // Refreshed here rather than at every resize site
-        // because `update` precedes `ui` in the frame, so both consumers see
-        // this frame's framing.
         self.camera.aspect = viewport.0 as f32 / viewport.1.max(1) as f32;
-        // The gimbal gets the left button first: its rings sit in front of
-        // the shapes, so a press that lands on one is a rotation gesture, not
-        // a throw. It also reads `left_was_down` before `update_throw`
-        // refreshes it, which is why it runs ahead of that call.
+        // Reads `left_was_down` before `update_throw` refreshes it, which is
+        // why the gimbal runs ahead of that call.
         let pointer_free = self.throw_enabled(ctx.ui_capture.pointer);
         let gimbaling = self.update_gimbal(pointer_free, &ctx.input, viewport);
         // Before the physics step, so the frame a flick is released on also
         // integrates it and `body_upload_needed` sees a moving world.
         let aiming = self.update_throw(pointer_free && !gimbaling, &ctx.input, viewport);
 
-        // Suppressed while a timeline owns the channel: the director rewrites
-        // `w_slice` below on every frame it plays, so a scrub against it would
-        // be a second writer whose value never survives to a render.
         let dir = (self.slider_up_held as i32 - self.slider_down_held as i32) as f32;
         let host_owns_w = !self
             .playback
@@ -393,11 +378,6 @@ impl Demo {
             self.recompose_spins_at(self.rot_time);
         }
 
-        // 4D rotation animation, with one writer per slot. The UI spin
-        // advances every slot on the same clock but from its OWN baselines and
-        // plane mask, so a row whose slots were never edited stays
-        // slice-comparable and one the user aimed at diverges; a loaded
-        // timeline takes the slots it names off that clock for the whole run.
         let dt_animation = if self.rotate {
             dt_secs * self.rate_scale
         } else {
@@ -416,8 +396,8 @@ impl Demo {
             self.rotation_mode,
             omega,
         );
-        // Grow the t-slider max past `rot_time`, capped at 1e6 s (~12 days
-        // at ×1) so a huge `rate_scale` or long run can't run it away.
+        // Capped at 1e6 s (~12 days at ×1) so a huge `rate_scale` or long run
+        // cannot run the slider away.
         const T_SLIDER_CAP: f32 = 1.0e6;
         if self.rot_time > self.t_slider_max {
             let new_max = (self.rot_time * 2.0).min(T_SLIDER_CAP);
@@ -427,11 +407,8 @@ impl Demo {
             }
         }
         // Rigid bodies advance on the tick count, not on `dt_secs`, so a
-        // trajectory is frame-rate independent. The collider sync runs ahead
-        // of the step so the tick collides this frame's rotor rather than the
-        // previous one's; `rebuild_bodies` then reconciles the row and uploads
-        // the resulting poses, but only on a frame that moved something: see
-        // [`state::body_upload_needed`] for why the motion test is read first.
+        // trajectory is frame-rate independent. The collider sync runs ahead of
+        // the step so the tick collides this frame's rotor, not the last one's.
         self.sync_physics_row();
         let bodies_moving = !self.physics.at_rest();
         self.physics.step(ctx.n_ticks);
@@ -439,25 +416,15 @@ impl Demo {
             self.rebuild_bodies();
         }
 
-        // Gate each camera on the clocks it reads, so dragging the egui
-        // slider doesn't also rotate the camera.
         let lift_orbit = self.view_mode == ViewMode::Filmstrip && self.strip_w && self.strip_t;
         self.orbit.target.y = if lift_orbit { BODY_Y } else { 0.0 };
         match self.camera_mode {
             CameraMode::Orbit if !ctx.ui_capture.pointer => {
-                // A flick or a held gimbal ring owns the left button for
-                // the whole drag, so the orbit must not read it as a
-                // look-around. Masking the button rather than skipping
-                // `advance` keeps scroll-zoom and the frame rebuild live
-                // while aiming.
                 let mut input = ctx.input;
                 input.left_mouse_down &= !(aiming || gimbaling);
                 self.orbit
                     .advance(input, &mut self.camera, &EuclideanR3, dt_secs);
             }
-            // Both clocks, because `advance` folds WASD translation in with
-            // the mouse look: a focused text field must not walk the camera
-            // the way a hovered widget must not turn it.
             CameraMode::FreeRoam if !(ctx.ui_capture.pointer || ctx.ui_capture.keyboard) => {
                 self.freecam.advance(ctx.input, &mut self.camera, dt_secs);
             }
@@ -465,11 +432,9 @@ impl Demo {
         }
         let view = self.camera.view();
 
-        // Hyperslice uniforms. Written through `set_if_changed` so a frame that
-        // moved neither camera, slice nor window leaves the buffer clean and
-        // `render` skips the upload. The flush itself lives there, once: the
-        // viewport is only known at render time, so a flush here would be
-        // wholly overwritten by the one after it.
+        // Written through `set_if_changed` so a clean frame skips the upload.
+        // The flush itself lives in `render`, once: the viewport is only known
+        // at render time, so a flush here would be wholly overwritten.
         let cfg = &ctx.rd.surface_bundle.config;
         {
             let mut changed = false;
@@ -481,12 +446,11 @@ impl Demo {
             changed |= set_if_changed(&mut u.fov_y_tan, (60.0_f32.to_radians() * 0.5).tan());
             changed |= set_if_changed(&mut u.resolution, [cfg.width as f32, cfg.height as f32]);
             changed |= set_if_changed(&mut u.w_slice, self.w_slice);
-            // Floor gate read by the injected wrapper around `loam_scene_sdf`:
-            // 1.0 = floor on, 0.0 = wrapper short-circuits to 1e9.
+            // Read by the injected wrapper around `loam_scene_sdf`: 1.0 = floor
+            // on, 0.0 = wrapper short-circuits to 1e9.
             changed |= set_if_changed(&mut u.params[0], if self.floor_enabled { 1.0 } else { 0.0 });
-            // Refreshed but excluded from the test: no part of the assembled
-            // shader reads them (pinned by `assembled_shader_reads_no_clock`),
-            // so a clock tick alone must not cost an upload.
+            // Excluded from the change test (pinned by
+            // `assembled_shader_reads_no_clock`): a clock tick must not upload.
             u.time = ctx.time;
             u.tick = ctx.tick as f32;
             self.sdf_upload_pending |= changed;
@@ -494,9 +458,8 @@ impl Demo {
     }
 
     pub(crate) fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
-        // Disable keyboard zoom: it changes PPP but the wgpu surface stays at
-        // native resolution, so the scene letter-boxes and the tessellator
-        // complains. Mouse-wheel orbit-zoom is the scene's zoom.
+        // Keyboard zoom changes PPP but the wgpu surface stays at native
+        // resolution, so the scene letter-boxes and the tessellator complains.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
 
         const MENU_BAR_PAD: f32 = 24.0;
@@ -706,8 +669,7 @@ impl Demo {
 
 // A wrapper, not a `console` field on `Demo`: `Scene::apply_command` dispatches
 // `&mut self.console` against `&mut self.demo`, so co-locating both would need
-// a simultaneous whole-`self` borrow. Separate fields give the dispatch a clean
-// two-field split.
+// a simultaneous whole-`self` borrow.
 
 pub(crate) struct RotateScene {
     demo: Demo,
@@ -715,15 +677,11 @@ pub(crate) struct RotateScene {
     console: Console<Demo>,
     text_hud: hud::TextHud,
     hud_seat: hud::HudSeat,
-    /// `--script=<path>` playhead, dropped once it has asked the runner to
-    /// exit. It submits to the runner's queue, so its lines reach whichever
-    /// scene is active at the drain; switching scenes mid-script drops the
-    /// driver with the scene, and the run then never ends itself.
     script: Option<ScriptDriver>,
 }
 
-/// Lower bound on a visible section-layer fill alpha; below this the cap reads
-/// as off, so the grammar rejects it and steers to `0` (explicit off).
+// Lower bound on a visible section-layer fill alpha; below this the cap reads
+// as off, so the grammar rejects it and steers to `0`.
 const SECTION_ALPHA_MIN_VISIBLE: f32 = 0.05;
 
 fn run_section_alpha(
@@ -857,8 +815,8 @@ impl loam_app::shell::Scene for RotateScene {
         state: winit::event::ElementState,
         ctx: &mut FrameCtx<'_>,
     ) {
-        // Suppress demo keybinds while egui captures the keyboard (a focused
-        // TextEdit), so typing `reset` doesn't also fire the R hotkey.
+        // Suppress demo keybinds while egui captures the keyboard, so typing
+        // `reset` does not also fire the R hotkey.
         if !ctx.ui_capture.keyboard {
             self.demo.on_key(code, state, ctx);
         }
@@ -1628,9 +1586,9 @@ mod drag_tests {
         egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0))
     }
 
-    /// Egui's drag detection compares `time - press_start_time` against
-    /// `max_click_duration`, so frames must thread a monotonic clock or every
-    /// press reads as still-within-click and never flips to dragging.
+    // Egui's drag detection compares `time - press_start_time` against
+    // `max_click_duration`, so frames must thread a monotonic clock or every
+    // press reads as still-within-click and never flips to dragging.
     fn pointer_press(time: f64, pos: egui::Pos2) -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(screen()),

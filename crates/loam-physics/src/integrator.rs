@@ -10,7 +10,7 @@ use crate::body::RigidBody;
 pub trait PhysicsSpace: Space + IsometryGroup {
     type AngVel: Bivector;
 
-    // Scalar in 2D, 3×3 in 3D, 6×6 bivector map in 4D. Layout opaque.
+    /// Scalar in 2D, 3×3 in 3D, 6×6 bivector map in 4D. Layout opaque.
     type Inertia: Copy;
 
     fn integrate_orientation(&self, iso: Self::Iso, omega: Self::AngVel, dt: f32) -> Self::Iso;
@@ -19,19 +19,19 @@ pub trait PhysicsSpace: Space + IsometryGroup {
 
     fn wedge(&self, a: Self::Vector, b: Self::Vector) -> Self::AngVel;
 
-    // Linear plus the angular contribution `ω × (p − body.position)`.
+    /// Linear plus the angular contribution `ω × (p − body.position)`.
     fn velocity_at_point(&self, body: &RigidBody<Self>, p: Self::Point) -> Self::Vector
     where
         Self: Sized;
 
-    // The PGS solver divides by this to turn a velocity constraint into an
-    // impulse magnitude:
-    //
-    //   K = inv_m_a + inv_m_b
-    //        + ((r_a ∧ n) · I_a⁻¹ · (r_a ∧ n))
-    //        + ((r_b ∧ n) · I_b⁻¹ · (r_b ∧ n))
-    //
-    // It is 0 only when both bodies are static.
+    /// The PGS solver divides by this to turn a velocity constraint into an
+    /// impulse magnitude:
+    ///
+    ///   K = inv_m_a + inv_m_b
+    ///        + ((r_a ∧ n) · I_a⁻¹ · (r_a ∧ n))
+    ///        + ((r_b ∧ n) · I_b⁻¹ · (r_b ∧ n))
+    ///
+    /// It is 0 only when both bodies are static.
     fn effective_mass_inv(
         &self,
         a: &RigidBody<Self>,
@@ -42,8 +42,8 @@ pub trait PhysicsSpace: Space + IsometryGroup {
     where
         Self: Sized;
 
-    // Sign convention: subtracts from A, adds to B, matching `Contact::normal`
-    // pointing from A toward B as the separating direction.
+    /// Sign convention: subtracts from A, adds to B, matching `Contact::normal`
+    /// pointing from A toward B as the separating direction.
     fn apply_contact_impulse(
         &self,
         a: &mut RigidBody<Self>,

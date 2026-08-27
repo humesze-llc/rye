@@ -25,8 +25,8 @@ pub trait VectorOps:
         self.length_squared().sqrt()
     }
 
-    // `fallback` for near-zero vectors, chosen over `Option<Self>` because
-    // every GJK caller has a default direction for the degenerate case.
+    /// `fallback` for near-zero vectors, chosen over `Option<Self>` because
+    /// every GJK caller has a default direction for the degenerate case.
     fn normalize_or(self, fallback: Self) -> Self {
         let l2 = self.length_squared();
         if l2 > 1e-12 {

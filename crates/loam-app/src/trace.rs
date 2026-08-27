@@ -2,14 +2,9 @@
 //! the dev console. Collection is already wired into `Runner::redraw`; this
 //! is the read side.
 //!
-//! Subcommands: `trace`/`trace summary` (aggregate p50/p95/p99/max, p95
-//! desc), `trace last` (most recent frame breakdown), `trace clear`,
-//! `trace cap <N>` (rolling-window size).
-//!
 //! The summary carries a synthetic `unscoped` row: `frame` minus the sections
 //! the frame loop opens inside it (`crate::FRAME_LOOP_SECTIONS`, crate-private
-//! so not linkable from here). Without it a reader has to sum the table by
-//! hand to notice that the named sections cover only a fraction of the frame.
+//! so not linkable from here).
 
 use loam_egui::{cmd, Console};
 use loam_time::frame_trace;
@@ -81,7 +76,6 @@ fn summary_rows() -> Vec<frame_trace::SectionStats> {
     stats
 }
 
-/// Print the rolling-window aggregate: one row per section, p95 descending.
 fn print_summary(out: &mut loam_egui::ConsoleWriter) {
     let stats = summary_rows();
     if stats.is_empty() {
@@ -306,7 +300,6 @@ impl PerfOverlay {
             return;
         }
 
-        // Cap the window at MAX_WINDOW so the stack buffers can't overflow.
         let window = self.window.min(MAX_WINDOW);
         let mut cadence = StackBuf::new();
         let mut frames_buf = StackBuf::new();

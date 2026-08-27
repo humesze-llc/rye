@@ -6,22 +6,6 @@
 //!   <canvas id="loam-canvas" width="1280" height="800"></canvas>
 //! </div>
 //! ```
-//!
-//! [`inject_launch_overlay`] creates the launch button as a sibling of the
-//! canvas plus a `<style>` carrying [`LAUNCH_OVERLAY_CSS`], so demos ship one
-//! line of HTML instead of the button markup + CSS. The wasm download happens
-//! regardless; click-to-start only defers the per-frame wgpu work.
-//!
-//! The `<style>` is keyed on a fixed id so several embeds on one page share
-//! one copy. Demos theme by shipping a later-cascade stylesheet or
-//! pre-creating their own `<button id="...">`, which
-//! [`inject_launch_overlay`] reuses.
-//!
-//! After launch, the embed lifecycle in `main_launcher` enforces
-//! one-active-demo-per-page: clicking outside the host pauses the worker
-//! and restores this overlay via [`show_resume_overlay`]. Pause-on-
-//! scroll-out remains a JS embed-wrapper concern (an `IntersectionObserver`
-//! posting `pause`), which the worker's pause/resume messages support.
 
 use anyhow::{anyhow, Context, Result};
 use wasm_bindgen::prelude::Closure;

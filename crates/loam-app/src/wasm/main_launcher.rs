@@ -1,9 +1,6 @@
 //! Main-thread side of worker mode. Handles the click-to-launch button,
 //! the worker construction + `OffscreenCanvas` transfer, and the DOM
 //! event listeners that forward input messages to the worker.
-//!
-//! The worker-side counterpart lives in [`super::worker`]. The protocol
-//! between them is defined in [`super::messages`].
 
 use anyhow::{anyhow, Context, Result};
 use std::cell::RefCell;
@@ -25,9 +22,7 @@ pub fn launch_on_click(host_id: &str, button_id: &str, canvas_id: &str) -> Resul
 
     // Spawn the worker on page load, not on click: it inits wgpu, renders a
     // preview frame for the backdrop-blurred overlay, then idles until the
-    // click posts `Start`. Trade-off is wasm + worker cost before the viewer
-    // shows interest; fine for single-demo pages, a future
-    // IntersectionObserver lazy-spawn fits many-demo pages.
+    // click posts `Start`.
     let _ = spawn_worker_for_preview(canvas_id, host_id, button_id)?;
     Ok(())
 }
@@ -44,8 +39,6 @@ fn read_wasm_bundle_url() -> Result<String> {
         .ok_or_else(|| anyhow!("__loam_wasm_url is not a string; demo's index.html must set it"))
 }
 
-/// Spawn the worker, transfer the canvas, post init, and wire the
-/// launch-overlay click handler (posts `Start`, removes the overlay).
 fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> Result<()> {
     let document = web_sys::window()
         .and_then(|w| w.document())
@@ -203,13 +196,8 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
     // ready so setup-window events queue and apply on first frame.
     install_dom_input_forwarders(&worker, &canvas).context("install_dom_input_forwarders")?;
 
-    // Worker -> main DOM-action channel + pointerlockchange forwarder +
-    // canvas click-to-re-engage (the standard OffscreenCanvas-in-Worker
-    // pattern for DOM APIs only callable from the main thread).
     install_host_action_handler(&worker, &canvas).context("install_host_action_handler")?;
 
-    // `preview_progress` drives the page-loader bar; `preview_ready` removes
-    // it.
     install_preview_progress_handler(&worker)?;
     install_preview_ready_handler(&worker, button_id)?;
 
@@ -253,7 +241,6 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
                 tracing::info!("loam_app::wasm::worker: launch click; posting Start");
                 let msg = build_msg("start");
                 if let Err(e) = worker_for_click.post_message(&msg) {
-                    // Keep the overlay up and allow a retry click.
                     fired.set(false);
                     tracing::error!(
                         "loam_app::wasm::worker: postMessage Start failed: {e:?}; \
@@ -263,8 +250,6 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
                 }
             }
 
-            // Pipelines were warmed before preview_ready, so removing the
-            // overlay is the whole transition; no second wait.
             overlay_for_click.remove();
             dispatch_embed_activated(&host_for_click);
         }) as Box<dyn FnMut()>);
@@ -412,10 +397,6 @@ fn install_embed_lifecycle(worker: &Worker, host_id: &str, button_id: &str) -> R
     Ok(())
 }
 
-/// Install the DOM event listeners that forward main-thread events to the
-/// worker. Each posts a typed `{kind: "...", ...}` object that
-/// [`super::messages::parse_non_init`] turns into an `InputMessage`.
-///
 /// `window`: resize, focus, blur, visibilitychange. `canvas`: mousemove
 /// (rAF-coalesced), mousedown, mouseup, wheel. `document`: keydown, keyup
 /// (on document so keys arrive regardless of focus, game convention). All
@@ -453,7 +434,6 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
             .map_err(|e| anyhow!("window resize listener: {e:?}"))?;
         cb.forget();
 
-        // rAF tick: advance the countdown, commit when idle past threshold.
         let worker_for_raf = worker.clone();
         let pending_for_raf = pending.clone();
         let window_for_raf = window.clone();
@@ -557,7 +537,6 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         Box::leak(Box::new(raf_cb));
     }
 
-    // Mouse down / up: same shape, different `pressed` flag.
     for (event_name, pressed) in [("mousedown", true), ("mouseup", false)] {
         let worker = worker.clone();
         let cb = Closure::wrap(Box::new(move |ev: web_sys::MouseEvent| {
@@ -675,7 +654,6 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         cb.forget();
     }
 
-    // Page-visibility on document so the app can pause when backgrounded.
     {
         let worker = worker.clone();
         let document_for_query = document.clone();
@@ -693,8 +671,6 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
 
     Ok(())
 }
-
-// Helpers for constructing typed postMessage payloads on the main thread.
 
 fn build_msg(kind: &str) -> js_sys::Object {
     let obj = js_sys::Object::new();
@@ -776,7 +752,6 @@ fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()>
         let Some(document) = web_sys::window().and_then(|w| w.document()) else {
             return;
         };
-        // Remove the static spinner; the wasm overlay takes over.
         if let Some(loader) = document.get_element_by_id("loam-page-loader") {
             loader.remove();
         }
@@ -791,9 +766,6 @@ fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()>
     Ok(())
 }
 
-/// Install the worker -> main DOM-action handler, the `pointerlockchange`
-/// forwarder, and the canvas click-to-re-engage helper.
-///
 /// The worker posts `{kind: "host_action", actions: [...]}` whenever an
 /// engine module queues a DOM-touching action; everything needing DOM
 /// access round-trips here because the worker holds only the
@@ -816,7 +788,6 @@ fn install_host_action_handler(worker: &Worker, canvas: &HtmlCanvasElement) -> R
     // the actual lock dropped.
     let want_locked: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
 
-    // Worker -> main: drain a `host_action` message into DOM calls.
     {
         let canvas_for_dispatch = canvas.clone();
         let document_for_dispatch = document.clone();
@@ -892,8 +863,6 @@ fn install_host_action_handler(worker: &Worker, canvas: &HtmlCanvasElement) -> R
         cb.forget();
     }
 
-    // Canvas click: re-engage Pointer Lock if want_locked but the browser
-    // dropped it. No-op otherwise.
     {
         let canvas_for_click = canvas.clone();
         let document_for_click = document.clone();

@@ -3,24 +3,10 @@
 //! A script file is lines of `<frame> <console command>`. The driver submits
 //! each command to [`crate::command`]'s queue on the frame whose index the
 //! line names, then asks the runner to exit a fixed margin past the last line.
-//! Reaching a configured state costs one flag instead of a click-through, and
-//! two runs issue the same commands on the same frame numbers, which is what
-//! makes a before/after pixel hash a diff rather than a coincidence.
 //!
 //! No new command language and no second dispatch path: a script line is
 //! submitted exactly as a typed line is, tokenized by the same grammar, and
-//! applied at the runner's one drain point. Console built-ins included; a
-//! scripted `clear` reaches the same handler a typed one does, and the line is
-//! echoed into the scrollback by whichever site runs it, so an unattended run
-//! leaves the same record a session at the prompt would.
-//!
-//! Two differences remain. A built-in typed at the prompt runs inside
-//! `Console::execute` on the frame it was typed, where a scripted one waits for
-//! the drain like every other queued line. And a scripted line never passes
-//! through `Console::execute` at all, so it leaves no entry in the prompt's
-//! up-arrow recall.
-//!
-//! ## Timebase
+//! applied at the runner's one drain point.
 //!
 //! [`ScriptDriver::frame`] counts calls to [`ScriptDriver::advance`], and that
 //! counter is the whole timeline. Nothing on the path reads a clock, so a
@@ -30,23 +16,11 @@
 //! (`rg 'Instant|SystemTime|Duration|elapsed' crates/loam-console/src` is
 //! empty).
 //!
-//! ## Focus and synthesized input
-//!
 //! [`ScriptDriver::advance`] takes nothing at all. That signature is the
 //! fence: with no `Window` and no event-loop handle in scope, cursor warping,
 //! focus requests and event injection are not callable from here, and every
 //! state change a script makes goes through the command queue, which reaches
-//! only what a typed line reaches. Widening that one signature to carry a
-//! window handle is the single change that would end the property;
-//! `the_driver_names_no_window_or_input_api` fails if this module ever
-//! mentions one.
-//!
-//! ## Exiting
-//!
-//! A script has no `ActiveEventLoop` to leave, so completion is published
-//! through [`request_exit`] and the runner reads [`exit_requested`] at the
-//! top of its redraw. Same publish/drain shape as [`crate::capture`]'s
-//! request queue.
+//! only what a typed line reaches.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,18 +31,16 @@ use crate::command;
 
 /// Frames the driver keeps running past the last scheduled command before it
 /// asks for exit. Long enough for that command's effect to reach the
-/// swapchain and for a streaming capture started by it to write something;
-/// a script that needs a longer tail schedules a later line.
+/// swapchain and for a streaming capture started by it to write something.
 const SETTLE_FRAMES: u64 = 60;
 
-/// One scheduled line: the frame it fires on and the command line to run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScriptStep {
     pub frame: u64,
     pub command: String,
 }
 
-/// A parsed script. Steps keep file order and their frame indices never
+/// Steps keep file order and their frame indices never
 /// decrease, so "run everything due, in order" is total.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Script {
@@ -76,7 +48,7 @@ pub struct Script {
 }
 
 impl Script {
-    /// Parse `<frame> <command>` lines. Blank lines and lines whose first
+    /// Blank lines and lines whose first
     /// non-space character is `#` are ignored; anything else that is not a
     /// frame index followed by a command is an error naming the line, because
     /// a script that quietly runs a subset of itself is worse than one that
@@ -120,7 +92,7 @@ impl Script {
         Ok(Self { steps })
     }
 
-    /// Read and parse a script file. The path rides along in the error so a
+    /// The path rides along in the error so a
     /// reported line number is attributable.
     pub fn load(path: &Path) -> Result<Self> {
         let source = std::fs::read_to_string(path)
@@ -132,24 +104,20 @@ impl Script {
         &self.steps
     }
 
-    /// Frame the last step fires on; 0 when the script schedules nothing.
     pub fn last_frame(&self) -> u64 {
         self.steps.last().map_or(0, |step| step.frame)
     }
 }
 
-/// Whether the script still has work (or settling) left.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ScriptStatus {
     Running,
     Finished,
 }
 
-/// Plays a [`Script`] against a console, one frame per [`Self::advance`].
 #[derive(Debug)]
 pub struct ScriptDriver {
     script: Script,
-    /// Index of the first step that has not fired.
     next: usize,
     frame: u64,
     exit_frame: u64,
@@ -166,17 +134,12 @@ impl ScriptDriver {
         }
     }
 
-    /// Index of the frame the next [`Self::advance`] will run.
     pub fn frame(&self) -> u64 {
         self.frame
     }
 
-    /// Submit every command due on the current frame, in file order, then step
-    /// the playhead. Steps whose frame the playhead has already passed still
+    /// Steps whose frame the playhead has already passed still
     /// fire, so a host that skips a frame loses ordering but never a command.
-    ///
-    /// Submission, not application: the queue applies at the runner's drain,
-    /// which is the same one frame of deferral a typed line takes.
     pub fn advance(&mut self) -> ScriptStatus {
         while let Some(step) = self.script.steps.get(self.next) {
             if step.frame > self.frame {
@@ -198,12 +161,10 @@ impl ScriptDriver {
 
 static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// Ask the runner to leave the event loop at the top of its next redraw.
 pub fn request_exit() {
     EXIT_REQUESTED.store(true, Ordering::Relaxed);
 }
 
-/// Read by the runner once per redraw; see [`request_exit`].
 pub fn exit_requested() -> bool {
     EXIT_REQUESTED.load(Ordering::Relaxed)
 }

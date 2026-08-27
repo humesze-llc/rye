@@ -1,8 +1,6 @@
 //! Console command that toggles the surface present mode, the upstream side of
 //! the [`crate::frame_pacing`] fps cap.
 //!
-//! ## Why this matters for fps
-//!
 //! The [`fps`] command alone cannot exceed the display refresh rate when the
 //! surface uses `PresentMode::Fifo` (the default), because the presentation
 //! engine paces the loop at vsync. The block lands on the swapchain acquire in
@@ -10,16 +8,6 @@
 //! `vsync off` swaps the surface to `Mailbox` (or `Immediate` as
 //! fallback) so the cap can drive cadence above the display rate; useful for
 //! benchmarking, perf profiling, or chasing input latency.
-//!
-//! ## Subcommands
-//!
-//! - `vsync`: print the current present mode.
-//! - `vsync on`: request `PresentMode::Fifo` on the runner's next redraw.
-//! - `vsync off`: request the best non-Fifo mode the adapter advertised; the
-//!   runner picks `Mailbox` first, falling back to `Immediate`, falling back
-//!   to leaving the mode alone (typical browser case; surfaces there
-//!   advertise only Fifo, so this command is effectively a no-op).
-//!
 //! [`fps`]: crate::fps
 
 use loam_egui::{cmd, Console, ConsoleWriter};

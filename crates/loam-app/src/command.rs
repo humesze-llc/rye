@@ -1,39 +1,8 @@
 //! The application-wide command queue: one place mutations are submitted, one
 //! point per frame where they are applied.
 //!
-//! ## The contract
-//!
 //! **Commands stamped with tick T are applied, in submission order, before tick
-//! T runs, however the frames were paced.** Both runners drain immediately
-//! before the runner's `drive_fixed_ticks` and stamp with the `tick_index` that call
-//! is about to start from, so a frame that runs zero ticks hands its commands the
-//! same T as the next frame's and concatenation preserves order. That is what
-//! makes the position of a mutation in simulation time a property of the
-//! recording rather than of how many catch-up ticks a frame happened to run.
-//!
-//! ## Who submits
-//!
-//! [`submit`] takes no application context by construction, so a console line, a
-//! bound key, a menu item and a `--script` line are the same caller. The console
-//! keeps its typed registry and becomes a producer: `Console::execute` parks a
-//! registry line, the host forwards it here, and `Console::dispatch` runs it from
-//! inside the App hook. A console built-in typed at the prompt takes the short
-//! path and never enters the queue; one named by any other producer arrives here
-//! like everything else and `Console::dispatch` resolves it.
-//!
-//! ## Where a drained line goes
-//!
-//! Engine verbs first, through the runner's own verb table; it owns those
-//! and no App is consulted for them. Everything else reaches
-//! [`App::apply_command`], which `SceneShell` fans out
-//! to the active [`Scene::apply_command`](crate::shell::Scene::apply_command).
-//!
-//! Output produced at the drain has no console in scope (the runner does not own
-//! one), so it lands in a buffer the host pumps into its scrollback, the same
-//! shape [`crate::log`] uses for mirrored tracing events. The echo of the line
-//! itself is written by whatever runs it, which is how it stays ahead of that
-//! line's output: a target holding a console writes both straight to it, and the
-//! engine-verb branch writes both into this buffer.
+//! T runs, however the frames were paced.**
 
 use std::sync::Mutex;
 
@@ -51,22 +20,17 @@ pub struct CommandLine {
 }
 
 impl CommandLine {
-    /// Parse one command line, or `None` when it holds no tokens.
     pub fn parse(line: &str) -> Option<Self> {
         let (name, args) = loam_egui::parse_line(line)?;
         Some(Self { name, args })
     }
 
-    /// Args as the `&[&str]` the console registry dispatches against.
     pub fn arg_refs(&self) -> Vec<&str> {
         self.args.iter().map(String::as_str).collect()
     }
 }
 
-/// A queued command paired with the tick index its drain precedes. Crate-only
-/// because [`drain`] is: a third drain point would be a second ordering, and
-/// the stamp would then describe only part of the frame's mutations. Appliers
-/// read the stamp off [`CommandCtx::tick`].
+/// A queued command paired with the tick index its drain precedes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StampedCommand {
     /// The command is applied before this tick runs.
@@ -76,8 +40,6 @@ pub(crate) struct StampedCommand {
 
 static QUEUE: Mutex<Vec<CommandLine>> = Mutex::new(Vec::new());
 
-/// Buffered output from commands applied at the drain. Drained by the host into
-/// a console; see [`pump_into`].
 static OUTPUT: Mutex<Vec<HistoryLine>> = Mutex::new(Vec::new());
 
 /// Buffered-output cap, so a host that submits without ever pumping cannot grow
@@ -85,7 +47,6 @@ static OUTPUT: Mutex<Vec<HistoryLine>> = Mutex::new(Vec::new());
 /// does at `MAX_HISTORY_LINES`.
 const MAX_BUFFERED_OUTPUT: usize = 256;
 
-/// Submit a command for the next drain.
 pub fn submit(command: CommandLine) {
     QUEUE
         .lock()
@@ -93,7 +54,7 @@ pub fn submit(command: CommandLine) {
         .push(command);
 }
 
-/// Parse and submit a raw line. Returns false when the line held no tokens.
+/// Returns false when the line held no tokens.
 pub fn submit_line(line: &str) -> bool {
     match CommandLine::parse(line) {
         Some(command) => {
@@ -105,7 +66,6 @@ pub fn submit_line(line: &str) -> bool {
 }
 
 /// Take everything queued, stamped with the tick the caller is about to run.
-/// Called from exactly two places, the two runners' pre-tick drain.
 pub(crate) fn drain(tick: u64) -> Vec<StampedCommand> {
     let queued = std::mem::take(&mut *QUEUE.lock().unwrap_or_else(|e| e.into_inner()));
     queued
@@ -114,14 +74,11 @@ pub(crate) fn drain(tick: u64) -> Vec<StampedCommand> {
         .collect()
 }
 
-/// Per-application context, held for one drained command.
 pub struct CommandCtx<'a> {
-    /// In scope at the drain point in both runners, and the reason a command that
-    /// has to rebuild a pipeline does not need a second deferred path.
     pub rd: &'a RenderDevice,
     /// The tick this command was stamped for; it has not run yet.
     pub tick: u64,
-    /// Where an applier writes user-facing output. Drained into the module's
+    /// Drained into the module's
     /// bounded output buffer after
     /// the command returns; a target that owns a console (a scene dispatching
     /// against its own registry) writes to that instead and leaves this empty.
@@ -131,10 +88,6 @@ pub struct CommandCtx<'a> {
 /// Engine verbs the runner owns, consulted before the App hook. Returns false
 /// when nothing here claims the name, which is the whole precedence rule: a
 /// claimed name never reaches an App.
-///
-/// One entry today. The other engine commands (`fps`, `trace`, `capture`,
-/// `scene`, `log`, `version`) still reach their module statics through the
-/// console registry and are convertible to this table one at a time.
 fn apply_engine_verb(command: &CommandLine, out: &mut ConsoleWriter) -> bool {
     match command.name.as_str() {
         "vsync" => {
@@ -193,12 +146,11 @@ pub(crate) fn apply_drained<A: App>(app: &mut A, rd: &RenderDevice, tick: u64) {
     }
 }
 
-/// Take output produced by commands applied at the drain.
 pub fn drain_output() -> Vec<HistoryLine> {
     std::mem::take(&mut *OUTPUT.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// Pump that output into a console's scrollback. Call once per frame before the
+/// Call once per frame before the
 /// console paints, beside [`crate::log::pump_into`]; this frame's drain already
 /// ran, so what it wrote shows this frame.
 pub fn pump_into<Ctx: 'static>(console: &mut Console<Ctx>) {

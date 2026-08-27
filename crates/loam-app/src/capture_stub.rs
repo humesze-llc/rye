@@ -5,14 +5,6 @@
 //! APNG encoder crates. This module mirrors the public API as no-ops so consumers
 //! (`loam_app::capture::CapturePanel`, `register_commands`, `bind_default_hotkeys`, etc.)
 //! compile against both targets without `cfg`-littering their call sites.
-//!
-//! Selected by `lib.rs` via a `#[path]` override when either:
-//! - the `capture` feature is disabled (lean native build), or
-//! - the build target is `wasm32-unknown-unknown` (no filesystem to write to).
-//!
-//! On wasm the user-facing UX is: the `capture` console command registers and prints a
-//! one-liner explaining that frame capture isn't available in the browser preview;
-//! programmatic [`enqueue`] calls silently drop.
 
 use std::path::PathBuf;
 
@@ -67,8 +59,7 @@ pub enum CaptureRequest {
     },
 }
 
-/// No-op enqueue: silently drops the request. Matches the real `enqueue` signature so
-/// programmatic callers compile, but no encoding happens.
+/// No-op enqueue: silently drops the request.
 pub fn enqueue(_req: CaptureRequest) {}
 
 /// Always returns `None` on stubbed builds; the real status string surfaces only when
@@ -78,8 +69,7 @@ pub fn current_status() -> Option<String> {
 }
 
 /// Register the `capture` console command as a stub that prints a one-liner explaining
-/// frame capture isn't available in this build. Keeps the command discoverable for
-/// users coming from a desktop session who type `capture png` out of habit.
+/// frame capture isn't available in this build.
 pub fn register_commands<Ctx: 'static>(console: &mut Console<Ctx>) {
     console.register(loam_egui::cmd(
         "capture",
@@ -94,9 +84,7 @@ pub fn register_commands<Ctx: 'static>(console: &mut Console<Ctx>) {
     ));
 }
 
-/// No-op hotkey binding. The real impl binds F12 (one-shot) and F9 (toggle); on stubbed
-/// builds those keys do nothing through this path. Apps can still bind them via their
-/// own console registrations.
+/// No-op hotkey binding.
 pub fn bind_default_hotkeys<Ctx: 'static>(_console: &mut Console<Ctx>) {}
 
 /// Stub `CapturePanel`. `new()` constructs an empty value; `show()` does nothing. The
@@ -111,7 +99,5 @@ impl CapturePanel {
         Self { _private: () }
     }
 
-    /// No-op render. The real impl draws a floating egui panel with capture controls;
-    /// stubbed builds emit nothing.
     pub fn show(&mut self, _ctx: &loam_egui::egui::Context) {}
 }

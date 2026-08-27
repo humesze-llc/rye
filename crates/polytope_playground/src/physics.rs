@@ -1363,6 +1363,8 @@ mod tests {
             (moved - layout).length()
         );
 
+        // 0.6 s time constant from MAX_THROW_SPEED down to REST_SPEED needs
+        // ~3.7 s; ten seconds of ticks is comfortably past it.
         physics.step(600);
         assert!(physics.at_rest(), "the throw never decayed back to rest");
         let settled = physics.pose(0, 1, Rotor4::IDENTITY).position;

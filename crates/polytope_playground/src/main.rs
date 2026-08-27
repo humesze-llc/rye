@@ -1039,6 +1039,9 @@ mod blended_edge_tests {
             STEREOGRAPHIC_VIEW_RADIUS,
         );
         let arc_len = polyline_length(&arc);
+        // Quarter circle of radius 0.7 has arc length 0.7·π/2 ≈ 1.0996 vs chord
+        // 0.7·√2 ≈ 0.9899. The 16-segment approximation undershoots the true arc
+        // slightly but still clears the chord comfortably.
         assert!(
             arc_len > chord + 0.05,
             "arc {arc_len} should exceed chord {chord}"
@@ -2426,6 +2429,9 @@ mod section_cap_projection_tests {
     #[test]
     fn stereographic_clip_cuts_to_boundary_and_drops_deep_pole() {
         let r = STEREOGRAPHIC_VIEW_RADIUS;
+        // Endpoints 30 degrees off the pole, opposite sides; their great circle
+        // passes through `+w` at its midpoint. Image magnitude cot(15 deg) ~ 3.73
+        // < R keeps the endpoints while the midpoint samples blow up.
         let off = 30.0_f32.to_radians();
         let a = Vec4::new(off.sin(), 0.0, 0.0, off.cos());
         let b = Vec4::new(-off.sin(), 0.0, 0.0, off.cos());
@@ -2682,6 +2688,8 @@ mod section_cap_projection_tests {
     fn cap_fill_uses_default_plus_w_pole() {
         let proj = default_stereographic();
         let clip = stereographic_clip_radius(&proj, STEREOGRAPHIC_VIEW_RADIUS);
+        // `(0.05, 0, 0, 1.0)` normalizes to dot ~ 0.99875 with +w, image ~40
+        // past the ~35 radius, so it drops.
         let near = cap_projected([0.05, 0.0, 0.0], 1.0, &proj);
         assert!(
             !sample_in_radius(near, clip),

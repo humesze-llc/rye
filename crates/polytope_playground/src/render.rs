@@ -1805,6 +1805,11 @@ mod tests {
     fn hyperslice_keeps_the_edges_whose_cells_cross_the_slab() {
         const THICKNESS: f32 = 0.2;
         const TILT: f32 = 0.5;
+        // Slab `[0.4, 0.6]`: above the tilted `e_z` w-extent
+        // (`BODY_SIZE · sin TILT` = 0.34) and below the `e_w` one
+        // (`BODY_SIZE · cos TILT` = 0.61), so a cell's w-range straddles the
+        // near boundary exactly when the cell holds `+e_w`, and the edges
+        // reaching only `-e_w` cells are the ones culled.
         const SLAB_CENTRE_W: f32 = 0.5;
         let physics = PlaygroundPhysics::new(1, BODY_SIZE);
         let frame = frame_of(

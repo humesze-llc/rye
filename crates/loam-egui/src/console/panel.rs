@@ -373,10 +373,7 @@ mod tests {
             (LineKind::System, "sys"),
         ]);
         let job = scrollback_layout_job(&h);
-        // Order: input, "
-", output, "
-", error, "
-", system.
+        // Order: input, "\n", output, "\n", error, "\n", system.
         let input_section = &job.sections[0];
         let output_section = &job.sections[2];
         let error_section = &job.sections[4];

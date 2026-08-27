@@ -1,10 +1,3 @@
-//! Window surface + wgpu adapter/device acquisition.
-//!
-//! [`RenderDevice::new`] picks a high-performance adapter and an sRGB surface
-//! format when available, optionally allocating a multisampled color
-//! attachment. [`RenderDevice::begin_frame`] returns the per-frame
-//! `(SurfaceTexture, TextureView)`.
-//!
 //! An sRGB surface renders direct to the swapchain. The scene pass draws
 //! through the target's own sRGB view ([`RenderDevice::msaa_view`], else the
 //! `begin_frame` view) and under MSAA [`RenderDevice::resolve_scene_to_swap`]
@@ -358,12 +351,7 @@ impl RenderDevice {
 
     /// Acquire the next swapchain texture and its default view. Returns the
     /// wgpu surface error directly so callers can branch on `Lost` / `Outdated`
-    /// / `Timeout`. The view carries the surface's own format, so which pass
-    /// targets it is per-path: the composite pass on a non-sRGB surface (see
-    /// [`RenderDevice::composite_to_swap`]), the scene pass on an sRGB surface
-    /// with MSAA off, and the scene resolve under MSAA (see
-    /// [`RenderDevice::resolve_scene_to_swap`]). A gamma-space UI pass takes
-    /// [`RenderDevice::create_ui_swap_view`], not this view.
+    /// / `Timeout`.
     pub fn begin_frame(
         &self,
     ) -> std::result::Result<(SurfaceTexture, TextureView), wgpu::SurfaceError> {
@@ -667,8 +655,6 @@ mod tests {
     const BOTH: DownlevelFlags =
         DownlevelFlags::SURFACE_VIEW_FORMATS.union(DownlevelFlags::VIEW_FORMATS);
 
-    /// Both swapchain paths (sRGB direct, linear composite) and a format with
-    /// no sRGB sibling.
     const SURFACES: [TextureFormat; 4] = [
         TextureFormat::Bgra8UnormSrgb,
         TextureFormat::Rgba8UnormSrgb,
@@ -676,7 +662,6 @@ mod tests {
         TextureFormat::Rgba16Float,
     ];
 
-    /// Neither flag, each alone, both, and everything.
     const DOWNLEVELS: [DownlevelFlags; 5] = [
         DownlevelFlags::empty(),
         DownlevelFlags::SURFACE_VIEW_FORMATS,
@@ -713,7 +698,6 @@ mod tests {
         let table = [
             (TextureFormat::Bgra8Unorm, TextureFormat::Bgra8UnormSrgb),
             (TextureFormat::Rgba8Unorm, TextureFormat::Rgba8UnormSrgb),
-            // No sRGB sibling: the offscreen scene target keeps this format.
             (TextureFormat::Rgba16Float, TextureFormat::Rgba16Float),
         ];
         for (surface, scene) in table {
@@ -732,12 +716,9 @@ mod tests {
                 let targets = ui_target_formats(surface, downlevel);
                 let case = format!("{surface:?} {downlevel:?}");
                 if surface.is_srgb() {
-                    // Direct path: the UI writes to the swapchain itself,
-                    // whatever the scene's sample count.
                     let swap = targets.swap_view_format.unwrap_or(surface);
                     assert_eq!(targets.ui_format, swap, "{case}");
                 } else {
-                    // Composite path: the UI writes to the offscreen target.
                     assert_eq!(targets.ui_format, surface.add_srgb_suffix(), "{case}");
                 }
             }

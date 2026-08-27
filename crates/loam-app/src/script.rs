@@ -1,26 +1,13 @@
-//! Frame-indexed console scripts: `--script=<path>`.
-//!
-//! A script file is lines of `<frame> <console command>`. The driver submits
-//! each command to [`crate::command`]'s queue on the frame whose index the
-//! line names, then asks the runner to exit a fixed margin past the last line.
-//!
-//! No new command language and no second dispatch path: a script line is
-//! submitted exactly as a typed line is, tokenized by the same grammar, and
-//! applied at the runner's one drain point.
+//! A script file is lines of `<frame> <console command>`, submitted to
+//! [`crate::command`]'s queue on the frame whose index the line names.
 //!
 //! [`ScriptDriver::frame`] counts calls to [`ScriptDriver::advance`], and that
-//! counter is the whole timeline. Nothing on the path reads a clock, so a
-//! frame that renders slowly still runs the same commands at the same index;
-//! `the_script_timeline_reads_no_clock` pins the absence in this module by
-//! scanning the source, and the dispatch it hands off to carries none either
-//! (`rg 'Instant|SystemTime|Duration|elapsed' crates/loam-console/src` is
-//! empty).
-//!
-//! [`ScriptDriver::advance`] takes nothing at all. That signature is the
-//! fence: with no `Window` and no event-loop handle in scope, cursor warping,
-//! focus requests and event injection are not callable from here, and every
-//! state change a script makes goes through the command queue, which reaches
-//! only what a typed line reaches.
+//! counter is the whole timeline: nothing on the path reads a clock, so a frame
+//! that renders slowly still runs the same commands at the same index.
+//! `advance` takes nothing, which is the fence: with no `Window` and no
+//! event-loop handle in scope, cursor warping, focus requests and event
+//! injection are not callable, and every state change a script makes goes
+//! through the command queue.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,9 +16,8 @@ use anyhow::{anyhow, bail, Context as _, Result};
 
 use crate::command;
 
-/// Frames the driver keeps running past the last scheduled command before it
-/// asks for exit. Long enough for that command's effect to reach the
-/// swapchain and for a streaming capture started by it to write something.
+// Long enough for the last command's effect to reach the swapchain and for a
+// streaming capture started by it to write something.
 const SETTLE_FRAMES: u64 = 60;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,22 +26,17 @@ pub struct ScriptStep {
     pub command: String,
 }
 
-/// Steps keep file order and their frame indices never
-/// decrease, so "run everything due, in order" is total.
+/// Steps keep file order and their frame indices never decrease.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Script {
     steps: Vec<ScriptStep>,
 }
 
 impl Script {
-    /// Blank lines and lines whose first
-    /// non-space character is `#` are ignored; anything else that is not a
-    /// frame index followed by a command is an error naming the line, because
-    /// a script that quietly runs a subset of itself is worse than one that
-    /// refuses to start.
-    ///
-    /// Only a leading `#` comments: truncating at a mid-line `#` would eat a
-    /// command argument that legitimately contains one.
+    /// Blank lines and lines whose first non-space character is `#` are ignored;
+    /// anything else that is not a frame index followed by a command is an error
+    /// naming the line. Only a leading `#` comments: truncating at a mid-line `#`
+    /// would eat a command argument that legitimately contains one.
     pub fn parse(source: &str) -> Result<Self> {
         let mut steps: Vec<ScriptStep> = Vec::new();
         for (index, raw) in source.lines().enumerate() {
@@ -92,8 +73,8 @@ impl Script {
         Ok(Self { steps })
     }
 
-    /// The path rides along in the error so a
-    /// reported line number is attributable.
+    /// The path rides along in the error so a reported line number is
+    /// attributable.
     pub fn load(path: &Path) -> Result<Self> {
         let source = std::fs::read_to_string(path)
             .with_context(|| format!("reading script {}", path.display()))?;
@@ -138,8 +119,8 @@ impl ScriptDriver {
         self.frame
     }
 
-    /// Steps whose frame the playhead has already passed still
-    /// fire, so a host that skips a frame loses ordering but never a command.
+    /// Steps whose frame the playhead has already passed still fire, so a host
+    /// that skips a frame loses ordering but never a command.
     pub fn advance(&mut self) -> ScriptStatus {
         while let Some(step) = self.script.steps.get(self.next) {
             if step.frame > self.frame {
@@ -173,9 +154,7 @@ pub fn exit_requested() -> bool {
 mod tests {
     use super::*;
 
-    /// Drive `script` for `frames` frames, draining the queue between advances
-    /// the way the runner does, and return `(frame, command line)` for
-    /// everything that reached it.
+    // Drains the queue between advances the way the runner does.
     fn play(script: Script, frames: u64) -> Vec<(u64, String)> {
         let _held = command::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = command::drain(0);
@@ -375,9 +354,8 @@ mod tests {
         assert_eq!(driver.advance(), ScriptStatus::Finished);
     }
 
-    /// This module's code, with comments and this test module removed. The
-    /// prose above has to name the very APIs the scans below forbid, so the
-    /// scans read code only.
+    // This module's code, with comments and this test module removed: the prose
+    // above names the very APIs the scans below forbid.
     fn driver_code() -> String {
         let source = include_str!("script.rs");
         let before_tests = source

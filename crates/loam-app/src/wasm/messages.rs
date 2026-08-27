@@ -1,22 +1,15 @@
-//! Typed protocol for postMessage traffic between main thread and worker.
-//!
-//! Main thread builds `{kind: "...", ...}` JS objects; the worker parses
-//! non-init messages via [`parse_non_init`] into [`InputMessage`] and
-//! queues them for `WorkerRunner::frame`. The `init` kind is handled by
-//! the worker entry (it carries an `OffscreenCanvas` transferable and
-//! triggers the one-time async wgpu+App setup).
+//! The `init` kind is handled by the worker entry instead: it carries an
+//! `OffscreenCanvas` transferable and triggers the one-time async wgpu setup.
 
 use anyhow::Result;
 use wasm_bindgen::JsValue;
 
 use super::input_queue::InputMessage;
 
-/// Parse a non-init postMessage payload into an [`InputMessage`].
-///
-/// `Ok(None)` covers both the "init" kind (caller handles) and unknown
-/// kinds (logged and dropped). `Err` means a malformed payload (no
-/// `kind` field). "init" is excluded here because its parse depends on
-/// the App type parameter this non-generic module lacks.
+/// `Ok(None)` covers both the `init` kind, which the caller handles, and unknown
+/// kinds, which are logged and dropped. `Err` means a payload with no `kind`
+/// field. `init` is excluded because its parse depends on the App type parameter
+/// this non-generic module lacks.
 pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
     let kind = js_sys::Reflect::get(data, &JsValue::from_str("kind"))
         .ok()
@@ -70,12 +63,10 @@ pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
     Ok(Some(msg))
 }
 
-/// Read the `dpr` field of an `init` or `resize` payload. Shared with the
-/// worker's `init` handler, which parses outside [`parse_non_init`].
-///
-/// A missing, zero, or non-finite ratio falls back to 1.0: it divides
-/// egui's `size_in_pixels` into points, so anything else poisons the whole
-/// screen rect rather than merely mis-scaling it.
+/// Shared with the worker's `init` handler, which parses outside
+/// [`parse_non_init`]. A missing, zero, or non-finite ratio falls back to 1.0:
+/// it divides egui's `size_in_pixels` into points, so anything else poisons the
+/// whole screen rect rather than merely mis-scaling it.
 pub fn read_device_pixel_ratio(obj: &JsValue) -> f32 {
     read_f32_field(obj, "dpr")
         .filter(|dpr| dpr.is_finite() && *dpr > 0.0)

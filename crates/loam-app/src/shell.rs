@@ -1,8 +1,3 @@
-//! Multi-scene shell: one [`App`] hosting a registry of [`Scene`]s behind a
-//! shared menu bar, with boot selection via `--scene=<slug>` / `?scene=<slug>`
-//! and an embed mode (`--embed=1` / `?embed=1`) that hides the bar for page
-//! embeds.
-//!
 //! [`Scene`] names no Space: each scene owns its own and recompiles through its
 //! own [`ShaderOwner`](crate::ShaderOwner), so a registry may mix geometries.
 
@@ -18,13 +13,12 @@ use crate::args::Args;
 use crate::command::{CommandCtx, CommandLine};
 use crate::{egui, App, AssetEvent, FrameCtx, RenderCtx, SetupCtx, ShaderDb};
 
-/// One hostable scene. [`App::tick`], [`App::on_event`] and
-/// [`App::on_shader_reload`] reach no scene, because the shell forwards
-/// none of them: a scene that needs one cannot be hosted.
+/// [`App::tick`], [`App::on_event`] and [`App::on_shader_reload`] reach no
+/// scene: the shell forwards none of them, so a scene needing one cannot be
+/// hosted.
 pub trait Scene {
-    /// Recompile this scene's shaders, scoped to the
-    /// [`ShaderOwner`](crate::ShaderOwner) it took at build time so the db
-    /// rebuilds them against the Space this scene loaded them with.
+    /// Scoped to the `ShaderOwner` this scene took at build time, so the db
+    /// rebuilds against the Space it loaded them with.
     fn apply_shader_events(&mut self, _events: &[AssetEvent], _shader_db: &mut ShaderDb) {}
     /// Apply one queued command, before the tick it is stamped for.
     fn apply_command(
@@ -44,8 +38,7 @@ pub trait Scene {
         state: winit::event::ElementState,
         ctx: &mut FrameCtx<'_>,
     );
-    /// Record this scene's passes into the runner's frame-wide encoder. Must
-    /// not submit; see [`RenderCtx`].
+    /// Must not submit; see `RenderCtx`.
     fn record(&mut self, ctx: &mut RenderCtx<'_>) -> Result<()>;
     fn title(&self, fps: f32) -> Cow<'static, str>;
 }
@@ -56,18 +49,17 @@ pub struct SceneEntry {
     pub build: fn(&mut SetupCtx<'_>) -> Result<Box<dyn Scene>>,
 }
 
-/// A demo's scene table. A trait rather than a value because [`App::setup`] is
-/// a static method: the shell has no instance that could have been handed a
-/// registry.
+/// A trait rather than a value because [`App::setup`] is a static method: the
+/// shell has no instance that could have been handed a registry.
 pub trait SceneRegistry: 'static {
     /// Index 0 is the fallback when no `scene` arg selects one, so this must be
     /// non-empty.
     const SCENES: &'static [SceneEntry];
 }
 
-/// A console command's context is
-/// the scene's own state, so it cannot see [`SceneShell`]; the shell publishes
-/// `active` and drains `pending` around the scene's `ui`.
+// A console command's context is the scene's own state, so it cannot see
+// `SceneShell`; the shell publishes `active` and drains `pending` around the
+// scene's `ui`.
 struct Switcher {
     active: usize,
     pending: Option<usize>,
@@ -81,7 +73,7 @@ static SWITCHER: Mutex<Switcher> = Mutex::new(Switcher {
 fn with_switcher<R>(f: impl FnOnce(&mut Switcher) -> R) -> R {
     // Recover from poisoning rather than propagate it: the switcher holds an
     // index and a pending slug, neither of which a panicking thread can leave
-    // torn, so the worst a poisoned lock costs is one stale scene request.
+    // torn, so a poisoned lock costs one stale scene request.
     f(&mut SWITCHER.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
@@ -89,8 +81,7 @@ fn scene_index(scenes: &[SceneEntry], slug: &str) -> Option<usize> {
     scenes.iter().position(|entry| entry.slug == slug)
 }
 
-/// Queue a switch to the scene named `slug`, applied after the current
-/// frame's scene `ui` returns.
+// Applied after the current frame's scene `ui` returns.
 fn request_scene(scenes: &[SceneEntry], slug: &str) -> Result<()> {
     let index = scene_index(scenes, slug).ok_or_else(|| {
         let known = scenes
@@ -104,8 +95,6 @@ fn request_scene(scenes: &[SceneEntry], slug: &str) -> Result<()> {
     Ok(())
 }
 
-/// Register the `scene` command: bare lists the registry and marks the
-/// active entry, `scene <slug>` switches.
 pub fn register_command<Ctx: 'static, R: SceneRegistry>(console: &mut Console<Ctx>) {
     let slugs = R::SCENES.iter().map(|entry| entry.slug).collect::<Vec<_>>();
     console.register(
@@ -145,9 +134,8 @@ type SceneSlots = Vec<Option<Box<dyn Scene>>>;
 
 const ACTIVE_IS_BUILT: &str = "a scene is built before it becomes active";
 
-/// One empty slot per registry entry with `boot` filled. Deferring the rest is
-/// the point: a cold start pays one scene's shader compile and VRAM instead of
-/// the whole registry's.
+// One empty slot per registry entry with `boot` filled, so a cold start pays
+// one scene's shader compile and VRAM instead of the whole registry's.
 fn build_boot_only(
     count: usize,
     boot: usize,
@@ -158,10 +146,9 @@ fn build_boot_only(
     Ok(slots)
 }
 
-/// Make `next` the active index, constructing it on first activation and
-/// serving the cached instance after. Returns the index actually active:
-/// `current` when the build failed, since every frame unwraps the active slot
-/// and a switch is not worth tearing the process down for.
+// Returns the index actually active: `current` when the build failed, since
+// every frame unwraps the active slot and a switch is not worth tearing the
+// process down for.
 fn activate(
     slots: &mut SceneSlots,
     current: usize,
@@ -183,21 +170,18 @@ fn activate(
 
 pub struct SceneShell<R: SceneRegistry> {
     scenes: SceneSlots,
-    /// Scene shader entries live here, not in the runner's db: the runner's
-    /// `&mut ShaderDb` dies with `App::setup`, and a scene built on a later
-    /// switch still has to mint an owner and compile against its own Space.
+    /// Not the runner's db: the runner's `&mut ShaderDb` dies with `App::setup`,
+    /// and a scene built on a later switch must mint an owner of its own.
     shader_db: ShaderDb,
     active: usize,
     /// Embed mode: no menu bar; the page chrome owns navigation.
     embed: bool,
-    /// `SetupCtx::sim_threads` retained from boot, because a scene built on a
-    /// later switch gets a `SetupCtx` the shell assembles and must see the
-    /// budget the runner resolved, not a fresh guess at it.
+    /// Retained from boot: a scene built on a later switch gets a `SetupCtx` the
+    /// shell assembles and must see the budget the runner resolved.
     sim_threads: usize,
     capture_panel: crate::capture::CapturePanel,
     perf: crate::trace::PerfOverlay,
-    /// `R` is reachable only through its associated const, so nothing else in
-    /// the struct carries it.
+    /// `R` is reachable only through its associated const.
     registry: PhantomData<fn() -> R>,
 }
 
@@ -208,9 +192,8 @@ impl<R: SceneRegistry> SceneShell<R> {
             .expect(ACTIVE_IS_BUILT) // ok: activate builds before it sets active
     }
 
-    /// `watcher` is `None`: the runner owns
-    /// it and only lends it for the duration of `setup`, so a scene built later
-    /// cannot register new watch paths.
+    // `watcher` is `None`: the runner lends it only for the duration of `setup`,
+    // so a scene built later cannot register new watch paths.
     fn apply_pending_switch(&mut self, rd: &RenderDevice, time: f32, sim_threads: usize) {
         let Self {
             scenes,
@@ -231,8 +214,6 @@ impl<R: SceneRegistry> SceneShell<R> {
     }
 }
 
-/// Take whatever the menu bar or the `scene` command queued, activate it, and
-/// republish the index that ended up active. Returns the new active index.
 fn drain_pending(
     slots: &mut SceneSlots,
     active: usize,
@@ -247,7 +228,7 @@ fn drain_pending(
     now
 }
 
-/// (boot scene index, embed). Unknown slugs fall back to scene 0.
+// (boot scene index, embed). Unknown slugs fall back to scene 0.
 fn resolve_boot(scenes: &[SceneEntry], args: &Args) -> (usize, bool) {
     let active = match args.get("scene") {
         None => 0,
@@ -287,9 +268,8 @@ impl<R: SceneRegistry> App for SceneShell<R> {
         })
     }
 
-    /// Fanned out because each scene's apply is scoped to its own owner: a
-    /// scene reached here recompiles only the modules it loaded, each against
-    /// the prelude that module was loaded with.
+    // Fanned out because each scene's apply is scoped to its own owner: a scene
+    // recompiles only the modules it loaded, against their own prelude.
     fn apply_shader_events(&mut self, events: &[AssetEvent], _shader_db: &mut ShaderDb) {
         let Self {
             scenes, shader_db, ..
@@ -299,8 +279,7 @@ impl<R: SceneRegistry> App for SceneShell<R> {
         }
     }
 
-    /// Only the active scene. A command names whatever the scene it was typed
-    /// against names.
+    // Only the active scene.
     fn apply_command(&mut self, cmd: &CommandLine, ctx: &mut CommandCtx<'_>) -> Result<()> {
         self.active_scene().apply_command(cmd, ctx)
     }
@@ -312,7 +291,7 @@ impl<R: SceneRegistry> App for SceneShell<R> {
     fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
         if !self.embed {
             // Bar renders first so the scene's own windows see it in
-            // `available_rect()`. `content_rect()` is the viewport minus OS
+            // `available_rect()`; `content_rect()` is the viewport minus OS
             // safe-area insets and never shrinks for a panel.
             let active = self.active;
             let scene = self.active_scene();
@@ -336,9 +315,9 @@ impl<R: SceneRegistry> App for SceneShell<R> {
         self.active_scene().ui(ctx, frame);
         self.capture_panel.show(ctx);
         self.perf.show(ctx);
-        // Drained after the scene's `ui` returns: the `scene` command runs
-        // inside it, holding the borrow a switch would invalidate. Menu-bar
-        // clicks queue through the same slot, so both paths land here.
+        // Drained after the scene's `ui` returns: the `scene` command runs inside
+        // it, holding the borrow a switch would invalidate. Menu-bar clicks queue
+        // through the same slot.
         self.apply_pending_switch(frame.rd, frame.time, self.sim_threads);
     }
 
@@ -371,19 +350,12 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    /// A scene holding a geometry of its own, written to be compiled: what is
-    /// under test is that `Scene` admits it, not what it does.
     struct HyperbolicScene {
-        /// Held, never read: a real scene keeps its Space to load shaders with
-        /// at build time, and holding one is what makes this fixture a scene in
-        /// H³ rather than a bare stub.
         #[allow(dead_code)]
         space: HyperbolicH3,
         owner: ShaderOwner,
-        /// Per-instance state the test can write from outside and read back
-        /// through `title`, which is the only `Scene` method reachable without
-        /// a frame. A cached activation must return the object that holds this
-        /// cell, not a fresh one that merely answers the same way.
+        /// Written from outside and read back through `title`: a cached
+        /// activation must return the object holding this cell, not a new one.
         state: Rc<Cell<u32>>,
     }
 
@@ -427,8 +399,7 @@ mod tests {
             },
         };
         // Index 1, not 0: 0 is also the unknown-slug fallback, so a one-entry
-        // table would answer the same under a `resolve_boot` that never
-        // consults the slug at all.
+        // table would answer the same under a `resolve_boot` that ignores slugs.
         const TABLE: &[SceneEntry] = &[
             SceneEntry {
                 slug: "euclidean",
@@ -443,8 +414,8 @@ mod tests {
         );
     }
 
-    /// Stand-in registry, three entries deep so a lookup asserted against it is
-    /// distinguishable from no lookup at all.
+    // Three entries deep, so a lookup asserted against it is distinguishable
+    // from no lookup at all.
     struct Fixture;
 
     impl SceneRegistry for Fixture {
@@ -505,13 +476,12 @@ mod tests {
         assert!(!resolve_boot(REGISTRY, &Args::from_pairs([("embed", "false")])).1);
     }
 
-    /// GPU-free stand-in for a built scene; the lazy table's contract is about
-    /// when a builder runs, not what it returns.
+    // GPU-free stand-in; the lazy table's contract is about when a builder runs,
+    // not what it returns.
     fn stub_scene() -> Box<dyn Scene> {
         stateful_stub_scene(Rc::default())
     }
 
-    /// A stub whose state the caller keeps a handle to.
     fn stateful_stub_scene(state: Rc<Cell<u32>>) -> Box<dyn Scene> {
         Box::new(HyperbolicScene {
             space: HyperbolicH3,
@@ -520,12 +490,11 @@ mod tests {
         })
     }
 
-    /// `SWITCHER` is process-global and cargo runs tests on parallel threads,
-    /// so a test that queues through it has to own it outright.
+    // `SWITCHER` is process-global and cargo runs tests on parallel threads, so
+    // a test that queues through it has to own it outright.
     static SWITCHER_TESTS: Mutex<()> = Mutex::new(());
 
-    /// Run `f` with the switcher held and reset, so no test inherits the index
-    /// another one published.
+    // Held and reset, so no test inherits the index another one published.
     fn with_exclusive_switcher<T>(f: impl FnOnce() -> T) -> T {
         let _held = SWITCHER_TESTS
             .lock()
@@ -592,8 +561,8 @@ mod tests {
         });
     }
 
-    /// The slug bare `scene` marks with `*`, which is the console's own view of
-    /// which scene the shell is rendering.
+    // The slug bare `scene` marks with `*`, the console's own view of which
+    // scene the shell is rendering.
     fn marked_slug(console: &mut Console<()>) -> String {
         console.clear_history();
         crate::command::run_on_console(console, "scene", &mut ());

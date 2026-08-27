@@ -1,7 +1,5 @@
-//! The browser's CSS-pixel pointer stream against the physical pixels
-//! `FrameInput::cursor_pos` is specified in. `crate::wasm` is wasm32-gated,
-//! so the conversion is included by path and driven against a real
-//! `InputState` rather than a copy of either.
+//! `crate::wasm` is wasm32-gated, so the CSS-to-physical pixel conversion is
+//! included by path and driven against a real `InputState`.
 
 #[path = "../src/wasm/input_queue.rs"]
 // Message variants this test has no reason to construct.
@@ -12,20 +10,18 @@ use input_queue::physical_cursor;
 use loam_input::InputState;
 use winit::event::{ElementState, MouseButton};
 
-/// CSS positions and the physical pixels each DPR must map them to.
-/// Literal expectations, not the formula restated.
+// Literal expectations, not the formula restated.
 const CSS_X: f32 = 37.0;
 const CSS_Y: f32 = 91.0;
 const CASES: [(f32, f32, f32); 3] = [(1.0, 37.0, 91.0), (1.5, 55.5, 136.5), (2.0, 74.0, 182.0)];
 
-/// Mirrors the worker's `MouseMove` arm.
 fn mouse_move(input: &mut InputState, x: f32, y: f32, dpr: f32) {
     let (x, y) = physical_cursor(x, y, dpr);
     input.cursor_moved(x, y);
 }
 
-/// Mirrors the worker's `MouseButton` arm: the click's own position lands
-/// before the transition is recorded.
+// Mirrors the worker's `MouseButton` arm: the click's own position lands before
+// the transition is recorded.
 fn mouse_press(input: &mut InputState, x: f32, y: f32, dpr: f32) {
     let (x, y) = physical_cursor(x, y, dpr);
     input.cursor_moved(x, y);

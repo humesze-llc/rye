@@ -1,25 +1,18 @@
-//! Worker-side egui integration.
-//!
-//! Parallel to [`loam_egui::UiIntegration`] but without `egui_winit`
-//! (winit's web backend assumes a `web_sys::Window`, which panics in
-//! `WorkerGlobalScope`). Translates [`super::input_queue::InputMessage`]
-//! directly into `egui::RawInput::events` and mirrors the `begin_frame` +
-//! `paint` lifecycle so `App::ui` works unchanged. No cursor / clipboard
-//! / IME platform-output handling, and no egui pipeline warmup.
+//! Parallel to [`loam_egui::UiIntegration`] but without `egui_winit`: winit's
+//! web backend assumes a `web_sys::Window`, which panics in
+//! `WorkerGlobalScope`. No cursor / clipboard / IME platform-output handling,
+//! and no egui pipeline warmup.
 
 use loam_egui::egui;
 
 use super::input_queue::InputMessage;
 
-/// Owns the egui-wgpu `Renderer`, `egui::Context`, and a per-frame
-/// `RawInput` accumulator. Constructed once per worker session.
 pub struct WorkerUi {
     ctx: egui::Context,
     renderer: egui_wgpu::Renderer,
     raw_events: Vec<egui::Event>,
     modifiers: egui::Modifiers,
-    /// `pixels_per_point` converts egui points (CSS-pixel equivalents)
-    /// to wgpu pixels.
+    /// egui points are CSS-pixel equivalents; this converts them to wgpu pixels.
     width_px: u32,
     height_px: u32,
     pixels_per_point: f32,
@@ -53,7 +46,6 @@ impl WorkerUi {
         }
     }
 
-    /// Translate one InputMessage into zero or more egui events.
     /// Updates `modifiers` as a side effect on key events.
     pub fn record_input(&mut self, msg: &InputMessage) {
         match msg {
@@ -101,8 +93,8 @@ impl WorkerUi {
                     mac_cmd: *meta,
                     command: *ctrl || *meta,
                 };
-                // Unknown codes drop here; the App's hotkey routing covers
-                // them via InputState.
+                // Unknown codes drop here; the App's hotkey routing covers them
+                // via InputState.
                 if let Some(egui_key) = crate::keymap::keycode_egui(code) {
                     self.raw_events.push(egui::Event::Key {
                         key: egui_key,
@@ -127,8 +119,7 @@ impl WorkerUi {
             InputMessage::Focus(focused) => {
                 self.raw_events.push(egui::Event::WindowFocused(*focused));
             }
-            // Handled outside egui (runner, cursor mirror, frame-loop
-            // entry).
+            // Handled outside egui: runner, cursor mirror, frame-loop entry.
             InputMessage::Resize { .. }
             | InputMessage::Visibility(_)
             | InputMessage::Start
@@ -136,15 +127,13 @@ impl WorkerUi {
         }
     }
 
-    /// Canvas-relative CSS pixels to egui points. The InputMessage
-    /// already carries CSS pixels, which egui treats as points, so this
-    /// passes through.
+    // The InputMessage already carries CSS pixels, which egui treats as points,
+    // so this passes through.
     fn point(&self, x: f32, y: f32) -> egui::Pos2 {
         egui::pos2(x, y)
     }
 
-    /// Begin a frame from accumulated raw input; returns the Context the
-    /// worker reads [`loam_egui::UiCapture`] from and hands to `App::ui`.
+    /// Returns the Context the worker reads [`loam_egui::UiCapture`] from.
     pub fn begin_frame(&mut self) -> &egui::Context {
         let raw_input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -164,9 +153,8 @@ impl WorkerUi {
         &self.ctx
     }
 
-    /// Finish the frame and paint into `view`, which is single-sampled on
-    /// every path (see `crate::UI_PASS_SAMPLE_COUNT`). Mirrors
-    /// `UiIntegration::paint` without the winit `handle_platform_output`
+    /// `view` is single-sampled on every path (see `crate::UI_PASS_SAMPLE_COUNT`).
+    /// Mirrors `UiIntegration::paint` without the winit `handle_platform_output`
     /// step.
     pub fn paint(
         &mut self,

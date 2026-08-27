@@ -1,14 +1,10 @@
-//! `loam-app`: thin App trait + event-loop runner that extracts the winit
-//! boilerplate every Loam example would otherwise rewrite.
-
 use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::sync::Arc;
 // `std::time::Instant::now` panics on wasm32, so the swap is mandatory there.
 use web_time::Instant;
 
-// Real capture pipeline on native+`capture`; stub elsewhere. Both expose the
-// same surface so demos need no `cfg` gates at `loam_app::capture::*` call sites.
+// Both cfg arms expose one surface, so demos need no gates at the call sites.
 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
 pub mod capture;
 
@@ -56,17 +52,13 @@ pub use loam_egui::{egui, world_to_screen, UiCapture};
 pub use loam_input::FrameInput as Input;
 pub use loam_shader::{ShaderDb, ShaderOwner};
 
-/// The framework calls back into your App through this trait.
 pub trait App: Sized + 'static {
-    /// One-shot construction after `RenderDevice` and `ShaderDb` are ready.
     fn setup(ctx: &mut SetupCtx<'_>) -> anyhow::Result<Self>;
 
-    /// Per-tick simulation step at the fixed-timestep rate: usually 0 or 1 per
-    /// frame, spiking after a stall to the runner's catch-up cap.
+    /// Runs 0..N times per frame, N bounded by the runner's catch-up cap.
     fn tick(&mut self, _dt: f32, _ctx: &mut TickCtx<'_>) {}
 
-    /// Apply one command from [`crate::command`]'s queue, before the tick it is
-    /// stamped for.
+    /// Applied before the tick it is stamped for.
     fn apply_command(
         &mut self,
         cmd: &command::CommandLine,
@@ -75,16 +67,14 @@ pub trait App: Sized + 'static {
         anyhow::bail!("no command target for `{}`", cmd.name)
     }
 
-    /// Per-frame update with drained input, after all the frame's ticks.
+    /// Runs after all the frame's ticks, with the drained input.
     fn update(&mut self, _ctx: &mut FrameCtx<'_>) {}
 
-    /// Not called for keyboard events in the wasm worker (it can't construct a
-    /// `WindowEvent::KeyboardInput`); use [`App::on_key`] for hotkeys, which fires
-    /// on both paths.
+    /// Not called for keyboard events in the wasm worker, which cannot construct
+    /// a `WindowEvent::KeyboardInput`; `on_key` fires on both paths.
     fn on_event(&mut self, _ev: &WindowEvent, _ctx: &mut FrameCtx<'_>) {}
 
-    /// Keyboard hotkey hook, fired for every press and release after input
-    /// routing.
+    /// Fired for every press and release, after input routing.
     fn on_key(
         &mut self,
         _code: winit::keyboard::KeyCode,
@@ -93,48 +83,35 @@ pub trait App: Sized + 'static {
     ) {
     }
 
-    /// Recompile the shaders `events` touches.
     fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
         shader_db.apply_events(ShaderDb::ROOT_OWNER, events);
     }
 
-    /// Hot-reload notification, after [`App::apply_shader_events`] has run;
-    /// rebuild any consumer pipelines that may be stale.
+    /// Runs after `apply_shader_events`; rebuild any stale consumer pipelines.
     fn on_shader_reload(&mut self, _ctx: &mut SetupCtx<'_>) {}
 
-    /// Legacy render path. Implement either this or `App::record`; the runner
-    /// always calls `record`, whose default impl calls this.
+    /// Implement either this or `record`; the runner always calls `record`.
     fn render(&mut self, _rd: &RenderDevice, _view: &wgpu::TextureView) -> anyhow::Result<()> {
         Ok(())
     }
 
-    /// Preferred render path: the runner owns one frame-wide command encoder
-    /// (shared via [`RenderCtx::encoder`]) for the demo's passes, ui-paint, and
-    /// the wasm composite, reaching the GPU in a single `queue.submit`.
-    ///
-    /// Contract:
-    /// - Do NOT call `encoder.finish()` or `queue.submit`; the runner does that
-    ///   once at end-of-frame.
-    /// - Use `ctx.view` as the color target; the runner already selected the
-    ///   right view (MSAA / scene-target / swapchain) for the platform.
+    /// Do NOT call `encoder.finish()` or `queue.submit`; the runner does that once
+    /// at end-of-frame. `ctx.view` is already the right view for the platform.
     fn record(&mut self, ctx: &mut RenderCtx<'_>) -> anyhow::Result<()> {
         self.render(ctx.rd, ctx.view)
     }
 
-    /// Build this frame's egui UI, after [`App::update`]; painted as a 2D overlay.
+    /// Runs after `App::update`; painted as a 2D overlay.
     fn ui(&mut self, _ctx: &egui::Context, _frame: &mut FrameCtx<'_>) {}
 
-    /// Title bar text. Override for live readouts; the runner rate-limits the
-    /// `set_title` call to ~1 Hz.
+    /// The runner rate-limits the `set_title` call to ~1 Hz.
     fn title(&self, _fps: f32) -> Cow<'static, str> {
         Cow::Borrowed("loam app")
     }
 }
 
-/// The catch-up cap lives solely in the `FixedTimestep`
-/// (`with_max_catch_up`); capping again here would book ticks the accumulator
-/// charged but the sim never ran, silently losing sim time and desyncing
-/// `tick_index` from `FixedTimestep::tick`.
+// The catch-up cap lives solely in the `FixedTimestep`: capping again here would
+// book ticks the accumulator charged but the sim never ran.
 pub(crate) fn drive_fixed_ticks<A: App>(
     app: &mut A,
     timestep: &mut FixedTimestep,
@@ -160,52 +137,38 @@ pub(crate) fn drive_fixed_ticks<A: App>(
     n_ticks
 }
 
-/// Setup-phase context. Available during [`App::setup`] and [`App::on_shader_reload`].
 pub struct SetupCtx<'a> {
     pub rd: &'a RenderDevice,
     pub shader_db: &'a mut ShaderDb,
-    /// `None` when filesystem watching failed to init; apps still load shaders
-    /// but get no hot-reload.
+    /// `None` when filesystem watching failed to init: shaders load, but no
+    /// hot-reload.
     pub watcher: Option<&'a mut AssetWatcher>,
     /// Wall-clock seconds since `run`. Always 0 in `setup`.
     pub time: f32,
-    /// Sim worker budget the runner resolved once before `setup`, and the
-    /// same integer [`TickCtx::jobs`] partitions against.
+    /// Resolved once before `setup` and constant for the run.
     pub sim_threads: usize,
 }
 
-/// Per-tick context. Visible to [`App::tick`]. Deliberately GPU-free so sim code stays
-/// bit-deterministic.
+/// Deliberately GPU-free so sim code stays bit-deterministic.
 pub struct TickCtx<'a> {
-    /// Sim time in seconds: `tick` scaled by the runner's fixed-timestep
-    /// interval (`1.0 / RunConfig::fixed_hz` natively, 1/60 in the wasm
-    /// worker). Derived from the tick index rather than read from the clock, so
-    /// replaying the same tick range yields the same bits.
+    /// Derived from the tick index rather than read from the clock, so replaying
+    /// the same tick range yields the same bits.
     pub time: f32,
     pub tick: u64,
-    /// The runner's worker pool, lent for the tick. The one runner-owned
-    /// resource a deterministic tick may reach: its partition is a pure
-    /// function of (unit count, worker count), so what a stage computes does
-    /// not depend on how the pool scheduled it. Its timings do, and nothing
-    /// in a tick may branch on them.
+    /// The one runner-owned resource a deterministic tick may reach: its
+    /// partition is a pure function of (unit count, worker count). Its timings
+    /// are not, and nothing in a tick may branch on them.
     pub jobs: &'a JobPool,
 }
 
-/// Render-time context for `App::record`. Owns the shared frame encoder; the
-/// runner reuses it for ui-paint and the wasm composite, then submits once.
-///
-/// `view` is the runner's scene-pass color target for the platform (MSAA
-/// attachment, offscreen scene texture on the composite path, or the swapchain
-/// view).
+/// Owns the shared frame encoder, reused for ui-paint and the wasm composite and
+/// submitted once. `view` is the platform's scene-pass color target.
 pub struct RenderCtx<'a> {
     pub rd: &'a RenderDevice,
     pub view: &'a wgpu::TextureView,
-    /// Shared command encoder. Open passes, draw, drop; do NOT call `finish()`
-    /// or `queue.submit`.
     pub encoder: &'a mut wgpu::CommandEncoder,
 }
 
-/// Per-frame context. Visible to [`App::update`] and [`App::on_event`].
 pub struct FrameCtx<'a> {
     pub rd: &'a RenderDevice,
     pub input: FrameInput,
@@ -213,27 +176,19 @@ pub struct FrameCtx<'a> {
     pub fps: f32,
     pub n_ticks: usize,
     pub tick: u64,
-    /// Wall-clock seconds since the previous `App::update` call.
-    ///
-    /// First call after setup gets the runner's fixed-timestep interval as a
-    /// sensible fallback (`1.0 / RunConfig::fixed_hz` natively, 1/60 in the
-    /// wasm worker; no prior frame to measure from).
+    /// Wall-clock seconds since the previous `App::update`; the first call
+    /// after setup reports the fixed-timestep interval instead.
     pub dt: f32,
-    /// What egui is consuming this frame, per input device.
     pub ui_capture: UiCapture,
     _non_exhaustive: PhantomData<()>,
 }
 
-/// Default catch-up ticks a single frame may run before the accumulator's
-/// excess is dropped.
 pub const DEFAULT_MAX_TICKS_PER_FRAME: u32 = 4;
 
 const SIM_THREADS_KEY: &str = "threads";
 
-/// Resolve the sim worker budget. Called once per process, before
-/// `App::setup`, and never again: a mid-run change would make the schedule a
-/// function of when the operator typed it, so a replay from tick 0 would stop
-/// reproducing the run.
+// Resolved once per process: a mid-run change would make the schedule a function
+// of when the operator typed it, so a replay from tick 0 would diverge.
 pub(crate) fn resolve_sim_threads(args: &Args, configured: Option<usize>) -> usize {
     let requested = match args.get(SIM_THREADS_KEY) {
         Some(raw) => raw.parse::<usize>().ok().or_else(|| {
@@ -260,62 +215,44 @@ fn default_sim_threads() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
-/// One browser thread, and `frame_trace`'s thread-local state is sound only
-/// because of it.
+// `frame_trace`'s thread-local state is sound only because this stays one.
 #[cfg(target_arch = "wasm32")]
 fn default_sim_threads() -> usize {
     1
 }
 
-/// Runtime knobs.
 pub struct RunConfig {
     pub window: WindowAttributes,
-    /// Simulation rate; `App::tick` receives `dt = 1.0 / fixed_hz`. Native
-    /// only: `RunConfig` does not cross the worker's postMessage boundary, so
-    /// the wasm build simulates at 60Hz whatever this says.
+    /// Native only: `RunConfig` does not cross the worker's postMessage
+    /// boundary, so the wasm build simulates at 60Hz whatever this says.
     pub fixed_hz: u32,
-    /// Spiral-of-death cap, applied by the native runner's [`FixedTimestep`].
-    /// Ticks beyond this in one frame are dropped, not deferred; `0` stops the
-    /// sim entirely. Native only: the wasm worker hardcodes
-    /// [`DEFAULT_MAX_TICKS_PER_FRAME`] whatever this says.
+    /// Ticks beyond this are dropped, not deferred; `0` stops the sim. Native
+    /// only: the wasm worker hardcodes [`DEFAULT_MAX_TICKS_PER_FRAME`].
     pub max_ticks_per_frame: u32,
-    /// Programmatic sim worker budget, overridden by `--threads=N` /
-    /// `?threads=N`. `None` or `Some(0)` lets the runner pick
-    /// (`available_parallelism` natively, 1 on wasm32). Reaches `App::setup`
-    /// as [`SetupCtx::sim_threads`] and each tick as [`TickCtx::jobs`].
+    /// `None` or `Some(0)` lets the runner pick (`available_parallelism`
+    /// natively, 1 on wasm32). `--threads=N` / `?threads=N` overrides it.
     pub sim_threads: Option<usize>,
-    /// `EnvFilter`-style log filter. `None` means keep whatever `tracing-subscriber`
-    /// was already configured with (or the `RUST_LOG` env var); `Some` installs a new
-    /// global default subscriber.
+    /// `None` keeps whatever `tracing-subscriber` already installed (or
+    /// `RUST_LOG`); `Some` installs a new global default subscriber.
     pub log_filter: Option<String>,
-    /// When true (default) the framework exits the event loop on `Esc`.
     pub esc_exits: bool,
-    /// Bail out after this many consecutive [`App::render`] errors. `0` disables
-    /// the budget.
+    /// `0` disables the budget.
     pub render_error_budget: u32,
-    /// Bail out after this many consecutive `wgpu::SurfaceError` results from
-    /// `begin_frame`. Larger than [`Self::render_error_budget`] because a sleep /
-    /// resume cycle on Windows / DX12 routinely takes several frames to settle
-    /// (the surface returns `Outdated` or `Other` until the driver finishes
-    /// rebuilding the swapchain).
+    /// Larger than [`Self::render_error_budget`] because a Windows / DX12 sleep
+    /// and resume cycle takes several frames to settle.
     pub surface_error_budget: u32,
-    /// MSAA sample count requested for the scene render target; the UI pass is
-    /// single-sampled whatever this says. `1` disables MSAA.
+    /// The UI pass is single-sampled whatever this says. `1` disables MSAA.
     pub msaa_samples: u32,
-    /// Wasm-specific knobs (DOM IDs the page exposes). Ignored on native.
+    /// Ignored on native.
     pub wasm: WasmConfig,
 }
 
-/// Wasm-only configuration knobs: the DOM element IDs the page uses to host
-/// the demo.
 #[derive(Clone)]
 pub struct WasmConfig {
-    /// Container element with `data-mode="manual"`. Determines whether the
-    /// demo enters click-to-start mode (vs auto-launch on page load).
+    /// Must carry `data-mode="manual"`; anything else auto-launches on load.
     pub host_id: String,
-    /// Launch button. Click handler transfers the canvas to a worker.
+    /// Its click handler transfers the canvas to a worker.
     pub button_id: String,
-    /// Canvas the worker renders into. The element is
     /// `transferControlToOffscreen()`-ed to the worker on click.
     pub canvas_id: String,
 }
@@ -349,8 +286,7 @@ impl Default for RunConfig {
     }
 }
 
-/// Run a demo. The unified entry point that handles native + wasm
-/// (both main-thread fallback and worker mode) in one call.
+/// Dispatches native, wasm main-thread, and wasm worker mode.
 pub fn run<A: App + 'static>(config: RunConfig) -> anyhow::Result<()> {
     #[cfg(target_arch = "wasm32")]
     {
@@ -368,15 +304,10 @@ pub fn run<A: App + 'static>(config: RunConfig) -> anyhow::Result<()> {
     run_with_config::<A>(config)
 }
 
-/// Run an app with custom config.
-///
-/// On native the function blocks until the event loop exits, then returns whatever
-/// error the runner deferred (or `Ok(())`).
+/// On native this blocks until the event loop exits.
 pub fn run_with_config<A: App>(config: RunConfig) -> anyhow::Result<()> {
-    // On wasm32 stdout doesn't exist and the env-filter has no `RUST_LOG` to read; we
-    // route tracing events into the browser console via `tracing-wasm` instead, and
-    // install the panic hook so a Rust panic surfaces a useful stack trace in
-    // devtools rather than the default `unreachable executed` from `wasm-bindgen`.
+    // wasm32 has no stdout and no `RUST_LOG`, so tracing goes to the browser
+    // console; the panic hook turns `unreachable executed` into a stack trace.
     #[cfg(target_arch = "wasm32")]
     {
         console_error_panic_hook::set_once();
@@ -427,18 +358,11 @@ struct InitArtifacts<A: App> {
     app: A,
 }
 
-/// The UI pass is single-sampled on every surface path: an MSAA scene attachment is
-/// resolved into the swapchain before egui paints (see
-/// [`RenderDevice::resolve_scene_to_swap`]), so egui never draws multisampled and never
-/// carries a resolve.
+// The MSAA scene attachment resolves into the swapchain before egui paints.
 const UI_PASS_SAMPLE_COUNT: u32 = 1;
 
-/// Format and sample count are the contract between `RenderDevice` (which owns the color
-/// attachments and the views onto them) and `UiIntegration` (which builds egui pipelines
-/// against exactly one of each).
-///
-/// Free function (not a method on Runner) so it can be called from the wasm `spawn_local`
-/// closure where `&mut Runner` isn't available across the await point.
+// Free function, not a method on Runner, so the wasm `spawn_local` closure can
+// call it where `&mut Runner` is not available across the await point.
 fn setup_after_device<A: App>(
     win: &Arc<Window>,
     rd: RenderDevice,
@@ -463,16 +387,13 @@ fn setup_after_device<A: App>(
     };
     let app = A::setup(&mut ctx).map_err(|e| e.context("App::setup"))?;
 
-    // Format is `ui_format`, not `target_format`, because on the direct-to-swapchain
-    // paths the UI pass draws through the swapchain's non-sRGB reinterpretation
-    // rather than the view the scene pass uses; on the composite path the two
-    // formats coincide.
+    // `ui_format`, not `target_format`: on the direct-to-swapchain paths the UI
+    // pass draws through the swapchain's non-sRGB reinterpretation, not the view
+    // the scene pass uses. On the composite path the two coincide.
     let mut ui = UiIntegration::new(&rd.device, win, rd.ui_format(), UI_PASS_SAMPLE_COUNT);
 
-    // Forces lazy pipeline compilation for
-    // egui-wgpu's shape variants and the browser-WebGPU composite pass during
-    // setup, instead of stalling the user's first visible frame for ~50-200ms
-    // per first-touched pipeline.
+    // Compiles egui-wgpu's shape variants and the browser-WebGPU composite pass
+    // now, rather than stalling the first visible frame ~50-200ms per pipeline.
     ui.warm_pipelines(
         &rd.device,
         &rd.queue,
@@ -491,15 +412,10 @@ fn setup_after_device<A: App>(
     })
 }
 
-/// On wasm32 the device-acquisition future runs to completion in a JS microtask and
-/// hands its result back to the runner through this slot.
 #[cfg(target_arch = "wasm32")]
 type PendingInit<A> = std::rc::Rc<std::cell::RefCell<Option<anyhow::Result<InitArtifacts<A>>>>>;
 
-/// Without this the
-/// canvas exists only as a JS object the surface can target but nothing the user can
-/// see; appending it makes the render output visible and lets pointer / keyboard
-/// events flow through.
+// Appending the canvas is what makes the render output visible.
 #[cfg(target_arch = "wasm32")]
 fn attach_canvas_to_dom(win: &winit::window::Window) -> anyhow::Result<()> {
     use winit::platform::web::WindowExtWebSys;
@@ -521,8 +437,7 @@ fn attach_canvas_to_dom(win: &winit::window::Window) -> anyhow::Result<()> {
         })?,
     };
 
-    // Without these the canvas keeps winit's default intrinsic size
-    // (typically 1024x768) which usually disagrees with the page layout.
+    // Without these the canvas keeps winit's 1024x768 intrinsic size.
     let style = canvas.style();
     let _ = style.set_property("width", "100%");
     let _ = style.set_property("height", "100%");
@@ -549,9 +464,8 @@ struct Runner<A: App> {
     ui: Option<UiIntegration>,
     app: Option<A>,
 
-    /// Read at each frame's `begin_frame`. Window events fire between
-    /// frames, with no pass of their own to query, so `on_event` / `on_key`
-    /// and the Esc-exit gate all serve this frame's value.
+    /// Read at each frame's `begin_frame`. Window events fire between frames,
+    /// so `on_event` / `on_key` and the Esc gate all serve this frame's value.
     ui_capture: UiCapture,
 
     #[cfg(target_arch = "wasm32")]
@@ -612,9 +526,7 @@ impl<A: App> Runner<A> {
         }
     }
 
-    /// Drain any error that the runner deferred during the event loop (setup or render
-    /// failures cause `elwt.exit()` so the loop returns `Ok`; we surface the real error
-    /// here).
+    // Setup and render failures call `elwt.exit()`, so the loop returns `Ok`.
     #[cfg(not(target_arch = "wasm32"))]
     fn finish(self) -> anyhow::Result<()> {
         match self.deferred_error {
@@ -672,9 +584,8 @@ impl<A: App> Runner<A> {
     }
 }
 
-/// Logs and swallows errors so a transient capture failure doesn't abort the render
-/// loop. Free function (not a method on Runner) so the borrow checker can see that
-/// `&mut capture` and `&rd` are disjoint borrows.
+// Errors are logged and swallowed so a transient capture failure does not abort
+// the render loop. Free function so `&mut capture` and `&rd` stay disjoint.
 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
 fn capture_consume(
     capture: &mut capture::Capture,
@@ -705,10 +616,8 @@ fn capture_consume(
 impl<A: App> ApplicationHandler for Runner<A> {
     #[cfg(target_arch = "wasm32")]
     fn resumed(&mut self, elwt: &ActiveEventLoop) {
-        // Default-on capture made Ctrl+R / F12 / Ctrl+Shift+I unreachable
-        // (the canvas swallowed them before browser chrome could see them); turning
-        // it off means winit only consumes the events it actually translates into
-        // `WindowEvent`s.
+        // Default-on prevent_default made Ctrl+R / F12 / Ctrl+Shift+I unreachable:
+        // the canvas swallowed them before browser chrome saw them.
         use winit::platform::web::WindowAttributesExtWebSys;
         let attrs = self.config.window.clone().with_prevent_default(false);
         let win = match elwt.create_window(attrs) {
@@ -803,8 +712,8 @@ impl<A: App> ApplicationHandler for Runner<A> {
             }
         }
 
-        // Forward to egui first so it can claim hover/focus/clicks
-        // before Loam's own routing translates the event for gameplay.
+        // Forward to egui first so it claims hover, focus and clicks before
+        // Loam's own routing.
         if let Some(ui) = self.ui.as_mut() {
             let _ = ui.handle_event(&win, &ev);
         }
@@ -849,9 +758,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
                 let was_minimized = self.minimized;
                 self.minimized = size.width == 0 || size.height == 0;
                 match (was_minimized, self.minimized) {
-                    // Just got minimized: park the event loop in `Wait` so we
-                    // stop burning CPU on poll iterations that have no work to
-                    // do.
+                    // Park in `Wait` so a minimized window stops polling.
                     (false, true) => elwt.set_control_flow(ControlFlow::Wait),
                     (true, false) => {
                         elwt.set_control_flow(ControlFlow::Poll);
@@ -889,16 +796,14 @@ impl<A: App> ApplicationHandler for Runner<A> {
                     fps,
                     n_ticks: 0,
                     tick,
-                    // dt isn't meaningful for input events (they fire whenever the OS
-                    // delivers, not on a frame cadence).
+                    // dt is meaningless for input events; they fire on OS
+                    // delivery, not on a frame cadence.
                     dt: 0.0,
                     ui_capture,
                     _non_exhaustive: PhantomData,
                 };
                 app.on_event(&ev, &mut ctx);
-                // Mirror the wasm worker's contract: route keyboard events
-                // through `on_key` too, so demos with a single hotkey impl
-                // (in `on_key`) work the same on both runners.
+                // Mirror the wasm worker: keyboard events also reach `on_key`.
                 if let WindowEvent::KeyboardInput { event, .. } = &ev {
                     if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
                         app.on_key(code, event.state, &mut ctx);
@@ -908,9 +813,8 @@ impl<A: App> ApplicationHandler for Runner<A> {
         }
     }
 
-    /// On wasm32 we use it to drain the deferred-init slot: the spawned
-    /// device-acquisition future may have resolved between callbacks, and
-    /// without a user-driven event the runner would otherwise sit idle.
+    // Drains the deferred-init slot: the device-acquisition future may resolve
+    // between callbacks, and the runner would otherwise sit idle.
     fn about_to_wait(&mut self, _elwt: &ActiveEventLoop) {
         #[cfg(target_arch = "wasm32")]
         {
@@ -932,10 +836,8 @@ impl<A: App> ApplicationHandler for Runner<A> {
     }
 }
 
-/// Section names the frame loops open directly inside their `frame` scope.
-/// [`crate::trace`] subtracts these from `frame` to report the remainder as
-/// `unscoped`; a scope added to a frame loop and not to this list lands there
-/// instead of under its own name.
+// `crate::trace` subtracts these from `frame` to report the remainder as
+// `unscoped`; a frame-loop scope missing here lands in `unscoped` instead.
 pub(crate) const FRAME_LOOP_SECTIONS: &[&str] = &[
     "sim-ticks",
     "ui-begin",
@@ -955,9 +857,8 @@ impl<A: App> Runner<A> {
         if self.minimized {
             return;
         }
-        // A `--script` run holds no `ActiveEventLoop`, so it publishes
-        // completion here instead. Read before the frame's work so the last
-        // scripted frame is the last one presented.
+        // A `--script` run holds no `ActiveEventLoop`, so it publishes completion
+        // here. Read before the frame's work so the last scripted frame presents.
         if script::exit_requested() {
             elwt.exit();
             return;
@@ -978,14 +879,9 @@ impl<A: App> Runner<A> {
             let _ = rd.set_present_mode(target);
         }
 
-        // Native only; browser Pointer Lock requires a recent user gesture
-        // that console commands don't satisfy (the cursor module emits a
-        // one-time tracing::warn on wasm).
-        //
-        // The runner translates the engine-level `GrabMode` to winit's
-        // `CursorGrabMode` and falls back from `Locked` to `Confined` (or
-        // vice versa) if the platform doesn't support the requested mode
-        // (macOS + Linux/X11 vary on which they prefer; Windows accepts both).
+        // Native only; browser Pointer Lock needs a recent user gesture that a
+        // console command does not satisfy. The `Locked` / `Confined` fallback
+        // covers platforms supporting only one (macOS and Linux/X11 vary).
         #[cfg(not(target_arch = "wasm32"))]
         {
             use winit::window::CursorGrabMode;
@@ -1014,11 +910,8 @@ impl<A: App> Runner<A> {
             if pending_grab.is_some() || pending_vis.is_some() {
                 cursor::mark_applied(applied.grab, applied.visible);
             }
-            // Applied AFTER the grab/visibility
-            // transition so the new cursor state is in effect first; warping
-            // a still-Locked cursor would be a no-op (winit pins it to the
-            // center already), but pairing the warp with a release lands the
-            // pointer where the user was aiming when they Alt-tabbed out.
+            // After the grab transition: warping a still-Locked cursor is a no-op,
+            // and pairing the warp with a release lands the pointer where aimed.
             if cursor::take_pending_warp_center() {
                 let size = win.inner_size();
                 let center = winit::dpi::PhysicalPosition::new(
@@ -1031,11 +924,8 @@ impl<A: App> Runner<A> {
 
         let Some(rd) = self.rd.as_ref() else { return };
 
-        // We anchor the deadline on the previous frame's ideal start (not on
-        // the actual wake-up) so the cadence stays locked to the period even
-        // if individual frames overshoot. If we ran long (work + present took
-        // longer than the period), we set `last_redraw_at = now` to "catch
-        // up" instead of falling further behind on every subsequent frame.
+        // Anchor on the previous frame's ideal start, not the wake-up, so cadence
+        // stays locked to the period; a long frame anchors on `now` instead.
         let now = Instant::now();
         let frame_anchor = if let (Some(period), Some(last)) =
             (frame_pacing::target_period(), self.last_redraw_at)
@@ -1064,10 +954,8 @@ impl<A: App> Runner<A> {
 
         let _frame_scope = loam_time::frame_trace::scope("frame");
 
-        // Command queue, drained immediately before the ticks and stamped
-        // with the index they start from, so a command's position in sim time
-        // is a property of the recording and not of how many catch-up ticks
-        // this frame happens to run.
+        // Drained before the ticks and stamped with the index they start from, so
+        // a command's place in sim time is a property of the recording.
         if let Some(app) = self.app.as_mut() {
             command::apply_drained(app, rd, self.tick_index);
         }
@@ -1085,9 +973,7 @@ impl<A: App> Runner<A> {
             0
         };
 
-        // Open the egui pass before `App::update` so this frame's input
-        // is hit-tested against the last build's layout, rather than gating
-        // gameplay on a capture computed before the input existed.
+        // Opened before `App::update` so input hit-tests the last build's layout.
         let egui_ctx = if let Some(ui) = self.ui.as_mut() {
             let _scope = loam_time::frame_trace::scope("ui-begin");
             let ctx = ui.begin_frame(win.as_ref()).clone();
@@ -1177,28 +1063,16 @@ impl<A: App> Runner<A> {
             }
         }
 
-        // On the two
-        // direct-to-swapchain paths the swapchain texture is addressed through
-        // two views, an sRGB one for whatever the scene writes into it and its
-        // non-sRGB reinterpretation for the UI pass, so egui blends in the
-        // gamma space its feathering assumes; where the adapter forbids the
-        // reinterpretation the UI takes the sRGB view too and those two
-        // topologies are otherwise unchanged.
-        //
-        // Capture taps read the swapchain texture, which on the composite path
-        // carries none of the frame until `composite_to_swap` runs. Each tap
-        // therefore orders a composite ahead of its readback, so it gets
-        // gamma-encoded pixels of the stage it names rather than an untouched
-        // surface.
+        // On the direct-to-swapchain paths the swapchain is addressed through two
+        // views, sRGB for the scene and non-sRGB for the UI pass, so egui blends
+        // in the gamma space its feathering assumes. Capture taps read that
+        // texture, so each tap orders a composite ahead of its readback.
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
         let capture_now = Instant::now();
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
         let do_capture = self.capture.should_capture(capture_now);
 
-        // Under `PresentMode::Fifo` the
-        // presentation engine holds the acquire until a swapchain image frees
-        // at the next flip, so the backpressure lands here, not in `present`,
-        // which only queues the flip and returns.
+        // Under `Fifo` the acquire blocks until the next flip, not `present`.
         let begin_result = {
             let _scope = loam_time::frame_trace::scope("surface-acquire");
             rd.begin_frame()
@@ -1212,11 +1086,8 @@ impl<A: App> Runner<A> {
                 let mut last_err: Option<anyhow::Error> = None;
                 let render_view = rd.msaa_view().or(rd.scene_view()).unwrap_or(&swap_view);
 
-                // Stays separate
-                // from the main frame encoder so the start timestamp is on the GPU
-                // BEFORE we begin recording scene passes; merging them would put the
-                // start timestamp at the end of the same submit as the work, ruining
-                // the measurement.
+                // Separate encoder so the start timestamp reaches the GPU before
+                // the scene passes record, not at the end of the same submit.
                 if let Some(timer) = rd.gpu_timer.as_ref() {
                     let mut t_enc =
                         rd.device
@@ -1246,20 +1117,18 @@ impl<A: App> Runner<A> {
                     }
                 }
 
-                // Branch rather than lean on the method's own
-                // guard so the MSAA-off steady state pays nothing.
+                // Branch here, not in the method's guard, so MSAA-off pays
+                // nothing.
                 if rd.sample_count() > 1 {
                     let _scope = loam_time::frame_trace::scope("scene-resolve");
                     rd.resolve_scene_to_swap(&mut encoder, &swap_view);
                 }
 
-                // Forces a mid-frame submit so the GPU has
-                // actually drawn the scene before we read it back; we restart the
-                // encoder afterwards for ui+composite.
+                // Mid-frame submit so the GPU has drawn the scene before the
+                // readback.
                 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
                 if do_capture && self.capture.wants_pre() {
-                    // Nothing has written the swapchain yet on the composite
-                    // path; the scene lives in the offscreen target.
+                    // Nothing has written the swapchain yet on this path.
                     if rd.scene_view().is_some() {
                         rd.composite_to_swap(&mut encoder, &swap_view);
                     }
@@ -1292,9 +1161,8 @@ impl<A: App> Runner<A> {
                     );
                 }
 
-                // Ordered before the post
-                // tap because that tap reads the swapchain and this is the only
-                // pass that writes it on this path.
+                // Before the post tap: the only pass that writes the swapchain
+                // here.
                 if rd.scene_view().is_some() {
                     let _scope = loam_time::frame_trace::scope("composite");
                     rd.composite_to_swap(&mut encoder, &swap_view);
@@ -1360,10 +1228,8 @@ impl<A: App> Runner<A> {
                     return;
                 }
 
-                // `Other` is what DX12
-                // returns after sleep/resume when the swapchain is wedged;
-                // reconfiguring lets wgpu rebuild it. `Timeout` is transient
-                // (driver took too long for one frame) so don't reconfigure.
+                // `Other` is what DX12 returns after sleep/resume with a wedged
+                // swapchain; `Timeout` is transient, so do not reconfigure.
                 match err {
                     wgpu::SurfaceError::Lost
                     | wgpu::SurfaceError::Outdated
@@ -1376,9 +1242,7 @@ impl<A: App> Runner<A> {
                     _ => {}
                 }
 
-                // Rate-limit the `Other` log to ~1 Hz so a persistently wedged
-                // surface doesn't spew thousands of lines/sec (and the
-                // corresponding tracing allocations).
+                // Rate-limit to ~1 Hz so a wedged surface cannot spew lines.
                 if matches!(err, wgpu::SurfaceError::Other) {
                     let now = Instant::now();
                     let should_log = self
@@ -1416,15 +1280,13 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// One tick of the 60 Hz accumulator, as `FixedTimestep` stores it
-    /// (nanoseconds derived from the target Hz, truncated).
+    // Nanoseconds derived from the target Hz and truncated, as `FixedTimestep`
+    // stores it.
     const TICK: Duration = Duration::from_nanos(1_000_000_000 / 60);
 
     #[derive(Default)]
     struct TickRecorder {
         times: Vec<f32>,
-        /// Worker budget observed through `TickCtx`, one entry per tick, so a
-        /// pool that changed or went missing mid-run is visible.
         workers: Vec<usize>,
     }
 
@@ -1439,10 +1301,7 @@ mod tests {
         }
     }
 
-    /// Drive frames whose wall-clock instants are `base + offsets[i]`, mirroring
-    /// how the runners wire the cap into the accumulator. Returns the
-    /// `TickCtx::time` values the app observed, the accumulator, and the
-    /// runner-side tick counter. The first offset only primes the accumulator.
+    // The first offset only primes the accumulator.
     fn drive(
         base: Instant,
         offsets: &[Duration],
@@ -1505,9 +1364,7 @@ mod tests {
 
     #[test]
     fn executed_ticks_equal_ticks_charged_to_the_accumulator() {
-        // Prime, then a frame arriving ten ticks late under a cap of exactly
-        // ten, so all ten are charged and all ten must run: any second cap
-        // inside the tick loop books ticks it never simulates.
+        // Ten ticks late under a cap of exactly ten: all ten are charged.
         const BACKLOG: u32 = 10;
         let offsets = [Duration::ZERO, TICK * BACKLOG];
         let (times, timestep, tick_index) = drive(Instant::now(), &offsets, BACKLOG);
@@ -1541,8 +1398,8 @@ mod tests {
 
     #[test]
     fn timestep_tick_and_runner_index_stay_equal_across_a_stall() {
-        // Two cap sizes, since a cap re-applied downstream stays invisible
-        // whenever the accumulator's own cap is the smaller of the two.
+        // Two cap sizes: a downstream cap hides whenever the accumulator's own
+        // cap is the smaller of the two.
         for cap in [DEFAULT_MAX_TICKS_PER_FRAME, loam_time::DEFAULT_MAX_CATCH_UP] {
             let base = Instant::now();
             let mut app = TickRecorder::default();
@@ -1550,7 +1407,6 @@ mod tests {
             let mut tick_index = 0u64;
             let jobs = JobPool::new(1);
 
-            // Prime, three steady frames, a 30-tick stall, three steady frames.
             let steps = [
                 Duration::ZERO,
                 TICK,
@@ -1586,8 +1442,7 @@ mod tests {
 
             let expected_ticks = 3 + u64::from(cap) + 3;
             assert_eq!(timestep.tick(), expected_ticks);
-            // Dropped backlog must not punch a hole in the sim-time sequence:
-            // the stall costs wall-clock time, not tick indices.
+            // The stall costs wall-clock time, not tick indices.
             let expected_times: Vec<f32> = (0..expected_ticks)
                 .map(|i| i as f32 * (1.0 / 60.0))
                 .collect();
@@ -1599,8 +1454,8 @@ mod tests {
     fn the_thread_budget_prefers_args_and_reads_zero_as_let_the_runner_pick() {
         let picked = default_sim_threads();
         assert!(picked >= 1, "the runner's own pick must be a legal budget");
-        // Offset off the pick rather than literal, so no assertion below can
-        // pass by coinciding with the core count of the machine running it.
+        // Offset off the pick, so no assertion can pass by matching the core
+        // count of the machine running it.
         let flagged = picked + 1;
         let configured = picked + 2;
         let flagged_arg = flagged.to_string();
@@ -1619,8 +1474,6 @@ mod tests {
         assert_eq!(resolve_sim_threads(&Args::default(), None), picked);
         assert_eq!(resolve_sim_threads(&flag("0"), Some(configured)), picked);
         assert_eq!(resolve_sim_threads(&Args::default(), Some(0)), picked);
-        // A value that is not a count must fall through to the next source,
-        // never be rounded into one.
         assert_eq!(
             resolve_sim_threads(&flag("many"), Some(configured)),
             configured
@@ -1637,9 +1490,8 @@ mod tests {
 
     #[test]
     fn every_tick_of_a_run_sees_the_one_pool_the_runner_resolved() {
-        // Offset off the platform's pick, so a path that quietly re-resolved
-        // instead of reading the runner's pool shows a different number on
-        // any machine rather than only on one whose core count differs.
+        // Offset off the platform's pick, so a path that re-resolved instead of
+        // reading the runner's pool differs on any machine.
         let budget = default_sim_threads() + 1;
 
         let jobs = JobPool::new(resolve_sim_threads(
@@ -1675,12 +1527,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
-    // Command queue ordering
-    // -----------------------------------------------------------------
-
-    /// What the frame loop did, in the order it did it. The drain and the tick
-    /// loop write to one log so their interleaving is the thing under test.
+    // The drain and the tick loop write to one log; the interleaving is the test.
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum FrameEvent {
         Applied { stamp: u64, line: String },
@@ -1702,11 +1549,8 @@ mod tests {
         }
     }
 
-    /// Replay the two runners' frame order: drain and record, then tick. One
-    /// command is submitted per frame, standing in for the console line or
-    /// bound key that would have been typed during the previous frame's UI.
-    /// That the runners really call in this order is a separate assertion,
-    /// `command::tests::each_runner_drains_once_and_before_its_ticks`.
+    // Replays the runners' frame order: drain and record, then tick. That they
+    // really call in this order is asserted in `command::tests`.
     fn drive_with_commands(offsets: &[Duration], max_catch_up: u32) -> Vec<FrameEvent> {
         let _held = command::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = command::drain(0);
@@ -1808,7 +1652,6 @@ mod tests {
             "the pacing must produce at least one stamp carrying several commands"
         );
 
-        // Submission order is the `markN` order, and stamps never go backwards.
         let submitted: Vec<u32> = batched
             .iter()
             .map(|(_, line)| line.trim_start_matches("mark").parse().expect("markN"))

@@ -108,25 +108,25 @@ pub trait Command<Ctx>: 'static {
 
     fn help(&self) -> &str;
 
-    // `\n` breaks paint as separate scrollback entries.
+    /// `\n` breaks paint as separate scrollback entries.
     fn long_help(&self) -> String {
         self.help().to_string()
     }
 
-    // Default is empty: a free-form arg.
+    /// Default is empty: a free-form arg.
     fn arg_choices(&self, arg_index: usize) -> &[&'static str] {
         let _ = arg_index;
         &[]
     }
 
-    // `prior` carries the arg tokens before the cursor (`prior.len() ==
-    // arg_index`). The explicit `'a` defeats nested-reference elision.
+    /// `prior` carries the arg tokens before the cursor (`prior.len() ==
+    /// arg_index`). The explicit `'a` defeats nested-reference elision.
     fn arg_choices_ctx<'a>(&'a self, arg_index: usize, prior: &[&str]) -> &'a [&'static str] {
         let _ = prior;
         self.arg_choices(arg_index)
     }
 
-    // `key` carries no trailing `=`; empty means free-form.
+    /// `key` carries no trailing `=`; empty means free-form.
     fn arg_value_choices(&self, arg_index: usize, key: &str) -> &[&'static str] {
         let _ = (arg_index, key);
         &[]
@@ -142,7 +142,7 @@ pub trait Command<Ctx>: 'static {
         self.arg_value_choices(arg_index, key)
     }
 
-    // Recoverable issues go to `out.error(..)`; unrecoverable ones return `Err`.
+    /// Recoverable issues go to `out.error(..)`; unrecoverable ones return `Err`.
     fn run(&mut self, args: &[&str], ctx: &mut Ctx, out: &mut ConsoleWriter) -> anyhow::Result<()>;
 }
 

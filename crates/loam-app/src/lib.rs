@@ -55,10 +55,10 @@ pub use loam_shader::{ShaderDb, ShaderOwner};
 pub trait App: Sized + 'static {
     fn setup(ctx: &mut SetupCtx<'_>) -> anyhow::Result<Self>;
 
-    // Runs 0..N times per frame, N bounded by the runner's catch-up cap.
+    /// Runs 0..N times per frame, N bounded by the runner's catch-up cap.
     fn tick(&mut self, _dt: f32, _ctx: &mut TickCtx<'_>) {}
 
-    // Applied before the tick it is stamped for.
+    /// Applied before the tick it is stamped for.
     fn apply_command(
         &mut self,
         cmd: &command::CommandLine,
@@ -67,14 +67,14 @@ pub trait App: Sized + 'static {
         anyhow::bail!("no command target for `{}`", cmd.name)
     }
 
-    // Runs after all the frame's ticks, with the drained input.
+    /// Runs after all the frame's ticks, with the drained input.
     fn update(&mut self, _ctx: &mut FrameCtx<'_>) {}
 
-    // Not called for keyboard events in the wasm worker, which cannot construct
-    // a `WindowEvent::KeyboardInput`; `on_key` fires on both paths.
+    /// Not called for keyboard events in the wasm worker, which cannot construct
+    /// a `WindowEvent::KeyboardInput`; `on_key` fires on both paths.
     fn on_event(&mut self, _ev: &WindowEvent, _ctx: &mut FrameCtx<'_>) {}
 
-    // Fired for every press and release, after input routing.
+    /// Fired for every press and release, after input routing.
     fn on_key(
         &mut self,
         _code: winit::keyboard::KeyCode,
@@ -87,24 +87,24 @@ pub trait App: Sized + 'static {
         shader_db.apply_events(ShaderDb::ROOT_OWNER, events);
     }
 
-    // Runs after `apply_shader_events`; rebuild any stale consumer pipelines.
+    /// Runs after `apply_shader_events`; rebuild any stale consumer pipelines.
     fn on_shader_reload(&mut self, _ctx: &mut SetupCtx<'_>) {}
 
-    // Implement either this or `record`; the runner always calls `record`.
+    /// Implement either this or `record`; the runner always calls `record`.
     fn render(&mut self, _rd: &RenderDevice, _view: &wgpu::TextureView) -> anyhow::Result<()> {
         Ok(())
     }
 
-    // Do NOT call `encoder.finish()` or `queue.submit`; the runner does that once
-    // at end-of-frame. `ctx.view` is already the right view for the platform.
+    /// Do NOT call `encoder.finish()` or `queue.submit`; the runner does that once
+    /// at end-of-frame. `ctx.view` is already the right view for the platform.
     fn record(&mut self, ctx: &mut RenderCtx<'_>) -> anyhow::Result<()> {
         self.render(ctx.rd, ctx.view)
     }
 
-    // Runs after `App::update`; painted as a 2D overlay.
+    /// Runs after `App::update`; painted as a 2D overlay.
     fn ui(&mut self, _ctx: &egui::Context, _frame: &mut FrameCtx<'_>) {}
 
-    // The runner rate-limits the `set_title` call to ~1 Hz.
+    /// The runner rate-limits the `set_title` call to ~1 Hz.
     fn title(&self, _fps: f32) -> Cow<'static, str> {
         Cow::Borrowed("loam app")
     }

@@ -17,10 +17,10 @@ use crate::{egui, App, AssetEvent, FrameCtx, RenderCtx, SetupCtx, ShaderDb};
 /// scene: the shell forwards none of them, so a scene needing one cannot be
 /// hosted.
 pub trait Scene {
-    // Scoped to the `ShaderOwner` this scene took at build time, so the db
-    // rebuilds against the Space it loaded them with.
+    /// Scoped to the `ShaderOwner` this scene took at build time, so the db
+    /// rebuilds against the Space it loaded them with.
     fn apply_shader_events(&mut self, _events: &[AssetEvent], _shader_db: &mut ShaderDb) {}
-    // Apply one queued command, before the tick it is stamped for.
+    /// Apply one queued command, before the tick it is stamped for.
     fn apply_command(
         &mut self,
         cmd: &CommandLine,
@@ -28,7 +28,7 @@ pub trait Scene {
     ) -> anyhow::Result<()> {
         anyhow::bail!("no command target for `{}`", cmd.name)
     }
-    // Contributions to the shared menu bar, rendered after the Demo menu.
+    /// Contributions to the shared menu bar, rendered after the Demo menu.
     fn menus(&mut self, _ui: &mut egui::Ui) {}
     fn update(&mut self, ctx: &mut FrameCtx<'_>);
     fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>);
@@ -38,7 +38,7 @@ pub trait Scene {
         state: winit::event::ElementState,
         ctx: &mut FrameCtx<'_>,
     );
-    // Must not submit; see `RenderCtx`.
+    /// Must not submit; see `RenderCtx`.
     fn record(&mut self, ctx: &mut RenderCtx<'_>) -> Result<()>;
     fn title(&self, fps: f32) -> Cow<'static, str>;
 }
@@ -52,8 +52,8 @@ pub struct SceneEntry {
 /// A trait rather than a value because [`App::setup`] is a static method: the
 /// shell has no instance that could have been handed a registry.
 pub trait SceneRegistry: 'static {
-    // Index 0 is the fallback when no `scene` arg selects one, so this must be
-    // non-empty.
+    /// Index 0 is the fallback when no `scene` arg selects one, so this must be
+    /// non-empty.
     const SCENES: &'static [SceneEntry];
 }
 

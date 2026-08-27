@@ -9,8 +9,8 @@ use crate::integrator::PhysicsSpace;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
-// `(s, xy, yz, zx) ↔ (w, z, x, y)` is the mapping that makes `Rotor3::apply`
-// agree with `Quat::mul_vec3`.
+// `(s, xy, yz, zx)` maps to `(w, z, x, y)`, which is what makes
+// `Rotor3::apply` agree with `Quat::mul_vec3`.
 fn rotor_to_quat(r: loam_math::Rotor3) -> Quat {
     Quat::from_xyzw(r.yz, r.zx, r.xy, r.s)
 }
@@ -24,8 +24,8 @@ fn omega_cross_r(w: Bivector3, r: Vec3) -> Vec3 {
     )
 }
 
-// `r ∧ f`, matching `r × f` under the (xy↔z, yz↔x, zx↔y) correspondence
-// `rotor_to_quat` uses.
+// `r ∧ f`, matching `r × f` under the (xy, yz, zx) to (z, x, y)
+// correspondence `rotor_to_quat` uses.
 fn wedge(r: Vec3, f: Vec3) -> Bivector3 {
     Bivector3::new(
         r.x * f.y - r.y * f.x,

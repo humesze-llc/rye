@@ -1,26 +1,16 @@
-//! Float-to-WGSL-literal printing, shared by the 3D and 4D emit paths.
-
-/// Print `v` as a WGSL `f32` literal.
-///
-/// Shortest round-trip, so parsing the emitted token recovers the exact input
-/// bits and the emitter contributes no floor to CPU/GPU parity.
-///
-/// `Debug` carries a decimal point or an exponent for every finite `f32` where
-/// `Display` does not, and that is load-bearing rather than cosmetic: WGSL
-/// types a bare digit run as `AbstractInt`, whose range is `i64`, so a
-/// magnitude at or above 2^63 is "not representable by target type" and the
-/// module fails to parse (WGSL spec 15.2, numeric literals).
-/// `every_finite_f32_prints_with_a_point_or_an_exponent` pins that property, so
-/// a std formatting change fails here rather than in naga.
-///
-/// # Panics
-///
-/// On non-finite `v`. WGSL 15.2 has no literal spelling for infinity or NaN,
-/// and the spellings that do exist (`bitcast<f32>(0x7f800000u)`) would put a
-/// constant on the GPU that poisons every distance derived from it to NaN,
-/// where nothing can attribute the failure back to the scene. Scene data
-/// reaching the emitter is finite; a violation is an upstream defect and fails
-/// on the CPU naming the value.
+// Shortest round-trip, so parsing the emitted token recovers the exact input
+// bits and the emitter contributes no floor to CPU/GPU parity.
+//
+// `Debug` carries a decimal point or an exponent for every finite `f32` where
+// `Display` does not, and that is load-bearing: WGSL types a bare digit run as
+// `AbstractInt`, whose range is `i64`, so a magnitude at or above 2^63 is "not
+// representable by target type" and the module fails to parse (WGSL spec 15.2,
+// numeric literals).
+//
+// Panics on non-finite `v`. WGSL 15.2 has no literal spelling for infinity or
+// NaN, and the spellings that do exist (`bitcast<f32>(0x7f800000u)`) would put
+// a constant on the GPU that poisons every distance derived from it to NaN,
+// where nothing can attribute the failure back to the scene.
 pub(crate) fn wgsl_f32(v: f32) -> String {
     assert!(
         v.is_finite(),

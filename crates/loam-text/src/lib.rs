@@ -1,7 +1,6 @@
-//! `loam-text`: screen-space text rendering for game HUDs and overlays.
 //! Printable ASCII (`0x20..=0x7E`) is pre-baked at a fixed atlas size; per-call
-//! sizes scale the quads bilinearly. For HUD readouts only, not typographic or
-//! non-Latin text; reach for `loam-egui` when an app needs more.
+//! sizes scale the quads bilinearly. HUD readouts only, not typographic or
+//! non-Latin text.
 
 pub mod glyph;
 
@@ -18,13 +17,13 @@ const ATLAS_FORMAT: TextureFormat = TextureFormat::R8Unorm;
 
 #[derive(Copy, Clone, Debug)]
 struct GlyphEntry {
-    /// Atlas UV rectangle (normalized 0..1).
+    /// Normalized 0..1.
     uv_min: [f32; 2],
     uv_max: [f32; 2],
     px_width: f32,
     px_height: f32,
     h_advance: f32,
-    /// Pixel offset from baseline to the glyph's top-left, at bake size.
+    /// Pixels from baseline to the glyph's top-left, at bake size.
     bearing_x: f32,
     bearing_y: f32,
 }
@@ -44,7 +43,6 @@ struct TextUniforms {
     _pad: [f32; 2],
 }
 
-/// Advance-only text extents, free of GPU resources.
 pub struct TextMetrics {
     advances: HashMap<char, f32>,
     bake_size_px: f32,
@@ -52,7 +50,6 @@ pub struct TextMetrics {
 }
 
 impl TextMetrics {
-    /// Read `font_bytes`'s advances at `bake_size_px`.
     pub fn new(font_bytes: &[u8], bake_size_px: f32) -> Result<Self> {
         let font = FontRef::try_from_slice(font_bytes)
             .map_err(|e| anyhow!("loam-text: failed to parse font: {e}"))?;
@@ -74,14 +71,10 @@ impl TextMetrics {
         }
     }
 
-    /// Width and height of `text` at `size_px`, as `[w, h]`.
-    ///
-    /// The advance box, not the ink box: width is the widest line's cursor
-    /// sweep and height is `lines * line_height`, measured from the `position`
-    /// [`TextRenderer::queue`] would take. That height exceeds the last line's
-    /// descender by one line gap, so the box contains the block rather than
-    /// hugging it. Characters the atlas does not cover contribute nothing,
-    /// which is what layout does with them.
+    /// The advance box, not the ink box: height is `lines * line_height`
+    /// measured from the `position` [`TextRenderer::queue`] would take, so it
+    /// exceeds the last line's descender by one line gap. Characters the atlas
+    /// does not cover contribute nothing, matching what layout does.
     pub fn measure(&self, text: &str, size_px: f32) -> [f32; 2] {
         let mut widest = 0.0_f32;
         let mut line = 0.0_f32;
@@ -102,24 +95,21 @@ impl TextMetrics {
         ]
     }
 
-    /// Bake size the advances were read at; per-frame sizes near this look best.
     pub fn bake_size_px(&self) -> f32 {
         self.bake_size_px
     }
 
-    /// Vertical advance between lines at the bake size.
+    /// At the bake size.
     pub fn line_height_px(&self) -> f32 {
         self.line_height_px
     }
 }
 
-/// Screen-space text renderer. The queue is reset every `record` call.
 pub struct TextRenderer {
     pipeline: RenderPipeline,
     bind_group: BindGroup,
     uniform_buf: Buffer,
-    // Held only to keep the GPU resources alive for the bind group's lifetime;
-    // dropping them would free what `bind_group` still references.
+    // Held only to keep alive what `bind_group` still references.
     #[allow(dead_code)]
     atlas_tex: Texture,
     #[allow(dead_code)]
@@ -139,10 +129,9 @@ pub struct TextRenderer {
 }
 
 impl TextRenderer {
-    /// `font_bytes` is raw TTF/OTF data; `bake_size_px` is the atlas
-    /// rasterization size (smaller per-frame sizes are clean, larger blur).
-    /// `sample_count` must match the render target
-    /// [`record`](TextRenderer::record) draws into, MSAA included.
+    /// `bake_size_px` is the atlas rasterization size: smaller per-frame sizes
+    /// stay clean, larger ones blur. `sample_count` must match the render
+    /// target [`record`](TextRenderer::record) draws into, MSAA included.
     pub fn new(
         device: &Device,
         queue: &Queue,
@@ -335,10 +324,9 @@ impl TextRenderer {
         })
     }
 
-    /// Queue a string for this frame at `position` (viewport pixels).
-    /// `position.y` is the first line's ascender, so a capital letter's top
-    /// edge lands there. `size_px` near the bake size is cleanest; `color` is
-    /// RGBA 0..1, straight alpha. `\n` advances a line; other control chars are
+    /// `position` is in viewport pixels and its `y` is the first line's
+    /// ascender, so a capital letter's top edge lands there. `color` is RGBA
+    /// 0..1, straight alpha. `\n` advances a line; other control chars are
     /// skipped.
     pub fn queue(&mut self, text: &str, position: [f32; 2], size_px: f32, color: [f32; 4]) {
         layout_text(
@@ -354,14 +342,11 @@ impl TextRenderer {
         );
     }
 
-    /// Record queued text into `encoder` as one load/store pass on `view` at
-    /// `viewport_size` (pixels), and reset the queue.
-    ///
-    /// The path for a host that owns the frame's encoder: a nested
-    /// `queue.submit` would reach the GPU before the passes already recorded
-    /// into that encoder, painting the text under the scene rather than over
-    /// it. No resolve target is attached, so under MSAA the host's own resolve
-    /// must come after this pass.
+    /// One load/store pass on `view`; resets the queue. Recording into the
+    /// host's own encoder rather than submitting: a nested `queue.submit` would
+    /// reach the GPU before the passes already recorded into that encoder,
+    /// painting the text under the scene rather than over it. No resolve target
+    /// is attached, so under MSAA the host's resolve must come after this pass.
     pub fn record(
         &mut self,
         device: &Device,
@@ -439,10 +424,9 @@ impl TextRenderer {
     }
 }
 
-/// The baseline sits `ascent_px * scale` below `position.y`, which puts the
-/// ascender line exactly at `position.y`. Offsetting by `line_height_px`
-/// instead would push the block down by the descent plus line gap, so
-/// `position` would not be the top edge it is documented as.
+// The baseline sits `ascent_px * scale` below `position.y`, which puts the
+// ascender line exactly at `position.y`. Offsetting by `line_height_px` instead
+// would push the block down by the descent plus line gap.
 #[allow(clippy::too_many_arguments)]
 fn layout_text(
     text: &str,
@@ -522,12 +506,9 @@ fn is_printable_ascii(c: char) -> bool {
     ('\u{20}'..='\u{7E}').contains(&c)
 }
 
-/// True when [`TextRenderer::queue`] can draw every character of `text`.
-///
-/// The atlas covers printable ASCII only, and layout drops everything else
-/// without erroring, so a caller whose string must survive intact (a readout,
-/// a label built from user data) checks here first. `\n` counts as renderable:
-/// layout consumes it as a line break.
+/// [`TextRenderer::queue`] drops characters the atlas lacks without erroring,
+/// so a caller whose string must survive intact checks here first. `\n` counts
+/// as renderable: layout consumes it as a line break.
 pub fn is_renderable(text: &str) -> bool {
     text.chars().all(|c| c == '\n' || is_printable_ascii(c))
 }
@@ -545,7 +526,6 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
     let mut atlas = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize];
     let mut entries: HashMap<char, GlyphEntry> = HashMap::with_capacity(96);
 
-    // Shelf packer: glyphs flow left-to-right, new shelf when the row is full.
     let pad = 1u32;
     let mut shelf_y: u32 = pad;
     let mut shelf_x: u32 = pad;
@@ -556,8 +536,7 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
         let gid: GlyphId = font.glyph_id(c);
         let h_adv = scaled.h_advance(gid);
 
-        // Glyph at origin so px_bounds is offset-from-origin (we need size +
-        // offset, not absolute placement).
+        // Glyph at origin so px_bounds reads as offset-from-origin.
         let mut glyph: Glyph = scaled.scaled_glyph(c);
         glyph.position = Point { x: 0.0, y: 0.0 };
 
@@ -568,8 +547,7 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
                 let gw = bounds.width().ceil() as u32;
                 let gh = bounds.height().ceil() as u32;
                 if gw == 0 || gh == 0 {
-                    // No rasterizable area; record an empty entry so the cursor
-                    // still advances.
+                    // No rasterizable area, but the cursor must still advance.
                     entries.insert(
                         c,
                         GlyphEntry {
@@ -716,8 +694,8 @@ mod tests {
         assert_eq!(baked.glyphs.len(), 0x7F - 0x20);
         let line_h = baked.metrics.line_height_px();
         assert!(line_h > 30.0 && line_h < 80.0, "line_h = {line_h}");
-        // Ascent is the part of the line box above the baseline, so it is
-        // strictly inside it; a swap of the two would be caught here.
+        // Ascent is the part of the line box above the baseline, so a swap of
+        // the two would be caught here.
         let ascent = baked.ascent_px;
         assert!(
             ascent > 0.0 && ascent < line_h,
@@ -732,9 +710,8 @@ mod tests {
         );
     }
 
-    /// Ascent used by the layout tests. Deliberately unequal to their 16.0 line
-    /// height so a test cannot pass by confusing the baseline offset with the
-    /// line advance.
+    // Deliberately unequal to the tests' 16.0 line height, so a test cannot
+    // pass by confusing the baseline offset with the line advance.
     const MOCK_ASCENT: f32 = 12.0;
 
     fn mock_glyph_table(h_advance: f32) -> HashMap<char, GlyphEntry> {

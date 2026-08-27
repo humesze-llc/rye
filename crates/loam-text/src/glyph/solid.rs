@@ -1,9 +1,8 @@
-//! The cross-section is recovered by splitting every grid cell into
-//! two triangles and clipping each against the half-space `d <= 0` (Sutherland
-//! & Hodgman, 1974). The triangle split sidesteps the saddle ambiguity a
-//! marching-squares cell would have: the interpolated point on a shared cell
-//! edge depends only on that edge's two samples, so neighbouring cells agree
-//! and the union is watertight.
+//! Every grid cell is split into two triangles and clipped against `d <= 0`
+//! (Sutherland & Hodgman, 1974). The split sidesteps the saddle ambiguity a
+//! marching-squares cell would have: the point on a shared cell edge depends
+//! only on that edge's two samples, so neighbours agree and the union is
+//! watertight.
 
 use glam::{Vec2, Vec3, Vec4};
 use loam_shape::{
@@ -14,53 +13,47 @@ use super::field::DistanceField2D;
 use super::hull::{centroid, convex_hull, reduce_sides, MAX_HULL_SIDES};
 use super::{GlyphParams, BLANK_DISTANCE};
 
-/// [`DistanceField2D::sample`] is 1-Lipschitz per axis, hence only
-/// `sqrt(2)`-Lipschitz in L2, while [`Isovolume::extract`] requires a true
-/// 1-Lipschitz field and silently loses its enclosure guarantee without one.
-/// Scaling by `1/sqrt(2)` restores the precondition and leaves the zero level
-/// where it was, at the price of an occupancy test that reaches a full cell
-/// instead of `cell/sqrt(2)`.
+// `DistanceField2D::sample` is 1-Lipschitz per axis, hence only
+// `sqrt(2)`-Lipschitz in L2, while `Isovolume::extract` requires a true
+// 1-Lipschitz field and silently loses its enclosure guarantee without one.
+// Scaling by `1/sqrt(2)` restores the precondition and leaves the zero level
+// where it was, at the price of an occupancy test that reaches a full cell
+// instead of `cell/sqrt(2)`.
 const LIPSCHITZ_SCALE: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
-/// Collider cells of empty space kept around the render grid.
-/// [`Isovolume::clipped`] flags a marked cell touching the domain boundary,
-/// and the field's own padding is counted in render cells, which are the finer
-/// of the two whenever the collider pitch is coarsened.
+// `Isovolume::clipped` flags a marked cell touching the domain boundary, and
+// the field's own padding is counted in render cells, which are the finer of
+// the two whenever the collider pitch is coarsened.
 const COVER_PADDING_CELLS: f32 = 2.0;
 
-/// Ring vertices closer than this fraction of a cell are the same vertex.
-/// A grid sample landing exactly on the zero level makes the clip emit the
-/// corner and the interpolated point at the same position, and a zero-length
-/// ring edge has no outward normal for the side wall.
+// A grid sample landing exactly on the zero level makes the clip emit the corner
+// and the interpolated point at the same position, and a zero-length ring edge
+// has no outward normal for the side wall.
 const RING_MERGE_FRACTION: f32 = 1.0e-4;
 
-/// Pieces thinner than this fraction of a cell's area are dropped. Degenerate
-/// convex polytopes have no well-defined support direction, so they are worse
-/// than useless as colliders.
+// Degenerate convex polytopes have no well-defined support direction, so a
+// sliver is worse than useless as a collider.
 const SLIVER_AREA_FRACTION: f32 = 1.0e-6;
 
 const WIREFRAME_WIDTH_PX: f32 = 1.0;
 
 const POINT_MARKER_PX: f32 = 2.0;
 
-/// One convex piece of a glyph's cross-section, counter-clockwise in world XY.
+// Counter-clockwise in world XY.
 #[derive(Clone, Debug)]
 pub(super) struct Piece {
-    /// At least three vertices: [`clip_triangle`] drops anything degenerate,
-    /// so cap fans and prism construction can index without a length check.
+    // At least three vertices: `clip_triangle` drops anything degenerate, so
+    // cap fans and prism construction can index without a length check.
     ring: Vec<Vec2>,
-    /// Index `k` such that `ring[k] -> ring[k + 1]` lies on the zero isoline,
-    /// i.e. is part of the glyph's silhouette rather than shared with the
-    /// neighbouring piece. At most one such edge exists per piece: clipping a
-    /// convex polygon by a single half-space introduces exactly one new edge.
+    // Index `k` such that `ring[k] -> ring[k + 1]` is on the zero isoline. At
+    // most one exists per piece: clipping a convex polygon by a single
+    // half-space introduces exactly one new edge.
     cut: Option<usize>,
 }
 
-/// One letter of a laid-out word: a 2D glyph cross-section extruded along `z`
-/// and embedded in a `w` slab, carrying its pen position within the word.
-///
-/// All geometry is in world units, already offset by the pen origin, so the
-/// letters of a word share one frame.
+/// A 2D glyph cross-section extruded along `z` and embedded in a `w` slab. All
+/// geometry is in world units, already offset by the pen origin, so the letters
+/// of a word share one frame.
 #[derive(Clone, Debug)]
 pub struct GlyphSolid {
     ch: char,
@@ -74,8 +67,7 @@ pub struct GlyphSolid {
     field: Option<DistanceField2D>,
     pieces: Vec<Piece>,
     cover: Option<Isovolume<2>>,
-    /// Counter-clockwise convex ring the dynamic body collides with; empty for
-    /// a blank.
+    // Counter-clockwise convex ring, empty for a blank.
     hull: Vec<Vec2>,
 }
 
@@ -129,18 +121,15 @@ impl GlyphSolid {
         self.field.as_ref()
     }
 
-    /// Convex cross-section pieces backing the render mesh.
     pub fn piece_count(&self) -> usize {
         self.pieces.len()
     }
 
-    /// The collider cover of the cross-section, absent for a blank.
-    ///
-    /// Extraction scaled the field by 1/sqrt(2), the Lipschitz correction a
-    /// 2D outline field needs before a conservative cover is sound, so
-    /// [`Isovolume::enclosure_margin`] under-reports this cover by that same
-    /// factor. [`Self::collider_margin`] is the bound that holds, and is the
-    /// one to quote.
+    /// `None` for a blank. Extraction scaled the field by 1/sqrt(2), the
+    /// Lipschitz correction a 2D outline field needs before a conservative
+    /// cover is sound, so [`Isovolume::enclosure_margin`] under-reports this
+    /// cover by that same factor. [`Self::collider_margin`] is the bound that
+    /// holds.
     pub fn collider_cover(&self) -> Option<&Isovolume<2>> {
         self.cover.as_ref()
     }
@@ -150,50 +139,39 @@ impl GlyphSolid {
     }
 
     /// Upper bound on how far the collider cover reaches past the letter's
-    /// baked surface: two collider cells.
-    ///
-    /// A cell is marked when its centre samples `LIPSCHITZ_SCALE * d <= m`
-    /// for the half-diagonal `m = cell/sqrt(2)`, i.e. when `d <= cell`. From
-    /// that centre to any point of the cell is at most one cell in L1, and
-    /// [`DistanceField2D::sample`] is 1-Lipschitz in L1, so the far corner has
-    /// `d <= 2 * cell`. Halving the collider resolution doubles this.
+    /// baked surface. A cell is marked when its centre samples
+    /// `LIPSCHITZ_SCALE * d <= m` for the half-diagonal `m = cell/sqrt(2)`,
+    /// i.e. when `d <= cell`. From that centre to any point of the cell is at
+    /// most one cell in L1, and [`DistanceField2D::sample`] is 1-Lipschitz in
+    /// L1, so the far corner has `d <= 2 * cell`.
     pub fn collider_margin(&self) -> f32 {
         2.0 * self.collider_cell
     }
 
-    /// Signed distance to the 2D cross-section, negative inside.
+    /// Negative inside.
     pub fn distance_2d(&self, p: Vec2) -> f32 {
         self.field
             .as_ref()
             .map_or(BLANK_DISTANCE, |field| field.sample(p))
     }
 
-    /// Signed distance to the slab-embedded 4D solid, negative inside.
-    ///
-    /// Fidelity is that of the baked cross-section: exact in `z` and `w`,
-    /// grid-interpolated in `xy`.
+    /// Negative inside. Exact in `z` and `w`, grid-interpolated in `xy`.
     pub fn distance_4d(&self, p: Vec4) -> f32 {
         let cross_section = self.distance_2d(Vec2::new(p.x, p.y));
         let extruded = extend(cross_section, p.z, 0.0, self.half_depth);
         extend(extruded, p.w, self.slab_center, self.slab_half)
     }
 
-    /// Convex 4D colliders enclosing the letter, as `(centre, hull)` pairs.
-    /// Pose is extrinsic per the [`Shape`] contract, so `centre` is the body
-    /// position and the hull is a 16-vertex box about the origin.
-    ///
-    /// The union encloses the letter and overshoots its ink
-    /// by at most [`Self::collider_margin`]; counters and notches stay open,
-    /// because the occupancy test never marks a cell they cover.
+    /// `(centre, hull)` pairs; pose is extrinsic per the [`Shape`] contract, so
+    /// the hull is a 16-vertex box about the origin. The union overshoots the
+    /// ink by at most [`Self::collider_margin`] and counters stay open.
     ///
     /// # Static bodies only
     ///
-    /// Spawn these fixed, and reach for [`Self::rigid_hull_4d`] when the letter
-    /// has to move. `loam-physics` gives a rigid body exactly one collider and
-    /// no per-collider local offset, so a letter made dynamic is as many
-    /// independent bodies as it has boxes; the cover's boxes overlap by
-    /// construction, so those bodies start interpenetrating and drive each
-    /// other apart on the first step rather than merely drifting.
+    /// `loam-physics` gives a rigid body exactly one collider and no
+    /// per-collider local offset, so a dynamic letter is as many bodies as it
+    /// has boxes; the cover's boxes overlap by construction, so those bodies
+    /// interpenetrate at spawn. Use [`Self::rigid_hull_4d`] instead.
     pub fn colliders_4d(&self) -> Vec<(Vec4, Shape)> {
         let Some(cover) = &self.cover else {
             return Vec::new();
@@ -232,24 +210,17 @@ impl GlyphSolid {
         self.hull.len()
     }
 
-    /// The single convex 4D collider a *dynamic* letter gets, as
-    /// `(centre, hull)`, or `None` for a blank.
+    /// The single collider a dynamic letter gets, `None` for a blank. The hull
+    /// is the prism `ring x [-depth/2, depth/2] x slab`, with `ring` the convex
+    /// hull of [`Self::collider_cover`] simplified to at most eight sides, so
+    /// the vertex count is at most 32 and fits the 4D narrowphase's fixed
+    /// polytope buffer.
     ///
-    /// The hull is the prism `ring x [-depth/2, depth/2] x slab`, where
-    /// `ring` is the convex hull of [`Self::collider_cover`] simplified to at
-    /// most eight sides, so the vertex count is at most 32 and fits the 4D
-    /// narrowphase's fixed polytope buffer.
-    ///
-    /// `centre` is the prism's centre of mass, i.e. the ring's area centroid in
-    /// `xy` and the mid-planes of the depth and the slab; pose is extrinsic per
-    /// the [`Shape`] contract, so the returned vertices are about the origin
-    /// and a body built from the pair spins about the right point.
-    ///
-    /// # What convexity costs
-    ///
-    /// Counters and notches fill: a body dropped down the middle of a moving
-    /// `O` lands on it. Both enclose the letter, so neither lets anything
-    /// through the ink.
+    /// `centre` is the prism's centre of mass: the ring's area centroid in `xy`
+    /// and the mid-planes of the depth and the slab. Pose is extrinsic per the
+    /// [`Shape`] contract, so the vertices are about the origin and a body
+    /// built from the pair spins about the right point. Convexity fills
+    /// counters, so a body dropped down the middle of a moving `O` lands on it.
     pub fn rigid_hull_4d(&self) -> Option<(Vec4, Shape)> {
         if self.hull.is_empty() {
             return None;
@@ -297,8 +268,7 @@ fn extract_cover(field: &DistanceField2D, cell: f32) -> Isovolume<2> {
     let counts = (span / cell).ceil().max(Vec2::ONE);
     // Handing `Isovolume` the longer axis' cell count as its resolution makes
     // the pitch it derives the one asked for, so every letter of a word covers
-    // on one pitch however wide its own ink is, matching the render bake's
-    // fixed-cell rule.
+    // on one pitch however wide its own ink is.
     let resolution = counts.max_element() as usize;
     Isovolume::extract(
         lo.to_array(),
@@ -384,11 +354,10 @@ fn at_z(p: Vec2, z: f32) -> Vec3 {
     Vec3::new(p.x, p.y, z)
 }
 
-/// Exact distance to `S x [center - half, center + half]` given the exact
-/// distance `d` to `S` in the orthogonal complement. Quilez, "distance
-/// functions" (2019), `opExtrusion`: the exterior term is the length of the
-/// positive part and the interior term is the larger (least negative)
-/// component.
+// Exact distance to `S x [center - half, center + half]` given the exact
+// distance `d` to `S` in the orthogonal complement. Quilez, "distance
+// functions" (2019), `opExtrusion`: the exterior term is the length of the
+// positive part and the interior term is the larger (least negative) component.
 fn extend(d: f32, x: f32, center: f32, half: f32) -> f32 {
     let axial = (x - center).abs() - half;
     Vec2::new(d, axial).max(Vec2::ZERO).length() + d.max(axial).min(0.0)
@@ -410,8 +379,7 @@ fn extract_pieces(field: &DistanceField2D) -> Vec<Piece> {
                 }
             });
             // Alternate the split diagonal by cell parity so the clipped edges
-            // carry no global directional grain. Both variants stay
-            // counter-clockwise.
+            // carry no global directional grain.
             let triangles: [[usize; 3]; 2] = if (i + j) % 2 == 0 {
                 [[0, 1, 2], [0, 2, 3]]
             } else {
@@ -826,8 +794,7 @@ mod tests {
     #[test]
     fn a_cover_cell_is_marked_out_to_a_full_cell_of_clearance() {
         // A single pitch quantises the sampled distances into an arithmetic
-        // progression that can step straight over the band between the two
-        // thresholds, so the fixture is swept rather than fixed.
+        // progression that can step over the band between the two thresholds.
         let (mut band, mut clear) = (0, 0);
         for collider_cells in [11u32, 12, 13, 16, 17] {
             let solid = diamond_solid(1.0, 48, collider_cells);
@@ -890,9 +857,8 @@ mod tests {
         assert_eq!(vertices.len(), 4 * sides);
         assert!(vertices.len() <= 32);
 
-        // Origin-centred on the centre of mass, which for a ring is its area
-        // centroid and not its vertex mean: greedy reduction leaves an uneven
-        // vertex spacing that a mean would follow and a centroid must not.
+        // The centre of mass is the area centroid, not the vertex mean: greedy
+        // reduction leaves an uneven vertex spacing a mean would follow.
         let local: Vec<Vec2> = vertices[..sides].iter().map(|v| v.xy()).collect();
         let local_centroid = centroid(&local);
         assert!(

@@ -1,8 +1,5 @@
-//! Baked 2D signed distance field over a glyph's flattened contours.
-//!
-//! Magnitude is the exact Euclidean distance to the nearest contour edge;
-//! sign comes from the nonzero winding rule, which is the fill rule both
-//! TrueType and CFF outlines are defined by. Using winding rather than contour
+//! Sign comes from the nonzero winding rule, which is the fill rule both
+//! TrueType and CFF outlines are defined by. Winding rather than contour
 //! orientation is what makes hole handling format-independent: TrueType writes
 //! outer contours clockwise and CFF counter-clockwise, but both fill the
 //! nonzero region.
@@ -11,18 +8,17 @@ use glam::Vec2;
 
 use super::outline::Contour;
 
-/// Ring of all-outside samples kept around the glyph's bounding box. Two cells
-/// guarantee the zero isoline is strictly interior to the grid, which is what
-/// lets [`super::solid`] treat every clipped-cell edge that is not on the
-/// isoline as shared with a neighbouring cell rather than as an open boundary.
+// Ring of all-outside samples around the glyph's bounding box. Two cells
+// guarantee the zero isoline is strictly interior to the grid, which is what
+// lets `super::solid` treat every clipped-cell edge not on the isoline as
+// shared with a neighbour rather than as an open boundary.
 const PADDING_CELLS: usize = 2;
 
-/// Squared length below which a contour edge has no usable direction. Contour
-/// construction already drops coincident neighbours at 1e-6 em, so this only
-/// catches edges that survive scaling into world units at a tiny `em_size`.
+// Contour construction already drops coincident neighbours at 1e-6 em, so this
+// only catches edges that survive scaling into world units at a tiny `em_size`.
 const DEGENERATE_EDGE_LENGTH2: f32 = 1.0e-24;
 
-/// Signed distances sampled on a uniform grid. Negative inside the glyph.
+/// Negative inside the glyph.
 #[derive(Clone, Debug)]
 pub struct DistanceField2D {
     origin: Vec2,
@@ -34,20 +30,15 @@ pub struct DistanceField2D {
 }
 
 impl DistanceField2D {
-    /// Bake `contours` on a grid of the given cell size. Returns `None` when
-    /// the contours enclose no area, which for a glyph means a degenerate
-    /// outline rather than a blank.
-    ///
-    /// The caller fixes `cell` rather than a per-glyph subdivision count so
-    /// that every letter of a word is sampled at the same fidelity regardless
-    /// of how tall its own outline is. [`super::solid`]'s collider cover takes
-    /// the same rule at its own pitch.
+    // `None` when the contours enclose no area, which for a glyph means a
+    // degenerate outline rather than a blank. The caller fixes `cell` rather
+    // than a per-glyph subdivision count so every letter of a word is sampled
+    // at the same fidelity regardless of how tall its own outline is.
     pub(super) fn bake(contours: &[Contour], cell: f32) -> Option<Self> {
         let (min, max) = bounds(contours)?;
         let extent = max - min;
-        // Either extent collapsing means the outline bounds no area, so there
-        // is nothing for the winding rule to call inside. The vector compare
-        // also rejects NaN coordinates, which no comparison would satisfy.
+        // Either extent collapsing leaves the winding rule nothing to call
+        // inside. The vector compare also rejects NaN coordinates.
         if !extent.cmpgt(Vec2::ZERO).all() {
             return None;
         }
@@ -75,12 +66,8 @@ impl DistanceField2D {
         })
     }
 
-    /// Grid-sampled signed distance at `p`, bilinear between samples.
-    ///
-    /// Interpolation error is bounded by the cell size where the true field is
-    /// smooth and grows to roughly half a cell at reflex features, so the
-    /// result is an approximation of the exact contour distance, adequate for
-    /// sphere tracing but not for exact containment tests.
+    /// Bilinear between grid samples, so an approximation of the exact contour
+    /// distance: adequate for sphere tracing, not for exact containment.
     ///
     /// The exact contour distance is 1-Lipschitz in L2; this interpolant is
     /// not. Adjacent samples differ by at most one cell, so each partial
@@ -107,10 +94,9 @@ impl DistanceField2D {
         // strictly inside the grid, so the true distance is at least the
         // distance back to the grid; and the exact contour distance is
         // 1-Lipschitz, so it is at least the clamped value less that same
-        // offset. Take the larger, so a sphere tracer under-steps rather than
-        // tunnelling. Decaying at one per unit rather than the sqrt(2) the
-        // interior interpolation can reach keeps the extrapolation inside the
-        // per-axis bound this function's doc states.
+        // offset. Take the larger, so a sphere tracer under-steps. Decaying at
+        // one per unit rather than the sqrt(2) the interior interpolation can
+        // reach keeps the extrapolation inside the per-axis bound.
         overshoot.max(inside_grid - overshoot)
     }
 
@@ -160,8 +146,8 @@ fn bounds(contours: &[Contour]) -> Option<(Vec2, Vec2)> {
     any.then_some((min, max))
 }
 
-/// Exact distance to the nearest contour edge, negated inside the nonzero
-/// winding region.
+// Exact distance to the nearest contour edge, negated inside the nonzero
+// winding region.
 fn signed_distance(contours: &[Contour], p: Vec2) -> f32 {
     let mut nearest = f32::INFINITY;
     let mut winding = 0i32;
@@ -184,8 +170,8 @@ fn signed_distance(contours: &[Contour], p: Vec2) -> f32 {
     }
 }
 
-/// Ericson, "Real-Time Collision Detection" (2005), section 5.1.2: closest
-/// point on a segment is the projection parameter clamped to `[0, 1]`.
+// Ericson, "Real-Time Collision Detection" (2005), section 5.1.2: closest point
+// on a segment is the projection parameter clamped to `[0, 1]`.
 fn point_edge_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let ab = b - a;
     let length2 = ab.length_squared();
@@ -196,10 +182,10 @@ fn point_edge_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     p.distance(a + ab * t)
 }
 
-/// Winding-number contribution of edge `a -> b` for the ray from `p` towards
-/// `+x`. Sunday (2001), "Inclusion of a Point in a Polygon": the half-open
-/// `y` comparison counts each crossing exactly once, so a vertex lying on the
-/// ray does not double-count.
+// Winding-number contribution of edge `a -> b` for the ray from `p` towards
+// `+x`. Sunday (2001), "Inclusion of a Point in a Polygon": the half-open `y`
+// comparison counts each crossing exactly once, so a vertex lying on the ray
+// does not double-count.
 fn crossing(p: Vec2, a: Vec2, b: Vec2) -> i32 {
     let side = (b.x - a.x) * (p.y - a.y) - (p.x - a.x) * (b.y - a.y);
     if a.y <= p.y {
@@ -278,9 +264,8 @@ mod tests {
         }
     }
 
-    /// Rounding headroom for a Lipschitz comparison: the probe separations are
-    /// ~1e-3 and the sampled values ~1e-1, so cancellation in the difference
-    /// costs a few times f32 epsilon of the larger operand.
+    // Probe separations are ~1e-3 and sampled values ~1e-1, so cancellation in
+    // the difference costs a few times f32 epsilon of the larger operand.
     const LIPSCHITZ_SLACK: f32 = 1.0e-6;
 
     #[test]
@@ -289,10 +274,9 @@ mod tests {
         let field = DistanceField2D::bake(&square, 2.0 / 24.0).expect("bake");
         let cell = field.cell_size();
 
-        // Fixed lattice, no RNG, so the assertion is reproducible. The pitches
-        // are incommensurate with the cell so probes land at many sub-cell
-        // phases, and the span reaches past the padded grid (half-extent
-        // 7/6) into the clamped extrapolation.
+        // Pitches incommensurate with the cell so probes land at many sub-cell
+        // phases, and the span reaches past the padded grid into the clamped
+        // extrapolation.
         let bases = (-40..=40)
             .flat_map(|i| (-40..=40).map(move |j| Vec2::new(i as f32 * 0.0371, j as f32 * 0.0397)));
         let mut steps = Vec::new();

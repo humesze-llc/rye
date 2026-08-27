@@ -1,9 +1,6 @@
-//! The word is spawned as static geometry, per `GlyphSolid::colliders_4d`'s
-//! static-only contract, and probed by dynamic spheres falling along `-z` onto
-//! the letters' front faces. Both halves of a faithful silhouette are checked:
-//! a sphere over ink lands on it, and a sphere over the counter of `O` falls
-//! through. A per-letter convex hull, or a bounding volume, passes the first
-//! and fails the second.
+//! Both halves of a faithful silhouette are checked: a sphere over ink lands on
+//! it, and a sphere over the counter of `O` falls through. A per-letter convex
+//! hull, or a bounding volume, passes the first and fails the second.
 
 use ab_glyph::FontRef;
 use glam::{Vec2, Vec4};
@@ -18,11 +15,9 @@ const WORD: &str = "LOAM";
 const DT: f32 = 1.0 / 120.0;
 const BALL_RADIUS: f32 = 0.03;
 const DROP_Z: f32 = 0.25;
-/// Steps before the ball is expected to be resting: the fall from [`DROP_Z`]
-/// to the front face takes 21 of them under `g = 9.8`.
+// The fall from DROP_Z to the front face takes 21 steps under `g = 9.8`.
 const IMPACT_STEPS: usize = 30;
-/// Measured budget at [`GlyphParams::default`], with the same ~12% headroom the
-/// in-crate pin uses. A regression past this is a solver cost, not a detail.
+// Measured at `GlyphParams::default`, with ~12% headroom.
 const COLLIDER_BUDGET: usize = 108;
 
 fn system_font() -> Option<Vec<u8>> {
@@ -50,9 +45,8 @@ fn word() -> Option<Vec<GlyphSolid>> {
     Some(layout_word(&font, WORD, &GlyphParams::default()).expect("layout"))
 }
 
-/// The word as static bodies under gravity along `-z`, i.e. into the letters'
-/// back faces, so a falling body meets a front face rather than a silhouette
-/// edge one slab thick.
+// Gravity along `-z`, so a falling body meets a front face rather than a
+// silhouette edge one slab thick.
 fn word_world(letters: &[GlyphSolid]) -> World<EuclideanR4> {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
@@ -74,8 +68,8 @@ fn drop_ball(world: &mut World<EuclideanR4>, at: Vec2) -> BodyId {
     ))
 }
 
-/// Mid-height of a letter's ink, taken from the render mesh so the drop points
-/// do not depend on the cover under test.
+// Taken from the render mesh so the drop points do not depend on the cover
+// under test.
 fn ink_mid_y(letter: &GlyphSolid) -> f32 {
     let mesh = Visualizable::<3>::to_triangles(letter).expect("mesh");
     let lo = mesh.vertices.iter().fold(f32::INFINITY, |m, v| m.min(v[1]));
@@ -86,8 +80,8 @@ fn ink_mid_y(letter: &GlyphSolid) -> f32 {
     0.5 * (lo + hi)
 }
 
-/// Runs of `x` the baked field calls ink along `y = mid`, as `(start, end)`.
-/// A fixed lattice, so the runs are reproducible.
+// `(start, end)` runs of `x` the baked field calls ink along `y = mid`. A fixed
+// lattice, so the runs are reproducible.
 fn ink_runs(letter: &GlyphSolid, mid: f32) -> Vec<(f32, f32)> {
     const PROBES: usize = 2048;
     let x0 = letter.pen_origin().x - 0.25 * letter.advance();

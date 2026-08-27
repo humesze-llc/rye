@@ -1,10 +1,8 @@
-//! WGSL emission and CPU evaluation for [`loam_shape::Shape`].
-//!
-//! - [`Shape::Box3`]: standard Euclidean box SDF. Honest in E³; chart-coord in
-//!   H³/S³ (accepted; no closed-form geodesic-box SDF exists).
+//! - [`Shape::Box3`]: honest in E³; chart-coord in H³/S³, accepted because no
+//!   closed-form geodesic-box SDF exists.
 //! - [`Shape::HalfSpace`]: chart-coord `dot(p, n) − offset` only in flat Spaces
-//!   (gated by `Space::is_chart_flat`). Curved Spaces draw the chart plane,
-//!   not the geodesic plane, so they sentinel until a closed-form geodesic-plane
+//!   (gated by `Space::is_chart_flat`). Curved Spaces draw the chart plane, not
+//!   the geodesic plane, so they sentinel until a closed-form geodesic-plane
 //!   SDF lands (artanh-of-Möbius in H³, chord-distance to a great hyperplane in
 //!   S³).
 
@@ -15,21 +13,14 @@ use loam_shape::Shape;
 use crate::literal::wgsl_f32;
 use crate::SENTINEL_DISTANCE;
 
-/// Extension trait on [`Shape`] exposing its signed-distance function as WGSL
-/// text and as a Rust scalar.
-///
-/// Trait rule: SDFs use only `loam_*`
-/// Space-prelude functions on the GPU and only [`Space`] methods on the CPU,
-/// never raw chart-coord arithmetic, except when the Space self-reports flat via
-/// [`Space::is_chart_flat`] (where chart-coord and Riemannian distances
-/// coincide).
+/// [`Self::to_wgsl`] emits `fn {name}(p: vec3<f32>) -> f32`; [`Self::eval`] is
+/// the CPU twin of that body.
+/// Implementations use only `loam_*` Space-prelude functions on the GPU and
+/// only [`Space`] methods on the CPU, never raw chart-coord arithmetic, except
+/// when the Space self-reports flat via [`Space::is_chart_flat`].
 pub trait Primitive {
-    /// Emit a WGSL function named `name` returning the signed distance from `p`
-    /// to `self` in the given Space.
     fn to_wgsl<S: WgslSpace>(&self, space: &S, name: &str) -> String;
 
-    /// Signed distance from `p` to `self` in the given Space, the CPU twin of
-    /// [`Self::to_wgsl`]'s emitted body.
     fn eval<S: Space<Point = Vec3, Vector = Vec3>>(&self, space: &S, p: Vec3) -> f32;
 }
 

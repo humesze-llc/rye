@@ -1,8 +1,5 @@
-//! Typed scene tree that assembles SDF primitives into `loam_scene_sdf`.
-//!
-//! Each leaf emits a named helper (`sdf_p{n}`); each combinator emits a `let`
-//! binding in `loam_scene_sdf`. The depth-first walk emits children before their
-//! parent so referenced variables are always in scope.
+//! The depth-first walk emits children before their parent so referenced WGSL
+//! variables are always in scope.
 
 use std::boxed::Box;
 
@@ -14,15 +11,14 @@ use crate::primitive::Primitive;
 use loam_math::{Space, WgslSpace};
 pub use loam_shape::Shape as PrimitiveKind;
 
-/// A node in the typed SDF scene tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SceneNode {
     Leaf(PrimitiveKind),
     Union(Box<SceneNode>, Box<SceneNode>),
     Intersection(Box<SceneNode>, Box<SceneNode>),
-    /// Carve the right subtree from the left: `max(left, -right)`.
+    /// `max(left, -right)`: the right subtree is carved from the left.
     Difference(Box<SceneNode>, Box<SceneNode>),
-    /// Polynomial smooth-minimum union. `k` is the blend radius in Space units.
+    /// `k` is the blend radius in Space units.
     SmoothUnion {
         k: f32,
         left: Box<SceneNode>,
@@ -35,10 +31,9 @@ impl SceneNode {
         SceneNode::Leaf(PrimitiveKind::Sphere { center, radius })
     }
 
-    /// Emission depends on the compile-time Space (see
-    /// [`Primitive`]'s `HalfSpace` arm): chart-coord `dot(p, n) - d` in flat
-    /// charts, [`crate::SENTINEL_DISTANCE`] in curved charts until geodesic-plane
-    /// SDFs land.
+    /// Emits chart-coord `dot(p, n) - d` in flat charts and
+    /// [`crate::SENTINEL_DISTANCE`] in curved ones, until geodesic-plane SDFs
+    /// land.
     pub fn plane(normal: Vec3, offset: f32) -> Self {
         SceneNode::Leaf(PrimitiveKind::HalfSpace { normal, offset })
     }
@@ -61,7 +56,6 @@ impl SceneNode {
         SceneNode::Intersection(Box::new(self), Box::new(other))
     }
 
-    /// Carve `other` out of `self`.
     pub fn subtract(self, other: SceneNode) -> Self {
         SceneNode::Difference(Box::new(self), Box::new(other))
     }
@@ -75,8 +69,6 @@ impl SceneNode {
     }
 }
 
-/// A complete SDF scene: a single root [`SceneNode`] that emits
-/// `fn loam_scene_sdf(p: vec3<f32>) -> f32` when compiled for a given Space.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
     pub root: SceneNode,
@@ -87,8 +79,8 @@ impl Scene {
         Self { root }
     }
 
-    /// Emit the complete WGSL scene module (helpers + `loam_scene_sdf` entry
-    /// point) for the given Space. Prepend to the Space prelude and user shader.
+    /// Emits `fn loam_scene_sdf(p: vec3<f32>) -> f32` plus its helpers. Prepend
+    /// the Space prelude to the result.
     pub fn to_wgsl<S: WgslSpace>(&self, space: &S) -> String {
         let mut helpers = String::new();
         let mut body = String::new();
@@ -106,19 +98,15 @@ impl Scene {
         )
     }
 
-    /// Signed distance from `p` to the scene, the CPU twin of the emitted
-    /// `loam_scene_sdf`. Walks the same tree as the emitter with the scalar
-    /// algebra inlined, so the two cannot diverge structurally; see
-    /// [`Primitive::eval`] for the residual that remains.
-    ///
-    /// Allocation-free and recursion-only, so a grid bake pays no per-sample
-    /// heap traffic.
+    /// The CPU twin of the emitted `loam_scene_sdf`; see [`Primitive::eval`]
+    /// for the residual divergence that remains. Allocation-free, so a grid
+    /// bake pays no per-sample heap traffic.
     pub fn eval<S: Space<Point = Vec3, Vector = Vec3>>(&self, space: &S, p: Vec3) -> f32 {
         eval_node(&self.root, space, p)
     }
 }
 
-/// Returns the WGSL variable holding this node's distance.
+// Returns the WGSL variable holding this node's distance.
 fn emit_node<S: WgslSpace>(
     node: &SceneNode,
     space: &S,
@@ -174,11 +162,10 @@ fn emit_node<S: WgslSpace>(
     }
 }
 
-/// Scalar twin of [`emit_node`], one arm per `SceneNode` variant in the same
-/// order. The combinator expressions are transcribed from
-/// [`crate::combinator`]'s emitted text operand for operand: reassociating them
-/// is algebraically neutral but not bit-neutral, and this sits inside the
-/// determinism boundary once a baked collider feeds the sim.
+// The combinator expressions are transcribed from `crate::combinator`'s emitted
+// text operand for operand: reassociating them is algebraically neutral but not
+// bit-neutral, and this sits inside the determinism boundary once a baked
+// collider feeds the sim.
 fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S, p: Vec3) -> f32 {
     match node {
         SceneNode::Leaf(prim) => prim.eval(space, p),

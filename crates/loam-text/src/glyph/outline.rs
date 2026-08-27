@@ -6,29 +6,25 @@
 use ab_glyph::{OutlineCurve, Point};
 use glam::Vec2;
 
-/// Upper bound on uniform subdivisions of a single Bezier segment. A cap is
-/// needed because the subdivision count grows with curve size over tolerance,
-/// and a pathological font can hand back an arbitrarily large control polygon.
+// Capped because the subdivision count grows with curve size over tolerance,
+// and a pathological font can hand back an arbitrarily large control polygon.
 const MAX_SUBDIVISIONS: u32 = 64;
 
-/// Points closer than this (in em) are the same point. Font outlines routinely
-/// repeat a vertex where two segments meet and where the closing line lands on
-/// the move-to point; both produce zero-length segments, which have no
-/// well-defined direction for the winding-number sign test in
-/// [`super::field`].
+// Points closer than this (in em) are the same point. Font outlines routinely
+// repeat a vertex where two segments meet and where the closing line lands on
+// the move-to point; both produce zero-length segments, which have no
+// well-defined direction for the winding-number sign test in `super::field`.
 const COINCIDENT_POINT_EM: f32 = 1.0e-6;
 
-/// A closed contour of a glyph outline, y-up with the baseline at `y = 0` and
-/// one em spanning 1.0. The closing edge from the last point back to the first
-/// is implicit, so `points` never repeats the start.
+/// Y-up, baseline at `y = 0`, one em spanning 1.0. The closing edge from the
+/// last point back to the first is implicit, so `points` never repeats the
+/// start.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Contour {
     pub points: Vec<Vec2>,
 }
 
-/// Split and flatten `curves` into closed contours, scaling font units by
-/// `units_to_em`. `tolerance_em` bounds the chord deviation of each flattened
-/// Bezier segment.
+// `tolerance_em` bounds the chord deviation of each flattened Bezier segment.
 pub(super) fn contours_from_curves(
     curves: &[OutlineCurve],
     units_to_em: f32,
@@ -76,8 +72,8 @@ fn close_contour(contours: &mut Vec<Contour>, raw: Vec<Vec2>, units_to_em: f32) 
     }
 }
 
-/// Append every point of `curve` after its start, flattened to within
-/// `tolerance` of the true curve.
+// Appends every point after the curve's start, so callers never duplicate the
+// join.
 fn flatten_into(curve: &OutlineCurve, tolerance: f32, out: &mut Vec<Vec2>) {
     match *curve {
         OutlineCurve::Line(_, p1) => out.push(to_vec2(p1)),
@@ -101,25 +97,24 @@ fn flatten_into(curve: &OutlineCurve, tolerance: f32, out: &mut Vec<Vec2>) {
     }
 }
 
-/// Bounds on the distance from a Bezier segment to its own chord, as multiples
-/// of the control points' second differences. Note this is chord distance, not
-/// the control-polygon distance the usual `N_inf(n)` constants bound; a chord
-/// is what flattening actually substitutes for the curve.
-///
-/// Quadratic: `B(t) - chord(t) = 2t(1-t)(P1 - (P0 + P2)/2)`, so the maximum is
-/// `|P0 - 2P1 + P2| / 4`, attained at `t = 1/2`. Exact, not an estimate.
-///
-/// Cubic: the same expansion gives
-/// `B(t) - chord(t) = t(1-t)[(t-2)a - (1+t)b]` with `a = P0 - 2P1 + P2` and
-/// `b = P1 - 2P2 + P3`. Both `t(1-t)(2-t)` and `t(1-t)(1+t)` peak at
-/// `0.38490...` (at `t = 1 -+ 1/sqrt(3)`), so `0.385 (|a| + |b|)` bounds it.
+// Bounds on the distance from a Bezier segment to its own chord, as multiples
+// of the control points' second differences. This is chord distance, not the
+// control-polygon distance the usual `N_inf(n)` constants bound; a chord is
+// what flattening actually substitutes for the curve.
+//
+// Quadratic: `B(t) - chord(t) = 2t(1-t)(P1 - (P0 + P2)/2)`, so the maximum is
+// `|P0 - 2P1 + P2| / 4`, attained at `t = 1/2`. Exact, not an estimate.
+//
+// Cubic: the same expansion gives
+// `B(t) - chord(t) = t(1-t)[(t-2)a - (1+t)b]` with `a = P0 - 2P1 + P2` and
+// `b = P1 - 2P2 + P3`. Both `t(1-t)(2-t)` and `t(1-t)(1+t)` peak at
+// `0.38490...` (at `t = 1 -+ 1/sqrt(3)`), so `0.385 (|a| + |b|)` bounds it.
 const QUAD_CHORD_BOUND: f32 = 0.25;
 const CUBIC_CHORD_BOUND: f32 = 0.385;
 
-/// Uniform subdivision count meeting `tolerance` for a segment whose whole-curve
-/// deviation bound is `deviation`. Splitting into `n` uniform pieces scales the
-/// control-point second differences by `1/n^2`, so the bound scales the same
-/// way and `n = ceil(sqrt(deviation / tolerance))` suffices.
+// Splitting into `n` uniform pieces scales the control-point second differences
+// by `1/n^2`, so the deviation bound scales the same way and
+// `n = ceil(sqrt(deviation / tolerance))` suffices.
 fn subdivisions(deviation: f32, tolerance: f32) -> u32 {
     if tolerance <= 0.0 || tolerance.is_nan() || deviation <= tolerance {
         return 1;

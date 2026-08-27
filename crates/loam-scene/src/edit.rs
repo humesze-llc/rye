@@ -1,20 +1,8 @@
-//! Reified edits to a [`Scene`]: the value an editor produces, and the one
-//! function that applies it.
-//!
-//! [`SceneEdit::to_args`] and [`SceneEdit::from_args`] are its
-//! textual form and round trip `f32` bit-exactly, so a widget and a command
-//! line cannot drift into meaning different things.
-//!
-//! Addresses are positional: a [`NodePath`] is the child index taken at each
-//! step down from the root. Structural edits move nodes, so a path names a
-//! position and not an identity; whoever holds one across an
-//! [`SceneEdit::Insert`] or [`SceneEdit::Remove`] re-derives it from
-//! [`SceneEdit::focus_after`] rather than assuming it survived.
-//!
-//! [`apply`] accepts only what [`Scene::from_ron`] would accept: every
-//! constant it writes is finite and every blend radius positive, checked
-//! through the same [`crate::load`] predicates the file path uses. An edited
-//! tree is therefore always serialisable and always emittable.
+//! Addresses are positional, so a [`NodePath`] names a position and not an
+//! identity; whoever holds one across an [`SceneEdit::Insert`] or
+//! [`SceneEdit::Remove`] re-derives it from [`SceneEdit::focus_after`].
+//! [`apply`] accepts only what [`Scene::from_ron`] would, through the same
+//! [`crate::load`] predicates, so an edited tree is always emittable.
 
 use std::fmt;
 use std::str::FromStr;
@@ -26,21 +14,19 @@ use thiserror::Error;
 use crate::load::{check_blend_radius, check_leaf};
 use crate::scene::{Scene, SceneNode};
 
-/// Blend radius a freshly inserted smooth union starts at, in Space units.
-/// Wide enough to read as a blend at the scale of the unit-ish primitives an
-/// editor inserts, and editable immediately through [`Param::Blend`].
+/// Space units. Wide enough to read as a blend at the scale of the unit-ish
+/// primitives an editor inserts.
 pub const DEFAULT_BLEND_RADIUS: f32 = 0.15;
 
-/// Shortest normal an editor may set on a half-space. Below this the three
-/// components are at f32 noise scale relative to each other, so the direction
-/// they encode is not a direction; `dot(p, n) - d` would also stop being a
-/// distance, since that formula is a signed distance only for unit `n`.
+// Below this the three components are at f32 noise scale relative to each
+// other, so the direction they encode is not a direction; `dot(p, n) - d` would
+// also stop being a distance, since that formula is a signed distance only for
+// unit `n`.
 const MIN_NORMAL_LENGTH: f32 = 1e-6;
 
-/// Address of a node: the child index taken at each step from the root. Every
-/// interior [`SceneNode`] has exactly two children, so each step is 0 or 1.
-///
-/// Spelled `root`, `root.0`, `root.1.0` and parsed back from the same text.
+/// The child index taken at each step from the root. Every interior
+/// [`SceneNode`] has exactly two children, so each step is 0 or 1. Spelled
+/// `root`, `root.0`, `root.1.0` and parsed back from the same text.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct NodePath(Vec<u8>);
 
@@ -49,21 +35,19 @@ impl NodePath {
         Self(Vec::new())
     }
 
-    /// This path extended by one step. `index` is taken mod 2, which is the
-    /// only meaningful reading for a binary tree.
     pub fn child(&self, index: u8) -> Self {
         let mut steps = self.0.clone();
         steps.push(index & 1);
         Self(steps)
     }
 
-    /// The path one step up, or `None` at the root.
+    /// `None` at the root.
     pub fn parent(&self) -> Option<Self> {
         let (_, head) = self.0.split_last()?;
         Some(Self(head.to_vec()))
     }
 
-    /// Last step, or `None` at the root.
+    /// `None` at the root.
     pub fn last_step(&self) -> Option<u8> {
         self.0.last().copied()
     }
@@ -110,7 +94,6 @@ impl FromStr for NodePath {
     }
 }
 
-/// Which interior node an [`SceneEdit::Insert`] builds.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Combinator {
     Union,
@@ -153,9 +136,9 @@ impl Combinator {
     }
 }
 
-/// A leaf an editor can create. The vertex-list shapes are absent on purpose:
-/// they carry no scalar parameter to author and their SDF is the sentinel, so
-/// inserting one would add an invisible node with nothing to edit.
+/// The vertex-list shapes are absent on purpose: they carry no scalar parameter
+/// to author and their SDF is the sentinel, so inserting one would add an
+/// invisible node with nothing to edit.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LeafKind {
     Sphere,
@@ -174,9 +157,8 @@ impl LeafKind {
         }
     }
 
-    /// The shape a freshly inserted leaf of this kind starts as. Sized against
-    /// the unit-ish scale the march kernel's step thresholds assume, and
-    /// placed at the origin, because an editor's next act is to move it.
+    /// Sized against the unit-ish scale the march kernel's step thresholds
+    /// assume.
     pub fn shape(self) -> Shape {
         match self {
             LeafKind::Sphere => Shape::sphere_at(Vec3::ZERO, 0.25),
@@ -198,7 +180,6 @@ impl LeafKind {
     }
 }
 
-/// A scalar or vector knob on one node.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Param {
     Center,
@@ -238,7 +219,6 @@ impl Param {
     }
 }
 
-/// The value carried by a [`SceneEdit::Set`].
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum EditValue {
     Scalar(f32),
@@ -246,8 +226,7 @@ pub enum EditValue {
 }
 
 impl EditValue {
-    /// Components in order, which is also the order they are written to and
-    /// read back from a command line.
+    /// The order components are written to and read back from a command line.
     pub fn components(&self) -> &[f32] {
         match self {
             EditValue::Scalar(v) => std::slice::from_ref(v),
@@ -271,24 +250,21 @@ impl fmt::Display for EditValue {
     }
 }
 
-/// One mutation of a scene tree.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SceneEdit {
-    /// Retune one parameter of the node at `path`.
     Set {
         path: NodePath,
         param: Param,
         value: EditValue,
     },
-    /// Replace the node at `path` with `combinator(that node, new leaf)`, so
-    /// the subtree already there becomes the left child and the new leaf the
-    /// right one.
+    /// Replaces the node at `path` with `combinator(that node, new leaf)`: the
+    /// subtree already there becomes the left child, the new leaf the right.
     Insert {
         path: NodePath,
         combinator: Combinator,
         leaf: LeafKind,
     },
-    /// Drop the node at `path` and collapse its parent into the sibling.
+    /// Collapses the parent into the sibling.
     Remove { path: NodePath },
 }
 
@@ -301,10 +277,8 @@ impl SceneEdit {
         }
     }
 
-    /// Where the node this edit is about lives once it has been applied: the
-    /// inserted leaf, the node that took a removed one's place, or the node
-    /// that was retuned. A selection follows this rather than trying to hold a
-    /// path across a structural change.
+    /// Where this edit's node lives once applied. A selection follows this
+    /// rather than trying to hold a path across a structural change.
     pub fn focus_after(&self) -> NodePath {
         match self {
             SceneEdit::Set { path, .. } => path.clone(),
@@ -313,7 +287,6 @@ impl SceneEdit {
         }
     }
 
-    /// The command-line spelling: verb, path, then the payload.
     pub fn to_args(&self) -> Vec<String> {
         match self {
             SceneEdit::Set { path, param, value } => {
@@ -339,7 +312,6 @@ impl SceneEdit {
         }
     }
 
-    /// Parse what [`Self::to_args`] wrote.
     pub fn from_args(args: &[&str]) -> Result<Self, EditError> {
         let verb = args
             .first()
@@ -371,7 +343,6 @@ impl SceneEdit {
     }
 }
 
-/// Why an edit did not land.
 #[derive(Debug, Error, PartialEq)]
 pub enum EditError {
     #[error("no node at `{0}`")]
@@ -390,12 +361,9 @@ pub enum EditError {
     Syntax(String),
 }
 
-/// Apply `edit` to `scene`.
-///
-/// Returns whether the tree actually changed. Setting a parameter to the value
-/// it already holds is not a change, and a caller that recompiles a shader per
-/// change must not be made to pay for it; the comparison is on bits, because
-/// the emitter prints the sign of a zero.
+/// Returns whether the tree actually changed, so a caller that recompiles a
+/// shader per change does not pay for a set to the value already held. The
+/// comparison is on bits, because the emitter prints the sign of a zero.
 pub fn apply(scene: &mut Scene, edit: &SceneEdit) -> Result<bool, EditError> {
     match edit {
         SceneEdit::Set { path, param, value } => {
@@ -412,9 +380,9 @@ pub fn apply(scene: &mut Scene, edit: &SceneEdit) -> Result<bool, EditError> {
                 .ok_or_else(|| EditError::NoSuchNode(path.clone()))?;
             let shape = leaf.shape();
             check_leaf(&shape).map_err(EditError::Rejected)?;
-            // Cloned rather than swapped out through a placeholder: the tree is
-            // editor-sized, and a placeholder would be a second tree state that
-            // an emitter could observe if this ever grew a fallible step.
+            // Cloned rather than swapped out through a placeholder, which would
+            // be a second tree state an emitter could observe if this ever grew
+            // a fallible step.
             *node = combinator.combine(node.clone(), SceneNode::Leaf(shape));
             Ok(true)
         }
@@ -433,12 +401,8 @@ pub fn apply(scene: &mut Scene, edit: &SceneEdit) -> Result<bool, EditError> {
     }
 }
 
-/// The editable parameters of `node`, in panel order, each paired with the
-/// value it currently holds.
-///
-/// Empty for the vertex-list leaves: their SDF is the sentinel, so a slider on
-/// one would be a control over an invisible shape. Empty for the boolean
-/// combinators, which carry no constant at all.
+/// In panel order. Empty for the vertex-list leaves, whose SDF is the sentinel,
+/// and for the boolean combinators, which carry no constant.
 pub fn parameters(node: &SceneNode) -> Vec<(Param, EditValue)> {
     match node {
         SceneNode::Leaf(Shape::Sphere { center, radius }) => vec![
@@ -460,7 +424,6 @@ pub fn parameters(node: &SceneNode) -> Vec<(Param, EditValue)> {
     }
 }
 
-/// Display name of a node's variant, for a tree row or a console listing.
 pub fn label(node: &SceneNode) -> &'static str {
     match node {
         SceneNode::Leaf(shape) => match shape {
@@ -480,9 +443,8 @@ pub fn label(node: &SceneNode) -> &'static str {
     }
 }
 
-/// Visit every node in pre-order with the path that addresses it. One path
-/// buffer is pushed and popped through the whole walk, so a full traversal
-/// allocates once however deep the tree.
+/// Pre-order. One path buffer is pushed and popped through the whole walk, so a
+/// full traversal allocates once however deep the tree.
 pub fn for_each_node(root: &SceneNode, mut visit: impl FnMut(&NodePath, &SceneNode)) {
     fn walk(node: &SceneNode, path: &mut NodePath, visit: &mut impl FnMut(&NodePath, &SceneNode)) {
         visit(path, node);
@@ -497,7 +459,7 @@ pub fn for_each_node(root: &SceneNode, mut visit: impl FnMut(&NodePath, &SceneNo
     walk(root, &mut NodePath::root(), &mut visit);
 }
 
-/// The node `path` addresses, or `None` when the tree has no such position.
+/// `None` when the tree has no such position.
 pub fn node_at<'a>(root: &'a SceneNode, path: &NodePath) -> Option<&'a SceneNode> {
     let mut node = root;
     for step in path.steps() {
@@ -582,7 +544,6 @@ fn set_param(
     }
 }
 
-/// `v` as a unit vector, refusing one too short to carry a direction.
 fn unit_normal(v: Vec3) -> Result<Vec3, EditError> {
     let length = v.length();
     if length < MIN_NORMAL_LENGTH {
@@ -593,7 +554,7 @@ fn unit_normal(v: Vec3) -> Result<Vec3, EditError> {
     Ok(v / length)
 }
 
-/// Write `value` and report whether the bits moved.
+// Reports whether the bits moved.
 fn store_f32(slot: &mut f32, value: f32) -> bool {
     let changed = slot.to_bits() != value.to_bits();
     *slot = value;
@@ -647,8 +608,7 @@ mod tests {
     use super::*;
     use loam_math::EuclideanR3;
 
-    /// Four leaves and every combinator, which is also the shape of the
-    /// editor's boot scene: `((sphere ~ box) | plane) - sphere`.
+    // Four leaves and every combinator: `((sphere ~ box) | plane) - sphere`.
     fn fixture() -> Scene {
         Scene::new(
             SceneNode::sphere(Vec3::new(-0.35, 0.0, 0.0), 0.45)
@@ -1122,10 +1082,8 @@ mod tests {
             Vec3::new(1e-3, 0.0, 0.0),
             Vec3::new(3.0, -4.0, 12.0),
         ] {
-            // Not asserted as a change: the first raw normal here normalizes
-            // to the one the fixture already carries, which is a no-op by the
-            // rule `setting_the_value_a_node_already_holds_is_not_a_change`
-            // pins.
+            // Not asserted as a change: the first raw normal here normalizes to
+            // the one the fixture already carries, so it is a no-op.
             assert!(apply(
                 &mut scene,
                 &SceneEdit::Set {

@@ -1,11 +1,6 @@
-//! Piece-count and cover-tightness table for [`Isovolume`] extraction, the
-//! measurement that decides whether an SDF-authored shape is affordable as a
-//! collider. Run with `cargo run --release -p loam-shape --example
-//! isovolume_piece_budget`.
+//! `cargo run --release -p loam-shape --example isovolume_piece_budget`.
 //!
-//! Test shapes are a 3D torus of revolution and its 4D analogue (the set of
-//! points within `minor` of a 2-sphere of radius `major`), both exact signed
-//! distances and both non-convex, so the piece count is not an artefact of a
+//! Both test shapes are non-convex, so the piece count is not an artefact of a
 //! shape a single hull would have covered.
 
 use std::time::Instant;
@@ -26,13 +21,13 @@ fn torus_4d(p: [f32; 4]) -> f32 {
     (radial * radial + p[3] * p[3]).sqrt() - MINOR
 }
 
-/// Pappus: `V = 2π²·R·r²`.
+// Pappus: `V = 2π²·R·r²`.
 fn torus_volume_3d() -> f32 {
     2.0 * std::f32::consts::PI.powi(2) * MAJOR * MINOR * MINOR
 }
 
-/// Revolving the meridian disk with the 2-sphere's `4πu²` measure and the
-/// disk's second moment `A·r²/4` gives `V = 4π²·r²·(R² + r²/4)`.
+// Revolving the meridian disk with the 2-sphere's `4πu²` measure and the disk's
+// second moment `A·r²/4` gives `V = 4π²·r²·(R² + r²/4)`.
 fn torus_volume_4d() -> f32 {
     4.0 * std::f32::consts::PI.powi(2) * MINOR * MINOR * (MAJOR * MAJOR + 0.25 * MINOR * MINOR)
 }

@@ -1,20 +1,16 @@
-//! `loam-scene`: signed-distance field primitives and scene builders for Loam.
-//!
 //! Emit contract, shared by the 3D and 4D paths: every baked constant goes
-//! through `literal::wgsl_f32`, which is shortest-round-trip and always
-//! carries a decimal point or an exponent. Parsing the emitted literal recovers
-//! the exact input bits, so the emitter contributes no floor to CPU/GPU parity
-//! and no divisor collapses to zero. Constants must be finite; the emit
-//! functions panic on infinity or NaN rather than bake a token WGSL cannot
-//! spell.
+//! through `literal::wgsl_f32`, so parsing the emitted literal recovers the
+//! exact input bits and the emitter contributes no floor to CPU/GPU parity.
+//! Constants must be finite; the emit functions panic rather than bake a token
+//! WGSL cannot spell.
 //!
 //! Every emitter has a CPU twin ([`Primitive::eval`], [`Primitive4::eval_4d`],
 //! [`Scene::eval`], [`Scene4::eval_at`]) written as the same `match`, arm for
 //! arm, so a new [`Shape`] variant fails to compile on both halves. The twin
-//! delegates all curved geometry to [`loam_math::Space::distance`], the
-//! reference implementation, rather than transliterating the WGSL prelude; for
-//! Spaces whose prelude is a deliberate approximation the two halves are
-//! different scalar fields and parity is a measured bound, not an identity.
+//! delegates curved geometry to [`loam_math::Space::distance`] rather than
+//! transliterating the WGSL prelude; where that prelude is a deliberate
+//! approximation the two halves are different scalar fields and parity is a
+//! measured bound, not an identity.
 
 pub mod combinator;
 pub mod edit;
@@ -35,13 +31,10 @@ pub use scene4::{
     Scene4, SceneNode4, PRIM_KIND_HALFSPACE4D, PRIM_KIND_HYPERSPHERE4D, PRIM_KIND_OTHER,
 };
 
-/// Distance returned by shapes with no closed-form SDF in the emitted dimension.
-///
-/// Large enough that the marcher's `t_scene > 40` bail fires before the surface
-/// is ever reached, so an accidentally included shape renders as nothing rather
-/// than as wrong geometry. Both halves read this constant: the emitters format
-/// it into WGSL and the evaluators return it, so the sentinel-parity test can
-/// compare against a name instead of a repeated literal.
+/// Returned by shapes with no closed-form SDF in the emitted dimension. Large
+/// enough that the marcher's `t_scene > 40` bail fires before the surface is
+/// reached, so an accidentally included shape renders as nothing rather than as
+/// wrong geometry. Both the emitters and the CPU evaluators read it.
 pub const SENTINEL_DISTANCE: f32 = 1e9;
 
 #[cfg(test)]
@@ -160,9 +153,7 @@ mod tests {
         assert!(!src.contains("dot(p,"));
     }
 
-    /// One `Shape` per [`loam_shape::ShapeKind`], in declaration order. The
-    /// sentinel tables sweep this, and `shape_table_covers_every_kind_exactly_once`
-    /// keeps it honest when a variant is added.
+    // One `Shape` per `ShapeKind`, in declaration order.
     fn one_shape_per_kind() -> Vec<Shape> {
         use glam::{Vec2, Vec4};
         vec![
@@ -320,10 +311,10 @@ mod tests {
             .collect()
     }
 
-    /// A signed-distance function is 1-Lipschitz with respect to the metric of
-    /// the Space it lives in, not with respect to chart coordinates. In E³ the
-    /// two coincide; in H³ and S³ the chart metric is strictly smaller than the
-    /// Riemannian one, so the geodesic-distance leaves satisfy only this form.
+    // A signed-distance function is 1-Lipschitz with respect to the metric of
+    // the Space it lives in, not with respect to chart coordinates. In E³ the
+    // two coincide; in H³ and S³ the chart metric is strictly smaller than the
+    // Riemannian one, so the geodesic-distance leaves satisfy only this form.
     fn assert_lipschitz_1_under_space_metric<S, F>(label: &str, space: &S, sdf: F, extent: f32)
     where
         S: loam_math::Space<Point = Vec3, Vector = Vec3>,
@@ -593,10 +584,9 @@ mod tests {
         }
     }
 
-    /// A magnitude past 2^63, where a bare digit run overflows WGSL's
-    /// `AbstractInt` (i64) range. 1e19 is used rather than 2^63 itself because
-    /// the shortest round-trip decimal for 2^63 is 9223372000000000000, which
-    /// still fits.
+    // Past 2^63, where a bare digit run overflows WGSL's `AbstractInt` (i64)
+    // range. 1e19 rather than 2^63 itself because the shortest round-trip
+    // decimal for 2^63 is 9223372000000000000, which still fits.
     const BEYOND_ABSTRACT_INT: f32 = 1.0e19;
 
     fn assert_naga_accepts(source: &str) {

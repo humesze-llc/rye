@@ -1,12 +1,5 @@
 //! The convex ring a dynamic letter collides with: the convex hull of the
 //! collider cover, simplified down to a bounded side count.
-//!
-//! A rigid body in `loam-physics` carries exactly one collider and no
-//! per-collider offset, so a letter that moves is one convex piece or it is
-//! nothing. The cover is not convex, which is the whole reason it keeps
-//! counters open, so the dynamic path pays for its rigidity with a convex
-//! overestimate and the static path keeps the faithful cover.
-//!
 //! Simplification only ever grows the ring, so a hull of the cover stays a
 //! hull of the letter at every side count.
 
@@ -40,7 +33,6 @@ pub(super) fn convex_hull(mut points: Vec<Vec2>) -> Vec<Vec2> {
         pop_non_left_turns(&mut hull, p, lower);
         hull.push(p);
     }
-    // The upper chain closes on the point the lower chain opened with.
     hull.pop();
     hull
 }
@@ -163,7 +155,6 @@ mod tests {
             Vec2::new(2.0, 2.0),
             Vec2::new(0.0, 2.0),
         ];
-        // Edge midpoints and an interior point: all redundant.
         points.extend([
             Vec2::new(1.0, 0.0),
             Vec2::new(2.0, 1.0),

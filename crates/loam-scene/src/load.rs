@@ -1,6 +1,3 @@
-//! Scene descriptions read from RON, the boundary between file text and the
-//! emitters.
-//!
 //! [`Primitive::to_wgsl`](crate::Primitive) asserts on constants WGSL cannot
 //! spell, so a description that merely deserializes is not yet safe to emit.
 //! Both entry points here run the same check, and every rejection is a
@@ -10,8 +7,6 @@
 //! fetches the text itself and calls `from_ron` with the URL as the origin; the
 //! origin is a parameter and not an internal detail of `load` for exactly that
 //! reason.
-//!
-//! Committed examples live in `crates/loam-scene/scenes/`.
 
 use std::path::{Path, PathBuf};
 
@@ -25,35 +20,24 @@ use crate::scene4::{Scene4, SceneNode4};
 /// Why a RON scene description did not produce a scene.
 #[derive(Debug, Error)]
 pub enum SceneLoadError {
-    /// The file could not be read.
     #[error("{}: {source}", origin.display())]
     Read {
-        /// Path as handed to [`Scene::load`] / [`Scene4::load`].
         origin: PathBuf,
-        /// Underlying filesystem failure.
         #[source]
         source: std::io::Error,
     },
 
-    /// The text is not a RON scene description. RON's `line:column` is part of
-    /// the message.
+    /// RON's `line:column` is part of the message.
     #[error("{}: {source}", origin.display())]
     Parse {
-        /// Path or label the text came from.
         origin: PathBuf,
-        /// Underlying RON failure, positioned in the source text.
         #[source]
         source: ron::error::SpannedError,
     },
 
     /// The description deserialized but holds a constant no emitter can bake.
     #[error("{}: {reason}", origin.display())]
-    Invalid {
-        /// Path or label the text came from.
-        origin: PathBuf,
-        /// What the description asks for and why it cannot be emitted.
-        reason: String,
-    },
+    Invalid { origin: PathBuf, reason: String },
 }
 
 impl Scene {
@@ -75,7 +59,6 @@ impl Scene {
         Ok(scene)
     }
 
-    /// Serialize this scene to a RON string.
     pub fn to_ron(&self) -> Result<String, ron::Error> {
         ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
     }
@@ -99,7 +82,6 @@ impl Scene4 {
         Ok(scene)
     }
 
-    /// Serialize this scene to a RON string.
     pub fn to_ron(&self) -> Result<String, ron::Error> {
         ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
     }

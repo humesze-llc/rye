@@ -1,11 +1,7 @@
 //! Convex regular 4-polytope vertex / face-plane generators and the Wolfe SDF.
-//! Factored out of the physics layer so the rasterizer and topology can build
-//! shapes without depending on loam-physics. Origin-centered, circumradius `r`.
+//! Origin-centered, circumradius `r`.
 
 use glam::Vec4;
-
-// 4D regular polytopes. Every generator returns origin-centered vertices scaled
-// so the circumradius equals `r`; the caller translates.
 
 /// **5-cell / pentatope** (4D simplex): 5 vertices, 10 edges, 10 faces, 5
 /// tetrahedral cells. The 4D analogue of the tetrahedron.
@@ -15,7 +11,6 @@ pub fn pentatope_vertices(r: f32) -> Vec<Vec4> {
     let k = r;
     let base_w = -r * 0.25;
     let base_r = r * (15.0_f32).sqrt() / 4.0;
-    // Use a regular tetrahedron's vertex set for the base, scaled.
     let t = base_r / 3.0_f32.sqrt();
     vec![
         Vec4::new(0.0, 0.0, 0.0, k),
@@ -293,16 +288,15 @@ pub fn polytope_sdf_wolfe(p: Vec4, face_normals: &[Vec4], inradius: f32) -> f32 
         }
     }
     if max_d <= 0.0 {
-        return max_d; // inside
+        return max_d;
     }
     let mut active_count = 1usize;
 
-    // Cache active normals so the 4-level projection doesn't re-index.
     let mut active = [Vec4::ZERO; 4];
     active[0] = face_normals[active_idx[0]];
 
     let tol = 1e-6_f32;
-    let mut q = p - max_d * active[0]; // |S|=1 projection
+    let mut q = p - max_d * active[0];
 
     while active_count < 4 {
         let mut next_d = tol;

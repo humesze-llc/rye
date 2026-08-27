@@ -1,12 +1,6 @@
-//! WGSL combinator helpers.
-//!
 //! Each combinator emits a named WGSL function that takes pre-evaluated distance values and
 //! returns a combined distance. The Scene tree calls the SDF sub-functions first, stores results in
 //! `let` bindings, then passes them to the combinator function.
-//!
-//! All combinators are Space-agnostic: they operate on scalar distances returned by
-//! `loam_distance`-based SDF functions, so they are correct in E³, H³, and S³ without
-//! modification.
 
 use crate::literal::wgsl_f32;
 
@@ -29,11 +23,7 @@ pub fn difference_expr(da: &str, db: &str) -> String {
 }
 
 /// Emit a named WGSL helper function implementing smooth-minimum (Inigo Quilez polynomial
-/// blend).
-///
-/// `k` controls the blend radius (in Space distance units). The function takes two pre-evaluated
-/// distances `(a: f32, b: f32)` and returns the blended distance. Call it as `{name}(da, db)` in
-/// the scene body.
+/// blend). `k` controls the blend radius (in Space distance units).
 ///
 /// `k` is baked as a shortest-round-trip literal, never at fixed precision: it
 /// is a divisor, and a six-decimal print collapses every `k` below 5e-7 to
@@ -53,7 +43,6 @@ pub fn smooth_min_fn(name: &str, k: f32) -> String {
 mod tests {
     use super::*;
 
-    /// Extract the WGSL literal `smooth_min_fn` divides by.
     fn divisor_literal(src: &str) -> &str {
         let after = src.split("(b - a) / (").nth(1).expect("divide is emitted");
         after.split(')').next().expect("divisor is parenthesized")

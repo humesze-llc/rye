@@ -1,46 +1,7 @@
 //! `loam-text`: screen-space text rendering for game HUDs and overlays.
-//!
-//! No global state, no `App`-trait coupling: construct a [`TextRenderer`] in
-//! `setup`, [`queue`](TextRenderer::queue) strings per frame, and
-//! [`record`](TextRenderer::record) into the frame's encoder after the main
-//! scene's passes.
-//!
-//! [`ab_glyph`] rasterization + a hand-rolled wgpu atlas/textured-quad pipeline.
 //! Printable ASCII (`0x20..=0x7E`) is pre-baked at a fixed atlas size; per-call
 //! sizes scale the quads bilinearly. For HUD readouts only, not typographic or
 //! non-Latin text; reach for `loam-egui` when an app needs more.
-//!
-//! [`glyph`] is the other consumer of the same `ab_glyph` font handle: a
-//! build-time pipeline turning letters into extruded, slab-embedded 4D solids
-//! that are simultaneously render geometry and physics colliders.
-//!
-//! # Example
-//!
-//! ```ignore
-//! let mut text = TextRenderer::new(device, queue, format, font_bytes, 48.0, 1)?;
-//! text.queue("Score: 1234", [16.0, 16.0], 32.0, [1.0, 1.0, 1.0, 1.0]);
-//! text.record(device, queue, &mut encoder, &view, [width, height]);
-//! ```
-//!
-//! # Limitations
-//!
-//! - **Printable ASCII only.** [`queue`](TextRenderer::queue) drops everything
-//!   else silently, with no fallback box glyph. [`is_renderable`] is the
-//!   pre-check for strings that must survive intact.
-//! - **No shaping.** Layout is a per-char advance sum: no kerning, ligatures,
-//!   combining marks, or bidi. Proportional faces therefore cannot align into
-//!   columns; a caller wanting alignment must supply a monospace face and pad
-//!   its own strings.
-//! - **Advance-box measurement only.** [`TextMetrics::measure`] sizes the
-//!   block the cursor sweeps, not its ink, so a face whose outlines overhang
-//!   their advances overhangs the measured box too.
-//! - **No wrapping, clipping, or scissor rect.** A line runs past the viewport
-//!   edge and off-screen rather than wrapping or being cut at a panel boundary.
-//! - **No scale-factor awareness.** `size_px` and `position` are physical
-//!   pixels; nothing tracks the window's DPI, so a caller that wants a
-//!   DPI-stable readout scales both itself.
-//! - **One face at one bake size.** No bold/italic, no font fallback chain, and
-//!   no mip chain, so sizes far from `bake_size_px` soften or blur.
 
 pub mod glyph;
 
@@ -55,23 +16,19 @@ use wgpu::*;
 const ATLAS_SIZE: u32 = 1024;
 const ATLAS_FORMAT: TextureFormat = TextureFormat::R8Unorm;
 
-/// Per-glyph metadata in the atlas.
 #[derive(Copy, Clone, Debug)]
 struct GlyphEntry {
     /// Atlas UV rectangle (normalized 0..1).
     uv_min: [f32; 2],
     uv_max: [f32; 2],
-    /// Pixel size at the atlas's bake size.
     px_width: f32,
     px_height: f32,
-    /// Horizontal advance to the next glyph, at bake size.
     h_advance: f32,
     /// Pixel offset from baseline to the glyph's top-left, at bake size.
     bearing_x: f32,
     bearing_y: f32,
 }
 
-/// One vertex per quad corner; six vertices per glyph (two-triangle fan).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct TextVertex {
@@ -88,20 +45,14 @@ struct TextUniforms {
 }
 
 /// Advance-only text extents, free of GPU resources.
-///
-/// Layout is a per-char advance sum, so a block's size is exactly this
-/// arithmetic. Split out of [`TextRenderer`] because a caller that must size a
-/// block before a device exists, or in a test, has no renderer to ask.
 pub struct TextMetrics {
-    /// Horizontal advance per baked codepoint, at the bake size.
     advances: HashMap<char, f32>,
     bake_size_px: f32,
     line_height_px: f32,
 }
 
 impl TextMetrics {
-    /// Read `font_bytes`'s advances at `bake_size_px`. Nothing is rasterized,
-    /// so this is cheap enough to call outside setup.
+    /// Read `font_bytes`'s advances at `bake_size_px`.
     pub fn new(font_bytes: &[u8], bake_size_px: f32) -> Result<Self> {
         let font = FontRef::try_from_slice(font_bytes)
             .map_err(|e| anyhow!("loam-text: failed to parse font: {e}"))?;
@@ -162,13 +113,7 @@ impl TextMetrics {
     }
 }
 
-/// Screen-space text renderer.
-///
-/// Construct once. Each frame:
-/// 1. Call [`TextRenderer::queue`] for each string to draw.
-/// 2. Call [`TextRenderer::record`] to flush the queue into the frame encoder.
-///
-/// The queue is reset every `record` call.
+/// Screen-space text renderer. The queue is reset every `record` call.
 pub struct TextRenderer {
     pipeline: RenderPipeline,
     bind_group: BindGroup,
@@ -185,8 +130,7 @@ pub struct TextRenderer {
     font_data: Vec<u8>,
     glyphs: HashMap<char, GlyphEntry>,
     metrics: TextMetrics,
-    /// Distance from a line's top edge to its baseline, at the bake size. Kept
-    /// alongside the line advance because layout needs both independently.
+    /// Distance from a line's top edge to its baseline, at the bake size.
     ascent_px: f32,
 
     vertex_buf: Buffer,
@@ -195,10 +139,10 @@ pub struct TextRenderer {
 }
 
 impl TextRenderer {
-    /// Construct a renderer. `font_bytes` is raw TTF/OTF data; `bake_size_px` is
-    /// the atlas rasterization size (smaller per-frame sizes are clean, larger
-    /// blur). 48 is a reasonable default. `sample_count` must match the render
-    /// target [`record`](TextRenderer::record) draws into, MSAA included.
+    /// `font_bytes` is raw TTF/OTF data; `bake_size_px` is the atlas
+    /// rasterization size (smaller per-frame sizes are clean, larger blur).
+    /// `sample_count` must match the render target
+    /// [`record`](TextRenderer::record) draws into, MSAA included.
     pub fn new(
         device: &Device,
         queue: &Queue,
@@ -478,23 +422,18 @@ impl TextRenderer {
         queue.write_buffer(&self.vertex_buf, 0, bytemuck::cast_slice(&self.queued));
     }
 
-    /// Advances and line height this renderer lays out with, for callers
-    /// sizing a block before they queue it.
     pub fn metrics(&self) -> &TextMetrics {
         &self.metrics
     }
 
-    /// Bake size glyphs were rasterized at; per-frame sizes near this look best.
     pub fn bake_size_px(&self) -> f32 {
         self.metrics.bake_size_px
     }
 
-    /// Vertical advance between lines at the bake size.
     pub fn line_height_px(&self) -> f32 {
         self.metrics.line_height_px
     }
 
-    /// Borrow the loaded font data. Useful for measurement helpers built on top.
     pub fn font_bytes(&self) -> &[u8] {
         &self.font_data
     }
@@ -504,7 +443,7 @@ impl TextRenderer {
 /// ascender line exactly at `position.y`. Offsetting by `line_height_px`
 /// instead would push the block down by the descent plus line gap, so
 /// `position` would not be the top edge it is documented as.
-#[allow(clippy::too_many_arguments)] // parameters are the layout state.
+#[allow(clippy::too_many_arguments)]
 fn layout_text(
     text: &str,
     position: [f32; 2],
@@ -579,7 +518,6 @@ fn layout_text(
     }
 }
 
-/// Atlas coverage: the codepoints [`bake_ascii_atlas`] rasterizes.
 fn is_printable_ascii(c: char) -> bool {
     ('\u{20}'..='\u{7E}').contains(&c)
 }
@@ -696,7 +634,6 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
                 shelf_h = shelf_h.max(gh);
             }
             None => {
-                // Whitespace / no outline.
                 entries.insert(
                     c,
                     GlyphEntry {
@@ -788,8 +725,6 @@ mod tests {
         );
         let a = baked.glyphs.get(&'A').expect("A in atlas");
         assert!(a.px_width > 0.0 && a.px_height > 0.0);
-        // Both construction paths read the same font at the same size, so the
-        // cheap non-rasterizing one must not drift from the baked one.
         let standalone = TextMetrics::new(&bytes, 48.0).expect("metrics");
         assert_eq!(
             standalone.measure("Wg|", 48.0),
@@ -802,8 +737,6 @@ mod tests {
     /// line advance.
     const MOCK_ASCENT: f32 = 12.0;
 
-    /// The pinned math (advance, newline reset, vertex count) depends only on
-    /// `h_advance`, not atlas geometry.
     fn mock_glyph_table(h_advance: f32) -> HashMap<char, GlyphEntry> {
         (0x20u8..=0x7Eu8)
             .map(|c| {
@@ -823,8 +756,6 @@ mod tests {
             .collect()
     }
 
-    /// Built by hand so `measure` is exercised against the very table
-    /// `layout_text` walks rather than against a second font.
     fn mock_metrics(h_advance: f32) -> TextMetrics {
         TextMetrics {
             advances: (0x20u8..=0x7Eu8).map(|c| (c as char, h_advance)).collect(),
@@ -837,7 +768,6 @@ mod tests {
     fn layout_newline_resets_x_and_advances_y() {
         let glyphs = mock_glyph_table(10.0);
         let mut out = Vec::new();
-        // size_px = bake_size_px = 16.0, so scale = 1.0 and line_h = 16.0.
         layout_text(
             "a\nb",
             [5.0, 0.0],
@@ -849,15 +779,12 @@ mod tests {
             MOCK_ASCENT,
             &mut out,
         );
-        assert_eq!(out.len(), 12); // 6 verts × 2 glyphs
+        assert_eq!(out.len(), 12);
 
-        // Glyph 'a' top-left: x0 = 5, y0 = ascent (mock bearings are zero).
         let first = out[0];
         assert_eq!(first.pos[0], 5.0);
         assert!((first.pos[1] - MOCK_ASCENT).abs() < 1e-5);
 
-        // Glyph 'b' (vertex 6), after the newline: x reset to 5, y advanced by
-        // the line height, not by the ascent.
         let second = out[6];
         assert_eq!(
             second.pos[0], 5.0,
@@ -873,7 +800,6 @@ mod tests {
     #[test]
     fn position_y_is_the_ascender_line_at_every_scale() {
         let mut glyphs = mock_glyph_table(10.0);
-        // Bake-space glyph reaching from the ascender down to the baseline.
         glyphs.insert(
             'A',
             GlyphEntry {
@@ -911,7 +837,6 @@ mod tests {
     fn layout_cursor_advances_by_h_advance_scaled() {
         let glyphs = mock_glyph_table(10.0);
         let mut out = Vec::new();
-        // 32px render at 16px bake => scale 2 => effective advance 20 per glyph.
         layout_text(
             "ab",
             [0.0, 0.0],
@@ -943,7 +868,6 @@ mod tests {
             MOCK_ASCENT,
             &mut out,
         );
-        // Only 'a', 'b', 'c', 'd' get glyphs. 4 × 6 = 24 vertices.
         assert_eq!(out.len(), 24);
     }
 

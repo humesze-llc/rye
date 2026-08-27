@@ -1,31 +1,9 @@
-//! The two consumers want opposite decompositions, so they get different ones.
-//!
-//! **Render.** The cross-section is recovered by splitting every grid cell into
+//! The cross-section is recovered by splitting every grid cell into
 //! two triangles and clipping each against the half-space `d <= 0` (Sutherland
 //! & Hodgman, 1974). The triangle split sidesteps the saddle ambiguity a
 //! marching-squares cell would have: the interpolated point on a shared cell
 //! edge depends only on that edge's two samples, so neighbouring cells agree
-//! and the union is watertight. The two cells traverse that edge in opposite
-//! directions, so their interpolants agree algebraically but can land an ulp
-//! apart; nothing downstream resolves anywhere near that. The piece count is
-//! `Theta(res^2)`, because the letter's interior contributes as many pieces as
-//! its boundary does, and that is the right trade for geometry a rasterizer
-//! consumes in one draw.
-//!
-//! **Collision.** A solver pays per body, so the same count is ruinous there.
-//! The colliders come instead from an [`Isovolume`] cover of the cross-section
-//! at its own pitch, extruded through the depth and the slab. The cover's count
-//! tracks silhouette complexity rather than interior area, and its error is a
-//! bounded outward margin rather than a lost stem, which is what lets the
-//! collider pitch be coarsened independently of legibility.
-//!
-//! **Collision, moving.** The cover is a set of bodies, not a body, and
-//! `loam-physics` gives a rigid body one collider with no local offset, so a
-//! letter that moves gets a third decomposition: [`GlyphSolid::rigid_hull_4d`],
-//! one convex prism per letter over the hull of the cover. Convexity is the
-//! price of rigidity and it is paid where it shows least, since a falling
-//! letter is judged on its silhouette and its rest pose rather than on whether
-//! something can pass through its counter.
+//! and the union is watertight.
 
 use glam::{Vec2, Vec3, Vec4};
 use loam_shape::{
@@ -61,13 +39,8 @@ const RING_MERGE_FRACTION: f32 = 1.0e-4;
 /// than useless as colliders.
 const SLIVER_AREA_FRACTION: f32 = 1.0e-6;
 
-/// Default wireframe weight for [`Visualizable::to_lines`]. `LineMesh::widths`
-/// is public, so callers wanting another weight overwrite it in place rather
-/// than threading a parameter through the bake.
 const WIREFRAME_WIDTH_PX: f32 = 1.0;
 
-/// Default marker radius for [`Visualizable::to_points`], same rationale as
-/// [`WIREFRAME_WIDTH_PX`].
 const POINT_MARKER_PX: f32 = 2.0;
 
 /// One convex piece of a glyph's cross-section, counter-clockwise in world XY.
@@ -136,35 +109,27 @@ impl GlyphSolid {
         }
     }
 
-    /// The character this solid was baked from.
     pub fn ch(&self) -> char {
         self.ch
     }
 
-    /// Baseline pen position of this letter within the laid-out word.
     pub fn pen_origin(&self) -> Vec2 {
         self.pen_origin
     }
 
-    /// Distance from this letter's pen origin to the next letter's.
     pub fn advance(&self) -> f32 {
         self.advance
     }
 
-    /// True for characters the font defines with no outline, i.e. whitespace.
-    /// A blank carries an advance and no geometry.
     pub fn is_blank(&self) -> bool {
         self.field.is_none()
     }
 
-    /// The baked cross-section field, absent for a blank.
     pub fn field(&self) -> Option<&DistanceField2D> {
         self.field.as_ref()
     }
 
-    /// Convex cross-section pieces backing the render mesh. Render-only: the
-    /// colliders come from [`Self::collider_cover`], which is a different
-    /// decomposition at a different pitch.
+    /// Convex cross-section pieces backing the render mesh.
     pub fn piece_count(&self) -> usize {
         self.pieces.len()
     }
@@ -180,8 +145,6 @@ impl GlyphSolid {
         self.cover.as_ref()
     }
 
-    /// Number of 4D colliders this letter emits, i.e. the number of bodies a
-    /// solver pays for.
     pub fn collider_count(&self) -> usize {
         self.cover.as_ref().map_or(0, Isovolume::piece_count)
     }
@@ -207,10 +170,8 @@ impl GlyphSolid {
 
     /// Signed distance to the slab-embedded 4D solid, negative inside.
     ///
-    /// The solid is `cross_section x [-depth/2, depth/2] x [w_min, w_max]`, so
-    /// the distance is the cross-section distance extended twice, once per
-    /// interval axis. Fidelity is that of the baked cross-section: exact in
-    /// `z` and `w`, grid-interpolated in `xy`.
+    /// Fidelity is that of the baked cross-section: exact in `z` and `w`,
+    /// grid-interpolated in `xy`.
     pub fn distance_4d(&self, p: Vec4) -> f32 {
         let cross_section = self.distance_2d(Vec2::new(p.x, p.y));
         let extruded = extend(cross_section, p.z, 0.0, self.half_depth);
@@ -221,8 +182,7 @@ impl GlyphSolid {
     /// Pose is extrinsic per the [`Shape`] contract, so `centre` is the body
     /// position and the hull is a 16-vertex box about the origin.
     ///
-    /// Each hull is one box of [`Self::collider_cover`] extruded through the
-    /// depth and the slab. The union encloses the letter and overshoots its ink
+    /// The union encloses the letter and overshoots its ink
     /// by at most [`Self::collider_margin`]; counters and notches stay open,
     /// because the occupancy test never marks a cell they cover.
     ///
@@ -233,9 +193,7 @@ impl GlyphSolid {
     /// no per-collider local offset, so a letter made dynamic is as many
     /// independent bodies as it has boxes; the cover's boxes overlap by
     /// construction, so those bodies start interpenetrating and drive each
-    /// other apart on the first step rather than merely drifting. Lifting that
-    /// is a compound shape carrying per-part offsets, in `loam-physics` and
-    /// not here.
+    /// other apart on the first step rather than merely drifting.
     pub fn colliders_4d(&self) -> Vec<(Vec4, Shape)> {
         let Some(cover) = &self.cover else {
             return Vec::new();
@@ -270,8 +228,6 @@ impl GlyphSolid {
             .collect()
     }
 
-    /// Sides of the convex ring [`Self::rigid_hull_4d`] is built on; zero for a
-    /// blank. The 4D hull carries four vertices per side.
     pub fn rigid_hull_sides(&self) -> usize {
         self.hull.len()
     }
@@ -279,8 +235,7 @@ impl GlyphSolid {
     /// The single convex 4D collider a *dynamic* letter gets, as
     /// `(centre, hull)`, or `None` for a blank.
     ///
-    /// One body per letter, against [`Self::collider_count`] for the static
-    /// path. The hull is the prism `ring x [-depth/2, depth/2] x slab`, where
+    /// The hull is the prism `ring x [-depth/2, depth/2] x slab`, where
     /// `ring` is the convex hull of [`Self::collider_cover`] simplified to at
     /// most eight sides, so the vertex count is at most 32 and fits the 4D
     /// narrowphase's fixed polytope buffer.
@@ -293,9 +248,8 @@ impl GlyphSolid {
     /// # What convexity costs
     ///
     /// Counters and notches fill: a body dropped down the middle of a moving
-    /// `O` lands on it. That is the whole difference from
-    /// [`Self::colliders_4d`], which keeps them open and cannot move. Both
-    /// enclose the letter, so neither lets anything through the ink.
+    /// `O` lands on it. Both enclose the letter, so neither lets anything
+    /// through the ink.
     pub fn rigid_hull_4d(&self) -> Option<(Vec4, Shape)> {
         if self.hull.is_empty() {
             return None;
@@ -320,9 +274,6 @@ impl GlyphSolid {
     }
 }
 
-/// Convex ring enclosing a cover, at most [`MAX_HULL_SIDES`] long. Hulling the
-/// box corners rather than the marked cells costs four points per box and needs
-/// no access to the occupancy grid.
 fn rigid_ring(cover: &Isovolume<2>) -> Vec<Vec2> {
     let mut corners = Vec::with_capacity(4 * cover.piece_count());
     for index in 0..cover.piece_count() {
@@ -338,8 +289,6 @@ fn rigid_ring(cover: &Isovolume<2>) -> Vec<Vec2> {
     ring
 }
 
-/// Cover the letter's cross-section with axis-aligned boxes on a grid of the
-/// given pitch.
 fn extract_cover(field: &DistanceField2D, cell: f32) -> Isovolume<2> {
     let (cells_x, cells_y) = field.cell_counts();
     let padding = Vec2::splat(COVER_PADDING_CELLS * cell);
@@ -359,10 +308,6 @@ fn extract_cover(field: &DistanceField2D, cell: f32) -> Isovolume<2> {
     )
 }
 
-/// Rendered geometry is the 3D cross-section of the 4D solid. Every `w` in the
-/// slab gives the same cross-section (the solid is a product with the slab
-/// interval), so one mesh serves the whole slab and the title-screen effect is
-/// the slab sliding across the render's `w`.
 impl Visualizable<3> for GlyphSolid {
     fn to_triangles(&self) -> Result<TriangleMesh<3>, NotVisualizable> {
         if self.pieces.is_empty() {
@@ -379,8 +324,6 @@ impl Visualizable<3> for GlyphSolid {
                     mesh.colors.push(self.color);
                 }
             }
-            // Fans are valid because every piece is convex. The back cap is
-            // wound in reverse so both caps face outwards.
             for k in 1..n as u32 - 1 {
                 mesh.indices.push([front, front + k, front + k + 1]);
                 mesh.indices.push([back, back + k + 1, back + k]);
@@ -619,11 +562,6 @@ mod tests {
         )
     }
 
-    /// A square rotated 45 degrees. Convex, so the render clip still tiles it
-    /// at `Theta(res^2)` pieces, while the axis-aligned cover of its diagonal
-    /// boundary is a staircase whose box count tracks the collider pitch. That
-    /// separation is what the two-pitch design is for; an axis-aligned fixture
-    /// covers in one box at every resolution and shows nothing.
     fn diamond_solid(half: f32, cells: u32, collider_cells: u32) -> GlyphSolid {
         diamond_hull_solid(half, cells, collider_cells, 0.4, (-0.2, 0.2))
     }
@@ -653,7 +591,6 @@ mod tests {
         )
     }
 
-    /// The hole is what a bounding-volume shortcut would fill in.
     fn annulus_solid(outer: f32, inner: f32, cells: u32, collider_cells: u32) -> GlyphSolid {
         let ring = |half: f32, counter_clockwise: bool| {
             let mut points = vec![
@@ -1073,15 +1010,12 @@ mod tests {
         let slab = (-1.0, 1.0);
         let solid = square_solid(1.0, 32, depth, slab);
 
-        // Deep inside: the nearest face is whichever of the three is closest.
         let centre = solid.distance_4d(Vec4::ZERO);
         assert!((centre + 0.25).abs() < 0.05, "centre distance {centre}");
 
-        // Straight out along +z past the cap: exact, since z is not baked.
         let above = solid.distance_4d(Vec4::new(0.0, 0.0, 0.5 * depth + 2.0, 0.0));
         assert!((above - 2.0).abs() < 1e-5, "above {above}");
 
-        // Straight out along +w past the slab: exact for the same reason.
         let beyond = solid.distance_4d(Vec4::new(0.0, 0.0, 0.0, slab.1 + 3.0));
         assert!((beyond - 3.0).abs() < 1e-5, "beyond {beyond}");
 

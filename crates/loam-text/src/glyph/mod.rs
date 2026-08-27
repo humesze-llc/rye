@@ -1,42 +1,10 @@
 //! Glyph letter pipeline: font outline to a slab-embedded 4D solid.
 //!
-//! One pass per letter: `ab_glyph` outline curves are flattened to closed
-//! contours, the contours are baked into a 2D signed distance field, and the
-//! field is decomposed three ways, one per role, each result extruded along
-//! `z` and embedded in a `w` slab. Render geometry is a clip of the field into
-//! convex cross-section pieces, reaching a [`loam_shape::TriangleMesh`] through
-//! [`loam_shape::Visualizable`]. Static colliders are a
-//! [`loam_shape::Isovolume`] cover at [`GlyphParams::collider_resolution`],
-//! emitted as convex [`loam_shape::Shape::ConvexPolytope4D`] boxes. A letter
-//! that moves is one convex body instead, [`GlyphSolid::rigid_hull_4d`],
-//! because a rigid body carries one collider.
-//!
 //! Unlike [`crate::TextRenderer`]'s HUD path, which skips characters it cannot
 //! draw so a per-frame overlay never fails, this pipeline is a build-time step
 //! and rejects anything it cannot represent: a character the font has no glyph
 //! for, a control character, or an outline with no area all return
 //! [`GlyphError`].
-//!
-//! # Example
-//!
-//! ```no_run
-//! use ab_glyph::FontRef;
-//! use loam_shape::Visualizable;
-//! use loam_text::glyph::{layout_word, GlyphParams};
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! # let font_bytes: &[u8] = &[];
-//! let font = FontRef::try_from_slice(font_bytes)?;
-//! let letters = layout_word(&font, "LOAM", &GlyphParams::default())?;
-//! for letter in &letters {
-//!     let mesh = Visualizable::<3>::to_triangles(letter);
-//!     // `(centre, hull)` pairs, one static body each.
-//!     let colliders = letter.colliders_4d();
-//!     // One dynamic body for the whole letter, convex.
-//!     let falling = letter.rigid_hull_4d();
-//! }
-//! # Ok(()) }
-//! ```
 
 mod field;
 mod hull;
@@ -55,39 +23,27 @@ pub const BLANK_DISTANCE: f32 = 1.0e9;
 
 /// Floor for both grid pitches. Below this many cells per em the render bake
 /// cannot resolve a stem and the cross-section comes out as disconnected specks
-/// rather than a letter. The collider cover degrades the other way, to a
-/// letter-shaped blob, and at this floor its outward margin is already half an
-/// em, so the bound is a backstop for both rather than a usable setting.
+/// rather than a letter.
 pub const MIN_RESOLUTION: u32 = 4;
 
 /// Why a character could not be turned into a solid.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum GlyphError {
-    /// The font has no glyph for this character. `Debug` formatting of a
-    /// `char` prints non-ASCII as its `\u{...}` escape, so the codepoint is in
-    /// the message.
     #[error("font has no glyph for {ch:?}")]
     NoGlyph { ch: char },
 
-    /// Control characters have no geometry. Line breaking and tabbing are the
-    /// caller's job; this pipeline lays out one run of printable text.
     #[error("{ch:?} is a control character; the glyph pipeline takes printable text only")]
     ControlCharacter { ch: char },
 
-    /// The font defines an outline for this character but it encloses no area.
     #[error("outline for {ch:?} encloses no area")]
     DegenerateOutline { ch: char },
 
-    /// Without `units_per_em` there is no scale to normalize outlines by.
     #[error("font declares no units_per_em")]
     NoUnitsPerEm,
 
-    /// A [`GlyphParams`] field that must be positive was not.
     #[error("GlyphParams::{field} must be positive, got {value}")]
     NonPositive { field: &'static str, value: f32 },
 
-    /// One of the two [`GlyphParams`] grid pitches, `resolution` or
-    /// `collider_resolution`, is below [`MIN_RESOLUTION`].
     #[error("GlyphParams::{field} must be at least {MIN_RESOLUTION}, got {resolution}")]
     Resolution {
         field: &'static str,
@@ -100,21 +56,17 @@ pub enum GlyphError {
 /// independent of [`Self::em_size`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlyphParams {
-    /// World size of one em. Advances, contours and geometry all scale by it.
+    /// World size of one em.
     pub em_size: f32,
     /// Extent along `z`, centred on `z = 0`.
     pub depth: f32,
     /// `w` extent of the slab the letter occupies, `(min, max)`.
     pub slab: (f32, f32),
-    /// Grid cells per em for the bake and the render decomposition. Fixed per
-    /// word rather than per glyph so every letter is sampled at the same
-    /// fidelity. Bake cost and render piece count both scale with its square.
+    /// Grid cells per em for the bake and the render decomposition.
     pub resolution: u32,
     /// Grid cells per em for the collider cover, independent of
     /// [`Self::resolution`]: legibility sets that one, the solver's body budget
-    /// sets this one. Coarsening it shrinks the box count and widens
-    /// [`GlyphSolid::collider_margin`] proportionally, and unlike the render
-    /// pitch it cannot lose a stem, only fatten it.
+    /// sets this one.
     pub collider_resolution: u32,
     /// Maximum chord deviation when flattening Bezier segments, in em.
     pub flatten_tolerance_em: f32,
@@ -338,7 +290,6 @@ mod tests {
     fn characters_the_font_lacks_are_rejected() {
         let Some(bytes) = system_font() else { return };
         let font = FontRef::try_from_slice(&bytes).expect("parse font");
-        // U+1F600 GRINNING FACE: outside any of the probed text faces.
         let error = layout_word(&font, "LO\u{1F600}AM", &params()).unwrap_err();
         assert_eq!(
             error,

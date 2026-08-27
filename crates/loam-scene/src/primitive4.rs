@@ -1,19 +1,5 @@
 //! `Primitive4`, 4D-SDF emit and CPU evaluation for the [`loam_shape::Shape`]
 //! variants in ℝ⁴.
-//!
-//! Counterpart of [`crate::Primitive`] for 4D points; emits
-//! `fn <name>(p: vec4<f32>) -> f32` returning the signed distance to the
-//! shape's surface (positive outside, negative inside, zero on boundary), and
-//! evaluates the same formulas on the CPU.
-//!
-//! ## Variant coverage
-//!
-//! | `Shape` variant | 4D SDF | Notes |
-//! |---|---|---|
-//! | [`Shape::HyperSphere4D`] | closed-form | `length(p − center) − radius` |
-//! | [`Shape::HalfSpace4D`] | closed-form | `dot(p, normal) − offset`; honest in flat ℝ⁴ (the only 4D Space today) |
-//! | [`Shape::ConvexPolytope4D`] | [`SENTINEL_DISTANCE`] | real path is per-frame uniforms |
-//! | 3D-only variants | [`SENTINEL_DISTANCE`] | shouldn't appear in `Scene4` |
 
 use glam::Vec4;
 use loam_shape::Shape;
@@ -25,8 +11,7 @@ use crate::SENTINEL_DISTANCE;
 /// [`crate::Primitive`] for 4D variants.
 ///
 /// No `space: &S` parameter today: ℝ⁴ is the only 4D Space and it's flat, so
-/// chart-coord SDFs are correct. A curved 4D Space would add that parameter and
-/// gate `HalfSpace4D` on `Space::is_chart_flat`, like the 3D counterpart.
+/// chart-coord SDFs are correct.
 pub trait Primitive4 {
     /// Emit a WGSL function named `name` taking `vec4<f32>` and returning `f32`.
     fn to_wgsl_4d(&self, name: &str) -> String;
@@ -54,8 +39,7 @@ impl Primitive4 for Shape {
 
             // Sentinel until the real path lands: face hyperplanes are pose-
             // dependent per frame, so `Hyperslice4DNode` ships them via a uniform
-            // buffer rather than baking constants here. Renders invisible so
-            // accidental scene inclusion fails visibly.
+            // buffer rather than baking constants here.
             Shape::ConvexPolytope4D { .. } => format!(
                 "fn {name}(_p: vec4<f32>) -> f32 {{\n\
                 \t// ConvexPolytope4D: half-space emit lives in the\n\
@@ -65,7 +49,6 @@ impl Primitive4 for Shape {
                 }}\n",
             ),
 
-            // Chart-coord hyperplane SDF; honest because ℝ⁴ is flat.
             Shape::HalfSpace4D { normal, offset } => format!(
                 "fn {name}(p: vec4<f32>) -> f32 {{\n\
                 \treturn dot(p, vec4<f32>({nx}, {ny}, {nz}, {nw})) - ({offset});\n\
@@ -78,8 +61,6 @@ impl Primitive4 for Shape {
                 offset = wgsl_f32(*offset),
             ),
 
-            // 2D/3D variants don't belong in a 4D scene; sentinel keeps the trait
-            // exhaustive without emitting type-mismatched WGSL.
             Shape::Sphere { .. }
             | Shape::HalfSpace { .. }
             | Shape::Box3 { .. }

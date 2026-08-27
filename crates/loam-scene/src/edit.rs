@@ -1,9 +1,7 @@
 //! Reified edits to a [`Scene`]: the value an editor produces, and the one
 //! function that applies it.
 //!
-//! An edit is data, never a closure, so the same value can be typed at a
-//! console, pushed by a widget, replayed from a script or snapshotted for an
-//! undo stack. [`SceneEdit::to_args`] and [`SceneEdit::from_args`] are its
+//! [`SceneEdit::to_args`] and [`SceneEdit::from_args`] are its
 //! textual form and round trip `f32` bit-exactly, so a widget and a command
 //! line cannot drift into meaning different things.
 //!
@@ -112,9 +110,7 @@ impl FromStr for NodePath {
     }
 }
 
-/// Which interior node an [`SceneEdit::Insert`] builds. Mirrors [`SceneNode`]'s
-/// interior variants without their children; the smooth union takes
-/// [`DEFAULT_BLEND_RADIUS`] and is retuned through [`Param::Blend`].
+/// Which interior node an [`SceneEdit::Insert`] builds.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Combinator {
     Union,
@@ -312,11 +308,7 @@ impl SceneEdit {
     pub fn focus_after(&self) -> NodePath {
         match self {
             SceneEdit::Set { path, .. } => path.clone(),
-            // The subtree at `path` became the left child, so the new leaf is
-            // the right one.
             SceneEdit::Insert { path, .. } => path.child(1),
-            // Collapsing the parent puts the surviving sibling at the parent's
-            // own address.
             SceneEdit::Remove { path } => path.parent().unwrap_or_default(),
         }
     }
@@ -970,8 +962,6 @@ mod tests {
         }
     }
 
-    /// Add, move, remove, retune: the sequence the acceptance criteria name,
-    /// written once and reused by the round-trip tests.
     fn edit_sequence() -> Vec<SceneEdit> {
         let path = |text: &str| text.parse::<NodePath>().expect("path");
         vec![
@@ -1119,7 +1109,6 @@ mod tests {
                 Err(EditError::Rejected(_)),
             ));
         }
-        // Nothing above landed.
         assert_eq!(scene.to_wgsl(&EuclideanR3), fixture().to_wgsl(&EuclideanR3));
     }
 

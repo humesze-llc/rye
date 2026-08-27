@@ -1,15 +1,9 @@
-//! A laid-out word given physics bodies: the acceptance the glyph collider
-//! path exists for.
-//!
 //! The word is spawned as static geometry, per `GlyphSolid::colliders_4d`'s
 //! static-only contract, and probed by dynamic spheres falling along `-z` onto
 //! the letters' front faces. Both halves of a faithful silhouette are checked:
 //! a sphere over ink lands on it, and a sphere over the counter of `O` falls
 //! through. A per-letter convex hull, or a bounding volume, passes the first
 //! and fails the second.
-//!
-//! Fonts are not vendored, so every test here skips cleanly when the machine
-//! has none.
 
 use ab_glyph::FontRef;
 use glam::{Vec2, Vec4};
@@ -115,8 +109,6 @@ fn ink_runs(letter: &GlyphSolid, mid: f32) -> Vec<(f32, f32)> {
     runs
 }
 
-/// Centre of the widest stroke a letter presents at mid height, i.e. the
-/// sturdiest place to land something on it.
 fn widest_stroke(letter: &GlyphSolid) -> Vec2 {
     let mid = ink_mid_y(letter);
     let run = ink_runs(letter, mid)

@@ -23,11 +23,6 @@ const PADDING_CELLS: usize = 2;
 const DEGENERATE_EDGE_LENGTH2: f32 = 1.0e-24;
 
 /// Signed distances sampled on a uniform grid. Negative inside the glyph.
-/// Coordinates are the caller's world units, in whatever frame the glyph
-/// outline was expressed in; [`GlyphSolid::field`] hands out the one baked
-/// from a font, whose frame is the em square scaled to `em_size`.
-///
-/// [`GlyphSolid::field`]: crate::glyph::GlyphSolid::field
 #[derive(Clone, Debug)]
 pub struct DistanceField2D {
     origin: Vec2,
@@ -47,9 +42,6 @@ impl DistanceField2D {
     /// that every letter of a word is sampled at the same fidelity regardless
     /// of how tall its own outline is. [`super::solid`]'s collider cover takes
     /// the same rule at its own pitch.
-    ///
-    /// Cost is `samples * edges` exact point-segment tests. This is a one-time
-    /// bake per glyph, not per-frame work.
     pub(super) fn bake(contours: &[Contour], cell: f32) -> Option<Self> {
         let (min, max) = bounds(contours)?;
         let extent = max - min;
@@ -130,7 +122,6 @@ impl DistanceField2D {
         self.origin + Vec2::new(i as f32, j as f32) * self.cell
     }
 
-    /// Cell counts, one less than the sample counts in each axis.
     pub(super) fn cell_counts(&self) -> (usize, usize) {
         (self.samples_x - 1, self.samples_y - 1)
     }
@@ -258,11 +249,8 @@ mod tests {
             rect(Vec2::splat(-2.0), Vec2::splat(2.0), true),
             rect(Vec2::splat(-1.0), Vec2::splat(1.0), false),
         ];
-        // Hole centre: outside, nearest edge is the inner contour.
         assert!((signed_distance(&ring, Vec2::ZERO) - 1.0).abs() < 1e-6);
-        // Mid-wall: inside, half a unit from both walls.
         assert!((signed_distance(&ring, Vec2::new(1.5, 0.0)) + 0.5).abs() < 1e-6);
-        // Well outside: positive.
         assert!(signed_distance(&ring, Vec2::new(3.0, 0.0)) > 0.0);
     }
 

@@ -1,8 +1,5 @@
 //! Smoke pin for the `TextRenderer` chain: construct, queue, record.
 //!
-//! It drives `record` rather than `render` because that is the path a host with
-//! a frame encoder takes, and the one whose pass ordering can go wrong.
-//!
 //! The atlas and layout halves are pure-CPU and pinned in the crate's own unit
 //! tests. Only the wgpu half needs a device, and only it is `#[ignore]`d. The
 //! `gpu_probe` suffix is what CI's software-adapter job selects on.
@@ -13,7 +10,6 @@ use wgpu::{Device, Queue, TextureFormat, TextureView};
 const TARGET_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
 const VIEWPORT: [f32; 2] = [1280.0, 720.0];
 
-/// One HUD frame, as a host owning the frame encoder would write it.
 fn draw_hud_frame(
     device: &Device,
     queue: &Queue,

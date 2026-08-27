@@ -1,28 +1,8 @@
 //! Typed scene tree that assembles SDF primitives into `loam_scene_sdf`.
 //!
-//! Build a [`Scene`] from [`SceneNode`] combinators, then call [`Scene::to_wgsl`]
-//! with a Space to get the complete WGSL scene module.
-//!
-//! # Emission strategy
-//!
 //! Each leaf emits a named helper (`sdf_p{n}`); each combinator emits a `let`
 //! binding in `loam_scene_sdf`. The depth-first walk emits children before their
 //! parent so referenced variables are always in scope.
-//!
-//! # Example
-//!
-//! ```rust
-//! use glam::Vec3;
-//! use loam_scene::scene::{Scene, SceneNode};
-//! use loam_math::EuclideanR3;
-//!
-//! let scene = Scene::new(
-//!     SceneNode::sphere(Vec3::ZERO, 0.3)
-//!         .union(SceneNode::plane(Vec3::Y, -0.5)),
-//! );
-//! let wgsl = scene.to_wgsl(&EuclideanR3);
-//! assert!(wgsl.contains("fn loam_scene_sdf"));
-//! ```
 
 use std::boxed::Box;
 
@@ -34,8 +14,7 @@ use crate::primitive::Primitive;
 use loam_math::{Space, WgslSpace};
 pub use loam_shape::Shape as PrimitiveKind;
 
-/// A node in the typed SDF scene tree. Leaves hold a primitive; interior nodes
-/// combine two children via a boolean or smooth operation.
+/// A node in the typed SDF scene tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SceneNode {
     Leaf(PrimitiveKind),
@@ -56,7 +35,7 @@ impl SceneNode {
         SceneNode::Leaf(PrimitiveKind::Sphere { center, radius })
     }
 
-    /// Half-space leaf. Emission depends on the compile-time Space (see
+    /// Emission depends on the compile-time Space (see
     /// [`Primitive`]'s `HalfSpace` arm): chart-coord `dot(p, n) - d` in flat
     /// charts, [`crate::SENTINEL_DISTANCE`] in curved charts until geodesic-plane
     /// SDFs land.
@@ -139,8 +118,7 @@ impl Scene {
     }
 }
 
-/// Walk `node` depth-first, appending helper definitions to `helpers` and `let`
-/// bindings to `body`. Returns the WGSL variable holding this node's distance.
+/// Returns the WGSL variable holding this node's distance.
 fn emit_node<S: WgslSpace>(
     node: &SceneNode,
     space: &S,

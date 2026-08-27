@@ -1,5 +1,3 @@
-//! Key vocabulary for console binds and the toggle key.
-//!
 //! The console names its own keys so binds carry no UI-framework type. A
 //! frontend translates its own key events into these at the input boundary
 //! (`loam_egui::console` holds the egui table).

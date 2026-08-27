@@ -2,27 +2,9 @@
 //! (APNG) streams, with two taps (`pre`-egui = pure 3D scene, `post`-egui = final
 //! composite).
 //!
-//! ## How requests flow
-//!
-//! Console commands push [`CaptureRequest`]s onto a global queue via [`enqueue`]. The
-//! runner drains it once per frame, drives the `Capture` state machine, and issues GPU
-//! copies at the two tap points. PNG encodes synchronously (readback-dominated, no
-//! drops); GIF and APNG encode on a worker thread fed by a bounded channel, dropping
-//! frames under backpressure rather than stalling the renderer.
-//!
-//! ## Pre-egui tap and MSAA
-//!
 //! Both taps copy the swapchain, never a multisampled attachment. With MSAA off the 3D
 //! pass writes the swapchain directly; with MSAA on the runner's scene resolve writes it
 //! before the pre-egui tap runs, so the tap copies resolved pixels either way.
-//!
-//! ## Output layout
-//!
-//! - One-shot PNG: `{dir}/{name}_post.png` (or `_pre.png` / both)
-//! - PNG sequence: `{dir}/{name}/{stage}_{frame:06}.png`
-//! - GIF stream:   `{dir}/{name}.gif`
-//!
-//! `dir` defaults to `./captures/`; `name` defaults to `{example}_{unix_secs}`.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -42,12 +24,9 @@ use wgpu::{
 
 use loam_egui::Console;
 
-/// Where in the frame pipeline the capture is taken from.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CaptureStage {
-    /// Pure 3D scene before egui paints.
     Pre,
-    /// Final composite after egui paints. What DWM receives.
     Post,
     /// Both, written to two separate files per frame. PNG-only; GIF can't multiplex.
     Both,
@@ -62,17 +41,14 @@ impl CaptureStage {
     }
 }
 
-/// Output format for streaming captures.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CaptureFormat {
-    /// One PNG file per frame; pre and post stages can write in parallel. FPS
-    /// unlimited by default; pass an fps to throttle.
+    /// One PNG file per frame; pre and post stages can write in parallel.
     Png,
-    /// Single animated GIF, NeuQuant-quantized, infinite loop. Single stage, default
-    /// fps 30. Quality ceiling on continuous-tone content; see module docs.
+    /// Single animated GIF, NeuQuant-quantized, infinite loop.
     Gif,
-    /// Single animated PNG, lossless 24-bit/frame, infinite loop. Single stage,
-    /// default fps 30. Worker buffers all frames in memory until stop (~5 s at 1080p).
+    /// Single animated PNG, lossless 24-bit/frame, infinite loop.
+    /// Worker buffers all frames in memory until stop (~5 s at 1080p).
     Apng,
 }
 
@@ -99,13 +75,11 @@ impl CaptureFormat {
     }
 
     fn supports_both_stages(self) -> bool {
-        // Single-file animated formats carry one stream; only PNG writes two files.
         matches!(self, CaptureFormat::Png)
     }
 }
 
-/// A capture command queued for the runner. Pushed by console commands and hotkey
-/// binds via [`enqueue`]; drained once per frame.
+/// A capture command queued for the runner.
 #[derive(Debug)]
 pub enum CaptureRequest {
     /// Capture exactly one frame as PNG and stop. Stage `Both` writes two files.
@@ -170,8 +144,6 @@ pub(crate) fn publish_status(status: Option<String>) {
     }
 }
 
-/// Console-driven toggle for the capture panel; flipped by `capture panel` and
-/// mirrored by [`CapturePanel::show`].
 static PANEL_OPEN: AtomicBool = AtomicBool::new(false);
 
 fn toggle_panel_global() -> bool {
@@ -200,13 +172,11 @@ enum CaptureState {
         writer: SequenceWriter,
         /// Minimum interval between captures. `None` = unlimited.
         fps_interval: Option<Duration>,
-        /// Wall-clock time of the last capture; `None` until the first.
         last_capture_time: Option<Instant>,
         frame_count: u32,
     },
 }
 
-/// Per-format incremental writer.
 enum SequenceWriter {
     /// PNG sequence: one stage-labelled file per frame, encoded on the main thread
     /// (cost is readback-dominated).
@@ -265,7 +235,6 @@ pub(crate) struct GifWorker {
     dropped: Arc<AtomicU32>,
 }
 
-/// One frame's worth of work for the GIF encoder thread.
 struct GifFrame {
     rgba: Vec<u8>,
     src_width: u32,
@@ -360,8 +329,6 @@ fn gif_encoder_loop(path: PathBuf, rx: Receiver<GifFrame>) {
     tracing::info!("capture: gif file finalised at {}", path.display());
 }
 
-/// Encode one GIF frame, in either local (per-frame NeuQuant) or global (shared
-/// palette via `index_of`) mode depending on `frame.global_palette`.
 fn encode_one_frame(
     path: &Path,
     encoder: &mut Option<gif::Encoder<BufWriter<File>>>,
@@ -411,21 +378,16 @@ fn encode_one_frame(
         }
     };
 
-    // Delay = wall-clock gap since the previous encoded frame, so dropped frames
-    // stretch the next delay and total duration is preserved. First frame has no
-    // predecessor; use the target delay.
     let delay_cs = match *last_captured_at {
         None => frame.default_delay_cs,
         Some(prev) => {
             let ms = frame.captured_at.duration_since(prev).as_millis() as u64;
-            // Round to nearest cs, clamp to [1, u16::MAX].
             let cs = (ms + 5) / 10;
             cs.clamp(1, u16::MAX as u64) as u16
         }
     };
     *last_captured_at = Some(frame.captured_at);
 
-    // Lanczos3 downscale before quantization, when requested.
     let mut buf: Vec<u8> = if frame.scale.is_some() {
         let src: ::image::RgbaImage =
             ::image::ImageBuffer::from_raw(frame.src_width, frame.src_height, frame.rgba)
@@ -482,7 +444,6 @@ fn encode_one_frame(
 pub(crate) struct ApngWorker {
     tx: Option<SyncSender<ApngFrame>>,
     handle: Option<JoinHandle<()>>,
-    /// Worker-updated; surfaced in the recording status so the buffer growth shows.
     frame_count: Arc<AtomicU32>,
 }
 
@@ -526,7 +487,7 @@ impl ApngWorker {
     }
 
     /// Close the channel and return the `JoinHandle`; the worker writes the APNG once
-    /// the channel closes. Mirrors `GifWorker::detach`.
+    /// the channel closes.
     fn detach(mut self) -> JoinHandle<()> {
         self.tx.take();
         self.handle.take().expect("worker handle present")
@@ -696,8 +657,6 @@ impl Capture {
         log
     }
 
-    // Args mirror `CaptureRequest::StartSequence`'s fields; a struct would just rename
-    // them.
     #[allow(clippy::too_many_arguments)]
     fn start_sequence(
         &mut self,
@@ -827,8 +786,6 @@ impl Capture {
                         }
                     }
                     let dropped = worker.dropped();
-                    // Detach and park the handle; the worker finishes encoding in the
-                    // background while the main thread returns.
                     let handle = worker.detach();
                     self.pending.push(handle);
                     let drop_note = if dropped > 0 {
@@ -872,7 +829,6 @@ impl Capture {
                 frame_count,
                 ..
             } => {
-                // Surface warmup progress; writing hasn't started yet.
                 if let SequenceWriter::Gif {
                     warming: Some(w), ..
                 } = writer
@@ -1028,7 +984,6 @@ impl SequenceWriter {
                 ..
             } => {
                 match *palette_mode {
-                    // Local: pass RGBA straight through to per-frame NeuQuant.
                     PaletteMode::Local => {
                         worker.try_send(GifFrame {
                             rgba: rgba.to_vec(),
@@ -1071,7 +1026,6 @@ impl SequenceWriter {
                                 *warming = None;
                             }
                         } else if let Some(nq) = global_palette.as_ref() {
-                            // Post-warmup: send with the shared palette.
                             worker.try_send(GifFrame {
                                 rgba: rgba.to_vec(),
                                 src_width: width,
@@ -1259,8 +1213,6 @@ fn write_png_bytes(path: &Path, rgba: &[u8], width: u32, height: u32) -> Result<
 /// Register the `capture` console command (subcommands png / frames / gif / apng /
 /// toggle / stop / panel; see `capture_help` for the grammar).
 pub fn register_commands<Ctx: 'static>(console: &mut Console<Ctx>) {
-    // Per-subcommand `arg_choices` drive context-aware completion; `palette=` is the
-    // only kv key with enumerable values. Handlers own arg parsing + enqueue.
     let stage_choices: &[&'static str] = &["pre", "post", "both"];
     let png_kv: &[&'static str] = &["fps=", "scale="];
     let gif_kv: &[&'static str] = &["fps=", "palette=", "scale="];
@@ -1310,7 +1262,6 @@ pub fn register_commands<Ctx: 'static>(console: &mut Console<Ctx>) {
             &[("palette", palette_values)],
             |_, rest, out| {
                 let p = parse_capture_args(rest);
-                // Surface the GIF quality caveat (256-color flicker on raymarched).
                 out.error(
                     "GIF: per-frame NeuQuant flickers on raymarched content. Prefer \
                      `capture apng` for shareable clips, or `capture frames` + ffmpeg \
@@ -1498,7 +1449,6 @@ fn parse_format<'a>(args: &'a [&'a str]) -> (CaptureFormat, &'a [&'a str]) {
         Some((&"png", rest)) | Some((&"frames", rest)) => (CaptureFormat::Png, rest),
         Some((&"gif", rest)) => (CaptureFormat::Gif, rest),
         Some((&"apng", rest)) => (CaptureFormat::Apng, rest),
-        // No format keyword: treat the list as stage/dir args, default to gif.
         _ => (CaptureFormat::Gif, args),
     }
 }
@@ -1514,10 +1464,7 @@ pub fn bind_default_hotkeys<Ctx: 'static>(console: &mut Console<Ctx>) {
 }
 
 /// Egui widget for setting capture parameters and driving start / stop / one-shot.
-/// Buttons synthesise a [`CaptureRequest`] onto the global queue. Visibility tracks
-/// [`CapturePanel::open`] or the `capture panel` console toggle, whichever changed last.
 pub struct CapturePanel {
-    /// Visible? Toggle via [`CapturePanel::toggle`] or the `capture panel` subcommand.
     pub open: bool,
     output_dir: String,
     name: String,
@@ -1607,7 +1554,6 @@ impl CapturePanel {
             ui.radio_value(&mut self.format, CaptureFormat::Apng, "APNG");
         });
 
-        // Only PNG supports pre/both; other formats are forced to Post.
         let stage_enabled = self.format == CaptureFormat::Png;
         ui.add_enabled_ui(stage_enabled, |ui| {
             ui.horizontal(|ui| {
@@ -1623,7 +1569,6 @@ impl CapturePanel {
             ui.add(loam_egui::egui::Slider::new(&mut self.fps, 1..=60));
         });
 
-        // Scale is animated-format-only; PNG keeps native size for diagnostic fidelity.
         let scale_supported = matches!(self.format, CaptureFormat::Gif | CaptureFormat::Apng);
         ui.add_enabled_ui(scale_supported, |ui| {
             ui.horizontal(|ui| {
@@ -1635,7 +1580,6 @@ impl CapturePanel {
             });
         });
 
-        // Palette is GIF-only; PNG and APNG are 24-bit per frame.
         ui.add_enabled_ui(self.format == CaptureFormat::Gif, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Palette:");

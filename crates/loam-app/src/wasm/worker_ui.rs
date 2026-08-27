@@ -16,11 +16,7 @@ use super::input_queue::InputMessage;
 pub struct WorkerUi {
     ctx: egui::Context,
     renderer: egui_wgpu::Renderer,
-    /// Events accumulated between frames; drained into `begin_pass` by
-    /// [`Self::begin_frame`], populated by [`Self::record_input`].
     raw_events: Vec<egui::Event>,
-    /// Modifier state, updated on each key event so subsequent events
-    /// carry the right `Modifiers`.
     modifiers: egui::Modifiers,
     /// `pixels_per_point` converts egui points (CSS-pixel equivalents)
     /// to wgpu pixels.

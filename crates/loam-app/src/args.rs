@@ -3,30 +3,9 @@
 //! Single API ([`Args`]) backed by `std::env::args` on native and
 //! `window.location.search` on wasm32, for recompile-free knobs like
 //! `?shape=tesseract`, `?seed=42`.
-//!
-//! A struct (not free functions) so callers can synthesize test instances
-//! ([`Args::from_pairs`]) and A/B two configs in one process.
-//!
-//! ## Syntax
-//!
-//! - **Native:** `--key=value` pairs; positional args ignored, `--` stripped.
-//!   The older `--key value` style is unsupported (ambiguous for multi-value);
-//!   a bare `--key` is recorded for [`Args::has_bare_flag`] so callers can
-//!   diagnose it instead of silently defaulting.
-//! - **Wasm32:** `?key=value&...` query string plus `#key=value` hash; both
-//!   populate the same map, hash winning on collision (share-link UI sets it
-//!   more deliberately than the page URL).
-//! - **Multi-value:** comma-separated, split by [`Args::get_many`].
-//!
-//! Not a `clap`-style parser (no subcommands/help/validation) and not a
-//! settings system (read-once at startup).
 
 use std::collections::HashMap;
 
-/// Parsed key=value pairs from the host's argument surface.
-///
-/// Construct via [`Args::current`] to read the live environment, or
-/// [`Args::from_argv`] / [`Args::from_pairs`] for tests and synthetic input.
 #[derive(Clone, Debug, Default)]
 pub struct Args {
     map: HashMap<String, String>,
@@ -34,13 +13,11 @@ pub struct Args {
 }
 
 impl Args {
-    /// Read `std::env::args` for `--key=value` pairs.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn current() -> Self {
         Self::from_argv(std::env::args().skip(1))
     }
 
-    /// Read `window.location.search` + `window.location.hash`.
     #[cfg(target_arch = "wasm32")]
     pub fn current() -> Self {
         let mut map = HashMap::new();
@@ -68,8 +45,6 @@ impl Args {
         }
     }
 
-    /// Parse native-syntax arguments, `argv[0]` already removed.
-    ///
     /// Non-`--key=value` arguments are ignored rather than errored: a parent
     /// harness (cargo test, a wrapper) may add positionals we shouldn't fail
     /// on. A bare `--key` is kept for [`Args::has_bare_flag`].
@@ -97,8 +72,6 @@ impl Args {
         Self { map, bare_flags }
     }
 
-    /// Construct from explicit pairs. For tests and hosts synthesizing an
-    /// `Args` from a non-standard source (e.g. a fetched JSON config).
     pub fn from_pairs<I, K, V>(pairs: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -123,21 +96,19 @@ impl Args {
         self.bare_flags.iter().any(|flag| flag == key)
     }
 
-    /// Look up a single value by key. `None` if the key was not provided.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.map.get(key).map(String::as_str)
     }
 
-    /// Look up a value and parse it as `T`. Returns `None` if the key was
+    /// Returns `None` if the key was
     /// missing OR the value failed to parse; distinguish these with `get`
     /// if your demo needs a specific error message.
     pub fn parse<T: std::str::FromStr>(&self, key: &str) -> Option<T> {
         self.get(key)?.parse().ok()
     }
 
-    /// Comma-split helper for multi-value keys. Returns an empty `Vec` when
-    /// the key is missing. Empty segments are filtered (so `?shapes=a,,b`
-    /// yields `["a", "b"]`).
+    /// Comma-split helper for multi-value keys. Empty segments are filtered
+    /// (so `?shapes=a,,b` yields `["a", "b"]`).
     pub fn get_many<'a>(&'a self, key: &str) -> Vec<&'a str> {
         match self.get(key) {
             Some(v) => v.split(',').filter(|s| !s.is_empty()).collect(),
@@ -145,8 +116,7 @@ impl Args {
         }
     }
 
-    /// All (key, value) pairs. Order is HashMap-arbitrary; consumers that
-    /// need a stable order should sort by key themselves.
+    /// All (key, value) pairs. Order is HashMap-arbitrary.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.map.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
@@ -160,7 +130,6 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Stash the page's `location.search` and `location.hash` inside a worker.
 /// Called by the worker entry before `App::setup`; hash wins on collision,
 /// matching the main-thread parse order.
 #[cfg(target_arch = "wasm32")]
@@ -168,8 +137,6 @@ pub fn set_query_override(search: String, hash: String) {
     QUERY_OVERRIDE.with(|q| *q.borrow_mut() = Some((search, hash)));
 }
 
-/// Parse a query/hash fragment ("?a=1&b=2" or "#a=1") into `map`. Leading
-/// `?`/`#` stripped; segments without `=` skipped (bare `?flag` unsupported).
 /// Repeated keys resolve last-write-wins, which is what makes the caller's
 /// search-then-hash order mean "hash wins".
 ///

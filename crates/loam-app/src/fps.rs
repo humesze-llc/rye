@@ -1,14 +1,5 @@
 //! Console command that reads / writes the target framerate via
 //! [`crate::frame_pacing`].
-//!
-//! ## Subcommands
-//!
-//! - `fps`: print the current target.
-//! - `fps <n>`: set the target to `n` frames per second. Accepts integers and
-//!   floats; `n` must be in `(0, 1000]`.
-//! - `fps unlimited` (alias: `off`, `0`): remove the cap entirely. On native
-//!   the surface's `PresentMode` (vsync) is the upper bound; on wasm the
-//!   browser's `requestAnimationFrame` cadence remains the upper bound.
 
 use loam_egui::{cmd, Console};
 

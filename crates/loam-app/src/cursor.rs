@@ -5,21 +5,6 @@
 //! Runner. `Window::set_cursor_grab` must run on the main thread, which the
 //! App (especially a console command) doesn't always reach directly.
 //!
-//! Grab mode and visibility are independent. [`request_grab_mode`] picks
-//! confinement ([`GrabMode`]); [`request_cursor_visible`] picks rendering.
-//! Both default to released + visible. [`request_grab`] / [`request_release`]
-//! wrap the common mouse-look pair; [`current_state`] reads what the runner
-//! last applied.
-//!
-//! ## Wasm note
-//!
-//! The channel routes through the worker -> main DOM plumbing in
-//! `wasm::host_action` (plain reference, not an intra-doc link: that module
-//! is `#[cfg(target_arch = "wasm32")]`). The worker drains [`take_pending`],
-//! posts a Pointer Lock request/release, and the main thread relays
-//! `pointerlockchange` back as `PointerLockChanged`, which calls
-//! [`mark_applied`].
-//!
 //! Pointer Lock requires transient activation; the console keystroke's
 //! ~5-second window survives the sub-millisecond worker round-trip. Esc
 //! release (browser-hardcoded) surfaces as `PointerLockChanged(false)`; a
@@ -29,15 +14,12 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-/// Cursor confinement modes. Mirrors `winit::window::CursorGrabMode` so
+/// Mirrors `winit::window::CursorGrabMode` so
 /// the engine API doesn't leak winit into demo code.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum GrabMode {
-    /// Cursor roams freely across the OS desktop. Default UX.
     #[default]
     None,
-    /// Confined to the window client rect, otherwise normal. Pairs with
-    /// `visible = true` for modal UIs.
     Confined,
     /// Pinned at window center, motion reported as raw device delta
     /// (`FrameInput::mouse_raw_delta`). Pairs with `visible = false` for
@@ -45,8 +27,7 @@ pub enum GrabMode {
     Locked,
 }
 
-/// Snapshot of the last cursor state the runner applied. Read via
-/// [`current_state`].
+/// Snapshot of the last cursor state the runner applied.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct CursorState {
     pub grab: GrabMode,
@@ -78,7 +59,6 @@ static PENDING_VISIBLE: AtomicU8 = AtomicU8::new(VIS_NONE);
 // doesn't reappear at a stale spot on un-grab.
 static PENDING_WARP_CENTER: AtomicBool = AtomicBool::new(false);
 
-// Last-applied state, committed by the runner; read by `current_state`.
 static APPLIED_GRAB: AtomicU8 = AtomicU8::new(GRAB_NONE);
 static APPLIED_VISIBLE: AtomicBool = AtomicBool::new(true);
 
@@ -98,39 +78,33 @@ fn code_to_grab_mode(code: u8) -> GrabMode {
     }
 }
 
-/// Request the runner change the grab mode on its next redraw.
 pub fn request_grab_mode(mode: GrabMode) {
     PENDING_GRAB.store(grab_mode_to_code(mode), Ordering::Release);
 }
 
-/// Request the runner show or hide the cursor on its next redraw.
 pub fn request_cursor_visible(visible: bool) {
     PENDING_VISIBLE.store(if visible { VIS_SHOW } else { VIS_HIDE }, Ordering::Release);
 }
 
-/// Request the runner warp the OS cursor to window center on its next
-/// redraw. Pair with grab release so the cursor reappears where the user
+/// Pair with grab release so the cursor reappears where the user
 /// was aiming, not at the OS-cached position. No-op on wasm (browser owns
 /// cursor positioning).
 pub fn request_warp_to_center() {
     PENDING_WARP_CENTER.store(true, Ordering::Release);
 }
 
-/// Convenience: request the FPS-mouse-look pair (Locked + hidden).
 pub fn request_grab() {
     request_grab_mode(GrabMode::Locked);
     request_cursor_visible(false);
 }
 
-/// Convenience: request the conventional UI pair (None + visible).
 pub fn request_release() {
     request_grab_mode(GrabMode::None);
     request_cursor_visible(true);
 }
 
-/// Read + clear the pending grab/visibility transition. Runner-internal;
+/// Runner-internal;
 /// each element is `Some(new_value)` if a request landed, else `None`.
-/// Demos read [`current_state`] instead.
 #[doc(hidden)]
 pub fn take_pending() -> (Option<GrabMode>, Option<bool>) {
     let grab_code = PENDING_GRAB.swap(NONE, Ordering::AcqRel);
@@ -144,22 +118,17 @@ pub fn take_pending() -> (Option<GrabMode>, Option<bool>) {
     (grab, visible)
 }
 
-/// Read + clear the pending warp-to-center flag. Runner-internal.
 #[doc(hidden)]
 pub fn take_pending_warp_center() -> bool {
     PENDING_WARP_CENTER.swap(false, Ordering::AcqRel)
 }
 
-/// Record what the runner just applied, so [`current_state`] reads it.
-/// Runner-internal.
 #[doc(hidden)]
 pub fn mark_applied(grab: GrabMode, visible: bool) {
     APPLIED_GRAB.store(grab_mode_to_code(grab), Ordering::Release);
     APPLIED_VISIBLE.store(visible, Ordering::Release);
 }
 
-/// Last-applied cursor state. Read from anywhere instead of mirroring a
-/// copy of the grab flag.
 pub fn current_state() -> CursorState {
     CursorState {
         grab: code_to_grab_mode(APPLIED_GRAB.load(Ordering::Acquire)),

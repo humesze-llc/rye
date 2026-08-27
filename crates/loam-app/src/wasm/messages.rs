@@ -82,10 +82,6 @@ pub fn read_device_pixel_ratio(obj: &JsValue) -> f32 {
         .unwrap_or(1.0)
 }
 
-// ---------------------------------------------------------------------------
-// JS-object field readers
-// ---------------------------------------------------------------------------
-
 fn read_u32_field(obj: &JsValue, key: &str) -> Option<u32> {
     js_sys::Reflect::get(obj, &JsValue::from_str(key))
         .ok()

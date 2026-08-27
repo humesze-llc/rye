@@ -1,12 +1,6 @@
 //! Process-global frame pacing state (target framerate, vsync toggle,
 //! precise sleep), read by `Runner::redraw` to gate each frame's work.
 //!
-//! Global atomics rather than `Runner` fields because the `fps` / `vsync`
-//! console commands get `&mut Ctx`, not the `Runner`; same pattern as
-//! [`loam_time::frame_trace::set_capacity`].
-//!
-//! ## Native vs. wasm semantics
-//!
 //! - **Native**: the runner [`precise_sleep_until`]s each redraw's deadline.
 //!   `target_fps = 0` removes the cap and the surface `PresentMode` drives
 //!   cadence (`Fifo` blocks at vsync); `vsync off` swaps to `Mailbox` /
@@ -17,8 +11,6 @@
 
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::time::Duration;
-// `web_time::Instant`: cross-target wall clock (native `std`, wasm
-// `performance.now()`). `std::time::Instant::now` panics on wasm32.
 use web_time::Instant;
 
 /// Initial period. `0` = uncapped (native uses the surface PresentMode,
@@ -31,7 +23,7 @@ const DEFAULT_PERIOD_NS: u64 = 0;
 /// skips and lets the refresh rate or RAF pace.
 static TARGET_PERIOD_NS: AtomicU64 = AtomicU64::new(DEFAULT_PERIOD_NS);
 
-/// Set the target frame period from a desired fps. `fps <= 0.0` removes the cap
+/// `fps <= 0.0` removes the cap
 /// (uncapped: frames as fast as the surface and browser allow).
 pub fn set_target_fps(fps: f32) {
     if fps <= 0.0 {
@@ -42,7 +34,6 @@ pub fn set_target_fps(fps: f32) {
     TARGET_PERIOD_NS.store(period_ns.max(1), Ordering::Release);
 }
 
-/// Current target frame period, or `None` if uncapped.
 pub fn target_period() -> Option<Duration> {
     let ns = TARGET_PERIOD_NS.load(Ordering::Acquire);
     if ns == 0 {
@@ -52,7 +43,6 @@ pub fn target_period() -> Option<Duration> {
     }
 }
 
-/// Current target fps. `0.0` = uncapped.
 pub fn target_fps() -> f32 {
     let ns = TARGET_PERIOD_NS.load(Ordering::Acquire);
     if ns == 0 {
@@ -62,10 +52,6 @@ pub fn target_fps() -> f32 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Vsync request channel
-// ---------------------------------------------------------------------------
-
 // Pending vsync request; `0` = none. Runner swaps back to 0 after applying
 // so the surface isn't reconfigured every tick.
 const VSYNC_NONE: u8 = 0;
@@ -73,20 +59,17 @@ const VSYNC_REQ_ON: u8 = 1;
 const VSYNC_REQ_OFF: u8 = 2;
 static PENDING_VSYNC: AtomicU8 = AtomicU8::new(VSYNC_NONE);
 
-/// Request that the runner switch the surface to vsync-on (`PresentMode::Fifo`)
-/// on its next redraw.
 pub fn request_vsync_on() {
     PENDING_VSYNC.store(VSYNC_REQ_ON, Ordering::Release);
 }
 
-/// Request the runner switch the surface to vsync-off on its next redraw.
 /// The runner picks `Mailbox`, else `Immediate`, else leaves `Fifo` (the
 /// typical browser case).
 pub fn request_vsync_off() {
     PENDING_VSYNC.store(VSYNC_REQ_OFF, Ordering::Release);
 }
 
-/// Read + clear the pending vsync transition. `Some(true)` = on,
+/// `Some(true)` = on,
 /// `Some(false)` = off, `None` = no change.
 pub fn take_pending_vsync() -> Option<bool> {
     match PENDING_VSYNC.swap(VSYNC_NONE, Ordering::AcqRel) {
@@ -95,10 +78,6 @@ pub fn take_pending_vsync() -> Option<bool> {
         _ => None,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Precise sleep
-// ---------------------------------------------------------------------------
 
 /// Busy-wait tail after the coarse sleep. 2 ms covers the worst-case
 /// `std::thread::sleep` overshoot seen on Win11's 15.625 ms timer tick;

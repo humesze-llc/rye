@@ -6,14 +6,6 @@
 //! Does not capture raw `println!`/`eprintln!` (those need an fd redirect) or
 //! events dropped by `EnvFilter` /
 //! [`RunConfig::log_filter`](crate::RunConfig).
-//!
-//! ```ignore
-//! loam_app::log::register_command(&mut c);     // build_console
-//! loam_app::log::pump_into(&mut self.console); // App::ui, before console.ui
-//! ```
-//!
-//! Subscriber init is automatic in
-//! [`run_with_config`](crate::run_with_config).
 
 use std::collections::VecDeque;
 #[cfg(not(target_arch = "wasm32"))]
@@ -31,7 +23,7 @@ use tracing::Event;
 #[cfg(not(target_arch = "wasm32"))]
 use tracing_subscriber::layer::{Context, Layer};
 
-/// Ring buffer cap (oldest lines drop). ~100 chars/entry, so ~200 KB full.
+/// ~100 chars/entry, so ~200 KB full.
 #[cfg(not(target_arch = "wasm32"))]
 const BUFFER_CAP: usize = 2000;
 
@@ -44,25 +36,20 @@ static BUFFER: Mutex<VecDeque<HistoryLine>> = Mutex::new(VecDeque::new());
 /// closure can't reach the runner.
 static EVENTS_ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Read by the runner's `window_event` handler; toggle via
-/// `log events on|off|toggle`.
 pub fn events_enabled() -> bool {
     EVENTS_ENABLED.load(Ordering::Relaxed)
 }
 
-/// Set the per-event log state explicitly.
 pub fn set_events_enabled(b: bool) {
     EVENTS_ENABLED.store(b, Ordering::Relaxed);
 }
 
-/// Toggle and return the new state.
 pub fn toggle_events() -> bool {
     let new = !events_enabled();
     set_events_enabled(new);
     new
 }
 
-/// True when log events should mirror into the console scrollback this frame.
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
@@ -71,14 +58,13 @@ pub fn set_enabled(b: bool) {
     ENABLED.store(b, Ordering::Relaxed);
 }
 
-/// Flip the enabled flag. Returns the new state.
 pub fn toggle() -> bool {
     let new = !enabled();
     set_enabled(new);
     new
 }
 
-/// Drain pending log lines. Disabled returns empty without draining, so
+/// Disabled returns empty without draining, so
 /// newly-enabled mirroring still shows recent history.
 pub fn drain() -> Vec<HistoryLine> {
     if !enabled() {
@@ -90,7 +76,7 @@ pub fn drain() -> Vec<HistoryLine> {
     buf.drain(..).collect()
 }
 
-/// Convenience: pump pending log lines into a console's scrollback. Call once per
+/// Call once per
 /// frame, before `Console::ui`.
 pub fn pump_into<Ctx: 'static>(console: &mut Console<Ctx>) {
     for line in drain() {
@@ -194,10 +180,6 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Tracing Layer
-// ---------------------------------------------------------------------------
-//
 // Native-only: wasm32 routes events through `tracing-wasm` and never installs
 // this layer, so gating the items keeps the wasm build warning-free.
 

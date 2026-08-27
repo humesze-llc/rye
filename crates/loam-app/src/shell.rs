@@ -1,8 +1,7 @@
 //! Multi-scene shell: one [`App`] hosting a registry of [`Scene`]s behind a
 //! shared menu bar, with boot selection via `--scene=<slug>` / `?scene=<slug>`
 //! and an embed mode (`--embed=1` / `?embed=1`) that hides the bar for page
-//! embeds. Embed mode leaves the `scene` console command as the only in-app
-//! switcher.
+//! embeds.
 //!
 //! [`Scene`] names no Space: each scene owns its own and recompiles through its
 //! own [`ShaderOwner`](crate::ShaderOwner), so a registry may mix geometries.
@@ -19,20 +18,15 @@ use crate::args::Args;
 use crate::command::{CommandCtx, CommandLine};
 use crate::{egui, App, AssetEvent, FrameCtx, RenderCtx, SetupCtx, ShaderDb};
 
-/// One hostable scene. Constructed through [`SceneEntry::build`] rather than
-/// [`App::setup`], and naming no Space; the shell owns the window and which
-/// scene is active. [`App::tick`], [`App::on_event`] and
+/// One hostable scene. [`App::tick`], [`App::on_event`] and
 /// [`App::on_shader_reload`] reach no scene, because the shell forwards
 /// none of them: a scene that needs one cannot be hosted.
 pub trait Scene {
     /// Recompile this scene's shaders, scoped to the
     /// [`ShaderOwner`](crate::ShaderOwner) it took at build time so the db
-    /// rebuilds them against the Space this scene loaded them with. Scenes with
-    /// no shaders of their own keep the no-op default.
+    /// rebuilds them against the Space this scene loaded them with.
     fn apply_shader_events(&mut self, _events: &[AssetEvent], _shader_db: &mut ShaderDb) {}
-    /// Apply one queued command, before the tick it is stamped for. A scene with
-    /// a console dispatches the parsed line against its own registry here; the
-    /// default refuses, for the reason [`App::apply_command`] does.
+    /// Apply one queued command, before the tick it is stamped for.
     fn apply_command(
         &mut self,
         cmd: &CommandLine,
@@ -40,8 +34,7 @@ pub trait Scene {
     ) -> anyhow::Result<()> {
         anyhow::bail!("no command target for `{}`", cmd.name)
     }
-    /// Contributions to the shared menu bar, rendered after the Demo menu. A
-    /// scene with nothing to add keeps the no-op default.
+    /// Contributions to the shared menu bar, rendered after the Demo menu.
     fn menus(&mut self, _ui: &mut egui::Ui) {}
     fn update(&mut self, ctx: &mut FrameCtx<'_>);
     fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>);
@@ -57,8 +50,6 @@ pub trait Scene {
     fn title(&self, fps: f32) -> Cow<'static, str>;
 }
 
-/// Registry row: the slug `--scene=` and the `scene` command select by, the
-/// menu-bar label, and the constructor.
 pub struct SceneEntry {
     pub slug: &'static str,
     pub label: &'static str,
@@ -74,10 +65,9 @@ pub trait SceneRegistry: 'static {
     const SCENES: &'static [SceneEntry];
 }
 
-/// Shell state a scene's console can reach. A console command's context is
+/// A console command's context is
 /// the scene's own state, so it cannot see [`SceneShell`]; the shell publishes
-/// `active` and drains `pending` around the scene's `ui`. Same publish/drain
-/// shape as [`crate::capture`]'s request queue.
+/// `active` and drains `pending` around the scene's `ui`.
 struct Switcher {
     active: usize,
     pending: Option<usize>,
@@ -95,7 +85,6 @@ fn with_switcher<R>(f: impl FnOnce(&mut Switcher) -> R) -> R {
     f(&mut SWITCHER.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
-/// Registry index for `slug`, or `None` when no scene claims it.
 fn scene_index(scenes: &[SceneEntry], slug: &str) -> Option<usize> {
     scenes.iter().position(|entry| entry.slug == slug)
 }
@@ -116,8 +105,7 @@ fn request_scene(scenes: &[SceneEntry], slug: &str) -> Result<()> {
 }
 
 /// Register the `scene` command: bare lists the registry and marks the
-/// active entry, `scene <slug>` switches. Free of the console's `Ctx`
-/// because the shell, not the scene, owns the selection.
+/// active entry, `scene <slug>` switches.
 pub fn register_command<Ctx: 'static, R: SceneRegistry>(console: &mut Console<Ctx>) {
     let slugs = R::SCENES.iter().map(|entry| entry.slug).collect::<Vec<_>>();
     console.register(
@@ -153,7 +141,6 @@ pub fn register_command<Ctx: 'static, R: SceneRegistry>(console: &mut Console<Ct
     );
 }
 
-/// Slot per registry entry, filled on the entry's first activation.
 type SceneSlots = Vec<Option<Box<dyn Scene>>>;
 
 const ACTIVE_IS_BUILT: &str = "a scene is built before it becomes active";
@@ -199,7 +186,6 @@ pub struct SceneShell<R: SceneRegistry> {
     /// Scene shader entries live here, not in the runner's db: the runner's
     /// `&mut ShaderDb` dies with `App::setup`, and a scene built on a later
     /// switch still has to mint an owner and compile against its own Space.
-    /// The runner's db stays empty because the shell loads no shaders itself.
     shader_db: ShaderDb,
     active: usize,
     /// Embed mode: no menu bar; the page chrome owns navigation.
@@ -222,11 +208,9 @@ impl<R: SceneRegistry> SceneShell<R> {
             .expect(ACTIVE_IS_BUILT) // ok: activate builds before it sets active
     }
 
-    /// Drain a queued switch against a `SetupCtx` rebuilt around the frame's
-    /// `RenderDevice` and the retained db. `watcher` is `None`: the runner owns
+    /// `watcher` is `None`: the runner owns
     /// it and only lends it for the duration of `setup`, so a scene built later
-    /// cannot register new watch paths. Reload events still reach it through
-    /// `apply_shader_events`.
+    /// cannot register new watch paths.
     fn apply_pending_switch(&mut self, rd: &RenderDevice, time: f32, sim_threads: usize) {
         let Self {
             scenes,
@@ -248,13 +232,7 @@ impl<R: SceneRegistry> SceneShell<R> {
 }
 
 /// Take whatever the menu bar or the `scene` command queued, activate it, and
-/// republish the index that ended up active. The republish is not bookkeeping:
-/// bare `scene` reads it to mark an entry, so without it the console would keep
-/// marking the boot scene, and a failed build would advertise a scene the shell
-/// is not rendering. Returns the new active index.
-///
-/// Split from [`SceneShell::apply_pending_switch`] so the switch is exercisable
-/// without a `RenderDevice`; the caller supplies the builder.
+/// republish the index that ended up active. Returns the new active index.
 fn drain_pending(
     slots: &mut SceneSlots,
     active: usize,
@@ -269,9 +247,7 @@ fn drain_pending(
     now
 }
 
-/// (boot scene index, embed). Unknown slugs fall back to scene 0. Takes the
-/// registry rather than reading `R::SCENES` so the lookup is exercisable
-/// against a multi-entry table.
+/// (boot scene index, embed). Unknown slugs fall back to scene 0.
 fn resolve_boot(scenes: &[SceneEntry], args: &Args) -> (usize, bool) {
     let active = match args.get("scene") {
         None => 0,
@@ -314,8 +290,6 @@ impl<R: SceneRegistry> App for SceneShell<R> {
     /// Fanned out because each scene's apply is scoped to its own owner: a
     /// scene reached here recompiles only the modules it loaded, each against
     /// the prelude that module was loaded with.
-    /// The runner's `shader_db` goes unused; scene owners were minted from the
-    /// shell's own db, and applying against the wrong db would find no entries.
     fn apply_shader_events(&mut self, events: &[AssetEvent], _shader_db: &mut ShaderDb) {
         let Self {
             scenes, shader_db, ..
@@ -326,7 +300,7 @@ impl<R: SceneRegistry> App for SceneShell<R> {
     }
 
     /// Only the active scene. A command names whatever the scene it was typed
-    /// against names, and an inactive scene's slot may not even be built.
+    /// against names.
     fn apply_command(&mut self, cmd: &CommandLine, ctx: &mut CommandCtx<'_>) -> Result<()> {
         self.active_scene().apply_command(cmd, ctx)
     }

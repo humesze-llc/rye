@@ -1,19 +1,10 @@
 //! Web Worker mode for loam demos. Moves the render loop into a worker so V8's
 //! GC pauses don't block the visible page.
 //!
-//! The worker receives an OffscreenCanvas via postMessage, creates a wgpu
-//! Surface from it, and drives a rolled-own RAF loop running the full App
-//! lifecycle plus an egui overlay (via [`WorkerUi`], which translates
-//! [`InputMessage`] directly into `egui::RawInput`).
-//!
 //! winit 0.30 has no `WorkerGlobalScope` support (issue #1518):
 //! `web_sys::window()` panics in worker context, so this path is rolled
 //! ourselves; the pieces we need (RAF, surface creation, message passing)
 //! are all available without winit.
-//!
-//! The same wasm bundle runs on the main thread and inside the worker;
-//! [`crate::wasm::is_worker_context`] lets `main` branch into [`run`] vs
-//! [`launch_on_click`].
 
 use anyhow::{anyhow, Context, Result};
 use std::cell::RefCell;
@@ -37,12 +28,9 @@ use loam_time::FixedTimestep;
 use winit::event::{ElementState, MouseScrollDelta};
 use winit::keyboard::PhysicalKey;
 
-/// Worker entry. Installs a `message` listener that waits for the
-/// canvas-transfer init, then constructs `RenderDevice` + `WorkerRunner<A>`
-/// and starts the RAF loop. Returns synchronously; the work happens in the
+/// Worker entry. Returns synchronously; the work happens in the
 /// message + RAF callbacks, which the `forget()` calls keep alive.
 pub fn run<A: App + 'static>() -> Result<()> {
-    // Worker has its own JS heap + console.
     install_logging_idempotent();
 
     tracing::debug!("loam_app::wasm::worker::run: entry");
@@ -83,9 +71,6 @@ pub fn run<A: App + 'static>() -> Result<()> {
     Ok(())
 }
 
-/// Dispatch a single inbound `postMessage`. `init` and `start` are special-
-/// cased here; other kinds go through [`messages::parse_non_init`] onto the
-/// per-frame queue.
 fn handle_message<A: App + 'static>(
     scope: &DedicatedWorkerGlobalScope,
     event: MessageEvent,
@@ -192,9 +177,6 @@ fn handle_message<A: App + 'static>(
     Ok(())
 }
 
-/// Build `RenderDevice` from the worker-owned OffscreenCanvas, run
-/// `App::setup`, and start the RAF loop. Uses `RenderDevice::from_surface`
-/// so the wgpu setup matches the windowed-mode path.
 async fn init_renderer<A: App + 'static>(
     scope: DedicatedWorkerGlobalScope,
     canvas: OffscreenCanvas,
@@ -234,21 +216,14 @@ async fn init_renderer<A: App + 'static>(
             .await
             .context("WorkerRunner::setup")?;
 
-    // The preview frame becomes the backdrop-blurred thumbnail the viewer
-    // sees before clicking. The warmup frames force wgpu's lazy pipeline
+    // The warmup frames force wgpu's lazy pipeline
     // compilation (browser WebGPU defers `create_render_pipeline` until
     // first use) up front so the click -> running transition has no second
     // hitch. Safe because the default `rotate` state is false, so warmup
     // advances no simulation state.
     //
     // 11 frames (1 + 10) empirically covers polytope_playground's
-    // first-frame compilation on Chrome and Firefox WebGPU. Each frame
-    // posts `preview_progress` to advance the `#loam-page-loader` bar.
-    //
-    // Scope: this warms only what these frames render. An app that builds
-    // its scenes on demand (polytope_playground's shell) has constructed
-    // just the booted one by now, so a later switch pays its own compile on
-    // the frame it first renders rather than at load.
+    // first-frame compilation on Chrome and Firefox WebGPU.
     const WARMUP_FRAMES: usize = 10;
     const TOTAL_FRAMES: usize = 1 + WARMUP_FRAMES;
     let post_progress = |step: usize| {
@@ -289,8 +264,6 @@ async fn init_renderer<A: App + 'static>(
         }
     }
 
-    // Self-referential RAF closure that re-schedules itself each frame
-    // (standard wasm-bindgen pattern).
     let runner = Rc::new(RefCell::new(runner));
     let raf_cb = Rc::new(RefCell::new(None::<Closure<dyn FnMut(f64)>>));
     let raf_cb_for_closure = raf_cb.clone();
@@ -400,10 +373,6 @@ thread_local! {
     static RAF_RESTART: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
-/// Per-worker lifecycle state: owns the RenderDevice, the user's App, and
-/// the wall-clock / tick bookkeeping. Drives the full App lifecycle
-/// (`update` + `ui` via [`WorkerUi`] + `record`) plus input fan-out via
-/// [`InputState`]. Lives inside the RAF closure via `Rc<RefCell>`.
 struct WorkerRunner<A: App + 'static> {
     rd: RenderDevice,
     /// Held so resize can set the OffscreenCanvas backing-store dimensions
@@ -414,20 +383,14 @@ struct WorkerRunner<A: App + 'static> {
     #[allow(dead_code)] // wasm stub today; native parity in case the trait grows
     watcher: Option<AssetWatcher>,
     app: A,
-    /// Converts the typed InputMessage stream into the FrameInput shape
-    /// loam-camera + loam-input expect. Drained by `take_frame` per frame.
     input: InputState,
     /// Corrects `input`'s derived modifier set against the flags the
     /// browser stamps on every key event.
     modifier_sync: ModifierSync,
-    /// Worker-side egui integration (parallel to loam-egui's UiIntegration
-    /// but without the winit dependency).
     ui: WorkerUi,
     /// Read at each frame's `begin_frame`. Input messages are applied
     /// outside the pass, so the `on_key` path serves this frame's value.
     ui_capture: UiCapture,
-    /// Pixel dimensions kept separately so egui gets `size_in_pixels`
-    /// without a round-trip through RenderDevice.
     width_px: u32,
     height_px: u32,
     /// Physical pixels per CSS pixel. Doubles as egui's
@@ -445,10 +408,7 @@ struct WorkerRunner<A: App + 'static> {
     tick_index: u64,
     /// Fixed-timestep accumulator at 60Hz with the catch-up cap at
     /// `DEFAULT_MAX_TICKS_PER_FRAME`, both matching `RunConfig::default()` so
-    /// demos reading `FrameCtx::n_ticks` see the native cadence. Overriding
-    /// either would need RunConfig plumbed through postMessage; a demo that
-    /// sets `RunConfig::max_ticks_per_frame` changes the native stall cadence
-    /// only.
+    /// demos reading `FrameCtx::n_ticks` see the native cadence.
     timestep: FixedTimestep,
     /// Resolved through the same `resolve_sim_threads` the native runner
     /// uses, which is why the knob is an `Args` key: `RunConfig` never
@@ -459,8 +419,7 @@ struct WorkerRunner<A: App + 'static> {
 }
 
 impl<A: App + 'static> WorkerRunner<A> {
-    /// Build ShaderDb + AssetWatcher (wasm stub) + WorkerUi and invoke
-    /// `A::setup`. Async because `A::setup` may await on asset loading.
+    /// Async because `A::setup` may await on asset loading.
     async fn setup(
         rd: RenderDevice,
         canvas: OffscreenCanvas,
@@ -469,8 +428,6 @@ impl<A: App + 'static> WorkerRunner<A> {
         device_pixel_ratio: f32,
     ) -> Result<Self> {
         let mut shader_db = ShaderDb::new(rd.device.clone());
-        // Watcher failure isn't fatal (demos work without hot-reload); the
-        // wasm32 watcher is a no-op stub anyway.
         let mut watcher = match AssetWatcher::new() {
             Ok(w) => Some(w),
             Err(e) => {
@@ -492,8 +449,7 @@ impl<A: App + 'static> WorkerRunner<A> {
         let app = A::setup(&mut ctx).map_err(|e| e.context("App::setup"))?;
 
         // Constructed after A::setup so the App's pipeline-warming runs
-        // first. egui-wgpu compiles its pipelines lazily on first paint;
-        // that cost lands on the first real frame for now.
+        // first.
         let ui = WorkerUi::new(
             &rd.device,
             rd.target_format(),
@@ -533,8 +489,7 @@ impl<A: App + 'static> WorkerRunner<A> {
         self.last_redraw_anchor = None;
     }
 
-    /// Resize the canvas backing store, reconfigure the surface, and update
-    /// egui's screen rect. Zero-sized resizes are no-ops.
+    /// Zero-sized resizes are no-ops.
     fn resize(&mut self, width: u32, height: u32, device_pixel_ratio: f32) {
         if width == 0 || height == 0 {
             return;
@@ -551,12 +506,8 @@ impl<A: App + 'static> WorkerRunner<A> {
         );
     }
 
-    /// Apply one `InputMessage`. Resize updates the surface; other variants
-    /// route into `InputState` and fan out to egui via `RawInput`.
-    ///
     /// `App::on_event` (winit `WindowEvent`s) is deliberately not plumbed
     /// here: constructing winit's `KeyEvent` needs private platform fields.
-    /// Camera + WASD axes work via `FrameInput`; winit-only hotkeys do not.
     fn apply_message(&mut self, msg: InputMessage) {
         // Fan out to egui first; it filters by pointer position vs widget
         // bounds, so double-feeding with InputState below is fine.
@@ -643,9 +594,6 @@ impl<A: App + 'static> WorkerRunner<A> {
                 );
                 if let Some(code) = crate::keymap::keycode_winit(code) {
                     self.input.key_input(PhysicalKey::Code(code), state);
-                    // Route to `App::on_key` so hotkeys work like native.
-                    // `App::on_event` can't run here: winit's `KeyEvent` has
-                    // a `pub(crate)` field we can't construct.
                     let mut fctx = FrameCtx {
                         rd: &self.rd,
                         input: loam_input::FrameInput::default(),
@@ -691,17 +639,12 @@ impl<A: App + 'static> WorkerRunner<A> {
         }
     }
 
-    /// One frame of the worker's RAF loop: FPS cap, input drain,
-    /// fixed-timestep ticks, `App::update` + `App::ui`, render, then
-    /// end-of-frame host actions. Wrapped in `loam_time::frame_trace::scope`
-    /// for the same telemetry the windowed runner emits.
     fn frame(&mut self) -> Result<()> {
-        // FPS cap: drop callbacks firing before the next ideal deadline
-        // (previous anchor + target period). Anchoring on the ideal
+        // Anchoring on the ideal
         // deadline, not the wake-up time, absorbs RAF jitter; otherwise a
         // target matching the refresh rate suffers alternating-skip (jitter
         // skips a callback, the next fires a period late, half-rate).
-        // Mirrors the native runner. Can only lower the rate below the
+        // Can only lower the rate below the
         // browser RAF cadence.
         let now_raf = web_time::Instant::now();
         match crate::frame_pacing::target_period() {
@@ -717,12 +660,10 @@ impl<A: App + 'static> WorkerRunner<A> {
                     let catch_up_floor = now_raf.checked_sub(target).unwrap_or(now_raf);
                     self.last_redraw_anchor = Some(deadline.max(catch_up_floor));
                 } else {
-                    // First frame under an active cap: anchor on `now`.
                     self.last_redraw_anchor = Some(now_raf);
                 }
             }
             None => {
-                // Uncapped: clear so a later `fps <N>` starts fresh.
                 self.last_redraw_anchor = None;
             }
         }
@@ -734,8 +675,6 @@ impl<A: App + 'static> WorkerRunner<A> {
             self.apply_message(msg);
         }
 
-        // dt: wall-clock since previous update; first frame falls back to
-        // 1/60 so the App doesn't see a 0 dt that breaks integrators.
         let now = web_time::Instant::now();
         let dt = match self.last_update_at {
             Some(prev) => now.duration_since(prev).as_secs_f32(),
@@ -744,15 +683,9 @@ impl<A: App + 'static> WorkerRunner<A> {
         self.last_update_at = Some(now);
 
         // Command queue, drained immediately before the ticks and stamped with
-        // the index they start from. Same placement as the windowed runner, for
-        // the reason the two share `drive_fixed_ticks`: a divergence here would
-        // give one platform a different sim-time position for the same command.
+        // the index they start from.
         crate::command::apply_drained(&mut self.app, &self.rd, self.tick_index);
 
-        // Fixed-timestep ticks via the shared `drive_fixed_ticks`. The
-        // accumulator logic matches the windowed runner; the rate is hardcoded
-        // at 60Hz here and diverges from any `RunConfig::fixed_hz` a demo set,
-        // because `RunConfig` does not cross the postMessage boundary.
         let n_ticks = crate::drive_fixed_ticks(
             &mut self.app,
             &mut self.timestep,
@@ -765,8 +698,6 @@ impl<A: App + 'static> WorkerRunner<A> {
         // Open the egui pass ahead of `App::update`, matching the windowed
         // runner: this frame's input is hit-tested against the last build's
         // layout instead of gating gameplay on a capture that predates it.
-        // The build still runs after `update`, and `paint` after the scene
-        // render below.
         let egui_ctx = {
             let _scope = loam_time::frame_trace::scope("ui-begin");
             let ctx = self.ui.begin_frame().clone();
@@ -774,8 +705,6 @@ impl<A: App + 'static> WorkerRunner<A> {
             ctx
         };
 
-        // `take_frame` drains the accumulated FrameInput and resets per-tick
-        // deltas (mouse motion + scroll).
         let input = self.input.take_frame();
         {
             let mut fctx = FrameCtx {
@@ -835,9 +764,6 @@ impl<A: App + 'static> WorkerRunner<A> {
             self.rd.resolve_scene_to_swap(&mut encoder, &swap_view);
         }
 
-        // egui into the same encoder, overlaid on the scene. Always
-        // single-sampled: the offscreen scene texture on the composite path,
-        // else the swapchain the resolve above wrote.
         {
             let _scope = loam_time::frame_trace::scope("ui-paint");
             let ui_view = self.rd.scene_view().unwrap_or(&swap_view);
@@ -845,7 +771,6 @@ impl<A: App + 'static> WorkerRunner<A> {
                 .paint(&self.rd.device, &self.rd.queue, &mut encoder, ui_view);
         }
 
-        // Composite pass when the swap is non-sRGB (browser-WebGPU).
         if self.rd.scene_view().is_some() {
             let _scope = loam_time::frame_trace::scope("composite");
             self.rd.composite_to_swap(&mut encoder, &swap_view);

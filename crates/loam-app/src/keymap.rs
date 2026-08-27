@@ -10,12 +10,7 @@
 //! Coverage is **partial**: every key tesseract_demo + polytope_playground
 //! plausibly touch is here, plus the standard set (alpha + digits +
 //! function keys + arrows + common control keys). Unmapped codes return
-//! `None`; the caller silently drops the event. Adding a key is one
-//! line per table.
-//!
-//! All functions are `const`-fn-friendly in spirit (one giant `match`
-//! lookup; no allocation). Pure utilities with no dependency on the
-//! rest of the worker module surface.
+//! `None`; the caller silently drops the event.
 
 use loam_egui::egui;
 use winit::event::MouseButton;
@@ -53,8 +48,7 @@ pub fn mouse_button_egui(button: u8) -> Option<egui::PointerButton> {
 
 /// Map a DOM `KeyboardEvent.code` string to a `winit::keyboard::KeyCode`.
 /// Returns `None` for unmapped codes; the caller is expected to drop
-/// the event silently. Coverage is the alphabet + digits + function
-/// keys + arrows + the common control / modifier keys.
+/// the event silently.
 pub fn keycode_winit(code: &str) -> Option<KeyCode> {
     if let Some(k) = letter_winit(code) {
         return Some(k);

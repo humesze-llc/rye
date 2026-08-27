@@ -1,16 +1,4 @@
 //! Console command that prints the demo's build identity.
-//!
-//! ## Wiring (per demo)
-//!
-//! ```ignore
-//! loam_app::version::register_command(
-//!     &mut console,
-//!     env!("CARGO_PKG_NAME"),
-//!     env!("CARGO_PKG_VERSION"),
-//!     env!("BUILD_HASH"),
-//!     env!("BUILD_DIRTY"),
-//! );
-//! ```
 
 use loam_egui::{cmd, Console};
 

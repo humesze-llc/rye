@@ -1,18 +1,4 @@
-//! Wasm32-only support code. Subdivided as the worker-mode plumbing grew
-//! beyond what a single file could hold.
-//!
-//! - [`launch`]: click-to-start container + the original page-startup
-//!   helpers (`is_manual_mode`, `wait_for_launch`).
-//! - [`worker`]: OffscreenCanvas + Web Worker mode for GC-isolated rendering.
-//!   The main thread owns the DOM and forwards input via postMessage; the
-//!   worker owns wgpu + egui and drives RAF. Avoids main-thread GC pauses and
-//!   sidesteps winit's incomplete worker-context support.
-//!
-//! Detection helpers ([`is_worker_context`], plus the heap sampler that
-//! `loam-time::frame_trace` registers) live at the module root so the
-//! `loam_app::wasm::*` import path stays flat for the common cases.
-//!
-//! ## Browser support
+//! Wasm32-only support code.
 //!
 //! Verified on Chrome and Firefox (desktop). The hard requirements are
 //! WebGPU (`navigator.gpu`), `OffscreenCanvas` + `transferControlToOffscreen`,
@@ -40,10 +26,6 @@ pub use launch::{is_manual_mode, js_heap_sampler, wait_for_launch};
 /// `DedicatedWorkerGlobalScope` (i.e., a Web Worker), false on the main
 /// page thread. The same wasm binary serves both contexts; this check
 /// lets `main` branch into worker entry vs main-thread launcher.
-///
-/// Implementation: dyn-cast the global object to `DedicatedWorkerGlobalScope`.
-/// In a worker the global is the worker scope; on the main thread it's the
-/// Window. The cast succeeds in exactly one case and that's the answer.
 pub fn is_worker_context() -> bool {
     use wasm_bindgen::JsCast;
     js_sys::global()

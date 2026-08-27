@@ -1,11 +1,6 @@
 //! What one [`JobPool`] stage costs, and the per-stage work a partition has to
 //! carry before splitting it wins. `cargo bench -p loam-time`.
 //!
-//! `JobPool::run_stage` spawns its extra partitions per call, so the price of
-//! parallelism is paid every stage rather than once at setup. A phase list is
-//! eight stages per tick, so the number that matters is not throughput on a
-//! large buffer but the fixed cost of one barrier.
-//!
 //! 256 units throughout, roughly a demo's body count. `unit_ns` is the serial
 //! cost of one unit, swept by a per-unit spin so the same kernel spans a
 //! trivial stage and an expensive one; `serial_us` is the whole stage at one
@@ -34,14 +29,6 @@
 //! At 181us serial, eight workers is 2.2x SLOWER than not splitting, so
 //! "raise the worker count" is a regression at every stage size this workspace
 //! currently runs.
-//!
-//! The consequence for a phase list: eight stages per tick is eight barriers,
-//! 3.2ms at eight workers, against 16.7ms of budget at 60Hz, before any stage
-//! does work. Parking the workers instead of spawning them is what removes
-//! that, and it needs a lifetime transmute `JobPool` does not do today. Until
-//! it does, this executor is the seam's shape rather than a way to make a tick
-//! faster, and a stage should be split only after a measurement puts it in the
-//! bottom row's regime.
 //!
 //! Wall-clock, so unlike the sim itself these numbers are not reproducible bit
 //! for bit; the ratios are what the table is for.

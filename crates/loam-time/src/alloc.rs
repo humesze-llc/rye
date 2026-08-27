@@ -2,35 +2,18 @@
 //! installing [`CountingAllocator`] as their `#[global_allocator]`; every
 //! alloc/dealloc bumps process-global atomic counters and the per-frame delta is
 //! surfaced through `loam_time::frame_trace::FrameTrace`.
-//!
-//! Lighter than `dhat`/`tracking-allocator` (offline, file-based): all we need is
-//! net bytes + alloc count this frame, a four-atomic increment per call (~5-10ns),
-//! cheap enough to leave on in release wasm. Atomics not thread-locals so the
-//! wrapper is correct off the single wasm thread too; `Relaxed` since no other
-//! memory is synchronized through these counts. `ALLOC_INSTALLED` lets
-//! `frame_trace` distinguish "no allocator wired" from "no allocations this frame."
-//!
-//! Generic over the inner allocator so wasm can swap in `wee_alloc`.
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// Total bytes allocated since startup. Monotonic; per-frame delta is sampled at
-/// frame boundaries and subtracted.
 pub(crate) static TOTAL_ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
-/// Total bytes deallocated since startup; net heap delta is alloc-delta minus
-/// dealloc-delta.
 pub(crate) static TOTAL_DEALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
-/// Allocation-call count since startup; the size-independent "churn" signal.
 pub(crate) static TOTAL_ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Deallocation-call count since startup.
 pub(crate) static TOTAL_DEALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Sentinel: was a [`CountingAllocator`] ever called? Distinguishes "no allocator
-/// wired" (counters all zero) from "no allocations." Read by `frame_trace`.
 pub(crate) static ALLOC_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// `GlobalAlloc` wrapper that counts every alloc/dealloc through atomic counters.
-/// Generic over the inner allocator. Calls delegate unmodified, so it is "as safe
+/// Calls delegate unmodified, so it is "as safe
 /// as `A`." Counts `Layout::size()` (what Rust code thinks it allocated), not the
 /// aligned size; reads slightly low vs true heap pressure but matches expectation.
 pub struct CountingAllocator<A: GlobalAlloc> {
@@ -78,8 +61,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
     }
 }
 
-/// Snapshot of the alloc counters at one point in time. Subtracting two
-/// snapshots produces an [`AllocDelta`] for the interval between them.
+/// Snapshot of the alloc counters at one point in time.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AllocSnapshot {
     pub alloc_bytes: u64,
@@ -92,9 +74,7 @@ pub struct AllocSnapshot {
 /// (alloc - dealloc) so a frame that drops more than it allocates reads negative.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AllocDelta {
-    /// Net bytes added this frame; negative when this frame dropped more.
     pub net_bytes: i64,
-    /// Bytes allocated this frame; the pressure signal that doesn't cancel out.
     pub alloc_bytes: u64,
     pub alloc_count: u64,
     pub dealloc_count: u64,

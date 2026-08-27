@@ -15,7 +15,6 @@ pub struct UiIntegration {
     ctx: egui::Context,
     winit_state: egui_winit::State,
     renderer: Renderer,
-    /// Pixels-per-point cached at the most recent `begin_frame`.
     pixels_per_point: f32,
 }
 
@@ -177,9 +176,7 @@ impl UiIntegration {
     /// view, the one the scene pass drew through, with the swapchain reached
     /// later by the composite pass rather than here.
     ///
-    /// `resolve_target` is `Some` only when `view` is multisampled. The
-    /// windowed runner resolves its multisampled scene attachment in a pass of
-    /// its own before this one and paints single-sampled, so it passes `None`.
+    /// `resolve_target` is `Some` only when `view` is multisampled.
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &mut self,

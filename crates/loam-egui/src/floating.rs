@@ -164,8 +164,6 @@ pub fn callout(
         return;
     }
 
-    // Leader line uses the window fill so it reads as part of the panel; anchor disc
-    // gets a dark outline to stay visible against bright scenes.
     const ANCHOR_RADIUS: f32 = 4.0;
     const LEADER_STROKE: f32 = 1.5;
     const PANEL_DEFAULT_WIDTH: f32 = 220.0;
@@ -197,8 +195,6 @@ pub fn callout(
     );
     let painter = Painter::new(ctx.clone(), painter_layer, ctx.content_rect());
     if let Some(rect) = window_rect {
-        // Attach to the window CENTER so the line emerges from under the panel;
-        // edge attachment reads as a separate element pointing at it.
         painter.line_segment(
             [rect.center(), anchor_screen_pos],
             Stroke::new(LEADER_STROKE, leader_color),

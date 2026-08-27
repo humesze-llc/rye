@@ -1,16 +1,5 @@
 //! Deterministic replay: a versioned input tape indexed by tick, and the
 //! hash mixer a recorder and a verifier have to share.
-//!
-//! The sim is `tick(state, input, tick_number) -> state'`, so a run is
-//! reproducible from its seed plus the per-tick input stream. A [`Tape`] is
-//! that stream, plus [`Checkpoint`]s carrying the state hash the recording run
-//! observed. Replay is then checkable rather than merely repeatable: a mismatch
-//! names the first tick at which the two runs parted.
-//!
-//! The tape is a byte format so a recording survives the process that made it.
-//! It is versioned because a change to what the sim consumes per tick, or to
-//! what the state hash covers, invalidates every tape written before it, and a
-//! silently misread tape is worse than a rejected one.
 
 use std::fmt;
 
@@ -118,9 +107,7 @@ pub enum TapeError {
 /// A recorded run: the per-tick input stream, the seed it started from, and the
 /// state hashes it passed through.
 ///
-/// Input is a flat `u32` buffer of `words_per_tick` per tick rather than a
-/// typed frame, because the tape is tick bookkeeping and the meaning of a word
-/// belongs to the sim that wrote it. `words_per_tick` may be zero: an
+/// `words_per_tick` may be zero: an
 /// input-free run (an attract-mode loop, a physics fixture) still has a seed, a
 /// tick count, and hashes worth pinning.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -271,12 +258,12 @@ impl Tape {
         let word_count = (input_bytes / 4) as usize;
         let mut inputs = Vec::with_capacity(word_count);
         for _ in 0..word_count {
-            inputs.push(reader.u32().expect("length checked above")); // ok: byte count validated at the header check
+            inputs.push(reader.u32().expect("length checked above"));
         }
         let mut checkpoints = Vec::with_capacity(checkpoint_count as usize);
         for index in 0..checkpoint_count as usize {
-            let tick = reader.u64().expect("length checked above"); // ok: byte count validated at the header check
-            let state_hash = reader.u64().expect("length checked above"); // ok: byte count validated at the header check
+            let tick = reader.u64().expect("length checked above");
+            let state_hash = reader.u64().expect("length checked above");
             if let Some(last) = checkpoints.last() {
                 let Checkpoint { tick: prev, .. } = *last;
                 if tick <= prev {
@@ -326,7 +313,7 @@ impl<'a> Reader<'a> {
         let end = self.at.checked_add(N)?;
         let slice = self.bytes.get(self.at..end)?;
         self.at = end;
-        Some(slice.try_into().expect("slice is N bytes")) // ok: get(at..at+N) yields exactly N
+        Some(slice.try_into().expect("slice is N bytes"))
     }
 
     fn u32(&mut self) -> Option<u32> {

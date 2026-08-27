@@ -1,6 +1,3 @@
-//! Fixed-partition worker pool: the executor a runner owns and lends to
-//! each tick.
-//!
 //! Lives here rather than in the app crate because the sim crates must be
 //! able to take it without depending on wgpu, winit and egui, and because
 //! [`crate::frame_trace`] is the other half of the same seam: the cross-worker
@@ -11,7 +8,7 @@ use std::num::NonZeroUsize;
 /// Units per partition: `ceil(units / workers)`, floored at 1 so an empty
 /// buffer still names a legal chunk width.
 ///
-/// The single definition of the split. Contiguous ascending chunks of this
+/// Contiguous ascending chunks of this
 /// width tile the buffer exactly once and produce at most `workers` of them,
 /// so which units a partition owns is a pure function of `(units, workers)`
 /// and of nothing else: not of arrival order, not of how fast a worker ran.
@@ -28,21 +25,9 @@ pub fn partition_len(units: usize, workers: usize) -> usize {
 /// Worker budget plus the fixed partition policy, borrowed by a tick for the
 /// duration of one stage.
 ///
-/// # Concurrency is inside a stage, never across stages
-///
 /// [`JobPool::run_stage`] joins every partition before it returns, so two
 /// stages never overlap and two app-level systems can therefore never run
-/// concurrently with each other. That is the right trade while the workspace
-/// has exactly one sim system whose phases are strictly sequentially
-/// dependent: pipelining phases that feed each other buys nothing, and it
-/// would make a tick's result depend on which overlap the pool happened to
-/// choose. It becomes the wrong trade the day a second app-level system
-/// appears that is independent of the first (audio, or particles with no
-/// contact coupling), because real cross-stage parallelism would then exist
-/// and this type could not express it. A system that only reads another's
-/// output is an edge, not a peer, and does not invalidate the trade.
-///
-/// # What is bit-identical across worker counts, and what is not
+/// concurrently with each other.
 ///
 /// A stage whose per-unit writes are disjoint is bit-identical between one
 /// worker and many: the value written to a unit is a function of the unit
@@ -55,24 +40,6 @@ pub fn partition_len(units: usize, workers: usize) -> usize {
 /// and must not be read as reproducible across worker counts. A stage that
 /// needs a reduction invariant under the worker count reduces per unit in
 /// canonical order instead, and stays serial.
-///
-/// # Cost, and why more workers is currently a regression
-///
-/// Partition 0 runs on the calling thread and the rest are spawned per call
-/// through `std::thread::scope`, so a single-partition stage spawns nothing
-/// and a multi-partition stage pays one thread creation per extra
-/// partition. `benches/jobs.rs` measures that at about 45us per extra
-/// partition, so a stage has to cost on the order of 1.6ms serially before
-/// splitting it breaks even, and an eight-phase tick would spend 3.2ms of a
-/// 16.7ms budget on barriers alone at eight workers. No stage in this
-/// workspace is near that, so raising the budget today buys nothing and a
-/// stage should be split only after a measurement puts it in that regime.
-///
-/// Parking the workers instead of spawning them is what removes the per-stage
-/// cost, and it requires lending a stage's borrows to threads that outlive
-/// them, which needs a lifetime transmute this crate does not do. It is a
-/// replacement for this method's body, not for the seam: nothing above
-/// changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JobPool {
     workers: NonZeroUsize,
@@ -109,10 +76,7 @@ impl JobPool {
     /// from the same function the pool split by.
     ///
     /// `partials` is cleared and refilled with one kernel result per
-    /// partition in ascending partition index. Taking the buffer by
-    /// reference rather than returning a fresh `Vec` keeps a per-tick stage
-    /// off the allocator; a stage with nothing to reduce instantiates `R`
-    /// at `()`, whose `Vec` never allocates.
+    /// partition in ascending partition index.
     ///
     /// Panics from a kernel are resumed on the calling thread after the
     /// barrier, so a partition panicking cannot leave the caller believing
@@ -121,10 +85,7 @@ impl JobPool {
     /// A kernel may open [`crate::frame_trace::scope`] freely: recording is
     /// thread-local, so a spawned partition's sections would die with its
     /// thread, and the barrier merges them into the caller's in-flight frame
-    /// in ascending partition index instead. What that costs a reader is that
-    /// one name opened on every partition lands in the frame once per
-    /// partition, so its row in the trace summary counts partitions times
-    /// frames and its mean is per partition, not per stage.
+    /// in ascending partition index instead.
     pub fn run_stage<T, R, F>(&self, units: &mut [T], partials: &mut Vec<R>, kernel: F)
     where
         T: Send,
@@ -194,8 +155,6 @@ mod tests {
         (x >> 40) as f32 / 8_388_608.0 - 1.0
     }
 
-    /// A stage meeting the disjoint-write contract: every slot is a function
-    /// of its own global index alone.
     fn fill_disjoint(buffer: &mut [f32], workers: usize) {
         let pool = JobPool::new(workers);
         let chunk = partition_len(buffer.len(), pool.threads());
@@ -311,9 +270,6 @@ mod tests {
         }));
 
         let payload = unwound.expect_err("a partition's panic must reach the caller");
-        // The payload, not merely the fact of a panic: `thread::scope` would
-        // panic at its own exit regardless, with a message naming the scope
-        // instead of what the kernel was asserting.
         let text = payload
             .downcast_ref::<String>()
             .map(String::as_str)
@@ -321,16 +277,13 @@ mod tests {
         assert!(text.contains(MESSAGE), "resumed some other panic: {text}");
     }
 
-    /// One `&'static str` per partition index. Scope names are static by
-    /// construction, so naming the recorder is a table lookup, not a format.
     #[cfg(feature = "frame-trace")]
     const PARTITION_SCOPES: [&str; 4] =
         ["partition-0", "partition-1", "partition-2", "partition-3"];
 
-    /// Section names the rolled frame carries after a stage in which every
-    /// partition opens its own scope. Lower partitions spin longer, so the
-    /// spawned partitions complete in descending index order and a merge that
-    /// followed completion would come back reversed.
+    // Lower partitions spin longer, so the spawned partitions complete in
+    // descending index order and a merge that followed completion would come
+    // back reversed.
     #[cfg(feature = "frame-trace")]
     fn stage_section_names(workers: usize) -> Vec<&'static str> {
         use crate::frame_trace;
@@ -374,8 +327,6 @@ mod tests {
         let names = stage_section_names(4);
         assert_eq!(names.len(), 4, "every partition should have recorded once");
 
-        // The trace summary reads the aggregate, so landing in the frame is
-        // necessary and not sufficient.
         let stats = frame_trace::aggregate();
         for name in PARTITION_SCOPES {
             let row = stats
@@ -419,7 +370,6 @@ mod tests {
             .filter(|name| PARTITION_SCOPES.contains(name))
             .collect();
 
-        // A merge that ran on the serial path would duplicate partition 0.
         assert_eq!(pooled, unpooled);
         assert_eq!(pooled, vec![PARTITION_SCOPES[0]]);
     }

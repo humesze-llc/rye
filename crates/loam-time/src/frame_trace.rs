@@ -1,11 +1,3 @@
-//! CPU per-section frame timers collected into a rolling ring buffer, surfaced
-//! via a runtime toggle (egui panel or console drain).
-//!
-//! Dumb-on-purpose vs `tracing` spans: one `Instant::now` at scope start, one at
-//! end, one `Vec::push`. ~50ns native, ~100ns wasm32. Collection is always-on
-//! under the `frame-trace` feature (default); feature OFF degrades the module to
-//! zero-sized types and empty drops that optimize away.
-//!
 //! Recording is thread-local: a section lands in the buffer of whichever thread
 //! opened it, and a worker thread's buffer dies with the thread. That would
 //! silently drop exactly the measurements a parallel stage has to justify itself
@@ -14,9 +6,6 @@
 //! [`crate::jobs::JobPool::run_stage`] calls the pair at its join barrier, in
 //! ascending partition index, so a frame's section list is a function of the
 //! partition and not of which worker finished first.
-//!
-//! `thread_local!` is sound on `wasm32-unknown-unknown` (single browser thread);
-//! multi-threaded wasm is not on the roadmap.
 
 #[cfg(feature = "frame-trace")]
 use std::cell::RefCell;
@@ -29,7 +18,6 @@ use web_time::Instant;
 /// One CPU section timing inside a single frame's trace.
 #[derive(Clone, Debug)]
 pub struct Section {
-    /// Static label baked at the call site; avoids per-frame allocation.
     pub name: &'static str,
     pub elapsed: Duration,
 }
@@ -51,8 +39,7 @@ pub struct FrameTrace {
 }
 
 impl FrameTrace {
-    /// Total time across every section. Double-counts if scopes overlap; today
-    /// the runner only opens disjoint scopes.
+    /// Total time across every section.
     pub fn total(&self) -> Duration {
         self.sections.iter().map(|s| s.elapsed).sum()
     }
@@ -80,44 +67,24 @@ impl Tracer {
 
 /// Host-registered JS heap sampler (bytes). On wasm32 + Chromium the host wires
 /// this to `performance.memory.usedJSHeapSize`; elsewhere no sampler is set and
-/// `heap_delta_bytes` stays `None`. Function-pointer slot so `loam-time` stays off
-/// the `js-sys`/`web-sys` dep graph; the host owns the platform access.
+/// `heap_delta_bytes` stays `None`.
 pub type HeapSampler = fn() -> Option<u64>;
 
 #[cfg(feature = "frame-trace")]
 thread_local! {
     static TRACER: RefCell<Tracer> = RefCell::new(Tracer::new(DEFAULT_CAPACITY));
-    /// The in-flight frame's sections, held apart from [`TRACER`] so that a
-    /// worker thread which recorded nothing pays no rolling-history allocation
-    /// to report that, and so `Scope::drop` never touches the history buffer.
     static CURRENT_SECTIONS: RefCell<Vec<Section>> = const { RefCell::new(Vec::new()) };
-    /// Last `end_frame` timestamp; with the next frame's begin/end it splits
-    /// cadence into our work (`frame`) and browser idle (`idle`).
     static LAST_FRAME_END: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
-    /// Current frame's `begin_frame` timestamp; lets `end_frame` separate CPU
-    /// work from the RAF/vsync gap.
     static CURRENT_FRAME_START: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
-    /// Heap snapshot at `begin_frame`, paired at `end_frame` into
-    /// `heap_delta_bytes`. `None` until a [`HeapSampler`] is registered.
     static CURRENT_FRAME_HEAP_START: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
-    /// Alloc snapshot at `begin_frame`, paired at `end_frame` into `allocs`.
-    /// `None` until the demo installs the wrapper.
     static CURRENT_FRAME_ALLOC_START: std::cell::Cell<Option<crate::alloc::AllocSnapshot>> = const { std::cell::Cell::new(None) };
-    /// Host-registered heap sampler; Cell because fn pointers are Copy.
     static HEAP_SAMPLER: std::cell::Cell<Option<HeapSampler>> = const { std::cell::Cell::new(None) };
-    /// Session-lifetime maxima per section. The rolling window ages spikes out
-    /// after ~2.4s, so a sparse freeze leaves no trace there; `MAX_EVER` answers
-    /// "worst ever seen" regardless of when the overlay was opened. Cleared only
-    /// by [`clear_max_ever`].
     static MAX_EVER: RefCell<std::collections::HashMap<&'static str, Duration>> =
         RefCell::new(std::collections::HashMap::new());
-    /// Threshold above which `end_frame` emits a spike `tracing::warn!`. 250ms is
-    /// "user-perceptible freeze"; below it, routine GC stalls and wireframe
-    /// rebuilds (50-150ms) drown the log. Lower via [`set_spike_threshold`].
+    /// 250ms is "user-perceptible freeze"; below it, routine GC stalls and
+    /// wireframe rebuilds (50-150ms) drown the log.
     static SPIKE_THRESHOLD: std::cell::Cell<Duration> =
         const { std::cell::Cell::new(Duration::from_millis(250)) };
-    /// Strictly-increasing frame counter so repeated spike warns are
-    /// distinguishable as separate events.
     static FRAME_COUNTER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -156,18 +123,14 @@ pub fn scope(name: &'static str) -> Scope {
     }
 }
 
-/// Register the host's JS heap sampler (last write wins). Once set,
-/// [`begin_frame`]/[`end_frame`] snapshot the heap and attach the signed delta to
-/// each `FrameTrace`; the spike warn includes it so a freeze + heap jump reads as
-/// GC pressure at a glance.
+/// Register the host's JS heap sampler (last write wins).
 #[cfg(feature = "frame-trace")]
 pub fn set_heap_sampler(sampler: HeapSampler) {
     HEAP_SAMPLER.with(|s| s.set(Some(sampler)));
 }
 
 /// Mark the start of a frame's work. Pairs with [`end_frame`] to compute the
-/// `idle` section. Called by the runner atop each `redraw`, before the `frame`
-/// scope. Also snapshots the JS heap (via the registered [`HeapSampler`], if any).
+/// `idle` section.
 #[cfg(feature = "frame-trace")]
 pub fn begin_frame() {
     CURRENT_FRAME_START.with(|c| c.set(Some(Instant::now())));
@@ -176,8 +139,7 @@ pub fn begin_frame() {
     CURRENT_FRAME_ALLOC_START.with(|c| c.set(crate::alloc::current_snapshot()));
 }
 
-/// Push the in-flight frame into history and start a new one. Called once per
-/// redraw by the runner, after all the frame's scopes have closed.
+/// Push the in-flight frame into history and start a new one.
 ///
 /// Records two synthetic sections beyond the explicit scopes:
 ///
@@ -197,7 +159,6 @@ pub fn end_frame() {
     });
     let frame_start = CURRENT_FRAME_START.with(|c| c.take());
 
-    // Delta only when both samples exist; signed so a mid-frame GC reads negative.
     let heap_start = CURRENT_FRAME_HEAP_START.with(|c| c.take());
     let sampler = HEAP_SAMPLER.with(|s| s.get());
     let heap_end = sampler.and_then(|f| f());
@@ -228,8 +189,6 @@ pub fn end_frame() {
             name: "between-frames",
             elapsed: between_frames,
         });
-        // Skip `idle` when begin_frame wasn't called rather than emit a bogus
-        // value.
         if let Some(frame_start) = frame_start {
             let idle = frame_start.saturating_duration_since(last_end);
             sections.push(Section {
@@ -269,9 +228,6 @@ pub fn end_frame() {
         });
     });
 
-    // Outside the trace borrows so a re-entrant tracing subscriber can't
-    // conflict. Common case is zero entries; only the spike path allocates.
-    // Suffixes appear only when their signal is wired (no misleading "heap=0").
     for (name, elapsed) in over_threshold {
         let heap_suffix = heap_delta_bytes
             .map(|d| format!(" heap_delta={:+.2}MB", d as f64 / (1024.0 * 1024.0)))
@@ -305,8 +261,7 @@ pub fn set_capacity(capacity: usize) {
 }
 
 /// Snapshot the rolling history (oldest-to-newest). Allocates; for the display
-/// path, not the hot path. Per-frame callers should prefer [`with_history`], since
-/// cloning the whole history each frame swamps the alloc telemetry it reads.
+/// path, not the hot path.
 #[cfg(feature = "frame-trace")]
 pub fn history() -> Vec<FrameTrace> {
     TRACER.with(|t| t.borrow().history.iter().cloned().collect())
@@ -315,23 +270,20 @@ pub fn history() -> Vec<FrameTrace> {
 /// Run `f` with a borrow of the rolling history. Zero-allocation read path.
 ///
 /// `f` must NOT call [`end_frame`] or [`set_capacity`] while the borrow is held;
-/// that deadlocks the `RefCell`. Everything else, including [`scope`] and
-/// [`record_external`], writes a different cell. Returns `f`'s value.
+/// that deadlocks the `RefCell`.
 #[cfg(feature = "frame-trace")]
 pub fn with_history<R>(f: impl FnOnce(&std::collections::VecDeque<FrameTrace>) -> R) -> R {
     TRACER.with(|t| f(&t.borrow().history))
 }
 
-/// Snapshot only the last completed frame. Cheaper than [`history`] for a
-/// per-frame readout.
+/// Snapshot only the last completed frame.
 #[cfg(feature = "frame-trace")]
 pub fn last_frame() -> Option<FrameTrace> {
     TRACER.with(|t| t.borrow().history.back().cloned())
 }
 
 /// Session-lifetime max elapsed for `name` since startup (or last
-/// [`clear_max_ever`]). Survives after the rolling window's `max` ages a spike
-/// out. `Duration::ZERO` for never-seen sections.
+/// [`clear_max_ever`]). `Duration::ZERO` for never-seen sections.
 #[cfg(feature = "frame-trace")]
 pub fn max_ever(name: &'static str) -> Duration {
     MAX_EVER.with(|m| m.borrow().get(name).copied().unwrap_or(Duration::ZERO))
@@ -355,7 +307,7 @@ pub fn clear_max_ever() {
 }
 
 /// Set the threshold above which `end_frame` logs a spike `tracing::warn!`. Pass
-/// `Duration::MAX` to disable. Process-global (spikes are one concept).
+/// `Duration::MAX` to disable.
 #[cfg(feature = "frame-trace")]
 pub fn set_spike_threshold(threshold: Duration) {
     SPIKE_THRESHOLD.with(|c| c.set(threshold));
@@ -374,12 +326,10 @@ pub fn record_external(name: &'static str, elapsed: Duration) {
     });
 }
 
-/// Feature-OFF stub: drops the section, no-op.
 #[cfg(not(feature = "frame-trace"))]
 pub fn record_external(_name: &'static str, _elapsed: Duration) {}
 
 /// Sections one worker thread recorded, in transit to the thread that joins it.
-/// Empty for a kernel that opened no scope, and an empty one owns no allocation.
 #[cfg(feature = "frame-trace")]
 #[derive(Debug, Default)]
 pub struct WorkerTrace(Vec<Section>);
@@ -387,9 +337,8 @@ pub struct WorkerTrace(Vec<Section>);
 /// Detach the calling thread's in-flight sections so a joining thread can merge
 /// them.
 ///
-/// For a worker at the end of its partition: its buffer dies with the thread, so
-/// the sections either ride back out or are lost. Calling this on the thread
-/// that owns the frame steals that frame's own sections instead.
+/// Calling this on the thread that owns the frame steals that frame's own
+/// sections instead.
 #[cfg(feature = "frame-trace")]
 pub fn take_worker_trace() -> WorkerTrace {
     CURRENT_SECTIONS.with(|s| WorkerTrace(std::mem::take(&mut *s.borrow_mut())))
@@ -399,15 +348,12 @@ pub fn take_worker_trace() -> WorkerTrace {
 ///
 /// Ordering is the caller's responsibility and is what makes the merge
 /// deterministic: [`crate::jobs::JobPool::run_stage`] calls this in ascending
-/// partition index, never in completion order. Sections keep the names the
-/// kernel gave them, so a name opened on every partition contributes one sample
-/// per partition per frame to [`aggregate`].
+/// partition index, never in completion order.
 #[cfg(feature = "frame-trace")]
 pub fn merge_worker_trace(trace: WorkerTrace) {
     CURRENT_SECTIONS.with(|s| s.borrow_mut().extend(trace.0));
 }
 
-/// Feature-OFF stub: zero-sized, so a pool joining it moves nothing.
 #[cfg(not(feature = "frame-trace"))]
 #[derive(Debug, Default)]
 pub struct WorkerTrace;
@@ -490,8 +436,6 @@ pub fn aggregate() -> Vec<SectionStats> {
     stats
 }
 
-// Feature-OFF stubs: zero-sized scope + empty drop; optimized away.
-
 #[cfg(not(feature = "frame-trace"))]
 #[must_use]
 pub struct Scope;
@@ -539,9 +483,8 @@ mod tests {
 
     #[test]
     fn scope_records_elapsed_on_drop() {
-        // Fresh tracer per thread (thread_local), so no cross-test history.
         end_frame(); // discard any pre-existing in-flight frame
-        let _ = history(); // sanity touch
+        let _ = history();
 
         {
             let _s = scope("test-a");
@@ -551,8 +494,6 @@ mod tests {
         end_frame();
         let post_frame = last_frame().expect("end_frame should produce a frame");
 
-        // The scope dropped before end_frame, so its section is in the
-        // just-rolled frame, not the pre-end snapshot.
         let _ = pre_frame;
         let sections = &post_frame.sections;
         assert!(
@@ -590,9 +531,7 @@ mod tests {
         }
         FAKE_HEAP.store(1_000_000, Ordering::SeqCst);
         set_heap_sampler(fake_sampler);
-        // Drain any pre-existing in-flight frame so the begin/end pair below
-        // produces the heap-delta-bearing frame.
-        end_frame();
+        end_frame(); // discard any pre-existing in-flight frame
         begin_frame();
         end_frame();
         let frame = last_frame().expect("end_frame should produce a frame");

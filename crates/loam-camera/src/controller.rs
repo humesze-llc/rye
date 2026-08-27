@@ -1,7 +1,3 @@
-//! [`CameraController`] is the input-driven logic that mutates a [`Camera`] each frame.
-//! Camera is data, controller is logic; they live in separate types so a game can swap
-//! controllers without reconstructing the camera state.
-
 use std::f32::consts::FRAC_PI_2;
 use std::marker::PhantomData;
 
@@ -163,12 +159,8 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for OrbitControl
 /// `loam_player::PlayerState`'s `position`); this controller only manages the look
 /// direction.
 ///
-/// Use by setting `camera.position` directly each frame (or via player physics), then
-/// calling `advance` to update the basis from yaw/pitch.
-///
 /// `advance` always integrates the mouse delta; pointer-locked windows just call it
-/// every frame. Apps that want hold-to-look gate the call themselves
-/// (`if input.left_mouse_down { ctrl.advance(...) }`).
+/// every frame.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FirstPersonController<S: Space> {
     pub yaw: f32,
@@ -177,8 +169,7 @@ pub struct FirstPersonController<S: Space> {
     /// `mouse_delta`. Pair with a grabbed cursor (see `loam_app::cursor`):
     /// the OS reports raw device motion that doesn't cap at the screen
     /// edge, so a fast horizontal flick can yaw the camera arbitrarily far
-    /// without the cursor "running out of room." Default off (uses the
-    /// clamped delta), which is what the orbit-mode camera consumers want.
+    /// without the cursor "running out of room."
     pub use_raw_delta: bool,
     _marker: PhantomData<S>,
 }

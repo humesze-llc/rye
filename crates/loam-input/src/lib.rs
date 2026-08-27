@@ -1,12 +1,5 @@
 //! Per-frame input accumulator. Routes raw winit events into a
 //! [`FrameInput`] snapshot the rest of the engine consumes.
-//!
-//! [`InputState::take_frame`] resets per-tick deltas (mouse delta, scroll)
-//! while preserving held state (buttons and their press anchors, cursor
-//! position, WASD axes, modifiers) across drains.
-//! [`InputState::cursor_invalidated`] / [`InputState::release_buttons`]
-//! are called on focus loss / cursor exit to drop cursor-relative and held
-//! state cleanly.
 
 use glam::{Vec2, Vec3};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
@@ -17,9 +10,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 pub const SCROLL_PIXELS_PER_LINE: f32 = 50.0;
 
 /// One mouse button: held state plus the cursor position at its press
-/// edge. Drag chords need that anchor to measure a later cursor position
-/// against; a delta sum cannot recover it once the button has been held
-/// across several drains.
+/// edge.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ButtonState {
     pub down: bool,
@@ -169,7 +160,6 @@ impl InputState {
         self.frame.move_up = axis(
             held,
             KeyCode::Space,
-            // treat either shift as down
             if held.contains(&KeyCode::ShiftRight) {
                 KeyCode::ShiftRight
             } else {
@@ -191,8 +181,7 @@ impl InputState {
     }
 
     /// Accumulate raw device motion (`DeviceEvent::MouseMotion`) into
-    /// `FrameInput::mouse_raw_delta`. `pub` only because the runner lives in
-    /// a separate crate; `#[doc(hidden)]` keeps it out of demo-facing docs.
+    /// `FrameInput::mouse_raw_delta`.
     #[doc(hidden)]
     pub fn accumulate_raw_motion(&mut self, dx: f64, dy: f64) {
         self.frame.mouse_raw_delta += Vec2::new(dx as f32, dy as f32);

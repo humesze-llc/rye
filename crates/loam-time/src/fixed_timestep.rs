@@ -36,7 +36,7 @@ impl FixedTimestep {
         }
     }
 
-    /// Override the spiral-of-death cap. Default is [`DEFAULT_MAX_CATCH_UP`].
+    /// Override the spiral-of-death cap.
     pub fn with_max_catch_up(mut self, n: u32) -> Self {
         self.max_catch_up = n;
         self

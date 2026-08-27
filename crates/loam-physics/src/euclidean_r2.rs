@@ -431,7 +431,6 @@ fn rectangle_vertices(half_extents: Vec2) -> Vec<Vec2> {
     ]
 }
 
-/// Build a dynamic axis-aligned rectangular body.
 pub fn rectangle_body(
     center: Vec2,
     velocity: Vec2,

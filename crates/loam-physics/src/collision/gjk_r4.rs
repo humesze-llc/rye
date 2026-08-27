@@ -1,10 +1,7 @@
 //! GJK in R⁴ using dimension-agnostic closest-point-on-simplex.
 //!
 //! Parallels [`crate::collision::gjk`] (3D) but substitutes the 3D's hand-rolled Voronoi-region
-//! simplex analysis with the Gram-matrix projection from [`super::simplex_r4`]. That lets us
-//! handle all simplex sizes (1 through 5) uniformly, which matters in 4D because a 4-simplex
-//! (pentatope) is the first volume-enclosing case; the 3D "tetrahedron encloses when all three
-//! face-normals point inward" logic has no direct 4D analogue worth hand-deriving.
+//! simplex analysis with the Gram-matrix projection from [`super::simplex_r4`].
 
 use glam::Vec4;
 
@@ -78,10 +75,6 @@ pub fn minkowski_support_r4<A: SupportFn4, B: SupportFn4>(
 /// GJK result: either the shapes overlap, in which case we hand the final simplex plus its
 /// surviving sub-simplex to EPA, or they don't. In 4D the enclosing simplex always has 5
 /// vertices; EPA receives exactly that.
-///
-/// The variants are asymmetric in size (an inline `[MinkowskiPoint4; 5]` is ~240 bytes;
-/// `Separated` is 0). We keep it inline; the enum is a short-lived stack return from
-/// narrowphase, not a stored field, so the size asymmetry doesn't matter in practice.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum GjkResult4 {
@@ -111,11 +104,6 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
     simplex.push(minkowski_support_r4(a, b, dir));
     dir = -simplex[0].point;
 
-    // ---- Stage 1: standard GJK, searching toward the origin.
-    // Terminates when either (a) a new support fails to cross the origin along the search
-    // direction (-> Separated) or (b) the current simplex's closest-point to origin is already
-    // at the origin (-> shapes intersect, exit to stage 2 to grow the simplex to 5 points for
-    // EPA).
     for _ in 0..GJK_MAX_ITERATIONS {
         if dir.length_squared() < GJK_EPS {
             break;
@@ -141,7 +129,6 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
             ..
         } = closest_to_origin(&points);
         if closest.length_squared() < GJK_EPS {
-            // Origin is in the current hull, enter growth phase.
             let pruned: Vec<MinkowskiPoint4> = kept.iter().map(|&i| simplex[i]).collect();
             simplex = pruned;
             break;
@@ -179,7 +166,6 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
             simplex.push(sup_neg);
             continue;
         }
-        // Polytope is truly flat along this probe axis; mark as tried and move on.
     }
 
     if simplex.len() == 5 {
@@ -227,8 +213,6 @@ fn orthogonal_to_hull(simplex: &[MinkowskiPoint4], tried: &[Vec4]) -> Option<Vec
         }
     }
 
-    // For each cardinal axis, compute the residual after projecting out the basis and out every
-    // already-tried direction. Rank candidates by residual magnitude; return the strongest.
     let axes = [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W];
     let mut best: Option<(f32, Vec4)> = None;
     for &axis in &axes {

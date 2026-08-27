@@ -323,7 +323,6 @@ fn polytope_halfspace_r3(
     let mut deepest_depth = 0.0_f32;
     for &v_local in va_local {
         let v_world = a.orientation.rotation * v_local + a.position;
-        // Deepest negative signed distance is the maximum penetration.
         let signed = v_world.dot(plane_n) - offset;
         let depth = -signed;
         if depth > deepest_depth {

@@ -1,18 +1,3 @@
-//! Persistent contact manifolds and the projected Gauss-Seidel constraint solver primitives.
-//!
-//! Single-contact, single-pass impulse resolution can't keep a stack of bodies stable: the
-//! bottom body has one contact with the floor, one with the body above; each frame's resolution
-//! applies an impulse, the next frame finds the bodies still slightly overlapping (due to gravity
-//! over `dt`), repeat -> jitter forever.
-//!
-//! The standard fix is two-fold:
-//!
-//! 1. **Persistent manifolds.** Cache up to 4 contact points per pair across frames so the
-//!    solver sees the same constraint repeatedly rather than rediscovering it.
-//! 2. **Warm-starting.** At the start of each step, re-apply each cached point's previous-frame
-//!    accumulated impulse. Bodies start near their settled velocities, so the iterative solver
-//!    converges in a handful of iterations instead of dozens.
-//!
 //! Manifolds are keyed by `(body_a, body_b)` with `body_a < body_b`, on generational
 //! [`BodyId`] handles rather than storage positions, so a despawn elsewhere in the world
 //! cannot rebind a key to a different pair of bodies.
@@ -33,7 +18,6 @@ const MERGE_RADIUS_SQ: f32 = 0.02 * 0.02;
 /// One persistent contact constraint between two bodies.
 #[derive(Clone, Copy)]
 pub struct ContactPoint<S: PhysicsSpace> {
-    /// World position the contact is applied at.
     pub world_point: S::Point,
     /// Unit vector from A toward B (separating direction).
     pub normal: S::Vector,
@@ -102,8 +86,6 @@ where
                 cp.world_point = new_point;
                 cp.normal = contact.normal;
                 cp.penetration = contact.penetration;
-                // Keep accumulated normal_impulse / tangent_impulse; they're the warm-start
-                // data.
                 return;
             }
         }

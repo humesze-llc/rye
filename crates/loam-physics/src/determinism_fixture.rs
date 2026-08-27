@@ -3,10 +3,6 @@
 //! [`World::step`] through this module rather than re-implementing the phase
 //! loop, so a schedule variant is always compared against the simulation the
 //! golden hash pins.
-//!
-//! The replay fixture below is the same idea run against a recorded input
-//! stream: it drives the scenario from a [`Tape`] instead of from silence, so
-//! the pin covers the inputs as well as the integrator.
 
 use std::ops::Range;
 
@@ -33,10 +29,8 @@ pub fn fnv1a64(words: &[u32]) -> u64 {
 }
 
 /// FNV-1a of [`ScenarioRun::trajectory`] under the default schedule, recorded
-/// on x86_64. This pins behavior rather than self-consistency: a
-/// deterministic-but-changed integrator, solver order, contact constant, or
-/// narrowphase moves it. Scoped to one architecture family, since glam's SIMD
-/// dot reduces in a different order than its scalar fallback.
+/// on x86_64. Scoped to one architecture family, since glam's SIMD dot
+/// reduces in a different order than its scalar fallback.
 ///
 /// Re-recording: the scenario is chaotic, so the hash alone cannot say whether
 /// a mismatch is an intended simulation change or a solver regression.
@@ -53,12 +47,7 @@ pub struct ScenarioRun {
     pub trajectory: Vec<u32>,
     /// Running hash after each step over a superset of `trajectory`: the same
     /// body words plus the manifold key list, each manifold's point count, and
-    /// each point's accumulated normal impulse. Warm-start impulses are
-    /// carried state, so a schedule change can leave body state identical for
-    /// one step and diverge several steps later; hashing bodies alone would
-    /// find that late or not at all. A vector rather than a scalar because the
-    /// first differing index is the first divergent step, which is the whole
-    /// triage story for a hash mismatch.
+    /// each point's accumulated normal impulse.
     pub step_hashes: Vec<u64>,
     /// The physical readings the golden hash cannot supply on its own.
     pub envelope: PhysicalEnvelope,
@@ -83,23 +72,18 @@ const STEPS: usize = 240;
 
 /// Both fixtures fall along -y at this magnitude onto a static half-space at
 /// `y = 0`, so heights and potential energies are read off the y component
-/// directly. Named here rather than at the two `Gravity::new` calls so the
-/// energy budget cannot drift from the field the scenarios install.
+/// directly.
 const GRAVITY_MAGNITUDE: f32 = 9.8;
 const UP_COMPONENT: usize = 1;
 
 /// Sampled words for one body: `dims` position, `dims` velocity, and the
-/// `C(dims, 2)` bivector components. Both samplers write this layout, and
-/// [`run_scenario`] asserts the sampled width agrees before reading any
-/// component out by index.
+/// `C(dims, 2)` bivector components.
 const fn words_per_body(dims: usize) -> usize {
     2 * dims + dims * (dims - 1) / 2
 }
 
-/// Translational plus rotational plus gravitational-potential energy of one
-/// sampled body. Every space here uses a scalar isotropic moment, so the
-/// rotational term is `½·I·|ω|²` with `|ω|` the Euclidean norm of the
-/// bivector components.
+/// Every space here uses a scalar isotropic moment, so the rotational term is
+/// `½·I·|ω|²` with `|ω|` the Euclidean norm of the bivector components.
 fn mechanical_energy(words: &[u32], dims: usize, mass: f32, inertia: f32) -> f32 {
     let read = |i: usize| f32::from_bits(words[i]);
     let sum_squares = |range: Range<usize>| range.map(|i| read(i) * read(i)).sum::<f32>();
@@ -108,7 +92,6 @@ fn mechanical_energy(words: &[u32], dims: usize, mass: f32, inertia: f32) -> f32
         + mass * GRAVITY_MAGNITUDE * read(UP_COMPONENT)
 }
 
-/// Total mechanical energy of the dynamic bodies in one sampled configuration.
 /// Statics are skipped rather than contributing zero: their sampled height is
 /// whatever the constructor gave them, not their plane's.
 fn configuration_energy<S>(world: &World<S>, words: &[u32], dims: usize) -> f32
@@ -162,10 +145,9 @@ pub fn assert_scenario_stays_physical(run: &ScenarioRun) {
     );
 }
 
-/// Drive `world` and sample it. Every fixture routes through here so all of
-/// them hash the same quantities in the same order, and so none of them can
-/// drift into re-implementing the phase loop instead of driving
-/// [`World::step`].
+/// Every fixture routes through here so all of them hash the same quantities
+/// in the same order, and so none of them can drift into re-implementing the
+/// phase loop instead of driving [`World::step`].
 fn run_scenario<S, F>(
     world: &mut World<S>,
     dt: f32,
@@ -292,14 +274,10 @@ pub fn sample_body_r3(body: &RigidBody<EuclideanR3>, words: &mut Vec<u32>) {
     ]);
 }
 
-/// The determinism fixture: 4D gravity, a static floor, and a six-sphere stack
-/// at fixed offsets landing on it. No RNG, so any run-to-run difference is
-/// genuine nondeterminism rather than seed noise.
+/// No RNG, so any run-to-run difference is genuine nondeterminism rather than
+/// seed noise.
 pub fn determinism_scenario_run(schedule: Schedule) -> ScenarioRun {
     let mut world = World::new(EuclideanR4);
-    // Contacts are what make the trajectory worth pinning: without a
-    // narrowphase the scenario is free fall and exercises no solver, manifold,
-    // or iteration-order behavior.
     register_narrowphase_r4(&mut world.narrowphase);
     world.schedule = schedule;
     world.push_field(Box::new(Gravity::new(Vec4::new(
@@ -337,16 +315,8 @@ pub fn first_divergent_step(a: &ScenarioRun, b: &ScenarioRun) -> Option<usize> {
 }
 
 const ISLAND_RADIUS: f32 = 0.5;
-/// Group centres on the x axis, separated by several diameters so a group
-/// would have to travel to reach its neighbour.
 const ISLAND_X: [f32; 3] = [-4.0, 0.0, 4.0];
-/// Bodies per group. The four-body chain is why this fixture exists: island
-/// order and colour order are both vacuous on a single stack, so the R4
-/// scenario cannot serve the axes that arrive with union-find islands and a
-/// coloured solve.
 const ISLAND_SIZES: [usize; 3] = [4, 2, 1];
-/// Initial surface-to-surface separation, so the run opens with an impact
-/// rather than with bodies already resting in contact.
 const ISLAND_GAP: f32 = 0.05;
 pub const MULTI_ISLAND_DT: f32 = 1.0 / 60.0;
 pub const MULTI_ISLAND_STEPS: usize = 240;
@@ -369,9 +339,6 @@ pub fn multi_island_groups() -> [Range<usize>; 3] {
 /// below its 1e-8 tangential-speed floor, so no group ever moves laterally.
 /// That is what makes the island partition constant for the whole run rather
 /// than a property that happens to hold for the first few hundred steps.
-///
-/// The floor is static, so it transmits no impulse between groups and does not
-/// merge islands under the usual union-find rule.
 pub fn multi_island_world(schedule: Schedule) -> World<EuclideanR3> {
     let mut world = World::new(EuclideanR3);
     register_narrowphase_r3(&mut world.narrowphase);
@@ -410,24 +377,14 @@ pub fn multi_island_scenario_run(schedule: Schedule) -> ScenarioRun {
 /// FNV-1a of [`multi_island_scenario_run`]'s trajectory under the default
 /// schedule, recorded on x86_64 on the same terms as
 /// [`GOLDEN_TRAJECTORY_HASH`].
-///
-/// Re-recording: [`assert_scenario_stays_physical`] runs first and is what
-/// tells the two cases apart. If it passed and only the hash moved, the
-/// change is intended: replace this constant with the value the hash
-/// assertion prints. If it failed, the scenario stopped being physical and no
-/// re-recorded hash is correct.
 pub const GOLDEN_MULTI_ISLAND_HASH: u64 = 0x56fd_21a0_2e4f_76e2;
 
 /// Words per recorded tick: the target handle as `(slot, generation)`, then the
 /// impulse. A handle rather than a storage position, because `despawn` compacts
 /// the arena and a tape outlives the run that wrote it.
 const THROW_WORDS: u32 = 5;
-/// `slot` value meaning the tick carried no throw. A tape must have one frame
-/// per tick for its inputs to be addressable by tick, and a quiet tick still
-/// has to say so.
+/// `slot` value meaning the tick carried no throw.
 const NO_THROW: u32 = u32::MAX;
-/// Ticks between throws, so a throw lands on a solver already carrying
-/// warm-start impulses rather than on a world still in free fall.
 const THROW_PERIOD: u64 = 20;
 /// Per-component impulse bound, kg·m/s. The fixture's spheres are unit mass,
 /// so one throw adds under `sqrt(3)·THROW_IMPULSE` m/s of speed, i.e. under
@@ -436,18 +393,14 @@ const THROW_PERIOD: u64 = 20;
 /// records.
 const THROW_IMPULSE: f32 = 2.0;
 pub const REPLAY_TICKS: u64 = 180;
-/// Arbitrary but fixed, so a replay failure is reproducible from its message.
 pub const REPLAY_SEED: u64 = 0x5eed_f11c_c0de_0001;
-/// Checkpoint stride. Every tick would make the tape a trajectory dump; only
-/// the last would let a divergence hide until the end.
 const CHECKPOINT_PERIOD: u64 = 30;
 /// Tick rate written into the tape header: the reciprocal of
 /// [`MULTI_ISLAND_DT`], the step the flick chamber runs at.
 const REPLAY_TICK_HZ: u32 = 60;
 
 /// xorshift64* (Vigna 2016, *An experimental exploration of Marsaglia's
-/// xorshift generators, scrambled*, §4). The input stream has to come from
-/// somewhere reproducible; the tape header's seed is that somewhere.
+/// xorshift generators, scrambled*, §4).
 fn xorshift64star(state: &mut u64) -> u64 {
     *state ^= *state >> 12;
     *state ^= *state << 25;
@@ -462,8 +415,6 @@ fn signed_unit(draw: u64) -> f32 {
     ((draw >> 40) as u32) as f32 * (1.0 / 8_388_608.0) - 1.0
 }
 
-/// The scripted throws for one seed: an impulse at a pseudo-random dynamic body
-/// every [`THROW_PERIOD`] ticks, silence between.
 fn generate_throws(
     seed: u64,
     ticks: u64,
@@ -502,10 +453,6 @@ fn apply_throw(world: &mut World<EuclideanR3>, frame: [u32; THROW_WORDS as usize
     }
 }
 
-/// Drive the multi-island world for `ticks`, applying each tick's input before
-/// stepping, and sample [`World::state_hash`] every [`CHECKPOINT_PERIOD`]
-/// ticks.
-///
 /// Recording and replaying differ only in the `input` they pass, so a replay
 /// cannot drift into a second implementation of the scenario it is supposed to
 /// reproduce.

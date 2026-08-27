@@ -1,15 +1,5 @@
 //! EPA: Expanding Polytope Algorithm (3D).
 //!
-//! Given GJK's terminating tetrahedron, EPA grows it into a polytope whose surface
-//! approaches the boundary of `A ⊖ B`. The closest surface point to the origin is
-//! the minimum translation: contact normal and penetration depth. The contact
-//! point comes from the closest point's barycentric weights applied to the cached
-//! per-shape supports in each [`MinkowskiPoint`].
-//!
-//! Each iteration: find the closest face, query a support along its outward normal,
-//! terminate if that support's distance matches the face's, else add the support
-//! (remove faces it sees, stitch new triangles from each horizon edge to it).
-//!
 //! Every geometric threshold here is a dimensionless coefficient times the
 //! caller's `scale` raised to the homogeneity degree of the quantity it guards,
 //! so the resolved depth and normal are equivariant under a uniform scaling of
@@ -85,10 +75,6 @@ const SEED_DEGENERATE_VOLUME: f32 = 1e-8;
 /// products.
 const BARYCENTRIC_SINGULAR_EPS: f32 = 1e-12;
 
-/// The scale-derived thresholds of one `epa` call: each constant times `scale`
-/// raised to that constant's degree, evaluated once at entry because `scale` is
-/// fixed for the call while `build_face_vs_point` runs once per horizon edge
-/// per iteration.
 #[derive(Clone, Copy)]
 struct Thresholds {
     support_gap: f32,
@@ -119,7 +105,6 @@ pub struct ContactInfo {
     pub point: Vec3,
 }
 
-/// Triangle face of the expanding polytope, stored by vertex index.
 #[derive(Clone, Copy, Debug)]
 struct Face {
     /// Indices into `Polytope::vertices`, wound so `normal` points outward.
@@ -145,7 +130,6 @@ impl Polytope {
     fn from_tetra(tetra: [MinkowskiPoint; 4], thresholds: Thresholds) -> Self {
         let vertices = tetra.to_vec();
         let interior = (tetra[0].point + tetra[1].point + tetra[2].point + tetra[3].point) * 0.25;
-        // Four faces, each wound so its normal points away from the opposite vertex.
         let mut faces = Vec::with_capacity(4);
         for &(i, j, k, l) in &[(0, 1, 2, 3), (0, 3, 1, 2), (0, 2, 3, 1), (1, 3, 2, 0)] {
             faces.push(build_face_vs_point(
@@ -176,13 +160,10 @@ impl Polytope {
         Some(idx)
     }
 
-    /// Add `support`: remove every face whose outward normal faces it, then connect
-    /// `support` to each horizon edge.
     fn expand(&mut self, support: MinkowskiPoint) {
         let new_idx = self.vertices.len();
         self.vertices.push(support);
 
-        // Horizon = edges of removed faces not shared with another removed face.
         let mut horizon: Vec<(usize, usize)> = Vec::new();
         let mut keep = Vec::with_capacity(self.faces.len());
 
@@ -199,8 +180,6 @@ impl Polytope {
         }
         self.faces = keep;
 
-        // Stitch each horizon edge to the new vertex, oriented against the seed
-        // centroid (a guaranteed interior reference; see the `interior` field).
         let interior = self.interior;
         let cross_norm = self.thresholds.cross_norm;
         for &(i, j) in &horizon {
@@ -317,7 +296,6 @@ fn expand_to_boundary<A: SupportFn, B: SupportFn>(
 ) -> Option<(Polytope, Face)> {
     let thresholds = Thresholds::for_scale(scale);
 
-    // Reject a near-coplanar (zero-volume) seed: |det([p1-p0, p2-p0, p3-p0])|.
     let p0 = initial_simplex[0].point;
     let p1 = initial_simplex[1].point;
     let p2 = initial_simplex[2].point;
@@ -330,14 +308,12 @@ fn expand_to_boundary<A: SupportFn, B: SupportFn>(
     let mut polytope = Polytope::from_tetra(initial_simplex, thresholds);
 
     for _ in 0..EPA_MAX_ITERATIONS {
-        // A collapsed polytope (no faces) is outside EPA's domain; bail cleanly.
         let face_idx = polytope.closest_face()?;
         let face = polytope.faces[face_idx];
 
         let support = minkowski_support(a, b, face.normal);
         let new_distance = support.point.dot(face.normal);
 
-        // Bail on non-finite support rather than grow the polytope with NaN.
         if !new_distance.is_finite() || !support.point.is_finite() {
             return None;
         }
@@ -353,7 +329,6 @@ fn expand_to_boundary<A: SupportFn, B: SupportFn>(
         }
     }
 
-    // Cap hit (near-degenerate inputs only): return the best estimate.
     tracing::debug!(
         max_iterations = EPA_MAX_ITERATIONS,
         vertices = polytope.vertices.len(),
@@ -369,7 +344,6 @@ fn contact_from_face(polytope: &Polytope, face: Face) -> Option<ContactInfo> {
     let v1 = polytope.vertices[face.v[1]];
     let v2 = polytope.vertices[face.v[2]];
 
-    // Closest point on the face to the origin, in Minkowski-diff space.
     let closest = face.normal * face.distance;
 
     let (u, v, w) = barycentric(
@@ -380,7 +354,6 @@ fn contact_from_face(polytope: &Polytope, face: Face) -> Option<ContactInfo> {
         polytope.thresholds.barycentric_gram,
     );
 
-    // Same weights against the cached supports recover the points on A and B.
     let point_a = v0.sa * u + v1.sa * v + v2.sa * w;
     let point_b = v0.sb * u + v1.sb * v + v2.sb * w;
 
@@ -487,11 +460,8 @@ mod tests {
         assert_close(info.penetration, 0.5 - 3.0_f32.sqrt() * 0.2, 1e-2);
     }
 
-    /// Both degeneracy fixtures below drive the same pair of radius-1 spheres.
     const SPHERE_PAIR_SCALE: f32 = 2.0;
 
-    /// Pre-images are irrelevant to a seed that never reaches contact
-    /// reconstruction, so they are the difference points themselves.
     fn seed(points: [Vec3; 4]) -> [MinkowskiPoint; 4] {
         points.map(|point| MinkowskiPoint {
             point,
@@ -701,8 +671,6 @@ mod tests {
             }
         }
 
-        // Generic position and one-axis flush are the two box families the
-        // coplanar band separates; the spheres carry the curved support.
         let box_offsets = [Vec3::new(0.3, 0.1, 0.2), Vec3::new(0.1, 0.05, 0.0)];
         let unit_seeds: Vec<[MinkowskiPoint; 4]> = box_offsets
             .iter()

@@ -1,5 +1,3 @@
-//! Euclidean R⁴, flat 4D space with a [`Rotor4`]-based isometry.
-//!
 //! Intentionally distinct from [`crate::spherical::Iso4`], that type is an SO(4) matrix used
 //! to embed `S³` in 4D ambient space. The flat Iso here is for rigid motions of `R⁴` itself,
 //! the setting in which 4D physics simulations live.
@@ -28,13 +26,11 @@ pub struct Iso4Flat {
 }
 
 impl Iso4Flat {
-    /// Fixes every point; the neutral element of `iso_compose`.
     pub const IDENTITY: Self = Self {
         rotation: Rotor4::IDENTITY,
         translation: Vec4::ZERO,
     };
 
-    /// Rotation about the origin, no translation.
     pub fn from_rotation(rotation: Rotor4) -> Self {
         Self {
             rotation,
@@ -42,7 +38,6 @@ impl Iso4Flat {
         }
     }
 
-    /// Pure translation.
     pub fn from_translation(translation: Vec4) -> Self {
         Self {
             rotation: Rotor4::IDENTITY,
@@ -57,7 +52,6 @@ impl Default for Iso4Flat {
     }
 }
 
-/// Euclidean R⁴ with the standard metric `‖x‖² = x₁² + x₂² + x₃² + x₄²`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EuclideanR4;
 

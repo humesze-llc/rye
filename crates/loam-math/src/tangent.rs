@@ -1,10 +1,7 @@
-//! [`Tangent`], a tangent vector bundled with the point it lives at.
-
 use std::ops::Mul;
 
 use crate::space::Space;
 
-/// A tangent vector `v` paired with the point `at` where it lives.
 pub struct Tangent<S: Space> {
     /// Base point, assumed on the manifold.
     pub at: S::Point,
@@ -28,8 +25,6 @@ impl<S: Space> Tangent<S> {
         Self { at, v }
     }
 
-    /// Parallel-transport this tangent vector to a new base point along the unique minimizing
-    /// geodesic.
     pub fn transport_to(self, space: &S, dest: S::Point) -> Self {
         Self {
             at: dest,
@@ -37,7 +32,6 @@ impl<S: Space> Tangent<S> {
         }
     }
 
-    /// Exponential map: walk from `at` along `v` for unit time.
     pub fn exp(self, space: &S) -> S::Point {
         space.exp(self.at, self.v)
     }
@@ -47,7 +41,6 @@ impl<S: Space> Tangent<S>
 where
     S::Vector: Mul<f32, Output = S::Vector>,
 {
-    /// Scale the tangent vector by `t`, keeping the base point fixed.
     pub fn scale(self, t: f32) -> Self {
         Self {
             at: self.at,

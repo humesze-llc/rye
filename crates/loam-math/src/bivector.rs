@@ -1,5 +1,3 @@
-//! Bivectors and rotors, the N-dim rotation primitive.
-//!
 //! `R = exp(B/2)`, so a bivector of magnitude θ in plane `e_i ∧ e_j` rotates
 //! by θ from `e_i` toward `e_j`. Rotor application is the sandwich
 //! `v' = R̃ · v · R`.
@@ -8,35 +6,24 @@ use std::ops::{Add, Mul};
 
 use glam::{Vec2, Vec3, Vec4};
 
-/// A bivector in G(N, 0): an oriented plane of rotation times magnitude;
-/// exponentiates to a rotor.
 pub trait Bivector: Copy + Add<Output = Self> + Mul<f32, Output = Self> {
-    /// Rotor produced by [`Bivector::exp`].
     type Rotor: Rotor<Bivector = Self>;
 
-    /// Zero bivector; `zero().exp()` is the identity rotor.
     fn zero() -> Self;
 
-    /// Exponential map, closed-form per dimension.
     fn exp(self) -> Self::Rotor;
 }
 
 /// A rotor in G(N, 0): an element of Spin(N), unit-norm by construction.
 pub trait Rotor: Copy + Mul<Output = Self> {
-    /// Generator algebra: `log` lands here and `exp` comes back, so the two
-    /// are mutual inverses on the branch each `log` documents.
     type Bivector: Bivector<Rotor = Self>;
 
-    /// Vector space the sandwich product acts on, `R^N` for this rotor's `N`.
     type Vector: Copy;
 
-    /// Identity rotor.
     fn identity() -> Self;
 
-    /// Reverse / conjugate rotor; the inverse for unit rotors.
     fn inverse(self) -> Self;
 
-    /// Rotate a vector via the sandwich product.
     fn apply(&self, v: Self::Vector) -> Self::Vector;
 
     /// Inverse of [`Bivector::exp`]. Which of a rotation's two rotors the
@@ -87,12 +74,10 @@ impl Bivector for Bivector2 {
 pub struct Rotor2 {
     /// Scalar part `cos(θ/2)`; `a² + b² = 1` is the type's invariant.
     pub a: f32,
-    /// `e1∧e2` coefficient `sin(θ/2)`; positive turns `x` toward `y`.
     pub b: f32,
 }
 
 impl Rotor2 {
-    /// Zero-angle rotor; [`Rotor::apply`] leaves every vector fixed.
     pub const IDENTITY: Self = Self { a: 1.0, b: 0.0 };
 }
 
@@ -142,24 +127,20 @@ impl Rotor for Rotor2 {
 /// encodes rotation angle.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Bivector3 {
-    /// Coefficient on `e1∧e2` (xy plane).
     pub xy: f32,
-    /// Coefficient on `e2∧e3` (yz plane).
     pub yz: f32,
-    /// Coefficient on `e3∧e1` (zx plane).
     pub zx: f32,
 }
 
 impl Bivector3 {
-    /// Zero rotation generator; exponentiates to [`Rotor3::IDENTITY`].
     pub const ZERO: Self = Self {
         xy: 0.0,
         yz: 0.0,
         zx: 0.0,
     };
 
-    /// Coefficients in field order. Not normalized: the magnitude is the
-    /// rotation angle, so scaling the input scales the angle.
+    /// Not normalized: the magnitude is the rotation angle, so scaling the
+    /// input scales the angle.
     pub fn new(xy: f32, yz: f32, zx: f32) -> Self {
         Self { xy, yz, zx }
     }
@@ -199,8 +180,8 @@ impl Bivector for Bivector3 {
         Self::ZERO
     }
 
-    /// Every 3D bivector is simple (single plane), so
-    /// `exp(B/2) = cos(θ/2) + sin(θ/2)·B̂` directly, no decomposition.
+    // Every 3D bivector is simple (single plane), so
+    // `exp(B/2) = cos(θ/2) + sin(θ/2)·B̂` directly, no decomposition.
     fn exp(self) -> Rotor3 {
         let mag_sq = self.xy * self.xy + self.yz * self.yz + self.zx * self.zx;
         // 1e-16: below this squared-angle the f32 sin/cos round-trip is
@@ -230,18 +211,13 @@ impl Bivector for Bivector3 {
 /// (`s² + xy² + yz² + zx² = 1`).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Rotor3 {
-    /// Scalar part `cos(θ/2)`.
     pub s: f32,
-    /// `e1∧e2` coefficient of `sin(θ/2)·B̂`, `B̂` the unit rotation plane.
     pub xy: f32,
-    /// `e2∧e3` coefficient of the same product.
     pub yz: f32,
-    /// `e3∧e1` coefficient of the same product.
     pub zx: f32,
 }
 
 impl Rotor3 {
-    /// Zero-angle rotor; [`Rotor::apply`] leaves every vector fixed.
     pub const IDENTITY: Self = Self {
         s: 1.0,
         xy: 0.0,
@@ -328,22 +304,15 @@ impl Rotor for Rotor3 {
 /// 4D bivector, six components on the basis planes `e_i ∧ e_j` (`i < j`).
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Bivector4 {
-    /// `e1∧e2` coefficient; positive turns `x` toward `y`.
     pub xy: f32,
-    /// `e1∧e3` coefficient; positive turns `x` toward `z`.
     pub xz: f32,
-    /// `e1∧e4` coefficient; positive turns `x` toward `w`.
     pub xw: f32,
-    /// `e2∧e3` coefficient; positive turns `y` toward `z`.
     pub yz: f32,
-    /// `e2∧e4` coefficient; positive turns `y` toward `w`.
     pub yw: f32,
-    /// `e3∧e4` coefficient; positive turns `z` toward `w`.
     pub zw: f32,
 }
 
 impl Bivector4 {
-    /// Zero rotation generator; exponentiates to [`Rotor4::IDENTITY`].
     pub const ZERO: Self = Self {
         xy: 0.0,
         xz: 0.0,
@@ -366,9 +335,8 @@ impl Bivector4 {
         }
     }
 
-    /// Unit basis bivector at index `i` (`0=xy, 1=xz, 2=xw, 3=yz, 4=yw,
-    /// 5=zw`). Panics if `i >= 6`; see [`Plane4::unit_bivector`] for the
-    /// type-safe form.
+    /// Unit basis bivector at index `i` in the canonical plane order. Panics
+    /// if `i >= 6`; see [`Plane4::unit_bivector`] for the type-safe form.
     pub fn basis(i: usize) -> Self {
         let mut c = [0.0_f32; 6];
         c[i] = 1.0;
@@ -392,7 +360,6 @@ impl Bivector4 {
         self.magnitude_squared().sqrt()
     }
 
-    /// Read the coefficient of a basis plane.
     pub fn component(self, plane: Plane4) -> f32 {
         match plane {
             Plane4::Xy => self.xy,
@@ -404,7 +371,6 @@ impl Bivector4 {
         }
     }
 
-    /// Write the coefficient of a basis plane; mirror of [`Self::component`].
     pub fn set_component(&mut self, plane: Plane4, value: f32) {
         match plane {
             Plane4::Xy => self.xy = value,
@@ -434,7 +400,6 @@ impl Bivector4 {
         2.0 * (self.xy * self.zw - self.xz * self.yw + self.xw * self.yz)
     }
 
-    /// Wedge product `u ∧ v` as a bivector.
     pub fn wedge(u: Vec4, v: Vec4) -> Self {
         Self {
             xy: u.x * v.y - u.y * v.x,
@@ -480,17 +445,11 @@ impl Bivector4 {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub enum Plane4 {
-    /// `e1∧e2`: turns `x` toward `y`, fixing the `zw` plane pointwise.
     Xy = 0,
-    /// `e1∧e3`: turns `x` toward `z`, fixing the `yw` plane pointwise.
     Xz = 1,
-    /// `e1∧e4`: turns `x` toward `w`, fixing the `yz` plane pointwise.
     Xw = 2,
-    /// `e2∧e3`: turns `y` toward `z`, fixing the `xw` plane pointwise.
     Yz = 3,
-    /// `e2∧e4`: turns `y` toward `w`, fixing the `xz` plane pointwise.
     Yw = 4,
-    /// `e3∧e4`: turns `z` toward `w`, fixing the `xy` plane pointwise.
     Zw = 5,
 }
 
@@ -510,7 +469,6 @@ impl Plane4 {
         }
     }
 
-    /// Unit-magnitude basis bivector for this plane.
     pub fn unit_bivector(self) -> Bivector4 {
         Bivector4::basis(self as usize)
     }
@@ -551,17 +509,17 @@ impl Bivector for Bivector4 {
         Self::ZERO
     }
 
-    /// Exponential map via the invariant decomposition. The angles
-    /// `θ₁ ≥ |θ₂| ≥ 0` of the two orthogonal simple parts solve
-    ///
-    /// ```text
-    ///   θ₁² + θ₂² = |B|²
-    ///   2·θ₁·θ₂   = wedge_self_coeff(B)
-    /// ```
-    ///
-    /// Four f32-stable branches: zero, simple (`δ ≈ 0`), isoclinic
-    /// (`disc ≈ 0`, equal angles; avoids the `1/(θ₁²−θ₂²)` singularity),
-    /// and the general expansion of `exp(B_a/2)·exp(B_b/2)`.
+    // Exponential map via the invariant decomposition. The angles
+    // `θ₁ ≥ |θ₂| ≥ 0` of the two orthogonal simple parts solve
+    //
+    // ```text
+    //   θ₁² + θ₂² = |B|²
+    //   2·θ₁·θ₂   = wedge_self_coeff(B)
+    // ```
+    //
+    // Four f32-stable branches: zero, simple (`δ ≈ 0`), isoclinic
+    // (`disc ≈ 0`, equal angles; avoids the `1/(θ₁²−θ₂²)` singularity),
+    // and the general expansion of `exp(B_a/2)·exp(B_b/2)`.
     fn exp(self) -> Rotor4 {
         let s = self.magnitude_squared();
         if s < 1e-16 {
@@ -670,17 +628,11 @@ impl Bivector for Bivector4 {
 pub struct Rotor4 {
     /// Scalar part `cos(θ₁/2)·cos(θ₂/2)` over the invariant decomposition.
     pub s: f32,
-    /// Grade-2 coefficient on `e1∧e2`.
     pub xy: f32,
-    /// Grade-2 coefficient on `e1∧e3`.
     pub xz: f32,
-    /// Grade-2 coefficient on `e1∧e4`.
     pub xw: f32,
-    /// Grade-2 coefficient on `e2∧e3`.
     pub yz: f32,
-    /// Grade-2 coefficient on `e2∧e4`.
     pub yw: f32,
-    /// Grade-2 coefficient on `e3∧e4`.
     pub zw: f32,
     /// Pseudoscalar coefficient on `I = e1∧e2∧e3∧e4`, equal to
     /// `sin(θ₁/2)·sin(θ₂/2)`; zero for a simple rotation.
@@ -688,7 +640,6 @@ pub struct Rotor4 {
 }
 
 impl Rotor4 {
-    /// Zero-angle rotor; [`Rotor::apply`] leaves every vector fixed.
     pub const IDENTITY: Self = Self {
         s: 1.0,
         xy: 0.0,
@@ -774,8 +725,8 @@ impl Default for Rotor4 {
     }
 }
 
-/// Pack into the `[s, xy, xz, xw, yz, yw, zw, xyzw]` slot order GPU uniform
-/// buffers consume (e.g. `loam-render`'s `BodyUniform`).
+// Pack into the `[s, xy, xz, xw, yz, yw, zw, xyzw]` slot order GPU uniform
+// buffers consume (e.g. `loam-render`'s `BodyUniform`).
 impl From<Rotor4> for [f32; 8] {
     fn from(r: Rotor4) -> Self {
         [r.s, r.xy, r.xz, r.xw, r.yz, r.yw, r.zw, r.xyzw]
@@ -867,7 +818,7 @@ impl Rotor for Rotor4 {
         Self::IDENTITY
     }
 
-    /// Reverse `R̃`: flips grades with `k(k−1)/2` odd, i.e. grade 2 only.
+    // Reverse `R̃`: flips grades with `k(k−1)/2` odd, i.e. grade 2 only.
     fn inverse(self) -> Self {
         Self {
             s: self.s,
@@ -923,18 +874,18 @@ impl Rotor for Rotor4 {
         Vec4::new(q1, q2, q3, q4)
     }
 
-    /// Inverse of [`Bivector4::exp`]. Both maps are diagonal in the self-dual
-    /// split of Λ²R⁴, which is what collapses the invariant decomposition to
-    /// a single branch-free formula.
-    ///
-    /// Recovers the minimal-norm generator of the rotation: `|log| ≤ π√2`,
-    /// the bi-invariant diameter of SO(4). That branch cannot also track the
-    /// double cover, so `exp` of the result is `±self`. The sign is invisible
-    /// to [`Rotor::apply`], but a caller comparing rotor components, or one
-    /// carrying the spinor sheet deliberately, sees it.
-    ///
-    /// One rotation is degenerate here: see
-    /// [`Rotor4::is_isoclinic_half_turn`].
+    // Inverse of [`Bivector4::exp`]. Both maps are diagonal in the self-dual
+    // split of Λ²R⁴, which is what collapses the invariant decomposition to
+    // a single branch-free formula.
+    //
+    // Recovers the minimal-norm generator of the rotation: `|log| ≤ π√2`,
+    // the bi-invariant diameter of SO(4). That branch cannot also track the
+    // double cover, so `exp` of the result is `±self`. The sign is invisible
+    // to [`Rotor::apply`], but a caller comparing rotor components, or one
+    // carrying the spinor sheet deliberately, sees it.
+    //
+    // One rotation is degenerate here: see
+    // [`Rotor4::is_isoclinic_half_turn`].
     fn log(self) -> Bivector4 {
         // Write R₂ for the bivector part and R₂* for its Hodge dual. The
         // combination R₂ ∓ R₂* carries the half-angle h± = (θ₁ ± θ₂)/2 alone:
@@ -1078,7 +1029,6 @@ mod tests {
         let r: Rotor4 = b.exp();
         let m = r.to_mat4();
 
-        // Column 0 should be R(e1).
         let e1 = Vec4::new(1.0, 0.0, 0.0, 0.0);
         let img1 = <Rotor4 as Rotor>::apply(&r, e1);
         assert_close(m[0][0], img1.x);
@@ -1130,17 +1080,14 @@ mod tests {
 
     #[test]
     fn bivector3_xy_quarter_turn_sends_x_to_y() {
-        // Rotation in xy-plane by π/2: e1 -> e2.
         let r = Bivector3::new(FRAC_PI_2, 0.0, 0.0).exp();
         assert_vec3_close(r.apply(Vec3::X), Vec3::Y);
         assert_vec3_close(r.apply(Vec3::Y), -Vec3::X);
-        // z-axis is unaffected by xy-plane rotation.
         assert_vec3_close(r.apply(Vec3::Z), Vec3::Z);
     }
 
     #[test]
     fn bivector3_yz_rotation() {
-        // Rotation in yz-plane (e2 -> e3) by π/2.
         let r = Bivector3::new(0.0, FRAC_PI_2, 0.0).exp();
         assert_vec3_close(r.apply(Vec3::Y), Vec3::Z);
         assert_vec3_close(r.apply(Vec3::Z), -Vec3::Y);
@@ -1149,7 +1096,6 @@ mod tests {
 
     #[test]
     fn bivector3_zx_rotation() {
-        // Rotation in zx-plane (e3 -> e1) by π/2.
         let r = Bivector3::new(0.0, 0.0, FRAC_PI_2).exp();
         assert_vec3_close(r.apply(Vec3::Z), Vec3::X);
         assert_vec3_close(r.apply(Vec3::X), -Vec3::Z);
@@ -1222,17 +1168,14 @@ mod tests {
         let theta = 0.7;
         let v = Vec3::new(1.0, 2.0, 3.0).normalize();
 
-        // xy-plane rotation <-> rotation about +z axis.
         let rotor = Bivector3::new(theta, 0.0, 0.0).exp();
         let quat = Quat::from_axis_angle(Vec3::Z, theta);
         assert_vec3_close(rotor.apply(v), quat * v);
 
-        // yz-plane rotation <-> rotation about +x axis.
         let rotor = Bivector3::new(0.0, theta, 0.0).exp();
         let quat = Quat::from_axis_angle(Vec3::X, theta);
         assert_vec3_close(rotor.apply(v), quat * v);
 
-        // zx-plane rotation <-> rotation about +y axis.
         let rotor = Bivector3::new(0.0, 0.0, theta).exp();
         let quat = Quat::from_axis_angle(Vec3::Y, theta);
         assert_vec3_close(rotor.apply(v), quat * v);
@@ -1284,7 +1227,6 @@ mod tests {
         assert_eq!(xy.dot(xy), 1.0);
         assert_eq!(xy.dot(zw), 0.0);
         assert_eq!(xy.dot(xw), 0.0);
-        // Bilinearity: dot(a, b + c) = dot(a, b) + dot(a, c).
         let a = Bivector4::new(1.0, 0.5, -0.25, 0.75, -1.0, 2.0);
         let b = xy * 3.0;
         let c = xw * 4.0;
@@ -1299,36 +1241,30 @@ mod tests {
 
     #[test]
     fn bivector4_single_plane_rotations_are_planar() {
-        // xy-plane (θ = π/2): x -> y, y -> −x, z / w fixed.
         let r = Bivector4::new(FRAC_PI_2, 0.0, 0.0, 0.0, 0.0, 0.0).exp();
         assert_vec4_close(r.apply(Vec4::X), Vec4::Y);
         assert_vec4_close(r.apply(Vec4::Y), -Vec4::X);
         assert_vec4_close(r.apply(Vec4::Z), Vec4::Z);
         assert_vec4_close(r.apply(Vec4::W), Vec4::W);
 
-        // xz-plane.
         let r = Bivector4::new(0.0, FRAC_PI_2, 0.0, 0.0, 0.0, 0.0).exp();
         assert_vec4_close(r.apply(Vec4::X), Vec4::Z);
         assert_vec4_close(r.apply(Vec4::Z), -Vec4::X);
         assert_vec4_close(r.apply(Vec4::Y), Vec4::Y);
         assert_vec4_close(r.apply(Vec4::W), Vec4::W);
 
-        // xw-plane.
         let r = Bivector4::new(0.0, 0.0, FRAC_PI_2, 0.0, 0.0, 0.0).exp();
         assert_vec4_close(r.apply(Vec4::X), Vec4::W);
         assert_vec4_close(r.apply(Vec4::W), -Vec4::X);
 
-        // yz-plane.
         let r = Bivector4::new(0.0, 0.0, 0.0, FRAC_PI_2, 0.0, 0.0).exp();
         assert_vec4_close(r.apply(Vec4::Y), Vec4::Z);
         assert_vec4_close(r.apply(Vec4::Z), -Vec4::Y);
 
-        // yw-plane.
         let r = Bivector4::new(0.0, 0.0, 0.0, 0.0, FRAC_PI_2, 0.0).exp();
         assert_vec4_close(r.apply(Vec4::Y), Vec4::W);
         assert_vec4_close(r.apply(Vec4::W), -Vec4::Y);
 
-        // zw-plane.
         let r = Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, FRAC_PI_2).exp();
         assert_vec4_close(r.apply(Vec4::Z), Vec4::W);
         assert_vec4_close(r.apply(Vec4::W), -Vec4::Z);
@@ -1459,7 +1395,6 @@ mod tests {
 
     #[test]
     fn rotor4_composition_matches_sequential_apply() {
-        // Under the sandwich, `(ra·rb).apply(v) = rb.apply(ra.apply(v))`.
         let ra = Bivector4::new(0.4, 0.0, 0.0, 0.0, 0.0, 0.0).exp();
         let rb = Bivector4::new(0.0, 0.0, 0.0, 0.5, 0.0, 0.0).exp();
         let composed = ra * rb;
@@ -1499,16 +1434,16 @@ mod tests {
         }
     }
 
-    /// Two orthogonal simple planes spanning R⁴, oriented so that
-    /// `(p1·t₁ + p2·t₂).wedge_self_coeff() = 2·t₁·t₂`, which is the sign
-    /// convention the invariant decomposition assigns to `(θ₁, θ₂)`. The
-    /// tilted pair spreads each simple part over four components, so a
-    /// swapped plane cannot hide in a single coefficient.
-    ///
-    /// Spreading over components is not the same as spreading over the
-    /// self-dual split: both of those pairs still put one eigenpart on a
-    /// single coordinate of that split, which is what
-    /// [`nondegenerate_plane_pairs`] fixes.
+    // Two orthogonal simple planes spanning R⁴, oriented so that
+    // `(p1·t₁ + p2·t₂).wedge_self_coeff() = 2·t₁·t₂`, which is the sign
+    // convention the invariant decomposition assigns to `(θ₁, θ₂)`. The
+    // tilted pair spreads each simple part over four components, so a
+    // swapped plane cannot hide in a single coefficient.
+    //
+    // Spreading over components is not the same as spreading over the
+    // self-dual split: both of those pairs still put one eigenpart on a
+    // single coordinate of that split, which is what
+    // [`nondegenerate_plane_pairs`] fixes.
     fn invariant_plane_pairs() -> [(Bivector4, Bivector4); 4] {
         let root_half = 0.5_f32.sqrt();
         let u1 = Vec4::new(root_half, root_half, 0.0, 0.0);
@@ -1524,14 +1459,14 @@ mod tests {
         ]
     }
 
-    /// The complementary plane pair whose self-dual split, in the
-    /// coordinates `Rotor4::log` reads it in, is `(sum, +diff)` for the
-    /// first plane and `(sum, −diff)` for the second. Unit `sum` and `diff`
-    /// make both planes simple and unit: `|p|² = (|sum|² + |diff|²)/2 = 1`
-    /// and `wedge_self_coeff(p) = (|sum|² − |diff|²)/2 = 0`. The eigenparts
-    /// of `p1·t₁ + p2·t₂` are then `(t₁+t₂)·sum` and `(t₁−t₂)·diff`, so its
-    /// invariant angles are `t₁` and `t₂` and its `wedge_self_coeff` is
-    /// `2·t₁·t₂`, the orientation the caller's convention requires.
+    // The complementary plane pair whose self-dual split, in the
+    // coordinates `Rotor4::log` reads it in, is `(sum, +diff)` for the
+    // first plane and `(sum, −diff)` for the second. Unit `sum` and `diff`
+    // make both planes simple and unit: `|p|² = (|sum|² + |diff|²)/2 = 1`
+    // and `wedge_self_coeff(p) = (|sum|² − |diff|²)/2 = 0`. The eigenparts
+    // of `p1·t₁ + p2·t₂` are then `(t₁+t₂)·sum` and `(t₁−t₂)·diff`, so its
+    // invariant angles are `t₁` and `t₂` and its `wedge_self_coeff` is
+    // `2·t₁·t₂`, the orientation the caller's convention requires.
     fn plane_pair_from_eigenparts(sum: Vec3, diff: Vec3) -> (Bivector4, Bivector4) {
         let plane = |d: Vec3| Bivector4 {
             xy: 0.5 * (sum.x + d.x),
@@ -1544,16 +1479,16 @@ mod tests {
         (plane(diff), plane(-diff))
     }
 
-    /// Plane pairs that are non-degenerate in the self-dual 3-space: every
-    /// coordinate of both the sum part and the difference part is nonzero,
-    /// and the two directions are not parallel. `log` emits each output
-    /// coefficient as one sum-part coordinate plus or minus one
-    /// difference-part coordinate, so a fixture that zeroes either
-    /// coordinate of a pair cannot see a sign error on that term.
-    ///
-    /// Both directions are unit. The first `diff` is oblique to `sum` and
-    /// the second orthogonal to it, so the two pairs do not share one
-    /// mutual angle between the eigenparts.
+    // Plane pairs that are non-degenerate in the self-dual 3-space: every
+    // coordinate of both the sum part and the difference part is nonzero,
+    // and the two directions are not parallel. `log` emits each output
+    // coefficient as one sum-part coordinate plus or minus one
+    // difference-part coordinate, so a fixture that zeroes either
+    // coordinate of a pair cannot see a sign error on that term.
+    //
+    // Both directions are unit. The first `diff` is oblique to `sum` and
+    // the second orthogonal to it, so the two pairs do not share one
+    // mutual angle between the eigenparts.
     fn nondegenerate_plane_pairs() -> [(Bivector4, Bivector4); 2] {
         let sum = Vec3::new(2.0, 3.0, 6.0) / 7.0;
         let oblique_diff = Vec3::new(9.0, 2.0, 6.0) / 11.0;
@@ -1564,10 +1499,10 @@ mod tests {
         ]
     }
 
-    /// Angle pairs for the half-angle recovery. The small and the near-equal
-    /// pairs put `cos((θ₁ ± θ₂)/2)` within an ulp of 1, which is where
-    /// recovering that half-angle from its cosine alone loses half the
-    /// mantissa; the last two are well-separated controls.
+    // Angle pairs for the half-angle recovery. The small and the near-equal
+    // pairs put `cos((θ₁ ± θ₂)/2)` within an ulp of 1, which is where
+    // recovering that half-angle from its cosine alone loses half the
+    // mantissa; the last two are well-separated controls.
     const HALF_ANGLE_STRESS_PAIRS: [(f32, f32); 10] = [
         (1.0e-3, 1.0e-3),
         (1.0e-3, 5.0e-4),
@@ -1684,8 +1619,8 @@ mod tests {
         }
     }
 
-    /// xorshift32; the sweep below needs 10⁵ deterministic samples and a
-    /// seeded generator is the only kind allowed in this crate's tests.
+    // xorshift32; the sweep below needs 10⁵ deterministic samples and a
+    // seeded generator is the only kind allowed in this crate's tests.
     struct Xorshift(u32);
 
     impl Xorshift {
@@ -1696,7 +1631,6 @@ mod tests {
             self.0
         }
 
-        /// Uniform in `[-span, span)`.
         fn signed(&mut self, span: f32) -> f32 {
             let unit = self.next_u32() as f32 / u32::MAX as f32;
             (unit * 2.0 - 1.0) * span
@@ -1840,7 +1774,6 @@ mod tests {
         let rotor = Bivector4::new(theta, 0.0, 0.0, 0.0, 0.0, 0.0).exp();
         let mat = Mat4::from_rotation_z(theta);
 
-        // Vectors lying in the xy plane (z = w = 0).
         for v in [
             Vec4::new(1.0, 0.0, 0.0, 0.0),
             Vec4::new(0.0, 1.0, 0.0, 0.0),
@@ -1855,7 +1788,6 @@ mod tests {
     #[test]
     fn rotor4_normalize_produces_unit() {
         let r = Bivector4::new(0.3, 0.1, -0.2, 0.4, 0.1, 0.0).exp();
-        // Perturb off the unit manifold.
         let perturbed = Rotor4 {
             s: r.s * 1.01,
             xy: r.xy * 1.01,
@@ -2009,15 +1941,12 @@ mod tests {
 
     #[test]
     fn bivector4_contract_vec_is_clifford_left_contraction() {
-        // e_xy ⌋ e_x = -e_y, e_xy ⌋ e_y = +e_x.
         let b = Bivector4::new(1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert_vec4_close_tol(b.contract_vec(Vec4::X), -Vec4::Y, 1e-6);
         assert_vec4_close_tol(b.contract_vec(Vec4::Y), Vec4::X, 1e-6);
-        // e_zw ⌋ e_z = -e_w; e_zw ⌋ e_w = +e_z.
         let b = Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
         assert_vec4_close_tol(b.contract_vec(Vec4::Z), -Vec4::W, 1e-6);
         assert_vec4_close_tol(b.contract_vec(Vec4::W), Vec4::Z, 1e-6);
-        // Vanishes when v lies outside B's plane.
         let b = Bivector4::new(1.0, 0.0, 0.0, 0.0, 0.0, 0.0); // e_xy
         assert_vec4_close_tol(b.contract_vec(Vec4::Z), Vec4::ZERO, 1e-6);
         assert_vec4_close_tol(b.contract_vec(Vec4::W), Vec4::ZERO, 1e-6);

@@ -1,9 +1,3 @@
-//! [`SectionableSpace<N>`] trait + axis-aligned hyperplane types + flat-Euclidean
-//! impls.
-//!
-//! A cross-section is what an inhabitant at the slice would see: the `N`-space's
-//! intersection with a hyperplane, expressed in the `(N-1)`-space of the slice.
-
 use glam::{Vec3, Vec4};
 
 use crate::space::Space;
@@ -21,7 +15,6 @@ pub const EDGE_PARALLEL_EPSILON: f32 = 1e-6;
 /// grazes a face.
 pub const SLICE_PERTURBATION_EPSILON: f32 = 1e-5;
 
-/// Axis-aligned w-slice hyperplane for R⁴: the 3-flat where `w = w_slice`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WPlane {
     /// The w-coordinate the 3-flat sits at. Unconstrained: a slice that
@@ -30,7 +23,6 @@ pub struct WPlane {
 }
 
 impl WPlane {
-    /// Usable in `const` context; performs no validation.
     pub const fn new(w_slice: f32) -> Self {
         Self { w_slice }
     }
@@ -40,10 +32,8 @@ impl WPlane {
 /// holding the intersection of the parent with a hyperplane. `N` matches the
 /// [`crate::rasterizable::RasterizableSpace`] convention.
 pub trait SectionableSpace<const N: usize>: Space {
-    /// The `(N - 1)`-Space the section lives in.
     type SectionSpace: Space;
 
-    /// Hyperplane identifier.
     type Hyperplane;
 
     /// Intersect geodesic edge `(p0, p1)` with `slice`. Returns the lerp `t in

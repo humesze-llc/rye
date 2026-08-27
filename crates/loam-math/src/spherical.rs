@@ -1,5 +1,3 @@
-//! Spherical 3-space (S³), the third constant-curvature `Space`.
-//!
 //! Upper-hemisphere model: `Point` is a `Vec3` with `|p| < 1`, lifted to the
 //! unit 4-vector `(p, √(1−|p|²))` on S³ ⊂ R⁴; the origin is the north pole.
 //! This keeps the WGSL ABI at `vec3<f32>` (the v0 `WgslSpace` contract) at the
@@ -13,60 +11,60 @@ use serde::{Deserialize, Serialize};
 
 use crate::space::{IsometryGroup, Space, WgslSpace};
 
-/// Saturation shell for `|p|²`. Conditioning class: divisor floor. The lift's
-/// `w = √(1 − |p|²)` divides every tangent formula (`vw = −dot(v, p)/w`) and
-/// bounds the unfloored transport denominator below, so the chart gives up the
-/// last 1e-6 of the hemisphere to hold `w ≥ 1.0066e-3` and cap the `1/w`
-/// amplification near 1e3.
-///
-/// Enforced by [`to_sphere`], which takes `min(|p|², SPHERE_R2_MAX)` before the
-/// square root and therefore floors `w` for any input, in-domain or not, and
-/// for non-finite input as well (`f32::min` returns the non-NaN operand).
-/// Specifically not enforced by [`clamp_to_hemisphere`]: its scale factor is
-/// two square roots, a divide and a product, each rounding, and 25% of
-/// out-of-domain directions land back above the shell by up to 3.0e-7 in
-/// `|p|²`, which on its own would put `w` 16% under the floor and falsify the
-/// `2·(1 − SPHERE_R2_MAX)` denominator bound `parallel_transport` relies on in
-/// place of a floor. A `to_sphere` that trusted the clamp's postcondition
-/// instead of re-taking the `min` would be that bug.
+// Saturation shell for `|p|²`. Conditioning class: divisor floor. The lift's
+// `w = √(1 − |p|²)` divides every tangent formula (`vw = −dot(v, p)/w`) and
+// bounds the unfloored transport denominator below, so the chart gives up the
+// last 1e-6 of the hemisphere to hold `w ≥ 1.0066e-3` and cap the `1/w`
+// amplification near 1e3.
+//
+// Enforced by [`to_sphere`], which takes `min(|p|², SPHERE_R2_MAX)` before the
+// square root and therefore floors `w` for any input, in-domain or not, and
+// for non-finite input as well (`f32::min` returns the non-NaN operand).
+// Specifically not enforced by [`clamp_to_hemisphere`]: its scale factor is
+// two square roots, a divide and a product, each rounding, and 25% of
+// out-of-domain directions land back above the shell by up to 3.0e-7 in
+// `|p|²`, which on its own would put `w` 16% under the floor and falsify the
+// `2·(1 − SPHERE_R2_MAX)` denominator bound `parallel_transport` relies on in
+// place of a floor. A `to_sphere` that trusted the clamp's postcondition
+// instead of re-taking the `min` would be that bug.
 const SPHERE_R2_MAX: f32 = 1.0 - 1e-6;
 
-/// `exp` returns its base point below this `|v|²`. Conditioning class:
-/// representability. `|v| = 1e-7` is under one f32 ulp of a chart coordinate of
-/// order 1, so the step is unrepresentable in the result rather than merely
-/// small.
-///
-/// It is also the only floor `sin(mag)/mag` needs, since `mag = |v4| ≥ |v|`
-/// past this return and `sin(x)/x` is exactly 1.0 in f32 at `x = 1e-7`. That
-/// inequality is enforced by the lift being a component append,
-/// `Vec4::new(v.x, v.y, v.z, vw)`, at `exp`'s single callsite; it does not
-/// depend on `vw`, which the `1/w` amplification can make far larger than `v`.
+// `exp` returns its base point below this `|v|²`. Conditioning class:
+// representability. `|v| = 1e-7` is under one f32 ulp of a chart coordinate of
+// order 1, so the step is unrepresentable in the result rather than merely
+// small.
+//
+// It is also the only floor `sin(mag)/mag` needs, since `mag = |v4| ≥ |v|`
+// past this return and `sin(x)/x` is exactly 1.0 in f32 at `x = 1e-7`. That
+// inequality is enforced by the lift being a component append,
+// `Vec4::new(v.x, v.y, v.z, vw)`, at `exp`'s single callsite; it does not
+// depend on `vw`, which the `1/w` amplification can make far larger than `v`.
 const EXP_TANGENT_MIN_SQ: f32 = 1e-14;
 
-/// Floor on `|perp4|` in `log`, the sine of the geodesic angle. Conditioning
-/// class: direction recovery. Below it the two lifts agree to within their own
-/// rounding, so `perp4 / n` would report the direction of that rounding rather
-/// than of the geodesic.
-///
-/// Reading `|perp4|` as a sine assumes both lifts are unit, which
-/// `to_sphere(clamp_to_hemisphere(·))` enforces at both of `log`'s callsites:
-/// the clamp keeps `|p|²` inside the unit ball even where it overshoots the
-/// shell, so `|q| − 1 ≤ 1.5e-7`. Nothing but the reading rests on it; the guard
-/// is a norm comparison and stays finite whatever the lift.
+// Floor on `|perp4|` in `log`, the sine of the geodesic angle. Conditioning
+// class: direction recovery. Below it the two lifts agree to within their own
+// rounding, so `perp4 / n` would report the direction of that rounding rather
+// than of the geodesic.
+//
+// Reading `|perp4|` as a sine assumes both lifts are unit, which
+// `to_sphere(clamp_to_hemisphere(·))` enforces at both of `log`'s callsites:
+// the clamp keeps `|p|²` inside the unit ball even where it overshoots the
+// shell, so `|q| − 1 ≤ 1.5e-7`. Nothing but the reading rests on it; the guard
+// is a norm comparison and stays finite whatever the lift.
 const LOG_PERP_MIN: f32 = 1e-7;
 
-/// Floor on the translation arc's sine in [`Iso4::from_translation`], below
-/// which the isometry is exactly the identity. Conditioning class: direction
-/// recovery, the same class and value as [`LOG_PERP_MIN`]. The Givens plane is
-/// spanned by `e_w` and `qt.xyz / s`, and that direction is rounding once `s`
-/// is under one f32 ulp of a coordinate of order 1; the discarded arc is
-/// `asin(s) < 1.1e-7`.
-///
-/// The matrix is a rotation rather than a boost only while `s < 1`, and this is
-/// a public constructor taking an unconstrained `Vec3`, so what enforces that
-/// is the `clamp_to_hemisphere` + `to_sphere` pair at the callsite: the clamp
-/// leaves `|p|²` inside the unit ball for every finite input, including the
-/// quarter of out-of-domain ones it leaves above the shell.
+// Floor on the translation arc's sine in [`Iso4::from_translation`], below
+// which the isometry is exactly the identity. Conditioning class: direction
+// recovery, the same class and value as [`LOG_PERP_MIN`]. The Givens plane is
+// spanned by `e_w` and `qt.xyz / s`, and that direction is rounding once `s`
+// is under one f32 ulp of a coordinate of order 1; the discarded arc is
+// `asin(s) < 1.1e-7`.
+//
+// The matrix is a rotation rather than a boost only while `s < 1`, and this is
+// a public constructor taking an unconstrained `Vec3`, so what enforces that
+// is the `clamp_to_hemisphere` + `to_sphere` pair at the callsite: the clamp
+// leaves `|p|²` inside the unit ball for every finite input, including the
+// quarter of out-of-domain ones it leaves above the shell.
 const ISO_TRANSLATION_MIN_ARC: f32 = 1e-7;
 
 fn clamp_to_hemisphere(p: Vec3) -> Vec3 {
@@ -108,7 +106,6 @@ pub struct Iso4 {
 }
 
 impl Iso4 {
-    /// Fixes every point of S³; the neutral element of `iso_compose`.
     pub const IDENTITY: Self = Self {
         matrix: Mat4::IDENTITY,
     };
@@ -153,7 +150,6 @@ impl Iso4 {
     }
 }
 
-/// Spherical 3-space, upper hemisphere model, curvature `K = +1`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SphericalS3;
 
@@ -509,15 +505,15 @@ mod tests {
         assert!(d2.is_finite() && d2 >= 0.0);
     }
 
-    /// Every shipped WGSL function with a CPU twin, pinned as one contiguous
-    /// statement sequence covering the whole body, signature through closing
-    /// brace. Comments are normalized out of the shipped source before the
-    /// comparison, so prose edits do not read as drift while a statement
-    /// added between two comments does.
-    ///
-    /// The pin fails when the shader form moves; the mirror parity tests below
-    /// fail when the CPU form moves. Neither half of a twin can be edited
-    /// alone.
+    // Every shipped WGSL function with a CPU twin, pinned as one contiguous
+    // statement sequence covering the whole body, signature through closing
+    // brace. Comments are normalized out of the shipped source before the
+    // comparison, so prose edits do not read as drift while a statement
+    // added between two comments does.
+    //
+    // The pin fails when the shader form moves; the mirror parity tests below
+    // fail when the CPU form moves. Neither half of a twin can be edited
+    // alone.
     const WGSL_BODY_PINS: &[(&str, &str)] = &[
         (
             "loam_s3_clamp",
@@ -595,11 +591,11 @@ mod tests {
         ),
     ];
 
-    /// `fn name` in `src`, signature through the closing brace in column 0,
-    /// with comments stripped and blank lines dropped. WGSL has no string
-    /// literals, so cutting each line at its first `//` cannot eat code.
-    /// A missing or unterminated function panics: a pin that cannot find its
-    /// target is drift, not a pass.
+    // `fn name` in `src`, signature through the closing brace in column 0,
+    // with comments stripped and blank lines dropped. WGSL has no string
+    // literals, so cutting each line at its first `//` cannot eat code.
+    // A missing or unterminated function panics: a pin that cannot find its
+    // target is drift, not a pass.
     fn wgsl_function_source(src: &str, name: &str) -> String {
         let start = src
             .find(&format!("\nfn {name}("))
@@ -687,23 +683,23 @@ mod tests {
         v4t.truncate()
     }
 
-    /// Shared direction for the point and tangent fixtures, unit length so a
-    /// scaled entry has exactly the radius it names. Sharing it makes the
-    /// band tangents radial at the shell points, which is what exercises the
-    /// `vw` amplification below.
+    // Shared direction for the point and tangent fixtures, unit length so a
+    // scaled entry has exactly the radius it names. Sharing it makes the
+    // band tangents radial at the shell points, which is what exercises the
+    // `vw` amplification below.
     const PARITY_DIR: Vec3 = Vec3::new(0.6, -0.48, 0.64);
 
-    /// Chart fixtures, each placed in the guard band it exercises, so a parity
-    /// assertion crosses every branch a mirror has and lands on both sides of
-    /// every threshold a pair of points can reach. Paired with the origin,
-    /// `|perp4|` in `log` is the chart radius itself, which is what the two
-    /// smallest radii straddle; they are scaled from the guard rather than
-    /// transcribed, so a retune cannot leave the band uncrossed.
-    ///
-    /// The shell antipodes are the closest a pair can drive the unfloored
-    /// transport denominator to zero, which is why
-    /// `transport_denominator_is_bounded_below_by_the_saturation_shell`
-    /// measures its bound over these points rather than asserting it alone.
+    // Chart fixtures, each placed in the guard band it exercises, so a parity
+    // assertion crosses every branch a mirror has and lands on both sides of
+    // every threshold a pair of points can reach. Paired with the origin,
+    // `|perp4|` in `log` is the chart radius itself, which is what the two
+    // smallest radii straddle; they are scaled from the guard rather than
+    // transcribed, so a retune cannot leave the band uncrossed.
+    //
+    // The shell antipodes are the closest a pair can drive the unfloored
+    // transport denominator to zero, which is why
+    // `transport_denominator_is_bounded_below_by_the_saturation_shell`
+    // measures its bound over these points rather than asserting it alone.
     fn parity_points() -> [Vec3; 11] {
         let shell = SPHERE_R2_MAX.sqrt();
         [
@@ -731,16 +727,16 @@ mod tests {
         ]
     }
 
-    /// Tangent fixtures bracketing the early return of `exp` and a
-    /// displacement long enough to leave the chart.
-    ///
-    /// The two `PARITY_DIR` entries bracket [`EXP_TANGENT_MIN_SQ`] from either
-    /// side and are scaled from it, so the bracket survives a retune. They
-    /// are radial because at a shell base point the lift `vw = −dot(v, p)/w`
-    /// amplifies by `1/w ≈ 1e3`, which is the only regime where `|v4|` departs
-    /// from `|v|` at all, and so the only one where
-    /// `exp_lifted_magnitude_is_never_below_the_tangent_guard` is measuring
-    /// rather than restating.
+    // Tangent fixtures bracketing the early return of `exp` and a
+    // displacement long enough to leave the chart.
+    //
+    // The two `PARITY_DIR` entries bracket [`EXP_TANGENT_MIN_SQ`] from either
+    // side and are scaled from it, so the bracket survives a retune. They
+    // are radial because at a shell base point the lift `vw = −dot(v, p)/w`
+    // amplifies by `1/w ≈ 1e3`, which is the only regime where `|v4|` departs
+    // from `|v|` at all, and so the only one where
+    // `exp_lifted_magnitude_is_never_below_the_tangent_guard` is measuring
+    // rather than restating.
     fn parity_vectors() -> [Vec3; 6] {
         let guard = EXP_TANGENT_MIN_SQ.sqrt();
         [

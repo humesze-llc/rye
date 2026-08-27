@@ -39,16 +39,10 @@ pub(crate) fn render_row_entries<'a>(
     }
 }
 
-/// Whether `Demo::update` must re-emit the body uniforms this frame.
-///
-/// `bodies_moving` must be read BEFORE the
-/// physics step: a body that comes to rest during the step still has a final
-/// pose to upload, and an at-rest world is an exact fixpoint of the integrator
-/// (see [`PlaygroundPhysics::at_rest`]), so it has none.
-///
-/// The rotor test is over the WHOLE row ([`SlotSpins::rotors_differ_from`]):
-/// each slot carries its own orientation, so one rotated body has to open the
-/// gate even while every other slot matches its uploaded copy.
+// `bodies_moving` must be read BEFORE the physics step: a body that comes to
+// rest during the step still has a final pose to upload, and an at-rest world
+// is an exact fixpoint of the integrator, so it has none. The rotor test is
+// over the WHOLE row, because each slot carries its own orientation.
 pub(crate) fn body_upload_needed(
     spins: &SlotSpins,
     uploaded_rotors: &[Rotor4],
@@ -109,12 +103,8 @@ pub(crate) enum CameraMode {
     FreeRoam,
 }
 
-/// One term in the rotor-composition sequence: `exp(phi * sum_of_unit_bivectors)`
-/// with an optional scalar `phi` in radians (`None` defaults to unit magnitude).
-///
-/// Bivector addition within a term is commutative (plane order inside a term is
-/// irrelevant); rotor multiplication between terms is not (seq term order
-/// matters).
+// Bivector addition within a term is commutative, so plane order inside a term
+// is irrelevant; rotor multiplication between terms is not.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RotorTerm {
     pub(crate) planes: Vec<Plane4>,
@@ -171,10 +161,9 @@ pub(crate) fn active_plane_angle(base: f32, active: bool, t: f32) -> f32 {
     base + if active { t * BASE_ROTATION_RATE } else { 0.0 }
 }
 
-/// Active-mode rotor at time `t`: the ORDERED PRODUCT
-/// `∏ᵢ exp(planeᵢ · active_plane_angle(base[i], active[i], t))` in `Plane4::ALL`
-/// order. A product (independent sliders), not `exp(sum)`, which would
-/// reintroduce BCH coupling (see the `active.rs` module doc).
+// The ORDERED PRODUCT `∏ᵢ exp(planeᵢ · active_plane_angle(base[i], active[i],
+// t))` in `Plane4::ALL` order. A product (independent sliders), not `exp(sum)`,
+// which would reintroduce BCH coupling.
 pub(crate) fn compose_active_rotor(base_angles: &[f32; 6], active: &[bool; 6], t: f32) -> Rotor4 {
     let mut r = Rotor4::IDENTITY;
     for i in 0..6 {
@@ -198,11 +187,8 @@ pub(crate) fn angular_velocity_from_seq(seq: &[RotorTerm], rate_scale: f32) -> B
     omega * (BASE_ROTATION_RATE * rate_scale)
 }
 
-/// State mutations queued during overlay rendering and applied once the
-/// overlay closure has returned. Anything that changes the overlay's widget
-/// set must defer: applying mid-render lays out the remainder of the frame
-/// against the new state while the rows already emitted used the old, so the
-/// overlay's auto-sized height is measured off a mixture of the two.
+// Applying mid-render lays out the rest of the frame against the new state
+// while the rows already emitted used the old.
 #[derive(Clone, Debug)]
 pub(crate) enum DeferredAction {
     DraftPush(Plane4),
@@ -234,9 +220,7 @@ pub(crate) fn sdf_body_uniform(
     // The 120-cell and 600-cell have NO authoritative SDF: their
     // `cell{120,600}_face_planes` are the known-wrong dual-vertex
     // approximation (see `loam_shape::polytope_geom`), wrong on 96 normals.
-    // Never raymarch them, on any platform or mode; the raster section +
-    // wireframe paths are their correct surfaces. (`row_blocks_sdf` also
-    // refuses to enter Sdf mode with them; this is the belt-and-suspenders.)
+    // Never raymarch them, on any platform or mode.
     if matches!(
         entry.shape.polytope4(),
         Some(Polytope4::Cell120 | Polytope4::Cell600)
@@ -256,10 +240,8 @@ pub(crate) fn sdf_body_uniform(
     )
 }
 
-/// A value cannot exist without a [`PlaygroundPhysics`], and each reader takes
-/// ALL of its per-body geometry from one, so no pass can quietly fall back to
-/// the authored spin over the static layout while the others follow the thrown
-/// bodies. [`Demo::row_frame`] is the only production constructor.
+// Each reader takes ALL of its per-body geometry from one `PlaygroundPhysics`,
+// so no pass can quietly fall back to the authored spin over the static layout.
 pub(crate) struct RowFrame<'a> {
     pub(crate) physics: &'a PlaygroundPhysics,
     pub(crate) row: &'a [ShapeEntry],
@@ -342,10 +324,9 @@ pub(crate) struct Demo {
     pub(crate) points_size_px: f32,
     pub(crate) points_mesh_scratch: loam_shape::PointMesh<3>,
     pub(crate) physics_overlay: crate::render::PhysicsOverlay,
-    /// Line rasterizer for the physics readout. Its own node rather than a
-    /// second upload of [`Self::parent_wireframe`]: a frame's queue writes all
-    /// land before its single command buffer, so two uploads of one node would
-    /// feed both passes the second mesh.
+    /// Its own node rather than a second upload of [`Self::parent_wireframe`]:
+    /// a frame's queue writes all land before its single command buffer, so two
+    /// uploads of one node would feed both passes the second mesh.
     pub(crate) physics_overlay_node: loam_render::LineRasterNode,
     pub(crate) physics_overlay_mesh_scratch: loam_shape::LineMesh<3>,
     pub(crate) section_faces_depth: Option<loam_render::DepthBuffer>,
@@ -356,14 +337,13 @@ pub(crate) struct Demo {
     pub(crate) body_uniform_scratch: Vec<BodyUniform>,
     pub(crate) slerp_scratch: Vec<glam::Vec4>,
     /// Reused across frames: worst measured case (an eight-slot row of
-    /// 600-cells, both perimeters on) is ~12k segments, about 0.7 MB
-    /// rebuilt from empty each frame.
+    /// 600-cells, both perimeters on) is ~12k segments, about 0.7 MB.
     pub(crate) wireframe_section_edges_scratch: loam_shape::LineMesh<3>,
     pub(crate) body_perimeter_scratch: loam_shape::LineMesh<3>,
-    /// The two are called from different render passes, which is
-    /// why `Demo::record_section_faces` running before
-    /// `Demo::record_wireframe_overlay` is load-bearing and not incidental:
-    /// each takes this buffer and restores it before the other runs.
+    // The two are called from different render passes, which is why
+    // `Demo::record_section_faces` running before
+    // `Demo::record_wireframe_overlay` is load-bearing: each takes this buffer
+    // and restores it before the other runs.
     pub(crate) section_cap_scratch: loam_shape::polytope::SectionScratch,
     pub(crate) wireframe_parent_lines_scratch: loam_shape::LineMesh<3>,
     pub(crate) overlay_local_vertices_scratch: Vec<glam::Vec4>,
@@ -473,9 +453,6 @@ impl Demo {
         }
     }
 
-    /// Slots a loaded timeline names are skipped in both modes. This is the
-    /// choke point every scrub reaches, so the suppression sits here rather
-    /// than at each slider.
     pub(crate) fn recompose_spins_at(&mut self, t: f32) {
         let directed = self.playback.as_ref().map_or(&[][..], Playback::directed);
         match self.rotation_mode {
@@ -493,9 +470,8 @@ impl Demo {
         BODY_SIZE * self.surface_scale
     }
 
-    /// True when entering `SurfaceMode::Sdf` would put a 120-cell or 600-cell into
-    /// the live SDF kernel (which crashes the browser tab; see [`row_blocks_sdf`]).
-    /// The `surface sdf` command and the UI radio gate on this.
+    // A 120-cell or 600-cell in the live SDF kernel crashes the browser tab;
+    // see [`row_blocks_sdf`].
     pub(crate) fn sdf_blocked_by_heavy_polychora(&self) -> bool {
         row_blocks_sdf(self.render_row())
     }
@@ -530,10 +506,8 @@ impl Demo {
             .position(|e| e.shape.polytope4().is_some())
     }
 
-    /// Resolve and cache the canonical Schlegel parameters. Call at every
-    /// cell-SELECT point (console, UI stepper, switching the radio to Schlegel, any
-    /// row edit changing the leading polychoron) so the per-frame path never reruns
-    /// the `LazyLock`-backed [`Polytope4::face_planes`] fit.
+    // Call at every cell-SELECT point so the per-frame path never reruns the
+    // `LazyLock`-backed [`Polytope4::face_planes`] fit.
     pub(crate) fn resolve_schlegel_cache(&mut self) {
         let (projection, cache) =
             synced_schlegel_projection(self.wireframe_projection, self.schlegel_subject());
@@ -583,8 +557,6 @@ impl Demo {
         self.rebuild_bodies();
     }
 
-    /// Uploads via `set_bodies` (not slot-wise) so a stale row from a previous
-    /// mode cannot keep rendering.
     pub(crate) fn rebuild_bodies(&mut self) {
         self.sdf_upload_pending = true;
         let n = self.render_row().len();
@@ -609,13 +581,11 @@ impl Demo {
         self.body_uniform_scratch = scratch;
     }
 
-    /// Called from `Demo::update` AHEAD of the physics step, so a tick
-    /// collides the shape the frame draws rather than the previous frame's
-    /// (up to 0.088 of rim lag at `rate_scale` 4).
+    // Called from `Demo::update` AHEAD of the physics step, so a tick collides
+    // the shape the frame draws (up to 0.088 of rim lag at `rate_scale` 4).
     pub(crate) fn sync_physics_row(&mut self) {
         let size = self.effective_body_size();
         let row = render_row_entries(self.view_mode, &self.row, &self.strip_subject);
-        // Ahead of the physics sync, which reads one rotor per rendered slot.
         self.spins.sync(row.len());
         self.physics.sync(row, &self.spins, size);
     }

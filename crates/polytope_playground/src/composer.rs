@@ -1,6 +1,6 @@
 //! There is one authored seq and it drives one body: the selected slot.
-//! Handing the same integrated delta to every slot would be the row-wide
-//! spin per-slot rotation exists to remove.
+//! Handing the same integrated delta to every slot would be the row-wide spin
+//! per-slot rotation exists to remove.
 
 use loam_app::egui;
 use loam_egui::{
@@ -16,10 +16,9 @@ use loam_math::{Bivector, Plane4, Rotor};
 use crate::consts::{CARD_ITEM_SPACING_X, CONTROL_H, MINI_BUTTON_W};
 use crate::state::{render_plane_sum, DeferredAction, Demo, DragPayload, RotorTerm};
 
-/// Parse one term like `90° (xy + zw)`, `90 xy`, `0.5 rad xy` into a
-/// [`RotorTerm`]. Degrees default; `rad` overrides. The `*` / `·`
-/// separator and outer parens are optional. One expression per call;
-/// rotor multiplication across terms lives in the seq.
+// Degrees default; `rad` overrides. The `*` / `·` separator and outer parens
+// are optional. One expression per call; rotor multiplication across terms
+// lives in the seq.
 pub(crate) fn parse_formula_term(input: &str) -> Result<RotorTerm, String> {
     let normalized = input.trim().replace('·', "*").replace('°', "deg ");
     let s = normalized.trim();
@@ -182,11 +181,9 @@ impl Demo {
         self.render_composer_scrub_slider(ui);
     }
 
-    /// Slide-to-rotate slider along the seq's net bivector direction.
-    /// Slider value is the projection of the selected slot's `log(R)` onto unit
-    /// `D = compose_omega()/|compose_omega()|`, in degrees; the
-    /// perpendicular component is preserved on drag so other rotations
-    /// stay put. Hidden when the seq's net bivector is zero.
+    // Slider value is the projection of the selected slot's `log(R)` onto unit
+    // `D = compose_omega()/|compose_omega()|`, in degrees; the perpendicular
+    // component is preserved on drag so other rotations stay put.
     pub(crate) fn render_composer_scrub_slider(&mut self, ui: &mut egui::Ui) {
         let omega = self.compose_omega();
         let mag_sq = omega.magnitude_squared();
@@ -208,13 +205,11 @@ impl Demo {
         let row_size = egui::vec2(avail, CONTROL_H);
         let row_layout = egui::Layout::left_to_right(egui::Align::Center);
 
-        // Bounded by SO(4)'s bi-invariant diameter, not by the double
-        // cover. `Rotor4::log` returns the minimal-norm generator, so
-        // |log| never exceeds pi*sqrt(2) and a projection onto a unit
-        // bivector cannot either. A wider range would let the drag write
-        // a rotor whose log reads back shorter, and the slider would snap
-        // on the next frame. Authoring a full turn needs a turn count
-        // carried beside the rotor, which this control does not have.
+        // Bounded by SO(4)'s bi-invariant diameter, not by the double cover.
+        // `Rotor4::log` returns the minimal-norm generator, so |log| never
+        // exceeds pi*sqrt(2) and a projection onto a unit bivector cannot
+        // either. A wider range would let the drag write a rotor whose log
+        // reads back shorter, and the slider would snap on the next frame.
         let formatted = format!("f {proj_deg:>+6.1}°");
         ui.allocate_ui_with_layout(row_size, row_layout, |ui| {
             let interaction = slider_with_edit(
@@ -236,8 +231,8 @@ impl Demo {
         });
     }
 
-    /// Mutations are gathered during rendering and applied at the end so the
-    /// loop can borrow `self.seq` immutably in flight.
+    // Mutations are gathered during rendering and applied at the end so the
+    // loop can borrow `self.seq` immutably in flight.
     pub(crate) fn render_composer_seq_cards(&mut self, ui: &mut egui::Ui) {
         let mut entry_moves: Vec<(usize, usize, usize)> = Vec::new();
         let mut remove_term: Option<usize> = None;
@@ -441,7 +436,6 @@ impl Demo {
             });
         }
 
-        // Apply deferred mutations in an order that keeps indices valid.
         if let Some(i) = add_scalar {
             if let Some(t) = self.seq.get_mut(i) {
                 t.scalar = Some(std::f32::consts::FRAC_PI_2);

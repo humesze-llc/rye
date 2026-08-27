@@ -1,14 +1,8 @@
-//! [`crate::director::Playback`] refuses a position track outright, because a
-//! row slot's place belongs to its rigid body and a track writing it would run
-//! a second clock against the solver. Neither half of that holds here. A title
-//! letter is not a solver body, and its place in R³ is the typesetting's: this
-//! module reads exactly one component of the position channel, `w`, which
-//! decides whether the letter meets the slice at all rather than where it sits.
-//! [`Transit::new`] enforces that by refusing any key with a nonzero `x`, `y`
-//! or `z`, so a file cannot quietly claim a place the layout owns.
-//!
-//! At [`GLYPH_RESOLUTION`] the whole title is ~89k vertices, 2.8 MB of
-//! vertex upload per frame, pinned by
+//! This module reads exactly one component of the position channel, `w`, and
+//! [`Transit::new`] refuses any key with a nonzero `x`, `y` or `z`: a letter's
+//! place in R³ is the typesetting's, so a file cannot claim it. At
+//! [`GLYPH_RESOLUTION`] the whole title is ~89k vertices, 2.8 MB of vertex
+//! upload per frame, pinned by
 //! `the_title_stays_inside_its_per_frame_upload_budget`.
 
 use std::borrow::Cow;
@@ -26,13 +20,12 @@ use loam_shape::{TriangleMesh, Visualizable};
 use loam_text::glyph::{layout_word, GlyphParams};
 use loam_time::{Director, Drive};
 
-/// The title, one line per entry. Letters are indexed across the whole title,
-/// so the timeline addresses `PLAYGROUND`'s `P` as `letter8`.
+// Letters are indexed across the whole title, so the timeline addresses
+// `PLAYGROUND`'s `P` as `letter8`.
 const TITLE_LINES: [&str; 2] = ["POLYTOPE", "PLAYGROUND"];
 
-/// The authored transit, compiled in rather than read from a path: the browser
-/// build has no filesystem, and a title screen that only animates natively is
-/// not a title screen.
+// Compiled in rather than read from a path: the browser build has no
+// filesystem.
 const TIMELINE_RON: &str = include_str!("../timelines/title.ron");
 
 const BODY_PREFIX: &str = "letter";
@@ -43,12 +36,11 @@ const LETTER_DEPTH: f32 = 0.25;
 
 const GLYPH_RESOLUTION: u32 = 48;
 
-/// Local `w` from the apex of a letter's solid to its full-size section.
 const APEX_DEPTH: f32 = 1.2;
 
-/// Local `w` the solid continues past full size as a prism. The transit parks
-/// the slice inside this, so the landed title holds still instead of shrinking
-/// back out the far side.
+// Local `w` the solid continues past full size as a prism. The transit parks
+// the slice inside this, so the landed title holds still instead of shrinking
+// back out the far side.
 const HOLD_DEPTH: f32 = 0.6;
 
 const SLICE_W: f32 = 0.0;
@@ -73,12 +65,9 @@ struct Letter {
     apex: Vec3,
 }
 
-/// Scale of a letter's section when the slice cuts its solid at `local_w`, or
-/// `None` when the slice misses the solid and there is nothing to draw.
-///
-/// `local_w` is measured in the letter's frame: `SLICE_W - position.w`. The
-/// apex is at `-APEX_DEPTH`, the full-size section at `0`, the end of the prism
-/// at `+HOLD_DEPTH`.
+// `local_w` is measured in the letter's frame: `SLICE_W - position.w`. The apex
+// is at `-APEX_DEPTH`, the full-size section at `0`, the end of the prism at
+// `+HOLD_DEPTH`. `None` where the slice misses the solid.
 fn section_scale(local_w: f32) -> Option<f32> {
     if !(-APEX_DEPTH..=HOLD_DEPTH).contains(&local_w) {
         return None;
@@ -178,8 +167,6 @@ struct Transit {
 }
 
 impl Transit {
-    /// Bind `director` to a title of `letters`, refusing everything that would
-    /// leave a letter undriven or claim a channel this scene does not own.
     fn new(director: Director, letters: usize) -> Result<Self> {
         let mut bound = Vec::with_capacity(director.timeline().bodies.len());
         let mut driven = vec![false; letters];
@@ -256,8 +243,8 @@ impl Transit {
         }
     }
 
-    /// One frame of playback. The playhead is an integer frame index and reads
-    /// no wall-clock delta, so the title is the same motion on any machine.
+    // The playhead is an integer frame index and reads no wall-clock delta, so
+    // the title is the same motion on any machine.
     fn advance(&mut self) {
         self.director.advance();
         self.sample();
@@ -276,8 +263,6 @@ impl Transit {
 pub(crate) struct TitleScene {
     camera: Camera<EuclideanR3>,
     orbit: OrbitController<EuclideanR3>,
-    /// Only the shell's `scene` command, as in [`crate::s3`]: without it,
-    /// booting `?scene=title&embed=1` would be a one-way trip.
     console: Console<()>,
     triangles: TriangleRasterNode,
     depth: Option<DepthBuffer>,
@@ -462,11 +447,10 @@ mod tests {
         (letters, transit)
     }
 
-    /// Surface area rather than enclosed volume because the glyph pipeline's
-    /// mesh is not closed for every letter (`P` at this em and pitch has a
-    /// missing side wall of net oriented area 0.052), and the divergence
-    /// theorem needs closure. Area needs none, and scales exactly as the square
-    /// of the section scale.
+    // Surface area rather than enclosed volume because the glyph pipeline's
+    // mesh is not closed for every letter (`P` at this em and pitch has a
+    // missing side wall of net oriented area 0.052) and the divergence theorem
+    // needs closure. Area scales exactly as the square of the section scale.
     fn area(mesh: &TriangleMesh<3>) -> f32 {
         mesh.indices
             .iter()
@@ -560,10 +544,10 @@ mod tests {
         assert_eq!(transit.letter_w(), [0.5, 0.5]);
     }
 
-    /// Frame index a key is authored at. `key.t * fps` is not the way round to
-    /// ask: `2.1 * 60` is 125.99999 in f32 while the sampler's `126 / 60` is
-    /// exactly the `2.1` the file holds, so the frame is recovered by rounding
-    /// and checked by mapping it back through the sampler's own division.
+    // `key.t * fps` is not the way round to ask: `2.1 * 60` is 125.99999 in f32
+    // while the sampler's `126 / 60` is exactly the `2.1` the file holds, so
+    // frame is recovered by rounding and checked by mapping it back through the
+    // sampler's own division.
     fn key_frame(t: f32, fps: f32) -> u32 {
         let frame = (t * fps).round();
         assert_eq!(frame / fps, t, "key at t = {t} does not land on a frame");

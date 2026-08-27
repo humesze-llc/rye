@@ -23,11 +23,9 @@ fn main() {
     let dirty_marker = if dirty { "+dirty" } else { "" };
     println!("cargo:rustc-env=BUILD_DIRTY={dirty_marker}");
 
-    // Re-run this build script when HEAD changes or files get staged/unstaged.
     // `.git/HEAD` covers branch + commit moves; `.git/index` covers staging.
-    // Note: editing a tracked file without staging it won't re-trigger this
-    // script via cargo's usual src-watch (cargo only watches .rs / Cargo.toml
-    // by default), so a dirty-but-not-committed change may show stale.
+    // Cargo watches only .rs / Cargo.toml by default, so a tracked file edited
+    // without being staged does not re-trigger this and may show stale.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
 }

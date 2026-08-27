@@ -1,12 +1,8 @@
-//! [`loam_time::Director`] arbitrates per channel and this module resolves its
-//! channels onto the row. A timeline addresses a body by slot index because
-//! the row is positional and can hold the same polytope twice, so a shape name
-//! would not be a name at all.
-//!
-//! The arbitration is the point. The director's playhead is an integer frame
-//! index and the UI spin's `rot_time` is a wall-clock accumulator; a slot
-//! written by both is the defect the timeline exists to prevent, so
-//! [`step_row_rotation`] is the single place either one writes a rotor.
+//! The director's playhead is an integer frame index and the UI spin's
+//! `rot_time` is a wall-clock accumulator; a slot written by both is the defect
+//! the timeline exists to prevent, so [`step_row_rotation`] is the single place
+//! either one writes a rotor. A timeline addresses a body by slot index because
+//! the row is positional and can hold the same polytope twice.
 
 use anyhow::{anyhow, Result};
 use loam_math::{Bivector, Bivector4};
@@ -21,17 +17,16 @@ const SLOT_PREFIX: &str = "slot";
 pub(crate) struct Playback {
     director: Director,
     slots: Vec<usize>,
-    /// `directed[slot]`: the timeline gives this slot an orientation track, so
-    /// the director writes its rotor for the whole run and the UI spin never
-    /// does. Ownership does not lapse when the playhead runs out or pauses;
-    /// holding a pose is what makes a scrub readable.
+    /// `directed[slot]`: the director writes this slot's rotor for the whole
+    /// run and the UI spin never does. Ownership does not lapse when the
+    /// playhead runs out or pauses; holding a pose is what makes a scrub
+    /// readable.
     directed: Vec<bool>,
 }
 
 impl Playback {
-    /// Bind `director` to a row of `slots` bodies, refusing anything the row
-    /// cannot host. Every rejection is an authoring fault the caller fixes by
-    /// editing the file, which is why they land here and not mid-playback.
+    // Every rejection is an authoring fault the caller fixes by editing the
+    // file, which is why they land here and not mid-playback.
     pub(crate) fn new(director: Director, slots: usize) -> Result<Self> {
         let mut bound = Vec::with_capacity(director.timeline().bodies.len());
         let mut directed = vec![false; slots];
@@ -91,17 +86,12 @@ fn slot_index(name: &str) -> Option<usize> {
     name.strip_prefix(SLOT_PREFIX)?.parse().ok()
 }
 
-/// One frame of the row's rotation channels, with exactly one writer per slot.
-///
-/// The director advances a single frame per call and reads no wall-clock
-/// delta, so a directed slot's pose is a function of the frame index alone and
-/// a capture of it is re-shootable. Slots the timeline does not name stay on
-/// `rot_time`, and `rot_time` stops advancing once no slot reads it: a clock
-/// still running behind a timeline that owns the whole row is the second
-/// writer this arbitration exists to remove.
-///
-/// `dt_animation` is already `dt * rate_scale`, and zero while the spin is
-/// paused, so the pause and a zero angular velocity take the same path.
+// Exactly one writer per slot. The director advances a single frame per call
+// and reads no wall-clock delta, so a directed slot's pose is a function of the
+// frame index alone. `rot_time` stops advancing once no slot reads it: a clock
+// still running behind a timeline that owns the whole row is the second writer
+// this arbitration exists to remove. `dt_animation` is already
+// `dt * rate_scale`, and zero while the spin is paused.
 pub(crate) fn step_row_rotation(
     playback: Option<&mut Playback>,
     spins: &mut SlotSpins,
@@ -129,8 +119,8 @@ pub(crate) fn step_row_rotation(
         RotationMode::Active => spins.recompose_active(*rot_time, directed),
         RotationMode::Composer => {
             let step = omega * dt_animation;
-            // Composer integrates the selected slot and no other, so an
-            // unowned selection is the whole gate.
+            // Composer integrates the selected slot and no other, so an unowned
+            // selection is the whole gate.
             if step.magnitude_squared() > 0.0 && !is_directed(directed, spins.selected()) {
                 let spin = spins.selected_spin_mut();
                 spin.rotor = (step.exp() * spin.rotor).normalize();

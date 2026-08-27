@@ -1,6 +1,3 @@
-//! 4D shape catalog: the single source of truth for shape names,
-//! colors, and tooltips.
-
 use anyhow::{anyhow, Result};
 use loam_app::args::Args;
 use loam_app::egui;
@@ -8,10 +5,9 @@ use loam_physics::euclidean_r4::MAX_POLYTOPE4_VERTICES;
 use loam_render::raymarch::RaymarchShape;
 use loam_shape::polytope::Polytope4;
 
-/// One polytope's metadata. `body_color` drives `BodyUniform.color`
-/// on the GPU, not the (uniformly grey) card color. `long_name` uses
-/// the `pentachoron`/`tesseract`/`hexadecachoron` family, not the
-/// dimension-generalized `*-plex` aliases.
+// `body_color` drives `BodyUniform.color` on the GPU, not the uniformly grey
+// card color. `long_name` uses the `pentachoron`/`tesseract`/`hexadecachoron`
+// family, not the dimension-generalized `*-plex` aliases.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub(crate) struct ShapeEntry {
     pub(crate) shape: RaymarchShape,
@@ -21,14 +17,11 @@ pub(crate) struct ShapeEntry {
 }
 
 impl ShapeEntry {
-    /// The polychoron this entry collides as its own hull, or `None` to keep
-    /// the bounding ball.
-    ///
-    /// Two independent reasons for `None`, and the budget is the interesting
-    /// one: a vertex list longer than [`MAX_POLYTOPE4_VERTICES`] is truncated
-    /// by the narrowphase in release, which is a corrupt hull rather than a
-    /// coarse one, so the 120-cell (600 vertices) and 600-cell (120) have to
-    /// stay spheres. The four smooth solids simply have no vertex list.
+    // Two independent reasons for `None`. A vertex list longer than
+    // [`MAX_POLYTOPE4_VERTICES`] is truncated by the narrowphase in release,
+    // which is a corrupt hull rather than a coarse one, so the 120-cell (600
+    // vertices) and 600-cell (120) stay spheres. The four smooth solids simply
+    // have no vertex list.
     pub(crate) fn collider_polytope(&self) -> Option<Polytope4> {
         self.shape
             .polytope4()
@@ -63,7 +56,7 @@ pub(crate) const DEFAULT_ROW: &[ShapeEntry] = &[
     },
 ];
 
-/// `body_color` channels pass straight to the WGSL kernel.
+// `body_color` channels pass straight to the WGSL kernel.
 pub(crate) const SHAPE_CATALOG: &[ShapeEntry] = &[
     ShapeEntry {
         shape: RaymarchShape::Polytope(Polytope4::Pentatope),
@@ -144,9 +137,7 @@ pub(crate) fn render_shape_catalog_menu(ui: &mut egui::Ui, mut on_select: impl F
     }
 }
 
-/// Half-open index ranges into [`SHAPE_CATALOG`] that group menu
-/// entries under a header. Ranges (not nested slices) keep flat
-/// `SHAPE_CATALOG[i]` lookups working.
+// Ranges, not nested slices, keep flat `SHAPE_CATALOG[i]` lookups working.
 struct ShapeCategory {
     name: &'static str,
     start: usize,
@@ -197,10 +188,8 @@ pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
     })
 }
 
-/// Parse the comma-separated `shapes` key (`--shapes=a,b` natively,
-/// `?shapes=a,b` in the browser). Returns [`DEFAULT_ROW`] when the key
-/// is absent, and an error for the space-separated `--shapes a,b` form,
-/// whose value never reaches `args`.
+// Parses `--shapes=a,b` natively and `?shapes=a,b` in the browser. The
+// space-separated `--shapes a,b` form errors: its value never reaches `args`.
 pub(crate) fn parse_row(args: &Args) -> Result<Vec<ShapeEntry>> {
     if args.has_bare_flag("shapes") {
         return Err(anyhow!(

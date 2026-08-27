@@ -1,26 +1,15 @@
-//! The scene owns a live [`loam_scene::Scene`] and re-emits, recompiles and
-//! rebuilds its render node on the frames where an edit landed. Every constant
-//! in the tree is a baked WGSL literal ([`loam_scene::Primitive::to_wgsl`]), so
-//! an edit is a shader compile, and `examples/sdf_edit_latency.rs` is what that
-//! costs. Measured on an idle RTX 4090 Laptop over 120 single-parameter edits:
-//! emit p50 0.009ms, shader module 0.352ms, pipeline 0.319ms, total per edit
-//! p50 0.685ms and p95 0.850ms, which is 5% of a 16.7ms frame.
-//! `ShaderDb` is not in the path because it reads
-//! source from disk, which is nothing in a browser.
-//! Nothing in the panel writes the tree. A widget's only output is a
-//! [`SceneEdit`], and the only way an edit reaches the tree is
-//! [`loam_app::command::submit`], the runner-owned queue that drains once per
-//! frame ahead of the ticks. The panel, a console line and a `--script` line
-//! are therefore the same caller, and `sdf set root.0 radius 0.2` typed into
-//! the console is exactly what dragging that slider produces. A typed
-//! [`SceneEdit`] and a command line are not two surfaces here:
-//! [`SceneEdit::to_args`] and [`SceneEdit::from_args`] round trip bit-exactly,
-//! so the value is the transport and the text is its spelling.
-//! Selection and the slider draft are the deliberate exceptions, and they are
-//! not mutations of the document: they are written inline because a click that
-//! took a frame to open a parameter panel would read as lag, and because a
-//! slider whose value is re-read from the tree mid-drag snaps back on the frame
-//! between the drag and the drain.
+//! Every constant in the tree is a baked WGSL literal
+//! ([`loam_scene::Primitive::to_wgsl`]), so an edit is a shader compile.
+//! Measured on an idle RTX 4090 Laptop over 120 single-parameter edits: emit
+//! p50 0.009ms, shader module 0.352ms, pipeline 0.319ms, total per edit p50
+//! 0.685ms and p95 0.850ms, 5% of a 16.7ms frame. `ShaderDb` is not in the
+//! path because it reads source from disk, which is nothing in a browser.
+//!
+//! Nothing in the panel writes the tree: a widget's only output is a
+//! [`SceneEdit`] submitted through [`loam_app::command::submit`], so a panel
+//! drag and a console line are the same caller. Selection and the slider draft
+//! are the exceptions, written inline because a slider re-read from the tree
+//! mid-drag snaps back on the frame between the drag and the drain.
 
 use std::borrow::Cow;
 
@@ -98,8 +87,8 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// Four leaves and every combinator, so the panel has one of each to edit on
-/// the first frame: `((sphere ~ box) | plane) - sphere`.
+// Four leaves and every combinator, so the panel has one of each to edit on
+// the first frame.
 fn boot_scene() -> Scene {
     Scene::new(
         SceneNode::sphere(Vec3::new(-0.35, 0.0, 0.0), 0.45)
@@ -119,14 +108,12 @@ fn assemble(scene: &Scene) -> String {
     )
 }
 
-/// This is the console's `Ctx`, so a console line and a panel widget reach the
-/// same state through the same registry entry. Everything that mutates it goes
-/// through [`edit::apply`].
+// This is the console's `Ctx`, so a console line and a panel widget reach the
+// same state through the same registry entry.
 pub(crate) struct Editor {
     scene: Scene,
     /// Bumped once per landed edit. The render node is rebuilt when it falls
-    /// behind, which is what makes a recompile a consequence of a change
-    /// rather than of a frame.
+    /// behind, so a recompile is a consequence of a change, not of a frame.
     generation: u64,
 }
 
@@ -145,8 +132,6 @@ impl Editor {
     }
 }
 
-/// `sdf`: the whole mutation and serialisation surface, as one console verb.
-/// The panel submits the same `set` / `add` / `remove` lines.
 fn register_commands(console: &mut Console<Editor>) {
     console.register(
         cmd::<Editor, _>(
@@ -209,9 +194,8 @@ fn register_commands(console: &mut Console<Editor>) {
     );
 }
 
-/// Slider bounds per parameter. A range is a UI decision, not a property of
-/// the tree, so it lives here rather than in `loam-scene`; the precise-edit
-/// popup on each value cell reaches past it.
+// A range is a UI decision, not a property of the tree, so it lives here and
+// not in `loam-scene`; the precise-edit popup on each value cell reaches past.
 fn slider_range(param: Param) -> std::ops::RangeInclusive<f32> {
     match param {
         Param::Center | Param::Offset => -2.0..=2.0,
@@ -384,8 +368,8 @@ pub(crate) struct SdfScene {
     editor: Editor,
     node: GeodesicRayMarchNode,
     compiled: u64,
-    /// View state, one frame ahead of the tree after a structural edit: the
-    /// address the edit will have created by the time the queue drains.
+    /// One frame ahead of the tree after a structural edit: the address the
+    /// edit will have created by the time the queue drains.
     selected: NodePath,
     draft: Draft,
     add: AddChoice,
@@ -431,10 +415,9 @@ impl SdfScene {
     }
 }
 
-/// egui's rect is a frame behind the swapchain across a resize and is empty
-/// before the first UI pass; a viewport reaching outside the attachment is a
-/// wgpu validation failure rather than a clipped draw, so neither case is
-/// allowed to reach `set_viewport`.
+// egui's rect is a frame behind the swapchain across a resize and is empty
+// before the first UI pass; a viewport reaching outside the attachment is a
+// wgpu validation failure rather than a clipped draw.
 fn march_viewport(region: [u32; 4], framebuffer: [u32; 2]) -> Viewport {
     let [width, height] = framebuffer.map(|d| d.max(1));
     let full = Viewport {
@@ -457,8 +440,6 @@ fn march_viewport(region: [u32; 4], framebuffer: [u32; 2]) -> Viewport {
     }
 }
 
-/// Emit, compile, and build the node. Separate from the scene so the rebuild
-/// path and the boot path cannot drift.
 fn compile(rd: &loam_render::device::RenderDevice, scene: &Scene) -> GeodesicRayMarchNode {
     let module = rd
         .device

@@ -15,9 +15,8 @@ use crate::state::{
 
 const OVERLAY_PAD: f32 = 16.0;
 
-/// Scene roster for the About panel, read off the registry the `scene` command
-/// and `--scene=` / `?scene=` resolve against, so a scene added to the table
-/// cannot ship without an in-app mention.
+// Read off the registry the `scene` command and `--scene=` / `?scene=` resolve
+// against, so a scene added to the table cannot ship without an in-app mention.
 fn scene_roster() -> String {
     crate::shell::Playground::SCENES
         .iter()
@@ -26,16 +25,15 @@ fn scene_roster() -> String {
         .join(", ")
 }
 
-/// Boot seat for the controls overlay. The window's pivot is `CENTER_BOTTOM`,
-/// so this is the bottom edge of its frame, not the top: everything the overlay
-/// occupies lies above it.
+// The window's pivot is `CENTER_BOTTOM`, so this is the bottom edge of its
+// frame, not the top.
 pub(crate) fn overlay_seat(ctx: &egui::Context) -> egui::Pos2 {
     let screen = ctx.content_rect();
     egui::pos2(screen.center().x, screen.bottom() - OVERLAY_PAD)
 }
 
-/// Free function so it can take a `&mut SectionLayer` destructured out of `Demo`
-/// without re-borrowing the whole `Demo`.
+// Free function so it can take a `&mut SectionLayer` destructured out of
+// `Demo` without re-borrowing the whole `Demo`.
 fn section_layer_controls(
     ui: &mut egui::Ui,
     title: &str,
@@ -104,8 +102,7 @@ impl Demo {
         }
     }
 
-    /// Staged into `self.pending_mode` so the switch lands between frames, not
-    /// partway through one; see [`DeferredAction`].
+    // Staged into `self.pending_mode` so the switch lands between frames.
     pub(crate) fn render_rotation_tab_row(&mut self, ui: &mut egui::Ui) {
         let mut staged = self.rotation_mode;
         ui.horizontal(|ui| {
@@ -162,14 +159,14 @@ impl Demo {
     pub(crate) fn render_render_panel(&mut self, ctx: &egui::Context) {
         // Snapshot fields the panel mutates so the surface-mode rebuild and
         // Schlegel re-resolve can run AFTER the destructure-borrow's lifetime
-        // ends (they need `&mut self`, unavailable inside the closure).
+        // ends; they need `&mut self`, unavailable inside the closure.
         let prev_surface = self.surface_mode;
         let prev_projection = self.wireframe_projection;
         // Before the destructure (which exclusively borrows `self.row`).
         let sdf_disabled = self.sdf_blocked_by_heavy_polychora();
         let schlegel_cell_count = self.schlegel_subject().map(|p| p.cell_count() as u32);
-        // Destructure-borrow the panel's fields so the closure stays a plain
-        // `FnOnce(&mut Ui)` and does not conflict with `show_render_panel`.
+        // Destructure-borrow so the closure stays a plain `FnOnce(&mut Ui)` and
+        // does not conflict with `show_render_panel`.
         let Self {
             show_render_panel,
             surface_mode,
@@ -196,8 +193,7 @@ impl Demo {
                 ui.label(egui::RichText::new("Surface").strong());
                 ui.radio_value(surface_mode, SurfaceMode::Raster, "Raster (default)");
                 // 120-cell / 600-cell SDF kernels overrun the browser's WebGPU
-                // shader budget and crash the tab, so SDF is disabled (with a
-                // reason tooltip) until the heavy polychora are removed.
+                // shader budget and crash the tab.
                 ui.add_enabled_ui(!sdf_disabled, |ui| {
                     let resp = ui.radio_value(surface_mode, SurfaceMode::Sdf, "SDF raymarch");
                     if sdf_disabled {
@@ -317,8 +313,7 @@ impl Demo {
         if self.surface_mode != prev_surface {
             self.rebuild_bodies();
         }
-        // Re-resolve the cached Schlegel face-plane params on a projection or
-        // cell-index change (deferred here because the resolve needs `&mut self`).
+        // Deferred here because the Schlegel re-resolve needs `&mut self`.
         if self.wireframe_projection != prev_projection {
             self.resolve_schlegel_cache();
         }
@@ -477,9 +472,7 @@ impl Demo {
         });
     }
 
-    /// The only reading a user gets of the drag-to-impulse mapping before
-    /// committing to it, so the number is the mapping's own `charge`, not a
-    /// second estimate of it.
+    // The number is the mapping's own `charge`, not a second estimate of it.
     pub(crate) fn render_throw_aim(&self, ctx: &egui::Context, frame: &FrameCtx<'_>) {
         let Some(drag) = self.throw_drag else {
             return;
@@ -542,9 +535,8 @@ impl Demo {
 
         let default_bottom_centre = overlay_seat(ctx);
 
-        // Snapshot the Single-view subject: it IS the rendered row in Single mode,
-        // so a picker change needs the same rebuild + Schlegel re-resolve a row
-        // edit does. Compared after the deferred-apply block.
+        // Single-view subject IS the rendered row, so a picker change needs the
+        // same rebuild and Schlegel re-resolve a row edit does.
         let prev_strip_subject = self.strip_subject;
 
         egui::Window::new("polytope-playground-overlay")
@@ -569,8 +561,7 @@ impl Demo {
             });
 
         // Drain only once the overlay closure has returned: applying mid-render
-        // would lay out the rest of the frame against the new state while the
-        // rows already emitted used the old.
+        // would lay out the rest of the frame against the new state.
         if let Some(new_mode) = self.pending_mode.take() {
             self.rotation_mode = new_mode;
         }

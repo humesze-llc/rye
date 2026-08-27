@@ -1,7 +1,5 @@
-//! What one edit costs the SDF editor, measured rather than assumed.
 //! Run: `cargo run -p polytope_playground --release --example sdf_edit_latency`
-//! Headless: an adapter and a device, no surface and no window. Reports the
-//! per-stage distribution over a scripted drag against a 60Hz frame.
+//! Headless: an adapter and a device, no surface and no window.
 
 use std::time::Instant;
 
@@ -12,15 +10,14 @@ use loam_scene::{Scene, SceneNode};
 use loam_shader::GEODESIC_MARCH_KERNEL;
 use wgpu::*;
 
-/// Frames of a slider drag. Enough that a pipeline cache warming up shows as a
-/// gap between the median and the maximum rather than hiding in the mean.
+// Enough that a pipeline cache warming up shows as a gap between the median
+// and the maximum rather than hiding in the mean.
 const FRAMES: usize = 120;
 
 const FRAME_BUDGET_MS: f64 = 1000.0 / 60.0;
 
-/// The scene the editor boots with, kept in step with `sdf::boot_scene` by
-/// shape rather than by import: an example must not force a demo's internals
-/// public.
+// Kept in step with `sdf::boot_scene` by shape rather than by import: an
+// example must not force a demo's internals public.
 fn boot_scene() -> Scene {
     Scene::new(
         SceneNode::sphere(Vec3::new(-0.35, 0.0, 0.0), 0.45)
@@ -30,9 +27,8 @@ fn boot_scene() -> Scene {
     )
 }
 
-/// Shading stub with the two entry points the pipeline needs. Its own text,
-/// not the editor's: what is being timed is the size and shape of the
-/// assembled module, and the fragment body is a constant in both.
+// Its own text, not the editor's: what is being timed is the size and shape of
+// the assembled module, and the fragment body is a constant in both.
 const SHADING: &str = r#"
 struct RayMarchUniforms {
     camera_pos: vec3<f32>,

@@ -1,5 +1,3 @@
-//! Frame-indexed playback of an authored timeline.
-//!
 //! This is presentation timing, not the crate's Tier-0 same-bits contract, and
 //! it must never feed simulation state. The property it does carry is the
 //! weaker same-binary-same-frames one.
@@ -53,37 +51,34 @@ impl Interpolate for f32 {
 }
 
 impl Interpolate for Vec4 {
-    /// Componentwise. `EuclideanR4` is flat, so its `exp` and `log` are
-    /// `at + v` and `to - from` and the Space geodesic between two positions
-    /// is already this lerp; routing through `Space` would be ceremony.
     fn mix(from: Self, to: Self, u: f32) -> Self {
         from + (to - from) * u
     }
 }
 
 impl Interpolate for Rotor4 {
-    /// Geodesic of the bi-invariant metric on Spin(4), given by
-    /// `R(u) = R₀·exp(u·log(R₀⁻¹·R₁))`: the SO(4) reading of the quaternion
-    /// slerp (Shoemake 1985, "Animating Rotation with Quaternion Curves",
-    /// SIGGRAPH '85, §3). [`Rotor4::log`] returns the minimal-norm generator,
-    /// so this takes the short way round with no double-cover fixup at the
-    /// callsite.
-    ///
-    /// Not renormalized. Every factor is unit by construction and the product
-    /// of units is unit to a few ulps, so a `normalize` here would hide drift
-    /// rather than bound it; the bound is pinned by test instead.
-    ///
-    /// `log` is undefined in direction for one relative rotor, the isoclinic
-    /// half-turn, which [`Timeline::validate`] refuses rather than reaching
-    /// here.
+    // Geodesic of the bi-invariant metric on Spin(4), given by
+    // `R(u) = R₀·exp(u·log(R₀⁻¹·R₁))`: the SO(4) reading of the quaternion
+    // slerp (Shoemake 1985, "Animating Rotation with Quaternion Curves",
+    // SIGGRAPH '85, §3). `Rotor4::log` returns the minimal-norm generator,
+    // so this takes the short way round with no double-cover fixup at the
+    // callsite.
+    //
+    // Not renormalized. Every factor is unit by construction and the product
+    // of units is unit to a few ulps, so a `normalize` here would hide drift
+    // rather than bound it; the bound is pinned by test instead.
+    //
+    // `log` is undefined in direction for one relative rotor, the isoclinic
+    // half-turn, which `Timeline::validate` refuses rather than reaching
+    // here.
     fn mix(from: Self, to: Self, u: f32) -> Self {
         let relative = from.inverse() * to;
         from * (relative.log() * u).exp()
     }
 }
 
-/// One keyframe: `value` at timeline second `t`, eased into from the previous
-/// key by `ease`.
+/// `t` is a timeline second; `ease` is applied to the span reaching this key
+/// from the previous one.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Key<T> {
     pub t: f32,
@@ -92,10 +87,8 @@ pub struct Key<T> {
     pub ease: Ease,
 }
 
-/// A channel as a pure function of a frame index, defined by keys in strictly
-/// ascending `t`.
-///
-/// The value is held constant before the first key and after the last;
+/// A pure function of a frame index, defined by keys in strictly ascending
+/// `t`. The value is held constant before the first key and after the last;
 /// between two keys it blends with the *later* key's easing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -114,7 +107,6 @@ impl<T> Track<T> {
         Self::default()
     }
 
-    /// Append a key.
     pub fn key(mut self, t: f32, value: T, ease: Ease) -> Self {
         self.keys.push(Key { t, value, ease });
         self
@@ -126,8 +118,6 @@ impl<T> Track<T> {
 }
 
 impl<T: Interpolate> Track<T> {
-    /// Value at `frame`.
-    ///
     /// `None` only for an empty track, which [`Timeline::validate`] refuses.
     pub fn sample(&self, frame: u32, fps: NonZeroU32) -> Option<T> {
         let first = self.keys.first()?;
@@ -147,8 +137,6 @@ impl<T: Interpolate> Track<T> {
     }
 }
 
-/// Tracks for one named body.
-///
 /// `position.w` is a rigid translation along the fourth axis, which decides
 /// whether the body meets the slice at all; it is an existence channel, not a
 /// place, and has no 3D counterpart.
@@ -161,32 +149,29 @@ pub struct BodyTrack {
     pub orientation: Option<Track<Rotor4>>,
 }
 
-/// An authored timeline: the channels a [`Director`] owns and the rate its
-/// frame indices are read at.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Timeline {
     /// Frames per second the keys' seconds are read at.
     pub fps: u32,
     /// Frame count; valid indices are `0..frames`.
     pub frames: u32,
-    /// The viewer's slicing hyperplane offset.
     #[serde(default)]
     pub w_slice: Option<Track<f32>>,
     #[serde(default)]
     pub bodies: Vec<BodyTrack>,
 }
 
-/// A key's rotor must be unit: the geodesic assumes it, and `Rotor4::log` of
-/// a non-unit relative rotor is not the rotation's generator. The bound
-/// admits a component hand-rounded to four decimals, whose worst-case norm²
-/// error is `2·√8·5e-5 ≈ 2.8e-4`, and refuses anything that is a different
-/// rotor rather than a rounded one.
+// A key's rotor must be unit: the geodesic assumes it, and `Rotor4::log` of
+// a non-unit relative rotor is not the rotation's generator. The bound
+// admits a component hand-rounded to four decimals, whose worst-case norm²
+// error is `2·√8·5e-5 ≈ 2.8e-4`, and refuses anything that is a different
+// rotor rather than a rounded one.
 const UNIT_ROTOR_TOLERANCE: f32 = 1e-3;
 
 impl Timeline {
-    /// Reject at authoring time everything the sampler would otherwise have
-    /// to cope with mid-playback. Yields the rate frame indices are read at,
-    /// so the sampler's divisor cannot be zero by construction.
+    /// Rejects at authoring time everything the sampler would otherwise have
+    /// to cope with mid-playback. The returned rate is why the sampler's
+    /// divisor cannot be zero.
     pub fn validate(&self) -> Result<NonZeroU32, TimelineError> {
         let fps = NonZeroU32::new(self.fps).ok_or(TimelineError::ZeroFps)?;
         if self.frames == 0 {
@@ -260,7 +245,6 @@ fn validate_rotors(track: &Track<Rotor4>, channel: &str) -> Result<(), TimelineE
     Ok(())
 }
 
-/// Why a timeline cannot be played.
 #[derive(Debug, thiserror::Error)]
 pub enum TimelineError {
     #[error("fps must be nonzero")]
@@ -295,7 +279,7 @@ pub enum TimelineError {
     Ron(#[from] ron::error::SpannedError),
 }
 
-/// Playback position, in whole frames.
+/// Position in whole frames.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Playhead {
     frame: u32,
@@ -314,7 +298,6 @@ impl Playhead {
         }
     }
 
-    /// One frame per host update.
     pub fn advance(&mut self) {
         if self.playing {
             self.frame = (self.frame + 1).min(self.last());
@@ -350,12 +333,9 @@ impl Playhead {
     }
 }
 
-/// Which clock writes a channel this frame.
-///
-/// Two clocks on one rotor is the defect the director exists to prevent; the
-/// `Host` arm is where a host runs its own
-/// clock, and nothing outside the host enforces that it does not run one in
-/// the other arm too.
+/// Two clocks on one rotor is the defect the director exists to prevent. The
+/// `Host` arm is where a host runs its own clock, and nothing outside the
+/// host enforces that it does not run one in the other arm too.
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[must_use]
 pub enum Drive<T> {
@@ -366,9 +346,6 @@ pub enum Drive<T> {
     Directed(T),
 }
 
-/// Plays a [`Timeline`] against an integer frame index and arbitrates who
-/// writes the channels it names.
-///
 /// Ownership does not lapse while paused: holding a pose is what makes
 /// scrub-and-look work. A host hands a channel back by dropping the director.
 #[derive(Clone, Debug)]

@@ -1,8 +1,6 @@
-//! Recording is thread-local: a section lands in the buffer of whichever thread
-//! opened it, and a worker thread's buffer dies with the thread. That would
-//! silently drop exactly the measurements a parallel stage has to justify itself
-//! with, so [`take_worker_trace`] and [`merge_worker_trace`] move a worker's
-//! sections onto the thread that owns the frame.
+//! Recording is thread-local and a worker thread's buffer dies with the
+//! thread, so [`take_worker_trace`] and [`merge_worker_trace`] move a
+//! worker's sections onto the thread that owns the frame.
 //! [`crate::jobs::JobPool::run_stage`] calls the pair at its join barrier, in
 //! ascending partition index, so a frame's section list is a function of the
 //! partition and not of which worker finished first.
@@ -15,15 +13,12 @@ use std::time::Duration;
 #[cfg(feature = "frame-trace")]
 use web_time::Instant;
 
-/// One CPU section timing inside a single frame's trace.
 #[derive(Clone, Debug)]
 pub struct Section {
     pub name: &'static str,
     pub elapsed: Duration,
 }
 
-/// All sections recorded inside one redraw cycle. `Default` is an empty trace.
-///
 /// `heap_delta_bytes` is signed JS heap growth this frame; only populated when a
 /// host registers a [`HeapSampler`] via [`set_heap_sampler`] AND the runtime
 /// exposes the API (Chrome/Edge yes, Firefox/native `None`). Negative means a GC
@@ -39,14 +34,12 @@ pub struct FrameTrace {
 }
 
 impl FrameTrace {
-    /// Total time across every section.
     pub fn total(&self) -> Duration {
         self.sections.iter().map(|s| s.elapsed).sum()
     }
 }
 
-/// Default rolling-buffer capacity. 120 frames is two seconds at 60fps; footprint
-/// stays under ~10 KB.
+/// 120 frames is two seconds at 60fps; footprint stays under ~10 KB.
 pub const DEFAULT_CAPACITY: usize = 120;
 
 #[cfg(feature = "frame-trace")]
@@ -65,8 +58,8 @@ impl Tracer {
     }
 }
 
-/// Host-registered JS heap sampler (bytes). On wasm32 + Chromium the host wires
-/// this to `performance.memory.usedJSHeapSize`; elsewhere no sampler is set and
+/// Bytes. On wasm32 + Chromium the host wires this to
+/// `performance.memory.usedJSHeapSize`; elsewhere no sampler is set and
 /// `heap_delta_bytes` stays `None`.
 pub type HeapSampler = fn() -> Option<u64>;
 
@@ -81,15 +74,15 @@ thread_local! {
     static HEAP_SAMPLER: std::cell::Cell<Option<HeapSampler>> = const { std::cell::Cell::new(None) };
     static MAX_EVER: RefCell<std::collections::HashMap<&'static str, Duration>> =
         RefCell::new(std::collections::HashMap::new());
-    /// 250ms is "user-perceptible freeze"; below it, routine GC stalls and
-    /// wireframe rebuilds (50-150ms) drown the log.
+    // 250ms is "user-perceptible freeze"; below it, routine GC stalls and
+    // wireframe rebuilds (50-150ms) drown the log.
     static SPIKE_THRESHOLD: std::cell::Cell<Duration> =
         const { std::cell::Cell::new(Duration::from_millis(250)) };
     static FRAME_COUNTER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// RAII guard from [`scope`]; records elapsed time on drop. Not safe to hold
-/// across `await` (the tracer is thread-local, borrowed mutably during drop).
+/// Not safe to hold across `await`: the tracer is thread-local and borrowed
+/// mutably during drop.
 #[cfg(feature = "frame-trace")]
 #[must_use = "Scope records on drop; binding it to `_` would record immediately"]
 pub struct Scope {
@@ -112,8 +105,8 @@ impl Drop for Scope {
     }
 }
 
-/// Open a CPU-timing scope; the guard records on drop. Bind it with a real name
-/// (`let _s = scope("foo")`); binding to `_` drops immediately and records zero.
+/// Bind the guard to a real name (`let _s = scope("foo")`); binding to `_`
+/// drops it immediately and records zero.
 #[cfg(feature = "frame-trace")]
 #[inline]
 pub fn scope(name: &'static str) -> Scope {
@@ -123,14 +116,12 @@ pub fn scope(name: &'static str) -> Scope {
     }
 }
 
-/// Register the host's JS heap sampler (last write wins).
 #[cfg(feature = "frame-trace")]
 pub fn set_heap_sampler(sampler: HeapSampler) {
     HEAP_SAMPLER.with(|s| s.set(Some(sampler)));
 }
 
-/// Mark the start of a frame's work. Pairs with [`end_frame`] to compute the
-/// `idle` section.
+/// Pairs with [`end_frame`], which computes the `idle` section from it.
 #[cfg(feature = "frame-trace")]
 pub fn begin_frame() {
     CURRENT_FRAME_START.with(|c| c.set(Some(Instant::now())));
@@ -139,16 +130,10 @@ pub fn begin_frame() {
     CURRENT_FRAME_ALLOC_START.with(|c| c.set(crate::alloc::current_snapshot()));
 }
 
-/// Push the in-flight frame into history and start a new one.
-///
-/// Records two synthetic sections beyond the explicit scopes:
-///
-/// - **`between-frames`**: wall-clock between successive `end_frame` calls (= 1/fps).
-/// - **`idle`**: last `end_frame` to this frame's `begin_frame`, the gap when our
-///   code wasn't running (RAF scheduling, vsync, GC, tab throttling). Dominates
-///   `between-frames` on wasm.
-///
-/// The first frame after startup records neither.
+/// Records two synthetic sections beyond the explicit scopes, neither on the
+/// first frame after startup: `between-frames`, the wall clock between
+/// successive `end_frame` calls, and `idle`, the gap from the last
+/// `end_frame` to this frame's `begin_frame`.
 #[cfg(feature = "frame-trace")]
 pub fn end_frame() {
     let now = Instant::now();
@@ -248,7 +233,6 @@ pub fn end_frame() {
     }
 }
 
-/// Set the rolling window size. Truncates older frames if shrinking.
 #[cfg(feature = "frame-trace")]
 pub fn set_capacity(capacity: usize) {
     TRACER.with(|t| {
@@ -260,15 +244,12 @@ pub fn set_capacity(capacity: usize) {
     });
 }
 
-/// Snapshot the rolling history (oldest-to-newest). Allocates; for the display
-/// path, not the hot path.
+/// Oldest-to-newest. Allocates; for the display path, not the hot path.
 #[cfg(feature = "frame-trace")]
 pub fn history() -> Vec<FrameTrace> {
     TRACER.with(|t| t.borrow().history.iter().cloned().collect())
 }
 
-/// Run `f` with a borrow of the rolling history. Zero-allocation read path.
-///
 /// `f` must NOT call [`end_frame`] or [`set_capacity`] while the borrow is held;
 /// that deadlocks the `RefCell`.
 #[cfg(feature = "frame-trace")]
@@ -276,20 +257,19 @@ pub fn with_history<R>(f: impl FnOnce(&std::collections::VecDeque<FrameTrace>) -
     TRACER.with(|t| f(&t.borrow().history))
 }
 
-/// Snapshot only the last completed frame.
 #[cfg(feature = "frame-trace")]
 pub fn last_frame() -> Option<FrameTrace> {
     TRACER.with(|t| t.borrow().history.back().cloned())
 }
 
-/// Session-lifetime max elapsed for `name` since startup (or last
-/// [`clear_max_ever`]). `Duration::ZERO` for never-seen sections.
+/// Since startup or the last [`clear_max_ever`]. `Duration::ZERO` for a
+/// name never seen.
 #[cfg(feature = "frame-trace")]
 pub fn max_ever(name: &'static str) -> Duration {
     MAX_EVER.with(|m| m.borrow().get(name).copied().unwrap_or(Duration::ZERO))
 }
 
-/// All session-lifetime maxima, name -> duration, sorted descending.
+/// Sorted descending by duration.
 #[cfg(feature = "frame-trace")]
 pub fn all_max_ever() -> Vec<(&'static str, Duration)> {
     MAX_EVER.with(|m| {
@@ -300,23 +280,23 @@ pub fn all_max_ever() -> Vec<(&'static str, Duration)> {
     })
 }
 
-/// Reset session-lifetime maxima. Doesn't touch the rolling window.
+/// Does not touch the rolling window.
 #[cfg(feature = "frame-trace")]
 pub fn clear_max_ever() {
     MAX_EVER.with(|m| m.borrow_mut().clear());
 }
 
-/// Set the threshold above which `end_frame` logs a spike `tracing::warn!`. Pass
-/// `Duration::MAX` to disable.
+/// `end_frame` logs a spike `tracing::warn!` above this. `Duration::MAX`
+/// disables it.
 #[cfg(feature = "frame-trace")]
 pub fn set_spike_threshold(threshold: Duration) {
     SPIKE_THRESHOLD.with(|c| c.set(threshold));
 }
 
-/// Push a section produced outside the `scope` lifecycle (GPU timer path: a
-/// timestamp delta arriving via `map_async`). Lands in the in-flight frame; late
-/// timestamps (1-2 frames) attribute to whatever frame is current, which the
-/// rolling-window aggregate absorbs.
+/// For a section produced outside the `scope` lifecycle (GPU timer path: a
+/// timestamp delta arriving via `map_async`). A late timestamp (1-2 frames)
+/// attributes to whatever frame is current, which the rolling-window
+/// aggregate absorbs.
 #[cfg(feature = "frame-trace")]
 pub fn record_external(name: &'static str, elapsed: Duration) {
     CURRENT_SECTIONS.with(|s| {
@@ -329,14 +309,10 @@ pub fn record_external(name: &'static str, elapsed: Duration) {
 #[cfg(not(feature = "frame-trace"))]
 pub fn record_external(_name: &'static str, _elapsed: Duration) {}
 
-/// Sections one worker thread recorded, in transit to the thread that joins it.
 #[cfg(feature = "frame-trace")]
 #[derive(Debug, Default)]
 pub struct WorkerTrace(Vec<Section>);
 
-/// Detach the calling thread's in-flight sections so a joining thread can merge
-/// them.
-///
 /// Calling this on the thread that owns the frame steals that frame's own
 /// sections instead.
 #[cfg(feature = "frame-trace")]
@@ -344,8 +320,6 @@ pub fn take_worker_trace() -> WorkerTrace {
     CURRENT_SECTIONS.with(|s| WorkerTrace(std::mem::take(&mut *s.borrow_mut())))
 }
 
-/// Append a joined worker's sections to the caller's in-flight frame.
-///
 /// Ordering is the caller's responsibility and is what makes the merge
 /// deterministic: [`crate::jobs::JobPool::run_stage`] calls this in ascending
 /// partition index, never in completion order.
@@ -385,7 +359,6 @@ pub fn set_spike_threshold(_threshold: Duration) {}
 #[cfg(not(feature = "frame-trace"))]
 pub fn set_heap_sampler(_sampler: HeapSampler) {}
 
-/// Aggregate stats across the rolling window for one section name.
 #[derive(Clone, Debug)]
 pub struct SectionStats {
     pub name: &'static str,
@@ -397,8 +370,7 @@ pub struct SectionStats {
     pub max: Duration,
 }
 
-/// Aggregate every section across the rolling window, keyed by name, returned in
-/// descending p95 order (slowest first).
+/// Keyed by name, in descending p95 order.
 #[cfg(feature = "frame-trace")]
 pub fn aggregate() -> Vec<SectionStats> {
     use std::collections::HashMap;

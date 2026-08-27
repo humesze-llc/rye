@@ -1,19 +1,16 @@
-//! egui's [`Ui::dnd_drag_source`] / [`Ui::dnd_drop_zone`] don't compose into a
-//! horizontal reorderable card row: the dragged source keeps occupying its slot, and
-//! there is no "make room" gap at the drop target.
+//! egui's [`Ui::dnd_drag_source`] / [`Ui::dnd_drop_zone`] do not compose into
+//! a horizontal reorderable card row: the dragged source keeps occupying its
+//! slot, and there is no "make room" gap at the drop target.
 
 use egui::{
     self, emath::TSTransform, vec2, DragAndDrop, Id, LayerId, Order, Rect, Response, Sense, Ui,
     UiBuilder,
 };
 
-/// Drag source whose dragged copy floats on the Tooltip layer while its original slot
-/// collapses to zero width.
-///
-/// Stock [`Ui::dnd_drag_source`] hosts the body via `scope_builder`, which advances the
-/// parent cursor and leaves a phantom slot. This bypasses it with [`Ui::new_child`]
-/// (no cursor advance) and registers a hit-rect at the body's natural position so
-/// callers still get a usable response.
+/// Stock [`Ui::dnd_drag_source`] hosts the body via `scope_builder`, which
+/// advances the parent cursor and leaves a phantom slot. This bypasses it with
+/// [`Ui::new_child`] (no cursor advance) and registers a hit-rect at the
+/// body's natural position so callers still get a usable response.
 pub fn drag_source_collapsing<P>(
     ui: &mut Ui,
     id: Id,
@@ -40,10 +37,7 @@ where
     ui.interact(body_rect, id, Sense::hover())
 }
 
-/// Animated insertion gap at one slot of a horizontal row: the `is_target` slot
-/// expands to `open_width` over ~120 ms, others stay at zero width.
-///
-/// Returns `true` if a pointer release occurred on the targeted gap this frame.
+/// `true` on a pointer release over the targeted gap.
 pub fn make_room_gap(
     ui: &mut Ui,
     is_target: bool,
@@ -65,7 +59,6 @@ pub fn make_room_gap(
     dropped
 }
 
-/// Map cursor x over `row_rect` to a 0-based insertion slot in `0..=item_count`.
 /// `None` when not dragging or outside the row band; the band extends ±40 pt
 /// vertically so a card dragged slightly off the row still snaps.
 pub fn drop_target_idx(
@@ -88,10 +81,9 @@ pub fn drop_target_idx(
     Some(((rel / slot_w) as usize).min(item_count))
 }
 
-/// Inside a [`drag_source_collapsing`] body, force opaque widget visuals. The dragged
-/// body paints to a Tooltip layer where widgets never register hover and default to
-/// the dimmed `inactive` style; this lifts inactive + noninteractive fills/strokes to
-/// `active` so the ghost reads as a solid card.
+/// The dragged body paints to a Tooltip layer where widgets never register
+/// hover and default to the dimmed `inactive` style; this lifts inactive and
+/// noninteractive fills and strokes to `active`.
 pub fn force_opaque_active(ui: &mut Ui) {
     let active = ui.visuals().widgets.active;
     let v = ui.visuals_mut();
@@ -103,8 +95,7 @@ pub fn force_opaque_active(ui: &mut Ui) {
     v.widgets.noninteractive.weak_bg_fill = active.weak_bg_fill;
 }
 
-/// "Pickup" pulse intensity in `[0.0, 1.0]` for `drag_id`, animating 0->1 over 120 ms
-/// on drag start and back on drag end.
+/// In `[0.0, 1.0]`, animated over 120 ms at drag start and drag end.
 pub fn pickup_t(ctx: &egui::Context, drag_id: Id) -> f32 {
     let target = if ctx.is_being_dragged(drag_id) {
         1.0
@@ -114,17 +105,12 @@ pub fn pickup_t(ctx: &egui::Context, drag_id: Id) -> f32 {
     ctx.animate_value_with_time(drag_id.with("pickup"), target, 0.12)
 }
 
-/// Detect a "pointer released over a drop slot" event this frame and apply the reorder
-/// to `vec` before the row's render loop runs; returns `true` when a move fired. Running
-/// before the loop avoids the one-frame "settles into place" lag an end-of-frame reorder
-/// would leave.
+/// Call before the row's render loop: an end-of-frame reorder leaves a
+/// one-frame "settles into place" lag.
 ///
-/// `filter` selects which payloads count and extracts the source index (homogeneous
-/// rows pass `|p| Some(*p)`; enum-payload rows match their variant).
-///
-/// `gap_id_prefix` / `card_id_prefix` drive the snap loop that closes gaps and resets
-/// pickup glow on success; pass the same prefixes the row uses for its
-/// `make_persistent_id`s.
+/// `gap_id_prefix` and `card_id_prefix` must be the prefixes the row uses for
+/// its `make_persistent_id`s: they drive the snap loop that closes gaps and
+/// resets pickup glow on success.
 pub fn apply_drop_pre_pass<T, P>(
     ui: &mut Ui,
     vec: &mut Vec<T>,
@@ -174,8 +160,8 @@ mod tests {
         Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0))
     }
 
-    /// egui's drag detection needs `time` to advance past `max_click_duration`, so
-    /// these input helpers thread a monotonic clock to clear the click threshold.
+    // egui's drag detection needs `time` to advance past `max_click_duration`,
+    // so these input helpers thread a monotonic clock through every frame.
     fn warmup_input(time: f64) -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(screen()),

@@ -76,9 +76,8 @@ pub(super) fn to_egui(key: Key) -> egui::Key {
     }
 }
 
-/// Printable text the OS produces for a key, used to strip the matching
-/// `egui::Event::Text` after consuming the Key event so the toggle char doesn't
-/// leak into the input.
+// Strips the matching `egui::Event::Text` after the Key event is consumed,
+// so the toggle char does not leak into the input.
 pub(super) fn key_text(key: Key) -> Option<&'static str> {
     match key {
         Key::Backtick => Some("`"),

@@ -1,16 +1,9 @@
-//! Per-frame input accumulator. Routes raw winit events into a
-//! [`FrameInput`] snapshot the rest of the engine consumes.
-
 use glam::{Vec2, Vec3};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
-/// Approximate pixels-per-notch used to normalize trackpad `PixelDelta`
-/// scroll events into the same `scroll_lines` units as `LineDelta`.
 pub const SCROLL_PIXELS_PER_LINE: f32 = 50.0;
 
-/// One mouse button: held state plus the cursor position at its press
-/// edge.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ButtonState {
     pub down: bool,
@@ -40,21 +33,16 @@ impl MouseButtons {
     }
 }
 
-/// Chord modifiers. Derived from the held physical keys rather than
-/// winit's `ModifiersChanged` so one key path feeds both the move axes
-/// and the modifier set, and left/right variants cannot disagree.
+/// Derived from the held physical keys rather than winit's
+/// `ModifiersChanged`, so left/right variants cannot disagree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Modifiers {
     pub shift: bool,
     pub control: bool,
     pub alt: bool,
-    /// Windows / Command key (winit `SuperLeft` / `SuperRight`).
     pub super_key: bool,
 }
 
-/// Accumulated input for one simulation tick, consumed by
-/// [`InputState::take_frame`].
-///
 /// `mouse_delta` is the OS-clamped cursor delta (`CursorMoved`); stops at the
 /// screen edge. `mouse_raw_delta` is the raw device delta (`MouseMotion`);
 /// accumulates past the edge for FPS-style infinite-yaw mouse-look.
@@ -72,24 +60,20 @@ pub struct FrameInput {
     /// picking cannot silently reuse a stale position.
     pub cursor_pos: Option<Vec2>,
     pub modifiers: Modifiers,
-    /// WASD forward/back: W = +1, S = −1.
+    /// W = +1, S = −1.
     pub move_forward: f32,
-    /// WASD strafe: D = +1, A = −1.
+    /// D = +1, A = −1.
     pub move_right: f32,
-    /// Vertical: Space = +1, Left/Right Shift = −1.
+    /// Space = +1, Left/Right Shift = −1.
     pub move_up: f32,
 }
 
 impl FrameInput {
-    /// WASD axes as a (possibly zero) direction vector; callers scale and
-    /// apply to their coordinate system.
     pub fn move_dir(&self) -> Vec3 {
         Vec3::new(self.move_right, self.move_up, -self.move_forward)
     }
 }
 
-/// Per-window input accumulator. Feed winit events in; call
-/// [`InputState::take_frame`] once per tick to drain them.
 #[derive(Debug, Default)]
 pub struct InputState {
     frame: FrameInput,
@@ -105,14 +89,12 @@ impl InputState {
         self.frame.cursor_pos = Some(pos);
     }
 
-    /// Re-anchor delta accumulation and mark the cursor position unknown.
     /// Call on `CursorLeft` and focus loss.
     pub fn cursor_invalidated(&mut self) {
         self.frame.cursor_pos = None;
     }
 
-    /// Release held mouse buttons and their press anchors. Call on focus
-    /// loss.
+    /// Call on focus loss.
     pub fn release_buttons(&mut self) {
         self.frame.buttons = MouseButtons::default();
         self.frame.left_mouse_down = false;
@@ -150,9 +132,8 @@ impl InputState {
         }
     }
 
-    /// Drain accumulated input for one tick: resets deltas, persists held
-    /// state (buttons, press anchors, cursor position), recomputes move
-    /// axes and modifiers from held keys.
+    /// Resets the deltas; held state (buttons, press anchors, cursor
+    /// position) persists into the next frame.
     pub fn take_frame(&mut self) -> FrameInput {
         let held = &self.held_keys;
         self.frame.move_forward = axis(held, KeyCode::KeyW, KeyCode::KeyS);
@@ -180,8 +161,7 @@ impl InputState {
         frame
     }
 
-    /// Accumulate raw device motion (`DeviceEvent::MouseMotion`) into
-    /// `FrameInput::mouse_raw_delta`.
+    /// Source is winit's `DeviceEvent::MouseMotion`.
     #[doc(hidden)]
     pub fn accumulate_raw_motion(&mut self, dx: f64, dy: f64) {
         self.frame.mouse_raw_delta += Vec2::new(dx as f32, dy as f32);

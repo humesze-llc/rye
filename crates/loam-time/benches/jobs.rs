@@ -40,15 +40,15 @@ use loam_time::jobs::JobPool;
 
 const UNITS: usize = 256;
 const WORKER_COUNTS: [usize; 3] = [2, 4, 8];
-/// Spin iterations per unit, chosen to walk the stage from below the barrier
-/// cost to well above it.
+// Spin iterations per unit, chosen to walk the stage from below the barrier
+// cost to well above it.
 const SPINS: [u32; 5] = [0, 8, 64, 512, 4096];
 const REPS: u32 = 200;
-/// Odd, so the reported median is a batch that was actually observed.
+// Odd, so the reported median is a batch that was actually observed.
 const BATCHES: usize = 9;
 
-/// Per-unit work with a serial dependency chain, so the compiler cannot
-/// vectorise the spin away and the cost scales with the iteration count.
+// Per-unit work with a serial dependency chain, so the compiler cannot
+// vectorise the spin away and the cost scales with the iteration count.
 fn unit_kernel(seed: f32, spin: u32) -> f32 {
     let mut x = seed;
     for _ in 0..spin {
@@ -65,8 +65,8 @@ fn run(pool: &JobPool, units: &mut [f32], partials: &mut Vec<()>, spin: u32) {
     });
 }
 
-/// Median batch mean. Thread creation is a syscall whose tail is fat and
-/// machine-load dependent, so a single batch is not reportable.
+// Median batch mean. Thread creation is a syscall whose tail is fat and
+// machine-load dependent, so a single batch is not reportable.
 fn median_nanos(mut body: impl FnMut()) -> f64 {
     let mut batches = [0.0_f64; BATCHES];
     for batch in &mut batches {

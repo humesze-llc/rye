@@ -1,7 +1,7 @@
 //! Console keys are intercepted via `egui::InputState::consume_key` before
-//! `TextEdit::singleline` sees them, so the toggle key and Tab don't leak into the
-//! input box or move focus. Enter is detected via the TextEdit response in the panel
-//! module to preserve `lost_focus`-on-submit semantics.
+//! `TextEdit::singleline` sees them, so the toggle key and Tab do not leak
+//! into the input box or move focus. Enter is detected via the TextEdit
+//! response to preserve `lost_focus`-on-submit semantics.
 
 mod key;
 mod panel;
@@ -14,15 +14,12 @@ pub use loam_console::{
 
 pub const ANIM_DURATION_SECS: f32 = 0.15;
 
-/// Fraction of the viewport height the open console occupies (Quake convention).
+/// Half the viewport height, the Quake convention.
 pub const PANEL_HEIGHT_FRACTION: f32 = 0.5;
 
-/// Drives and paints a [`Console`] inside an egui pass.
-///
 /// No `Ctx`: the frontend accepts lines, it does not run them. What it accepts
 /// leaves through `Console::drain_pending`.
 pub trait ConsoleUi {
-    /// Call once per frame from the egui pass.
     fn ui(&mut self, egui_ctx: &egui::Context);
 }
 

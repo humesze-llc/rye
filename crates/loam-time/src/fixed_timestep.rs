@@ -8,8 +8,6 @@ use web_time::Instant;
 /// death where a slow sim falls further behind each frame.
 pub const DEFAULT_MAX_CATCH_UP: u32 = 10;
 
-/// Tick-rate accumulator driving a deterministic sim from wall-clock time.
-///
 /// Tick duration is stored as nanoseconds from the target Hz, so a given
 /// `FixedTimestep::new(hz)` is bit-identical across machines.
 #[derive(Debug, Clone)]
@@ -22,8 +20,6 @@ pub struct FixedTimestep {
 }
 
 impl FixedTimestep {
-    /// Construct with a target tick rate in hertz.
-    ///
     /// Panics if `hz == 0`.
     pub fn new(hz: u32) -> Self {
         assert!(hz > 0, "tick rate must be positive");
@@ -36,14 +32,12 @@ impl FixedTimestep {
         }
     }
 
-    /// Override the spiral-of-death cap.
     pub fn with_max_catch_up(mut self, n: u32) -> Self {
         self.max_catch_up = n;
         self
     }
 
-    /// Current tick number. Monotonic from 0, one per tick yielded by
-    /// [`FixedTimestep::advance`].
+    /// Monotonic from 0, one per tick yielded by [`FixedTimestep::advance`].
     pub fn tick(&self) -> u64 {
         self.tick
     }
@@ -56,15 +50,13 @@ impl FixedTimestep {
         self.dt.as_secs_f32()
     }
 
-    /// Render-smoothing alpha in `[0.0, 1.0)`: wall-clock fraction between the
-    /// last completed tick and the next pending one.
+    /// In `[0.0, 1.0)`: the wall-clock fraction between the last completed
+    /// tick and the next pending one.
     pub fn alpha(&self) -> f32 {
         let a = self.accumulator.as_secs_f64() / self.dt.as_secs_f64();
         (a as f32).clamp(0.0, 1.0)
     }
 
-    /// Advance to `now` and return the tick range to execute this frame.
-    ///
     /// The first call primes the wall-clock reference and returns an empty
     /// range. Beyond `max_catch_up` ticks behind, the excess is dropped:
     /// the loop recovers to real-time at the cost of a visual jump.
@@ -84,8 +76,6 @@ impl FixedTimestep {
             catch_up += 1;
         }
 
-        // Spiral cap: drain remaining whole-tick excess so the accumulator
-        // stays bounded under pathological stalls.
         while self.accumulator >= self.dt {
             self.accumulator -= self.dt;
         }

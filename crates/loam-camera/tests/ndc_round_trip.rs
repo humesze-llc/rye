@@ -1,13 +1,7 @@
-//! `Camera::ray_from_ndc` and `Camera::pixels_from_world` must invert each
-//! other, through the public API rather than through the shared internals
-//! the unit tests can reach.
-
 use glam::{Vec2, Vec3};
 use loam_camera::Camera;
 use loam_math::{EuclideanR3, HyperbolicH3, Space};
 
-/// The screen convention `pixels_from_world` is contracted to produce: NDC x
-/// in [-1, 1] runs left to right, NDC y runs up while pixel y runs down.
 fn expected_pixel(ndc: Vec2, viewport: Vec2) -> Vec2 {
     Vec2::new(
         (ndc.x * 0.5 + 0.5) * viewport.x,

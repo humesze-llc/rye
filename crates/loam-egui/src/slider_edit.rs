@@ -2,24 +2,20 @@ use egui::{
     vec2, Align, Button, CursorIcon, DragValue, Layout, RichText, Slider, SliderClamping, Ui,
 };
 
-/// What happened to a [`slider_with_edit`] this frame. `changed` fires from either
-/// source (slider drag, popup edit, or any external mutation that the slider observes);
-/// `dragged` is strictly user-on-the-slider this frame. Callers that recompute
-/// expensive state ONLY when the user is actively scrubbing should gate on `dragged`
-/// so they don't refire when something else (e.g., a per-frame integrator) advances
-/// the value.
+/// `changed` fires for a slider drag, a popup edit, or any external mutation
+/// the slider observes. `dragged` is strictly user-on-the-slider this frame,
+/// so a caller that recomputes expensive state only while scrubbing gates on
+/// it and does not refire when an integrator advances the value.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct SliderInteraction {
     pub changed: bool,
     pub dragged: bool,
 }
 
-/// Render a slider with a fixed-width side cell that displays `formatted` and opens a
-/// precise-edit [`DragValue`](egui::DragValue) popup on right-click.
-///
-/// `value_cell_w` is the fixed width allocated to the side label cell. Without a fixed
-/// width the cell would resize as the value's character count varies, shifting the
-/// slider's right edge frame-to-frame.
+/// The side cell displays `formatted` and opens a precise-edit
+/// [`DragValue`](egui::DragValue) popup on right-click. `value_cell_w` is
+/// fixed because a cell sized to the value's character count shifts the
+/// slider's right edge frame to frame.
 pub fn slider_with_edit(
     ui: &mut Ui,
     value: &mut f32,

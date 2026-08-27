@@ -5,9 +5,6 @@ use glam::Vec3;
 use loam_camera::Camera;
 use loam_math::Space;
 
-/// Screen position of a world-space point under `camera`'s projection
-/// through `space`, ready for `egui::Area::fixed_pos`.
-///
 /// `viewport` is `(width, height)` in egui points, the units the returned
 /// position is in. `None` when the point is outside the frustum, so an
 /// anchored widget draws nothing.

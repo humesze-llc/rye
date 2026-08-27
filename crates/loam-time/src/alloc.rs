@@ -1,8 +1,3 @@
-//! Per-frame allocation counter via a [`GlobalAlloc`] wrapper. Demos opt in by
-//! installing [`CountingAllocator`] as their `#[global_allocator]`; every
-//! alloc/dealloc bumps process-global atomic counters and the per-frame delta is
-//! surfaced through `loam_time::frame_trace::FrameTrace`.
-
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -12,17 +7,15 @@ pub(crate) static TOTAL_ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static TOTAL_DEALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ALLOC_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// `GlobalAlloc` wrapper that counts every alloc/dealloc through atomic counters.
-/// Calls delegate unmodified, so it is "as safe
-/// as `A`." Counts `Layout::size()` (what Rust code thinks it allocated), not the
-/// aligned size; reads slightly low vs true heap pressure but matches expectation.
+/// Counts `Layout::size()`, what Rust code thinks it allocated, not the
+/// aligned size, so it reads slightly low against true heap pressure. Calls
+/// delegate unmodified, so it is as safe as `A`.
 pub struct CountingAllocator<A: GlobalAlloc> {
     inner: A,
 }
 
 impl<A: GlobalAlloc> CountingAllocator<A> {
-    /// Wrap `inner`. `const fn` so it can be called in a `#[global_allocator]`
-    /// static.
+    /// `const fn` so it can be called in a `#[global_allocator]` static.
     pub const fn new(inner: A) -> Self {
         Self { inner }
     }
@@ -61,7 +54,6 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
     }
 }
 
-/// Snapshot of the alloc counters at one point in time.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AllocSnapshot {
     pub alloc_bytes: u64,
@@ -70,8 +62,8 @@ pub struct AllocSnapshot {
     pub dealloc_count: u64,
 }
 
-/// Per-frame delta from subtracting two [`AllocSnapshot`]s. `net_bytes` is signed
-/// (alloc - dealloc) so a frame that drops more than it allocates reads negative.
+/// `net_bytes` is signed (alloc - dealloc), so a frame that drops more than
+/// it allocates reads negative.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AllocDelta {
     pub net_bytes: i64,
@@ -80,8 +72,7 @@ pub struct AllocDelta {
     pub dealloc_count: u64,
 }
 
-/// Read the current allocation counters, or `None` when no [`CountingAllocator`]
-/// has been installed.
+/// `None` when no [`CountingAllocator`] has been installed.
 pub fn current_snapshot() -> Option<AllocSnapshot> {
     if !ALLOC_INSTALLED.load(Ordering::Relaxed) {
         return None;
@@ -94,8 +85,8 @@ pub fn current_snapshot() -> Option<AllocSnapshot> {
     })
 }
 
-/// Delta between two snapshots; `start` must be the earlier one (counters are
-/// monotonic, so `end >= start` per-field).
+/// `start` must be the earlier snapshot: the counters are monotonic, so
+/// `end >= start` per field.
 pub fn delta(start: AllocSnapshot, end: AllocSnapshot) -> AllocDelta {
     let alloc_bytes = end.alloc_bytes.saturating_sub(start.alloc_bytes);
     let dealloc_bytes = end.dealloc_bytes.saturating_sub(start.dealloc_bytes);

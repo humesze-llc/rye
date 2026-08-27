@@ -1,13 +1,5 @@
-//! Filesystem watcher built on [`notify`] (native targets only).
-//!
-//! Native backs [`AssetWatcher`] with `notify::RecommendedWatcher`; the
-//! `wasm32` stub keeps the same API shape but never emits events. Both
-//! impls share [`AssetEvent`], [`AssetEventKind`], and the per-poll
-//! deduplication rule ([`merge_kinds`]).
-
 use std::path::PathBuf;
 
-/// A filesystem change observed by [`AssetWatcher`].
 #[derive(Clone, Debug)]
 pub struct AssetEvent {
     pub path: PathBuf,
@@ -30,17 +22,15 @@ mod native {
     use std::path::{Path, PathBuf};
     use std::sync::mpsc::{channel, Receiver};
 
-    /// Watches filesystem paths and yields coalesced [`AssetEvent`]s on
-    /// demand. [`poll`](Self::poll) drains non-blockingly and deduplicates
-    /// per path per cycle, so an editor save burst collapses to one event
-    /// per file. Not `Sync`: own one per app.
+    /// [`poll`](Self::poll) deduplicates per path per cycle, so an editor
+    /// save burst collapses to one event per file.
     pub struct AssetWatcher {
         watcher: RecommendedWatcher,
         rx: Receiver<notify::Result<notify::Event>>,
     }
 
     impl AssetWatcher {
-        /// Start a new watcher. No paths are watched until [`watch`](Self::watch) is called.
+        /// No paths are watched until [`watch`](Self::watch) is called.
         pub fn new() -> Result<Self> {
             let (tx, rx) = channel();
             let watcher = notify::recommended_watcher(move |res| {
@@ -68,7 +58,6 @@ mod native {
             Ok(())
         }
 
-        /// Drain all pending events, deduplicating per path.
         pub fn poll(&self) -> Vec<AssetEvent> {
             let mut latest: HashMap<PathBuf, AssetEventKind> = HashMap::new();
 
@@ -109,8 +98,8 @@ mod web {
     use anyhow::Result;
     use std::path::Path;
 
-    /// No-op stub for wasm32: every call succeeds and `poll` returns empty,
-    /// so consumers compile against the native API and skip hot-reload.
+    /// Every call succeeds and `poll` returns empty, so a consumer compiles
+    /// against the native API and skips hot-reload.
     pub struct AssetWatcher {
         _private: (),
     }
@@ -139,12 +128,10 @@ pub use native::AssetWatcher;
 #[cfg(target_arch = "wasm32")]
 pub use web::AssetWatcher;
 
-/// Merge two events for the same path within a single poll cycle.
-///
-/// `Created` survives a later `Modified` because Windows `fs::write` on a
-/// fresh file emits Create+Modify and consumers want "new file" distinct
-/// from "changed file." Otherwise the later event wins, handling
-/// save-by-atomic-replace correctly.
+// `Created` survives a later `Modified` because Windows `fs::write` on a
+// fresh file emits Create+Modify and consumers want "new file" distinct
+// from "changed file." Otherwise the later event wins, handling
+// save-by-atomic-replace correctly.
 #[cfg(not(target_arch = "wasm32"))]
 fn merge_kinds(old: AssetEventKind, new: AssetEventKind) -> AssetEventKind {
     use AssetEventKind::*;

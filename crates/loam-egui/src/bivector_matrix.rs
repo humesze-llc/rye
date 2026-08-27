@@ -14,8 +14,7 @@
 use egui::{Grid, Label, Response, RichText, Ui};
 use loam_math::{Bivector4, Plane4};
 
-/// Render `b` as a labeled antisymmetric 4×4 matrix, cells in
-/// degrees-per-unit-time with a `+5.1` format.
+/// Cells are degrees per unit time, `+5.1` format.
 pub fn bivector_matrix(ui: &mut Ui, b: &Bivector4) -> Response {
     Grid::new("loam_egui_bivector_matrix")
         .num_columns(5)
@@ -40,8 +39,6 @@ pub fn bivector_matrix(ui: &mut Ui, b: &Bivector4) -> Response {
 
 const AXIS: [&str; 4] = ["x", "y", "z", "w"];
 
-/// Text for matrix cell `(row, col)`. Diagonal is `"0"`; off-diagonal is the
-/// signed degrees value with the lower triangle negated `M_ji = -M_ij`.
 pub fn cell_text(b: &Bivector4, row: usize, col: usize) -> String {
     if row == col {
         "0".to_string()

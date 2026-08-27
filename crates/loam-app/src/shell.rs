@@ -14,7 +14,8 @@ use crate::command::{CommandCtx, CommandLine};
 use crate::{egui, App, AssetEvent, FrameCtx, RenderCtx, SetupCtx, ShaderDb};
 
 /// [`App::tick`], [`App::on_event`] and [`App::on_shader_reload`] reach no
-/// scene: the shell forwards none of them, so a scene needing one cannot host.
+/// scene: the shell forwards none of them, so a scene needing one cannot be
+/// hosted.
 pub trait Scene {
     // Scoped to the `ShaderOwner` this scene took at build time, so the db
     // rebuilds against the Space it loaded them with.

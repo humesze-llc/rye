@@ -1,6 +1,7 @@
 //! Both capture taps copy the swapchain, never a multisampled attachment. With
-//! MSAA on, the runner's scene resolve writes the swapchain before the pre-egui
-//! tap runs, so the tap copies resolved pixels either way.
+//! MSAA off the scene pass writes the swapchain directly; with MSAA on the
+//! runner's scene resolve writes it before the pre-egui tap runs, so the tap
+//! copies resolved pixels either way.
 
 use std::fs::File;
 use std::io::BufWriter;

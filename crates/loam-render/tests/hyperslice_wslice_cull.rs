@@ -9,6 +9,9 @@
 //! marcher takes a longer step, converges at a different `t`, and shades a
 //! different point of the same surface.
 //!
+//! Measured on an NVIDIA GeForce RTX 4090 Laptop GPU (Vulkan, driver 610.74),
+//! Windows 11 Pro 10.0.26200, `cargo test --release`.
+//!
 //! Verdict: not taken. It is negative where it matters, and the frames it
 //! speeds up are the blank ones nobody waits on. The probes stay so the
 //! trade can be re-priced: if the row cap rises well past eight, or the

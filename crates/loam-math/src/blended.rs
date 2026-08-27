@@ -1,6 +1,3 @@
-//! `BlendedSpace<A, B, F>`: a `Space` whose metric smoothly interpolates
-//! between two source Spaces A and B via a blending field F: ℝ³ -> [0, 1].
-
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
@@ -16,15 +13,13 @@ use crate::space::{Space, WgslSpace};
 /// integrator works in the coordinates `Space::Point` actually carries, so only
 /// that chart's metric counts.
 pub trait ConformallyFlat: Space {
-    /// Conformal scale factor at `p`: the scalar f with g_ij(p) = f(p)·δ_ij.
-    ///
-    /// Positive and finite inside the chart; chart-boundary points (Poincaré
-    /// |p| -> 1) may return `f32::INFINITY`, which the integrator clamps.
+    // Positive and finite inside the chart; chart-boundary points (Poincaré
+    // |p| -> 1) may return `f32::INFINITY`, which the integrator clamps.
     fn conformal_factor(&self, p: Vec3) -> f32;
 
-    /// Scalar curvature R(p). For a 3D conformally flat metric:
-    /// R = -(4/f(p))·[∇²φ + (1/2)|∇φ|²]. Default is finite-difference; every
-    /// constant-curvature Space overrides with the closed form.
+    // Scalar curvature R(p). For a 3D conformally flat metric:
+    // R = -(4/f(p))·[∇²φ + (1/2)|∇φ|²]. Default is finite-difference; every
+    // constant-curvature Space overrides with the closed form.
     fn scalar_curvature(&self, p: Vec3) -> f32 {
         const EPS: f32 = 5.0e-3;
         let phi_at = self.conformal_log_half(p);
@@ -45,13 +40,11 @@ pub trait ConformallyFlat: Space {
         -(4.0 / f_p) * (lap + 0.5 * grad_sq)
     }
 
-    /// Logarithm of the conformal factor: φ(p) = (1/2) ln f(p).
+    // Logarithm of the conformal factor: φ(p) = (1/2) ln f(p).
     fn conformal_log_half(&self, p: Vec3) -> f32 {
         0.5 * self.conformal_factor(p).ln()
     }
 
-    /// Spatial gradient of [`Self::conformal_log_half`]. Default is central
-    /// finite differences; closed-form overrides avoid the FD noise.
     fn conformal_log_half_gradient(&self, p: Vec3) -> Vec3 {
         const EPS: f32 = 1.0e-3;
         let dx = (self.conformal_log_half(p + Vec3::X * EPS)
@@ -129,9 +122,7 @@ where
     B: Space<Point = Vec3, Vector = Vec3>,
     F: BlendingField,
 {
-    /// Source metric reached at weight 0.
     pub a: A,
-    /// Source metric reached at weight 1.
     pub b: B,
     /// Supplies α(p). Changing it changes the metric itself, so state
     /// integrated under the old field is no longer on the same manifold.
@@ -218,10 +209,10 @@ where
 /// curved metrics; 64 gives ~7.
 pub const GEODESIC_DEFAULT_STEPS: u32 = 32;
 
-/// Single RK4 step on the geodesic ODE for a conformally flat metric, state
-/// `(p, v)`: ṗ = v, v̇ = |v|²·∇φ(p) - 2·(∇φ·v)·v, i.e. -Γ^k_ij·v^i·v^j for the
-/// Christoffel symbols of g = e^(2φ)·δ (Wald, *General Relativity*, 1984,
-/// App. D). Steps by `h` in parameter time.
+// Single RK4 step on the geodesic ODE for a conformally flat metric, state
+// `(p, v)`: ṗ = v, v̇ = |v|²·∇φ(p) - 2·(∇φ·v)·v, i.e. -Γ^k_ij·v^i·v^j for the
+// Christoffel symbols of g = e^(2φ)·δ (Wald, *General Relativity*, 1984,
+// App. D). Steps by `h` in parameter time.
 fn rk4_geodesic_step<S: ConformallyFlat>(space: &S, p: Vec3, v: Vec3, h: f32) -> (Vec3, Vec3) {
     let rhs = |p: Vec3, v: Vec3| -> (Vec3, Vec3) {
         let grad_phi = space.conformal_log_half_gradient(p);
@@ -240,8 +231,6 @@ fn rk4_geodesic_step<S: ConformallyFlat>(space: &S, p: Vec3, v: Vec3, h: f32) ->
     (p + dp, v + dv)
 }
 
-/// Integrate the geodesic ODE from `(at, v)` for unit parameter time in
-/// `n_steps` RK4 steps; returns the final `(point, velocity)`.
 pub fn rk4_geodesic<S: ConformallyFlat>(
     space: &S,
     at: Vec3,
@@ -332,8 +321,8 @@ pub const LOG_MAX_ITERS: u32 = 12;
 /// Euclidean convergence threshold for the residual `|to − exp_from(v)|`.
 pub const LOG_RESIDUAL_TOL: f32 = 1.0e-5;
 
-/// Finite-difference step for the Jacobian of `exp` w.r.t. `v`. Smaller is more
-/// accurate but noisier; 1e-3 is the sweet spot for f32 RK4-of-32-steps.
+// Finite-difference step for the Jacobian of `exp` w.r.t. `v`. Smaller is more
+// accurate but noisier; 1e-3 is the sweet spot for f32 RK4-of-32-steps.
 const LOG_JACOBIAN_EPS: f32 = 1.0e-3;
 
 /// Find the tangent `v` at `from` with `exp_from(v) ≈ to`, by Gauss-Newton
@@ -429,13 +418,13 @@ where
         (1.0 - alpha) * f_a + alpha * f_b
     }
 
-    /// Analytical chain-rule gradient of φ = (1/2)·ln f for the blended factor
-    /// f = (1-α)·f_A + α·f_B:
-    ///
-    ///   ∇f = ∇α·(f_B - f_A) + 2·(1-α)·f_A·∇φ_A + 2·α·f_B·∇φ_B,
-    ///
-    /// using ∇f_X = 2·f_X·∇φ_X, then ∇φ = ∇f / (2f). Mirrors the WGSL emit's
-    /// `loam_blended_grad_phi`; avoids the default's FD truncation noise.
+    // Analytical chain-rule gradient of φ = (1/2)·ln f for the blended factor
+    // f = (1-α)·f_A + α·f_B:
+    //
+    //   ∇f = ∇α·(f_B - f_A) + 2·(1-α)·f_A·∇φ_A + 2·α·f_B·∇φ_B,
+    //
+    // using ∇f_X = 2·f_X·∇φ_X, then ∇φ = ∇f / (2f). Mirrors the WGSL emit's
+    // `loam_blended_grad_phi`; avoids the default's FD truncation noise.
     fn conformal_log_half_gradient(&self, p: Vec3) -> Vec3 {
         let alpha = self.field.weight(p);
         // Zone-extreme fast paths: without them a `0 * INFINITY` from an
@@ -477,11 +466,9 @@ where
 /// merely-continuous field (e.g. a clamped linear ramp) produces artifacts at
 /// its breakpoints; use a smoothstep or equivalent C¹ profile.
 pub trait BlendingField: Copy + Send + Sync + 'static {
-    /// Blend weight at `p`. Implementations must clamp to `[0, 1]`.
+    // Implementations must clamp to `[0, 1]`.
     fn weight(&self, p: Vec3) -> f32;
 
-    /// Spatial gradient of [`Self::weight`]. Default is central finite
-    /// differences; closed-form blends override to avoid the FD noise.
     fn gradient(&self, p: Vec3) -> Vec3 {
         const EPS: f32 = 1.0e-3;
         let dx = (self.weight(p + Vec3::X * EPS) - self.weight(p - Vec3::X * EPS)) / (2.0 * EPS);
@@ -556,18 +543,18 @@ impl BlendingField for LinearBlendX {
     }
 }
 
-/// WGSL prelude for the specific
-/// `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>` instantiation. A
-/// hand-rolled parametric prelude, not a generic `WgslSpace` impl; only the
-/// shader emission is single-instantiation, the Rust API is already generic.
-///
-/// 16 RK4 sub-steps per `loam_exp`, 8 per `loam_parallel_transport`, matching the
-/// CPU's `parallel_transport_segment_rk4` step-for-step.
-///
-/// `loam_log` returns the chart-coordinate difference (the geodesic march kernel
-/// does not call it). `loam_distance` uses the midpoint chord-metric
-/// `sqrt(f((a+b)/2)) · |a − b|`, first-order accurate for nearby points (the
-/// SDF use case); use the CPU side for accurate arbitrary-pair distances.
+// WGSL prelude for the specific
+// `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>` instantiation. A
+// hand-rolled parametric prelude, not a generic `WgslSpace` impl; only the
+// shader emission is single-instantiation, the Rust API is already generic.
+//
+// 16 RK4 sub-steps per `loam_exp`, 8 per `loam_parallel_transport`, matching the
+// CPU's `parallel_transport_segment_rk4` step-for-step.
+//
+// `loam_log` returns the chart-coordinate difference (the geodesic march kernel
+// does not call it). `loam_distance` uses the midpoint chord-metric
+// `sqrt(f((a+b)/2)) · |a − b|`, first-order accurate for nearby points (the
+// SDF use case); use the CPU side for accurate arbitrary-pair distances.
 fn blended_e3_h3_linearx_wgsl(field: &LinearBlendX) -> String {
     format!(
         r#"
@@ -766,7 +753,6 @@ mod tests {
         assert_eq!(f.gradient(Vec3::new(-100.0, 0.0, 0.0)), Vec3::ZERO);
         close(f.weight(Vec3::new(100.0, 0.0, 0.0)), 1.0, 0.0);
         assert_eq!(f.gradient(Vec3::new(100.0, 0.0, 0.0)), Vec3::ZERO);
-        // Smoothstep gradient is also zero at the endpoints.
         close(f.gradient(Vec3::new(-1.0, 0.0, 0.0)).x, 0.0, 1e-6);
         close(f.gradient(Vec3::new(1.0, 0.0, 0.0)).x, 0.0, 1e-6);
     }
@@ -839,7 +825,6 @@ mod tests {
     fn hyperbolic_h3_conformal_factor_pin_values() {
         use crate::HyperbolicH3;
         let s = HyperbolicH3;
-        // f(0) = 4.
         close(s.conformal_factor(Vec3::ZERO), 4.0, 1e-6);
         // |p| = 0.5: f = 4 / 0.5625.
         close(
@@ -847,7 +832,6 @@ mod tests {
             4.0 / 0.5625,
             1e-5,
         );
-        // Near boundary, huge magnitude.
         close(
             s.conformal_factor(Vec3::new(0.0, 0.0, 0.99499f32.sqrt())),
             4.0 / (1.0 - 0.99499_f32).powi(2),
@@ -885,17 +869,17 @@ mod tests {
         }
     }
 
-    /// Step for the forward difference against `Space::distance`. Small enough
-    /// that the O(ε) truncation below stays ~10⁻³ relative, large enough that
-    /// forming `p + ε·u` in f32 costs only ~|p|/ε ≈ 10³ ulps.
+    // Step for the forward difference against `Space::distance`. Small enough
+    // that the O(ε) truncation below stays ~10⁻³ relative, large enough that
+    // forming `p + ε·u` in f32 costs only ~|p|/ε ≈ 10³ ulps.
     const METRIC_PROBE_EPS: f32 = 1.0e-3;
 
-    /// Relative slack on the metric probe: the O(ε²) remainder of the length
-    /// functional plus the ~10³ ulps lost forming `p + ε·u`.
+    // Relative slack on the metric probe: the O(ε²) remainder of the length
+    // functional plus the ~10³ ulps lost forming `p + ε·u`.
     const METRIC_PROBE_SLACK: f32 = 1.0e-3;
 
-    /// Euclidean-unit probe directions at `p`: radial, two tangential, one
-    /// oblique. At the origin the radial split degenerates, so anchor on X.
+    // Euclidean-unit probe directions at `p`: radial, two tangential, one
+    // oblique. At the origin the radial split degenerates, so anchor on X.
     fn metric_probe_directions(p: Vec3) -> [Vec3; 4] {
         let radial = if p.length_squared() > 0.0 {
             p.normalize()
@@ -908,10 +892,10 @@ mod tests {
         [radial, tangential_a, tangential_b, oblique]
     }
 
-    /// The trait contract, checked against the implementing Space's own metric:
-    /// g = f·δ means `d(p, p+ε·u) = √f(p)·ε + O(ε²)` for *every* Euclidean-unit
-    /// `u`. Isotropy is the load-bearing half; an anisotropic chart fails it no
-    /// matter which scalar is offered.
+    // The trait contract, checked against the implementing Space's own metric:
+    // g = f·δ means `d(p, p+ε·u) = √f(p)·ε + O(ε²)` for *every* Euclidean-unit
+    // `u`. Isotropy is the load-bearing half; an anisotropic chart fails it no
+    // matter which scalar is offered.
     fn assert_conformal_factor_matches_metric<S>(space: &S, samples: &[Vec3])
     where
         S: ConformallyFlat<Point = Vec3, Vector = Vec3>,
@@ -1027,7 +1011,6 @@ mod tests {
         use crate::{EuclideanR3, HyperbolicH3};
         let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-1.0, 1.0));
 
-        // alpha=0: pure E³, factor = 1.
         close(bs.conformal_factor(Vec3::new(-1.0, 0.0, 0.0)), 1.0, 1e-6);
         // Near x=1 but inside; x=1 itself is the Poincaré boundary (f -> ∞).
         let p = Vec3::new(0.99, 0.0, 0.0);
@@ -1324,7 +1307,6 @@ mod tests {
             HyperbolicH3,
             LinearBlendX::new(-100.0, -50.0), // alpha ≡ 1 in test region
         );
-        // Triangle path well inside the ball.
         let path = [
             Vec3::new(0.1, 0.0, 0.0),
             Vec3::new(0.3, 0.0, 0.0),
@@ -1339,7 +1321,6 @@ mod tests {
             drift > 1e-3,
             "expected non-zero holonomy in H³, got drift {drift}"
         );
-        // Small loop, so holonomy stays bounded.
         assert!(drift < 0.5, "holonomy unreasonably large: {drift}");
     }
 
@@ -1400,7 +1381,6 @@ mod tests {
         use crate::{EuclideanR3, HyperbolicH3};
         let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.5, 0.5));
 
-        // Well into E³.
         let r_e = bs.scalar_curvature(Vec3::new(-0.7, 0.0, 0.0));
         close(r_e, 0.0, 1e-1);
 
@@ -1408,7 +1388,6 @@ mod tests {
         let r_h = bs.scalar_curvature(Vec3::new(0.7, 0.0, 0.0));
         close(r_h, -6.0, 1.0);
 
-        // Sample across the zone and check the values vary smoothly.
         let xs: Vec<f32> = (-30..=30).map(|i| (i as f32) * 0.025).collect();
         let curvatures: Vec<f32> = xs
             .iter()

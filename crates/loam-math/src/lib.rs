@@ -1,15 +1,9 @@
-//! `loam-math`: geometric primitives for Loam.
-//!
-//! ## Determinism
-//!
 //! Loam is built for lockstep multiplayer, so all math here must be bit-reproducible across
 //! machines that agree on:
 //! - target architecture's IEEE-754 f32 semantics (no fast-math, no FMA contraction unless
 //!   globally enabled),
 //! - this crate's exact version,
 //! - call ordering (single-threaded sim).
-
-#![warn(missing_docs)]
 
 pub mod bivector;
 pub mod blended;

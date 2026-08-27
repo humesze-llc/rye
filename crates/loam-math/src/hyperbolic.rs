@@ -1,5 +1,3 @@
-//! Hyperbolic 3-space (H³), curvature `K = -1`.
-//!
 //! Dual representation: points in the **Poincaré ball** (`Vec3`, `|p| < 1`,
 //! conformal and shader-compatible); isometries as 4×4 Lorentz matrices acting
 //! on the **hyperboloid** model so composition is matmul (see [`Iso3H`]).
@@ -12,20 +10,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::space::{IsometryGroup, Space, WgslSpace};
 
-/// Max `|p|²` before the conformal factor `λ = 2/(1-|p|²)` saturates. `1 - 1e-7`
-/// keeps `λ ≲ 2 × 10⁷`, well inside f32 dynamic range.
+// Max `|p|²` before the conformal factor `λ = 2/(1-|p|²)` saturates. `1 - 1e-7`
+// keeps `λ ≲ 2 × 10⁷`, well inside f32 dynamic range.
 const POINCARE_R2_MAX: f32 = 1.0 - 1e-7;
 
-/// Clamp an out-of-domain point onto the saturation shell. Never NaN or panic.
-///
-/// The scale factor is two square roots, a divide and three products, each
-/// rounding, so `p * (sqrt(R2MAX)/sqrt(r2))` lands outside the shell for about
-/// a third of out-of-ball directions, overshooting `|q|² = 1` by up to 2.4e-7.
-/// That is enough for a caller to see `1 + a·b` round to exactly zero, which
-/// is why the postcondition is enforced rather than assumed: downstream code
-/// derives its own bounds from `|q|² <= POINCARE_R2_MAX` and divides by them.
-/// The loop is a nudge of one ulp per pass and terminates in at most two on
-/// the out-of-domain path.
+// Clamp an out-of-domain point onto the saturation shell. Never NaN or panic.
+//
+// The scale factor is two square roots, a divide and three products, each
+// rounding, so `p * (sqrt(R2MAX)/sqrt(r2))` lands outside the shell for about
+// a third of out-of-ball directions, overshooting `|q|² = 1` by up to 2.4e-7.
+// That is enough for a caller to see `1 + a·b` round to exactly zero, which
+// is why the postcondition is enforced rather than assumed: downstream code
+// derives its own bounds from `|q|² <= POINCARE_R2_MAX` and divides by them.
+// The loop is a nudge of one ulp per pass and terminates in at most two on
+// the out-of-domain path.
 fn clamp_to_ball(p: Vec3) -> Vec3 {
     let r2 = p.length_squared();
     if r2 <= POINCARE_R2_MAX {
@@ -52,7 +50,6 @@ pub struct Iso3H {
 }
 
 impl Iso3H {
-    /// Fixes every point of H³; the neutral element of `iso_compose`.
     pub const IDENTITY: Self = Self {
         matrix: Mat4::IDENTITY,
     };
@@ -100,7 +97,6 @@ impl Iso3H {
     }
 }
 
-/// Hyperbolic 3-space, Poincaré ball model, `K = -1`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HyperbolicH3;
 
@@ -305,9 +301,9 @@ fn artanh(x: f32) -> f32 {
     0.5 * ((1.0 + x) / (1.0 - x)).ln()
 }
 
-/// Möbius addition `a ⊕ b` in the Poincaré ball, K = -1. Non-associative; the
-/// failure of associativity is the gyration. (Ungar, *From Möbius to
-/// Gyrogroups*, Amer. Math. Monthly 115, 2008, §4, Def. 3.)
+// Möbius addition `a ⊕ b` in the Poincaré ball, K = -1. Non-associative; the
+// failure of associativity is the gyration. (Ungar, *From Möbius to
+// Gyrogroups*, Amer. Math. Monthly 115, 2008, §4, Def. 3.)
 fn mobius_add(a: Vec3, b: Vec3) -> Vec3 {
     let ab = a.dot(b);
     let aa = a.length_squared();
@@ -321,46 +317,46 @@ fn mobius_add(a: Vec3, b: Vec3) -> Vec3 {
     }
 }
 
-/// Möbius gyration `gyr[a, b] v`, the rotation from Möbius non-associativity
-/// (Ungar, *From Möbius to Gyrogroups*, Amer. Math. Monthly 115, 2008, §4,
-/// Def. 4), evaluated as the rotation it is: conjugation by the quaternion
-/// `A = 1 - ab` for pure-imaginary `a`, `b`, whose scalar part is `1 + a·b`
-/// and whose vector part is `-(a × b)`, applied by Rodrigues.
-///
-/// That closed form is a theorem and not the cited definition, so it carries
-/// its own derivation. Read `a`, `b`, `v` as pure-imaginary quaternions, where
-/// `xy = -x·y + x×y` and conjugation `x ↦ -x` negates the vector part. Def. 3's
-/// Möbius addition is then the right quotient `a ⊕ x = (a + x)(1 - ax)⁻¹`,
-/// which is the disk automorphism of the one-dimensional case with quaternion
-/// division: expanding the quotient against `|1 - ax|² = 1 + 2a·x + |a|²|x|²`
-/// reproduces [`mobius_add`] term for term. Composing two of them gives
-/// `a ⊕ (b ⊕ v) = (a ⊕ b) ⊕ (A v A⁻¹)`, and the left gyroassociative law
-/// `a ⊕ (b ⊕ v) = (a ⊕ b) ⊕ gyr[a, b] v` (same source, §4) identifies the
-/// second factor. Conjugation rather than a unimodular multiplier because the
-/// quaternions do not commute.
-///
-/// Ungar's defining form `⊖(a ⊕ b) ⊕ (a ⊕ (b ⊕ v))` subtracts two points that
-/// agree to within the size of `v`, and its Möbius denominator
-/// `1 + 2a·b + |a|²|b|²` falls off like `(1 - |a|²)²` as the operands approach
-/// the ideal boundary together, so the surviving mantissa shrinks with the
-/// distance to the boundary rather than with the answer. It also feeds `v`
-/// through `mobius_add`, which is defined only for ball elements while a
-/// tangent has no norm bound. Conjugation is orthogonal by construction, so
-/// the transported norm survives at any radius, and it is linear in `v`.
-/// `gyration_matches_ungars_four_addition_definition` pins the two forms
-/// against each other where the defining form is still trustworthy.
-///
-/// Unfloored. Both callers keep the operands inside the ball:
-/// [`HyperbolicH3::parallel_transport`] clamps them, and
-/// `gyration_matches_ungars_four_addition_definition` passes constants of
-/// radius under 0.5. So `|a·b| ≤ POINCARE_R2_MAX` and
-/// `|A|² ≥ (1 - POINCARE_R2_MAX)² = 1.4e-14`, a bound
-/// `parallel_transport_is_exact_where_the_clamp_conditions_the_gyration_worst`
-/// pins as attained and survivable; a floor below it can only fire for an
-/// operand the clamp did not produce, and the one such input that reaches
-/// here, a NaN, compares false against any floor and propagates regardless.
-/// The WGSL twin keeps its floor because `loam_gyr_apply` is a prelude entry
-/// point that a shader author can call directly with anything.
+// Möbius gyration `gyr[a, b] v`, the rotation from Möbius non-associativity
+// (Ungar, *From Möbius to Gyrogroups*, Amer. Math. Monthly 115, 2008, §4,
+// Def. 4), evaluated as the rotation it is: conjugation by the quaternion
+// `A = 1 - ab` for pure-imaginary `a`, `b`, whose scalar part is `1 + a·b`
+// and whose vector part is `-(a × b)`, applied by Rodrigues.
+//
+// That closed form is a theorem and not the cited definition, so it carries
+// its own derivation. Read `a`, `b`, `v` as pure-imaginary quaternions, where
+// `xy = -x·y + x×y` and conjugation `x ↦ -x` negates the vector part. Def. 3's
+// Möbius addition is then the right quotient `a ⊕ x = (a + x)(1 - ax)⁻¹`,
+// which is the disk automorphism of the one-dimensional case with quaternion
+// division: expanding the quotient against `|1 - ax|² = 1 + 2a·x + |a|²|x|²`
+// reproduces [`mobius_add`] term for term. Composing two of them gives
+// `a ⊕ (b ⊕ v) = (a ⊕ b) ⊕ (A v A⁻¹)`, and the left gyroassociative law
+// `a ⊕ (b ⊕ v) = (a ⊕ b) ⊕ gyr[a, b] v` (same source, §4) identifies the
+// second factor. Conjugation rather than a unimodular multiplier because the
+// quaternions do not commute.
+//
+// Ungar's defining form `⊖(a ⊕ b) ⊕ (a ⊕ (b ⊕ v))` subtracts two points that
+// agree to within the size of `v`, and its Möbius denominator
+// `1 + 2a·b + |a|²|b|²` falls off like `(1 - |a|²)²` as the operands approach
+// the ideal boundary together, so the surviving mantissa shrinks with the
+// distance to the boundary rather than with the answer. It also feeds `v`
+// through `mobius_add`, which is defined only for ball elements while a
+// tangent has no norm bound. Conjugation is orthogonal by construction, so
+// the transported norm survives at any radius, and it is linear in `v`.
+// `gyration_matches_ungars_four_addition_definition` pins the two forms
+// against each other where the defining form is still trustworthy.
+//
+// Unfloored. Both callers keep the operands inside the ball:
+// [`HyperbolicH3::parallel_transport`] clamps them, and
+// `gyration_matches_ungars_four_addition_definition` passes constants of
+// radius under 0.5. So `|a·b| ≤ POINCARE_R2_MAX` and
+// `|A|² ≥ (1 - POINCARE_R2_MAX)² = 1.4e-14`, a bound
+// `parallel_transport_is_exact_where_the_clamp_conditions_the_gyration_worst`
+// pins as attained and survivable; a floor below it can only fire for an
+// operand the clamp did not produce, and the one such input that reaches
+// here, a NaN, compares false against any floor and propagates regardless.
+// The WGSL twin keeps its floor because `loam_gyr_apply` is a prelude entry
+// point that a shader author can call directly with anything.
 fn gyr_apply(a: Vec3, b: Vec3, v: Vec3) -> Vec3 {
     let scalar = 1.0 + a.dot(b);
     let axis = -a.cross(b);
@@ -379,14 +375,14 @@ fn poincare_to_hyperboloid(p: Vec3) -> Vec4 {
     )
 }
 
-/// The floor on `1 + w` keeps off-sheet inputs finite.
+// The floor on `1 + w` keeps off-sheet inputs finite.
 fn hyperboloid_to_poincare(h: Vec4) -> Vec3 {
     let den = (1.0 + h.w).max(1e-7);
     Vec3::new(h.x / den, h.y / den, h.z / den)
 }
 
-/// The time-like component and the radial part of the space-like one share the
-/// factor `4 (p·v) / (1 - r²)²`.
+// The time-like component and the radial part of the space-like one share the
+// factor `4 (p·v) / (1 - r²)²`.
 fn poincare_to_hyperboloid_tangent(p: Vec3, v: Vec3) -> Vec4 {
     let r2 = p.length_squared().min(POINCARE_R2_MAX);
     let den = 1.0 - r2;
@@ -395,7 +391,7 @@ fn poincare_to_hyperboloid_tangent(p: Vec3, v: Vec3) -> Vec4 {
     Vec4::new(space.x, space.y, space.z, radial)
 }
 
-/// Same floor on `1 + w`, for the same reason.
+// Same floor on `1 + w`, for the same reason.
 fn hyperboloid_to_poincare_tangent(h: Vec4, dh: Vec4) -> Vec3 {
     let den = (1.0 + h.w).max(1e-7);
     let space = Vec3::new(h.x, h.y, h.z);
@@ -500,10 +496,10 @@ mod tests {
         assert!(src.contains("fn loam_parallel_transport"));
     }
 
-    /// Radii and directions spanning the ball out to the last shell the chart
-    /// represents without clamping (`|p|² < 1 - 1e-7`). Fixed, not sampled: the
-    /// failure this covers is radial, so a seeded sampler would only make the
-    /// coverage harder to read.
+    // Radii and directions spanning the ball out to the last shell the chart
+    // represents without clamping (`|p|² < 1 - 1e-7`). Fixed, not sampled: the
+    // failure this covers is radial, so a seeded sampler would only make the
+    // coverage harder to read.
     fn ball_sweep() -> Vec<Vec3> {
         let radii = [
             0.0f32, 0.1, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 0.9999,
@@ -532,14 +528,14 @@ mod tests {
         Vec3::new(2.0, -1.0, 0.5),
     ];
 
-    /// Chord between unit vectors, so it reads as an angle directly: a twist of
-    /// `θ` about the direction of travel registers as `2 sin(θ/2)`, and 0.1 rad
-    /// registers as 9.99e-2, two decades above this bound.
-    ///
-    /// The bound is set by the radial case, measured worst 2.6e-5 against 1.9e-7
-    /// for the plane normal. There the gyration axis `b × a` vanishes in exact
-    /// arithmetic but not in f32, and its rounding is divided by the scalar part
-    /// `1 - a·b`, which falls to 2e-4 between the two outermost shells.
+    // Chord between unit vectors, so it reads as an angle directly: a twist of
+    // `θ` about the direction of travel registers as `2 sin(θ/2)`, and 0.1 rad
+    // registers as 9.99e-2, two decades above this bound.
+    //
+    // The bound is set by the radial case, measured worst 2.6e-5 against 1.9e-7
+    // for the plane normal. There the gyration axis `b × a` vanishes in exact
+    // arithmetic but not in f32, and its rounding is divided by the scalar part
+    // `1 - a·b`, which falls to 2e-4 between the two outermost shells.
     const TWIST_CHORD_TOLERANCE: f32 = 1e-3;
 
     #[test]

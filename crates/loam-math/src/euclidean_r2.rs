@@ -1,5 +1,3 @@
-//! Euclidean R², the 2D flat-space [`Space`] impl.
-
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
@@ -9,20 +7,17 @@ use crate::space::{IsometryGroup, Space};
 /// A rigid motion of R²: a rotation followed by a translation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso2 {
-    /// Rotation about the origin, applied first.
     pub rotation: Rotor2,
     /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec2,
 }
 
 impl Iso2 {
-    /// Fixes every point; the neutral element of `iso_compose`.
     pub const IDENTITY: Self = Self {
         rotation: Rotor2::IDENTITY,
         translation: Vec2::ZERO,
     };
 
-    /// Rotation about the origin, no translation.
     pub fn from_rotation(rotation: Rotor2) -> Self {
         Self {
             rotation,
@@ -30,7 +25,6 @@ impl Iso2 {
         }
     }
 
-    /// Pure translation.
     pub fn from_translation(translation: Vec2) -> Self {
         Self {
             rotation: Rotor2::IDENTITY,
@@ -58,7 +52,6 @@ impl<'de> Deserialize<'de> for Rotor2 {
     }
 }
 
-/// Euclidean R² with the standard metric. Stateless unit struct.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EuclideanR2;
 

@@ -1,5 +1,3 @@
-//! Euclidean R³, the sanity-check implementation of [`Space`].
-
 use std::borrow::Cow;
 
 use glam::{Quat, Vec3};
@@ -8,8 +6,6 @@ use serde::{Deserialize, Serialize};
 use crate::space::{IsometryGroup, Space, WgslSpace};
 
 /// A rigid motion of R³: a rotation followed by a translation.
-///
-/// Pure isometry; scale and shear are excluded by construction.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3 {
     /// Rotation about the origin, applied first. Assumed unit; `iso_apply`
@@ -20,13 +16,11 @@ pub struct Iso3 {
 }
 
 impl Iso3 {
-    /// Fixes every point; the neutral element of `iso_compose`.
     pub const IDENTITY: Self = Self {
         rotation: Quat::IDENTITY,
         translation: Vec3::ZERO,
     };
 
-    /// Rotation about the origin, no translation.
     pub fn from_rotation(rotation: Quat) -> Self {
         Self {
             rotation,
@@ -34,7 +28,6 @@ impl Iso3 {
         }
     }
 
-    /// Pure translation.
     pub fn from_translation(translation: Vec3) -> Self {
         Self {
             rotation: Quat::IDENTITY,
@@ -43,7 +36,6 @@ impl Iso3 {
     }
 }
 
-/// Euclidean R³ with the standard metric.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EuclideanR3;
 

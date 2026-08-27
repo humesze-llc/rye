@@ -1,13 +1,6 @@
 //! Spherical 3-space (S³) in the **full ambient embedding**: points are unit
 //! 4-vectors in R⁴, not a chart.
 //!
-//! [`crate::SphericalS3`] is the upper-hemisphere chart (`Vec3`, `vec3<f32>`
-//! WGSL ABI for the fractal demo) and cannot represent `w ≤ 0`, so it collapses
-//! every `w < 0` polytope vertex onto the equator. [`SphericalS3Embedded`] takes
-//! `Point = Vec4` on the unit sphere: full coverage, no chart seam, exact
-//! great-circle geodesics, but no WGSL ABI, so it serves the CPU rasterizer
-//! wireframe path, not the SDF ray-marcher.
-//!
 //! The exp / log / transport
 //! maps are the standard unit-sphere forms (Absil, Mahony & Sepulchre,
 //! *Optimization Algorithms on Matrix Manifolds*, 2008, §3.6, Example 8.1.1);
@@ -22,34 +15,34 @@ use crate::space::{IsometryGroup, Space};
 use crate::spherical::Iso4;
 use crate::EuclideanR4;
 
-/// Floor on the tangent-direction norm below which a geodesic has no defined
-/// direction: near-coincident (`p1 ≈ p0`) or near-antipodal (`p1 ≈ −p0`, the
-/// great circle is non-unique). Conditioning class: direction recovery, the
-/// same class and value as the hemisphere model's `LOG_PERP_MIN`, so the two S³
-/// impls agree on "too close to have a direction"; at `1e-7` the residual is
-/// one f32 ulp of a coordinate of order 1 and its direction is rounding.
-///
-/// Reading the residual as `sin(ω)` assumes unit points. That is the contract
-/// on [`SphericalS3Embedded`], enforced at the two entrances that produce
-/// points ([`RasterizableSpace::array_to_point`] normalizes,
-/// [`IsometryGroup::iso_apply`] re-normalizes to shed drift) and deliberately
-/// not re-checked per call; the guards themselves are norm comparisons and stay
-/// finite for any input.
+// Floor on the tangent-direction norm below which a geodesic has no defined
+// direction: near-coincident (`p1 ≈ p0`) or near-antipodal (`p1 ≈ −p0`, the
+// great circle is non-unique). Conditioning class: direction recovery, the
+// same class and value as the hemisphere model's `LOG_PERP_MIN`, so the two S³
+// impls agree on "too close to have a direction"; at `1e-7` the residual is
+// one f32 ulp of a coordinate of order 1 and its direction is rounding.
+//
+// Reading the residual as `sin(ω)` assumes unit points. That is the contract
+// on [`SphericalS3Embedded`], enforced at the two entrances that produce
+// points ([`RasterizableSpace::array_to_point`] normalizes,
+// [`IsometryGroup::iso_apply`] re-normalizes to shed drift) and deliberately
+// not re-checked per call; the guards themselves are norm comparisons and stay
+// finite for any input.
 const GEODESIC_DIRECTION_MIN: f32 = 1e-7;
 
-/// Floor on the transport denominator `|from + to|² / 2`. Conditioning class:
-/// divisor floor on a squared quantity, which is why it is its own constant
-/// despite sharing [`GEODESIC_DIRECTION_MIN`]'s value: compared against a
-/// square, `1e-7` engages at `|from + to| = 4.5e-4`, an arc within 4.5e-4 rad
-/// of the antipodal cut locus where parallel transport is genuinely undefined
-/// and any finite answer is a choice rather than an approximation.
-///
-/// The arc reading, and the equality with `1 + ⟨from, to⟩`, assume unit points
-/// on the same contract as [`GEODESIC_DIRECTION_MIN`]; a non-unit pair scales
-/// the denominator by `|from|·|to|` and moves where the floor engages. Unlike
-/// the hemisphere model, whose chart floors `w` and so bounds this denominator
-/// below without a guard, `Point = Vec4` makes `from = −to` exactly
-/// representable, so the floor is load-bearing here.
+// Floor on the transport denominator `|from + to|² / 2`. Conditioning class:
+// divisor floor on a squared quantity, which is why it is its own constant
+// despite sharing [`GEODESIC_DIRECTION_MIN`]'s value: compared against a
+// square, `1e-7` engages at `|from + to| = 4.5e-4`, an arc within 4.5e-4 rad
+// of the antipodal cut locus where parallel transport is genuinely undefined
+// and any finite answer is a choice rather than an approximation.
+//
+// The arc reading, and the equality with `1 + ⟨from, to⟩`, assume unit points
+// on the same contract as [`GEODESIC_DIRECTION_MIN`]; a non-unit pair scales
+// the denominator by `|from|·|to|` and moves where the floor engages. Unlike
+// the hemisphere model, whose chart floors `w` and so bounds this denominator
+// below without a guard, `Point = Vec4` makes `from = −to` exactly
+// representable, so the floor is load-bearing here.
 const TRANSPORT_DENOM_MIN: f32 = 1e-7;
 
 /// Spherical 3-space, full ambient embedding, curvature `K = +1`.
@@ -62,8 +55,8 @@ pub struct SphericalS3Embedded;
 
 impl Space for SphericalS3Embedded {
     type Point = Vec4;
-    /// Ambient tangent vector in R⁴, perpendicular to its base point.
-    /// [`Self::exp`] projects out any radial component.
+    // Ambient tangent vector in R⁴, perpendicular to its base point.
+    // [`Self::exp`] projects out any radial component.
     type Vector = Vec4;
 
     fn distance(&self, a: Vec4, b: Vec4) -> f32 {
@@ -220,12 +213,12 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
     }
 }
 
-/// A deterministic unit vector perpendicular to unit `p0`, for the degenerate
-/// slerp branch. Picks the world axis least aligned with `p0` (best-conditioned
-/// residual), Gram-Schmidt's it against `p0`, normalizes (do Carmo, *Differential
-/// Geometry of Curves and Surfaces*, §1.4). Ties resolve toward the earliest
-/// axis, so it is a pure function of `p0` (Tier 0). A unit `p0` cannot align with
-/// all four axes, so the residual is always clear of zero.
+// A deterministic unit vector perpendicular to unit `p0`, for the degenerate
+// slerp branch. Picks the world axis least aligned with `p0` (best-conditioned
+// residual), Gram-Schmidt's it against `p0`, normalizes (do Carmo, *Differential
+// Geometry of Curves and Surfaces*, §1.4). Ties resolve toward the earliest
+// axis, so it is a pure function of `p0` (Tier 0). A unit `p0` cannot align with
+// all four axes, so the residual is always clear of zero.
 fn deterministic_perp(p0: Vec4) -> Vec4 {
     let a = p0.abs();
     // Smallest-magnitude component; `<` ties toward the earlier index.
@@ -289,7 +282,6 @@ mod tests {
     fn exp_stays_on_sphere_with_non_tangent_input() {
         let s = s3();
         let at = Vec4::new(0.0, 0.0, 0.0, 1.0);
-        // Tangent plus a radial part along `at`.
         let v = Vec4::new(0.4, 0.2, 0.0, 0.7);
         let moved = s.exp(at, v);
         assert_relative_eq!(moved.length(), 1.0, epsilon = 1e-6);
@@ -409,7 +401,6 @@ mod tests {
             let p1 = Vec4::new(omega.cos(), omega.sin(), 0.0, 0.0).normalize();
             let mut out = Vec::new();
             <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 16, &mut out);
-            // Skip the verbatim endpoints.
             for p in &out[1..out.len() - 1] {
                 assert!(p.is_finite(), "near-antipode sample must be finite: {p:?}");
                 assert!(

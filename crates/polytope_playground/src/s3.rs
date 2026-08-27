@@ -1,14 +1,5 @@
 //! `loam-shape` stores every 4-polytope at unit circumradius, so its vertices
-//! are already points of S³ and nothing needs mapping onto the sphere. This
-//! scene poses them through [`SphericalS3Embedded`]'s own isometry group,
-//! draws each edge as the great-circle arc that Space's `tessellate_segment`
-//! produces, and views the result through the stereographic chart. The rotate
-//! scene reaches this same seam
-//! ([`push_blended_edge`]) with `blend = 0` in its flat projections, where the
-//! arc collapses to the `EuclideanR4` chord; the `Great-circle arcs` toggle is
-//! that switch, so the two geometries differ by which Space impl answers, not
-//! by which code runs.
-//!
+//! are already points of S³ and nothing needs mapping onto the sphere.
 //! The motion is isoclinic: equal angles in the two orthogonal invariant
 //! planes `e₁∧e₂` and `e₃∧e₄`. On S³ that is a Clifford translation. For
 //! `B = θ(e₁₂ + e₃₄)` and any unit `v`,
@@ -39,14 +30,8 @@ use crate::catalog::SHAPE_CATALOG;
 use crate::color::w_depth_color;
 use crate::wireframe_geom::push_blended_edge;
 
-/// The conformal chart of S³. The pole is fixed in the ambient frame, so the
-/// figure turns under it: cells open out toward infinity as they pass and
-/// close again behind, which is the motion the scene exists to show.
 const PROJECTION: Projection<4> = Projection::Stereographic { pole: Vec4::W };
 
-/// Isoclinic angular rate per invariant plane, radians per second. One
-/// Clifford loop takes `2π / rate`; faster than this and the 600-cell's 720
-/// arcs read as noise rather than as flow.
 const DEFAULT_RATE: f32 = 0.35;
 
 /// Cut radius for the stereographic image, as a fraction of the live camera
@@ -65,12 +50,8 @@ const CLIP_RADIUS_FLOOR: f32 = 2.5;
 /// coarse and consecutive samples jump several-fold, faceting the curve.
 const CLIP_RADIUS_MAX: f32 = 10.0;
 
-/// Line width in pixels. Thin: the 600-cell's arc density is the subject, and
-/// a heavier stroke fills the interior solid.
 const LINE_WIDTH_PX: f32 = 1.4;
 
-/// Not black: the cool end of [`w_depth_color`] is a desaturated blue that
-/// disappears against it.
 const BACKGROUND: wgpu::Color = wgpu::Color {
     r: 0.020,
     g: 0.022,
@@ -78,10 +59,6 @@ const BACKGROUND: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// Camera framing at boot: far enough out to hold the ~1.7-radius bulk of a
-/// unit-circumradius figure's stereographic image. The cells passing the pole
-/// stretch beyond the frame edge, where the cut and not the frustum bounds
-/// them.
 const BOOT_ORBIT_DISTANCE: f32 = 6.0;
 const BOOT_ORBIT_PITCH: f32 = -0.18;
 
@@ -119,7 +96,7 @@ fn clip_radius(camera_distance: f32) -> f32 {
 /// Rebuild `mesh` from already-posed vertices. `curved` picks which Space
 /// answers for the edge: `true` is the `SphericalS3Embedded` great-circle
 /// arc, `false` the `EuclideanR4` chord between the same two projected
-/// endpoints. Free function so the geometry is exercisable without a device.
+/// endpoints.
 fn build_wireframe(
     polytope: Polytope4,
     posed: &[Vec4],
@@ -209,9 +186,6 @@ impl S3Scene {
             camera,
             orbit,
             console,
-            // No depth attachment: the figure is a single translucent-looking
-            // arc tangle with no surfaces to occlude it, and depth-sorting
-            // 11k line instances buys nothing.
             lines: LineRasterNode::new(
                 &ctx.rd.device,
                 ctx.rd.target_format(),
@@ -272,9 +246,6 @@ impl S3Scene {
     }
 }
 
-/// Display name from the shared catalog, so the two scenes cannot end up
-/// calling the same polychoron different things. The catalog hit is pinned by
-/// `every_polychoron_has_a_catalog_label`.
 fn polytope_label(p: Polytope4) -> &'static str {
     SHAPE_CATALOG
         .iter()
@@ -370,9 +341,6 @@ impl loam_app::shell::Scene for S3Scene {
             &mut self.mesh,
             &mut self.slerp_scratch,
         );
-        // The mesh is already world R³; `Projection::Identity` over
-        // `EuclideanR3` is the pass-through the raster node wants. The S³
-        // geometry was resolved on the CPU, above.
         self.lines.upload::<EuclideanR3, 3>(
             &rd.device,
             &rd.queue,
@@ -404,8 +372,6 @@ mod tests {
     use super::*;
     use loam_math::{Rotor, Space};
 
-    /// Angle used by every pose test; not a multiple of `π/2`, so a
-    /// coordinate-permutation bug cannot pass by symmetry.
     const TEST_ANGLE: f32 = 0.7;
 
     fn posed_at(polytope: Polytope4, angle: f32) -> Vec<Vec4> {
@@ -430,7 +396,6 @@ mod tests {
         }
         assert!(spread < 1e-4, "displacement spread {spread} must vanish");
 
-        // Same angle, one plane only.
         let simple = iso_from_rotor(Bivector4::new(TEST_ANGLE, 0.0, 0.0, 0.0, 0.0, 0.0).exp());
         let mut simple_posed = Vec::new();
         pose_vertices(simple, vertices, &mut simple_posed);
@@ -481,7 +446,6 @@ mod tests {
 
     #[test]
     fn the_pose_preserves_every_pairwise_separation() {
-        /// Arc within this of π counts as the cut locus.
         const CUT_LOCUS_MARGIN: f32 = 0.05;
         let vertices = Polytope4::Cell24.topology().vertices;
         let posed = posed_at(Polytope4::Cell24, TEST_ANGLE);
@@ -506,8 +470,6 @@ mod tests {
                 );
             }
         }
-        // The 24-cell is centrally symmetric: 12 antipodal pairs, and the
-        // skip must not have quietly swallowed the whole loop.
         assert_eq!(cut_locus_pairs, vertices.len() / 2);
     }
 
@@ -613,8 +575,6 @@ mod tests {
 
     #[test]
     fn no_sample_escapes_the_cut_as_vertices_sweep_the_pole() {
-        // The 16-cell puts a vertex exactly on the +w pole, so the sweep hits
-        // the singularity dead on rather than passing near it.
         let radius = clip_radius(BOOT_ORBIT_DISTANCE);
         let edges = Polytope4::Cell16.topology().edges.len();
         let mut scratch = Vec::new();
@@ -630,8 +590,6 @@ mod tests {
                 &mut mesh,
                 &mut scratch,
             );
-            // A cut that ate the figure would satisfy the bounds below
-            // vacuously; the surviving arcs must still outnumber the edges.
             assert!(
                 mesh.segments.len() >= edges,
                 "only {} segments survived the cut at angle {angle}",

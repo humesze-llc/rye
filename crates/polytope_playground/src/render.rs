@@ -1,13 +1,8 @@
-//! Each pass splits in two: a CPU mesh build over the frame's
-//! [`state::RowFrame`], written as a free function so it runs (and is pinned)
-//! without a device, and the upload + record half that needs one.
-//!
 //! Every pass records into the runner's frame-wide encoder, which the runner
 //! submits once (`loam_app::App::record`). Two consequences bind the code here:
 //! nothing may call `queue.submit`, and no node may be uploaded twice in a
 //! frame, because `Queue::write_buffer` lands before the whole command buffer
-//! and the second upload would feed both passes. See
-//! [`section_layers_share_a_node`].
+//! and the second upload would feed both passes.
 
 use crate::*;
 
@@ -18,17 +13,10 @@ impl Demo {
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
     ) -> Result<()> {
-        // Scene renders to the full window; the overlay and Render modal float on
-        // top without reserving pixels, so the viewport is always the framebuffer.
         let cfg = &rd.surface_bundle.config;
         let viewport = Viewport::full([cfg.width, cfg.height]);
         if self.view_mode == ViewMode::Filmstrip {
-            // Each cell shows the `strip_subject` at a different `w_slice`. Swap
-            // the GPU body list to just the subject for this render, then restore
-            // via `rebuild_bodies` so later state reads see the full row.
             let entry = self.strip_subject;
-            // 2D grid: w on columns, t on rows by default (`strip_swap_axes`
-            // flips it). A 1D case collapses the second axis to one cell.
             let strip_w_extent = self.effective_body_size();
             let (cols, rows, w_on_cols) = match (self.strip_w, self.strip_t) {
                 (true, true) => {
@@ -40,7 +28,6 @@ impl Demo {
                 }
                 (true, false) => (self.strip_count_w, 1, true),
                 (false, true) => (1, self.strip_count_t, false),
-                // UI invariant prevents both being off.
                 (false, false) => (1, 1, true),
             };
             let col_vps = viewport.split_horizontal(cols as u32);
@@ -63,16 +50,9 @@ impl Demo {
                     let t_offset = if !self.strip_t || t_n <= 1 {
                         0.0
                     } else {
-                        // Fan forward only: cell 0 = now, last = rot_time +
-                        // strip_t_extent ("the rotor at this future time").
                         let t_norm = t_idx as f32 / (t_n - 1) as f32;
                         t_norm * self.strip_t_extent
                     };
-                    // Cell's rotor: the SELECTED slot's orientation at
-                    // `rot_time + t_offset`, via the same `rotor_at_time`
-                    // dispatch the spin + t-scrub use. The strip renders one
-                    // subject, so it follows the one body the rotation
-                    // controls are aimed at rather than a row-wide rotor.
                     let cell_rotor = if t_offset == 0.0 {
                         self.selected_rotor()
                     } else {
@@ -95,7 +75,6 @@ impl Demo {
             let result = self
                 .node
                 .execute_strip(&rd.device, &rd.queue, view, &grid_cells);
-            // Restore the full row for any non-strip consumer.
             self.rebuild_bodies();
             result
         } else {
@@ -130,27 +109,18 @@ impl Demo {
                 let _scope = loam_time::frame_trace::scope("pp-section-faces");
                 self.record_section_faces(rd, encoder, view);
             }
-            // Cross-section + wireframe overlay. Shapes view only: Filmstrip's
-            // per-cell composition would need per-cell depth-clear + uploads not
-            // worth the v1 plumbing.
             if self.wireframe_enabled {
                 let _scope = loam_time::frame_trace::scope("pp-wireframe");
                 self.record_wireframe_overlay(rd, encoder, view);
             }
-            // Points overlay, drawn last so discs sit on top of edges and caps.
             if self.points_enabled {
                 let _scope = loam_time::frame_trace::scope("pp-points");
                 self.record_points(rd, encoder, view);
             }
-            // Physics readout on top of everything, and only when a layer is
-            // on: one branch over four flags is the whole cost of a hidden
-            // overlay.
             if self.physics_overlay.any_layer() {
                 let _scope = loam_time::frame_trace::scope("pp-physics-overlay");
                 self.record_physics_overlay(rd, encoder, view);
             }
-            // Manipulator after everything else: the rings have to stay
-            // grabbable whatever ends up in front of them.
             {
                 let _scope = loam_time::frame_trace::scope("pp-gimbal");
                 self.record_gimbal(rd, encoder, view);
@@ -159,11 +129,6 @@ impl Demo {
         }
     }
 
-    /// Ensure the shared section-faces depth attachment exists at the current
-    /// swapchain size + sample count, then record its clear to `1.0`. Shared
-    /// between `section_faces` (writes depth in Raster) and `parent_wireframe`
-    /// (tests, no write), so one ensure + clear covers both. Skipped on a frame
-    /// where neither runs; see [`shared_depth_is_read`].
     fn ensure_and_clear_shared_depth(
         &mut self,
         rd: &RenderDevice,
@@ -232,7 +197,6 @@ impl Demo {
         self.overlay_center_locals_scratch = center_locals;
         self.overlay_cell_strengths_scratch = cell_strengths;
 
-        // Camera matches the wireframe overlay / section faces.
         let view_dir = self.camera.view();
         let aspect = cfg.width as f32 / cfg.height as f32;
         let view_mat = Mat4::look_to_rh(view_dir.position, view_dir.forward, view_dir.up);
@@ -252,10 +216,6 @@ impl Demo {
         self.points_node.record(encoder, view, None, None);
     }
 
-    /// Build the physics readout mesh ([`build_physics_overlay_mesh`]), upload
-    /// it, and record the line pass. No depth attachment, for the same reason
-    /// [`Demo::record_points`] has none: a solver readout occluded by the body
-    /// it describes reports nothing.
     fn record_physics_overlay(
         &mut self,
         rd: &RenderDevice,
@@ -264,13 +224,9 @@ impl Demo {
     ) {
         let cfg = &rd.surface_bundle.config;
         let overlay = self.physics_overlay;
-        // Mesh taken out of `self` for the build: the row frame borrows the
-        // physics world for as long as the buffer it fills is borrowed. Put
-        // back so its capacity persists across frames.
         let mut mesh = std::mem::take(&mut self.physics_overlay_mesh_scratch);
         build_physics_overlay_mesh(&self.row_frame(), &overlay, &mut mesh);
 
-        // Camera matches the wireframe overlay / section faces.
         let view_dir = self.camera.view();
         let aspect = cfg.width as f32 / cfg.height as f32;
         let view_mat = Mat4::look_to_rh(view_dir.position, view_dir.forward, view_dir.up);
@@ -290,18 +246,7 @@ impl Demo {
         self.physics_overlay_node.record(encoder, view, None, None);
     }
 
-    /// Render the rasterized section as TWO independent overlaid layers in one
-    /// viewport:
-    ///
-    /// - the honest cross-section (the drop-w slice 3-flat, NEVER reprojected
-    ///   through the active wireframe projection; the same geometry the SDF
-    ///   raymarch shows), and
-    /// - the projected cap (the same slice reprojected through the active
-    ///   wireframe projection so it can sit on a Schlegel / stereographic
-    ///   wireframe).
-    ///
-    /// Each layer's fill alpha is its own switch (`SectionLayer::fill_visible`):
-    /// a layer with alpha 0 draws no triangles. The honest layer draws first so
+    /// The honest layer draws first so
     /// the opt-in projected cap composites over it when both are on. Defaults draw
     /// only the honest layer, so selecting a distorting projection never silently
     /// reshapes the slice the user reads as "the cross-section."
@@ -318,15 +263,10 @@ impl Demo {
         let cfg = &rd.surface_bundle.config;
         let cross = self.cross_section;
         let cap = self.projected_cap;
-        // Both layers off: perimeter outlines belong to the wireframe overlay,
-        // so an all-alpha-zero section skips the triangle passes entirely.
         if !cross.fill_visible() && !cap.fill_visible() {
             return;
         }
 
-        // Scratch + layer meshes taken out of `self` for the build: the row
-        // frame borrows the physics world for as long as they are borrowed. Put
-        // back so their capacity persists across frames.
         let mut local_vertices = std::mem::take(&mut self.section_world_vertices_scratch);
         let mut proj_scratch = std::mem::take(&mut self.section_clip_projected_scratch);
         let mut cross_mesh = std::mem::take(&mut self.section_faces_mesh_scratch);
@@ -354,14 +294,12 @@ impl Demo {
         self.section_faces_mesh_scratch = cross_mesh;
         self.section_faces_projected_scratch = cap_mesh;
 
-        // Camera matches the SDF raymarcher, for pixel-aligned composition.
         let view_dir = self.camera.view();
         let aspect = cfg.width as f32 / cfg.height as f32;
         let view_mat = Mat4::look_to_rh(view_dir.position, view_dir.forward, view_dir.up);
         let proj_mat = Mat4::perspective_rh(60.0_f32.to_radians(), aspect, 0.1, 100.0);
         let view_proj = proj_mat * view_mat;
 
-        // Honest cross-section first, then the projected cap on top.
         if cross.fill_visible() {
             self.record_section_layer(rd, encoder, view, view_proj, cross.surface_alpha, true);
         }
@@ -370,10 +308,6 @@ impl Demo {
         }
     }
 
-    /// Upload + record one built section layer's mesh. Picks the opaque vs
-    /// translucent node by `alpha`: opaque writes depth so caps occlude
-    /// within a polytope; translucent skips depth-write so layers behind
-    /// show through. `is_cross_section` selects the scratch mesh.
     fn record_section_layer(
         &mut self,
         rd: &RenderDevice,
@@ -383,9 +317,6 @@ impl Demo {
         alpha: f32,
         is_cross_section: bool,
     ) {
-        // Disjoint field borrows let the immutable depth + scratch reads coexist
-        // with the `&mut` node. The shared depth is ensured + cleared per frame by
-        // `ensure_and_clear_shared_depth`; here we consume its view.
         let depth_view = &self
             .section_faces_depth
             .as_ref()
@@ -396,7 +327,6 @@ impl Demo {
         } else {
             &self.section_faces_projected_scratch
         };
-        // Empty-mesh short-circuit lives in `TriangleRasterNode::record`.
         let node = if section_alpha_is_opaque(alpha) {
             &mut self.section_faces
         } else {
@@ -412,9 +342,6 @@ impl Demo {
         node.record(encoder, view, Some(depth_view), None);
     }
 
-    /// Distance from the camera eye to the orbit target, used to scale the
-    /// stereographic clip radius (see [`stereographic_view_radius`]). Reads the
-    /// live eye position, not `orbit.distance`, so it is correct in FreeRoam too.
     pub(crate) fn camera_distance_to_focus(&self) -> f32 {
         (self.camera.position - self.orbit.target).length()
     }
@@ -431,8 +358,6 @@ impl Demo {
             alpha: self.wireframe_alpha,
             width_px: self.wireframe_width_px,
             nearest_active: self.wireframe_nearest_active,
-            // Edge geometry is projection-derived: Stereographic draws S³ arcs,
-            // the affine projections draw flat R4 chords.
             space_blend: state::default_edge_blend(self.wireframe_projection),
             hyperslice: self
                 .hyperslice_cull_active()
@@ -440,9 +365,6 @@ impl Demo {
         };
         let cross = self.cross_section;
         let cap = self.projected_cap;
-        // Cache, buffers and both meshes taken out of `self` for the build: the
-        // row frame borrows the physics world for as long as they are borrowed.
-        // Put back so their capacity persists across frames.
         let mut palette_cache = std::mem::take(&mut self.unique_edge_palette_cache);
         let mut slerp_scratch = std::mem::take(&mut self.slerp_scratch);
         let mut local_vertices = std::mem::take(&mut self.overlay_local_vertices_scratch);
@@ -489,8 +411,6 @@ impl Demo {
         self.wireframe_section_edges_scratch = section_edges;
         self.wireframe_parent_lines_scratch = parent_lines;
 
-        // Same view+projection as the SDF raymarcher, so the overlay aligns
-        // pixel-for-pixel.
         let view_dir = self.camera.view();
         let aspect = cfg.width as f32 / cfg.height as f32;
         let view_mat = Mat4::look_to_rh(view_dir.position, view_dir.forward, view_dir.up);
@@ -501,9 +421,6 @@ impl Demo {
         self.parent_wireframe
             .set_camera(&rd.queue, view_proj, vp_size);
 
-        // Perimeter edges then parent wireframe, both depth-testing (no write)
-        // against the shared section-faces depth so lines behind a cap occlude
-        // correctly. In SDF mode the cleared `1.0` lets every fragment pass.
         let depth_view = self
             .section_faces_depth
             .as_ref()
@@ -516,10 +433,6 @@ impl Demo {
     }
 }
 
-/// Whether `alpha` selects the opaque, depth-writing section node rather than
-/// the translucent one. Single-sourced so the node pick in
-/// [`Demo::record_section_layer`] and the merge test in
-/// [`section_layers_share_a_node`] cannot drift apart.
 pub(crate) fn section_alpha_is_opaque(alpha: f32) -> bool {
     alpha >= 1.0
 }
@@ -540,8 +453,7 @@ pub(crate) fn section_layers_share_a_node(
             == section_alpha_is_opaque(cap.surface_alpha)
 }
 
-/// Append `src`'s triangles onto `dst`, rebasing `src`'s indices onto `dst`'s
-/// vertex count. Order is preserved, so a merged pass rasterizes `dst`'s
+/// Order is preserved, so a merged pass rasterizes `dst`'s
 /// triangles before `src`'s exactly as two passes in that order would.
 pub(crate) fn append_triangle_mesh(
     dst: &mut loam_shape::TriangleMesh<3>,
@@ -557,25 +469,10 @@ pub(crate) fn append_triangle_mesh(
     );
 }
 
-/// Whether any pass this frame samples the shared section-faces depth
-/// attachment: `section_faces` writes it in [`SurfaceMode::Raster`], and both
-/// wireframe layers depth-test against it. The points overlay is
-/// `DepthMode::Off` and the SDF pass has no depth attachment, so with raster
-/// faces and the wireframe both off, ensuring and clearing the buffer is a
-/// texture allocation and a render pass nothing reads. It stopped costing its
-/// own encoder and submit when the frame moved to one of each.
-///
-/// Free function so the "clear exactly when something reads it" pairing is
-/// unit-testable without a device.
 pub(crate) fn shared_depth_is_read(surface_mode: SurfaceMode, wireframe_enabled: bool) -> bool {
     matches!(surface_mode, SurfaceMode::Raster) || wireframe_enabled
 }
 
-/// Style inputs for [`build_points_mesh`] that do not come from the bodies.
-///
-/// Sprites honor the active [`WireframeColorMode`] so the overlay reads as part
-/// of the wireframe pass; `UniqueEdge` falls back to the position gradient (the
-/// edge-indexed palette has no canonical vertex assignment).
 #[derive(Copy, Clone)]
 pub(crate) struct PointsStyle {
     pub(crate) color_mode: WireframeColorMode,
@@ -584,18 +481,6 @@ pub(crate) struct PointsStyle {
     pub(crate) size_px: f32,
 }
 
-/// Fill `mesh` with the vertex-marker and cell-center sprites of every
-/// polychoral body in the row, in world R³. Cleared on entry, reusing the
-/// caller's allocation. Same body-local project-then-translate pattern as the
-/// wireframe and section-faces paths.
-///
-/// Every buffer is the caller's: `centers_cache` memoizes the topology-only
-/// cell centroids, and the three scratch buffers are refilled per body. On the
-/// 240 fps path nothing here reaches the allocator once they are warm.
-///
-/// Free function over [`RowFrame`] so "the sprites sit on the body physics put
-/// there" is unit-testable without a GPU-backed [`Demo`];
-/// [`Demo::record_points`] is the one production caller.
 pub(crate) fn build_points_mesh(
     frame: &RowFrame<'_>,
     style: &PointsStyle,
@@ -605,8 +490,6 @@ pub(crate) fn build_points_mesh(
     cell_strengths: &mut Vec<f32>,
     mesh: &mut loam_shape::PointMesh<3>,
 ) {
-    // Active-mode palette: green for vertices in an intersected cell, gray
-    // otherwise. Same hues as the wireframe overlay.
     const ACTIVE_GREEN: [f32; 4] = [0.40, 1.00, 0.55, 1.0];
     const INACTIVE_GRAY: [f32; 4] = [0.55, 0.55, 0.58, 0.85];
 
@@ -618,20 +501,13 @@ pub(crate) fn build_points_mesh(
         let Some(polytope) = entry.shape.polytope4() else {
             continue;
         };
-        // Near-pole drop radius shared with the edges and cap outline: a point in
-        // the pole band would draw as a giant clamp disc while its edges drop, so
-        // the same predicate gates it. Resolved per shape (only 16-cell clipped).
         let points_clip_radius = stereographic_clip_radius(
             &frame.projection,
             stereographic_view_radius(polytope, frame.camera_distance),
         );
         let topo = polytope.topology();
 
-        // Body-local 4D vertices (rotated + scaled), shared by the vertex and
-        // cell-center loops (WDepth normalization, Active cell strengths).
         let body_pos_r3 = frame.body_local(slot, topo.vertices, frame.body_size, local_vertices);
-        // Canonical-max-w normalization (see build_wireframe_meshes), so the
-        // points' w-depth color stays in step with the edges.
         let w_extent_local: f32 = if matches!(style.color_mode, WireframeColorMode::WDepth) {
             let canonical_max_w = topo
                 .vertices
@@ -643,8 +519,6 @@ pub(crate) fn build_points_mesh(
         } else {
             1.0
         };
-        // Cell strengths only for Active mode (`compute_cell_strengths`, same as
-        // the wireframe overlay).
         if matches!(style.color_mode, WireframeColorMode::Active) {
             compute_cell_strengths(topo.cells, local_vertices, frame.w_slice, cell_strengths);
         } else {
@@ -665,14 +539,11 @@ pub(crate) fn build_points_mesh(
                         v_local,
                         &frame.projection,
                     );
-                // Drop a near-pole vertex (clean blink) instead of a giant disc.
                 if !sample_in_radius(v3_local, points_clip_radius) {
                     continue;
                 }
                 let v_world = v3_local + body_pos_r3;
                 let color = match style.color_mode {
-                    // Position covers UniqueEdge too (edge-indexed palette has no
-                    // per-vertex assignment).
                     WireframeColorMode::VertexGradient | WireframeColorMode::UniqueEdge => {
                         vertex_color_by_position(*v)
                     }
@@ -712,7 +583,6 @@ pub(crate) fn build_points_mesh(
                         c_local,
                         &frame.projection,
                     );
-                // Same near-pole drop as the vertex loop above.
                 if !sample_in_radius(c3_local, points_clip_radius) {
                     continue;
                 }
@@ -733,17 +603,12 @@ pub(crate) fn build_points_mesh(
                 };
                 mesh.positions.push(c_world.to_array());
                 mesh.colors.push(color);
-                // Half-sized so they don't compete with the vertex discs.
                 mesh.sizes.push(style.size_px * 0.5);
             }
         }
     }
 }
 
-/// The caller-owned working set [`build_section_layer_meshes`] fills. Bundled
-/// rather than passed one by one because they are taken from `Demo` and
-/// restored together, so a struct keeps them from drifting apart at a call
-/// site.
 pub(crate) struct SectionBuffers<'a> {
     pub(crate) local_vertices: &'a mut Vec<Vec4>,
     pub(crate) proj_scratch: &'a mut Vec<Vec3>,
@@ -752,18 +617,6 @@ pub(crate) struct SectionBuffers<'a> {
     pub(crate) section_scratch: &'a mut SectionScratch,
 }
 
-/// Append every polychoral body's cross-section caps into the visible layer
-/// meshes, each under its own projection ([`state::section_layer_projection`]:
-/// drop-w for the honest cross-section, the active projection for the cap).
-/// Both meshes are cleared on entry and reuse their allocations; an invisible
-/// layer is skipped.
-///
-/// Single pass over the row: the body-local 4D section vertices are identical
-/// for both layers, computed once per body before the per-layer transform.
-///
-/// Free function over [`RowFrame`] so "the caps are cut from the body physics
-/// put there" is unit-testable without a GPU-backed [`Demo`];
-/// [`Demo::record_section_faces`] is the one production caller.
 pub(crate) fn build_section_layer_meshes(
     frame: &RowFrame<'_>,
     cross: state::SectionLayer,
@@ -778,9 +631,6 @@ pub(crate) fn build_section_layer_meshes(
         section_scratch,
     } = buffers;
     let w_slice = frame.w_slice;
-    // Honest layer is drop-w (Identity makes `perspective_scale_at_w` report
-    // `Some(1.0)`, a scale-by-one + translate); the cap follows the active
-    // projection.
     let cross_projection = state::section_layer_projection(true, frame.projection);
     let cap_projection = state::section_layer_projection(false, frame.projection);
     let cross_scale = perspective_scale_at_w(w_slice, &cross_projection);
@@ -797,29 +647,16 @@ pub(crate) fn build_section_layer_meshes(
         let Some(polytope) = entry.shape.polytope4() else {
             continue;
         };
-        // Near-pole drop radius, per shape: finite for the 16-cell, none for the
-        // rest; the cross layer is drop-w so it never clips.
         let view_radius = stereographic_view_radius(polytope, frame.camera_distance);
         let cross_clip = stereographic_clip_radius(&cross_projection, view_radius);
         let cap_clip = stereographic_clip_radius(&cap_projection, view_radius);
         let topo = polytope.topology();
 
-        // Body-local 4D section vertices (no world translate): keep the body's
-        // R³ position out of the perspective divide. Shared by both layers.
         let body_pos_r3 = frame.body_local(slot, topo.vertices, frame.body_size, local_vertices);
         let cap_vertices: &[Vec4] = local_vertices;
 
-        // Match the SDF's per-body coloring: catalog color, Lambert depth.
-        // Alpha is the layer's `surface_alpha`; below 1.0 it renders through the
-        // no-depth-write pipeline so layers behind composite through.
         let [r, g, b] = entry.body_color;
 
-        // Append + world-transform one layer's caps.
-        // `cap_vertex_projected_and_world` maps each body-local cap vertex
-        // through the layer's projection and returns the projected point the
-        // clip tests. Under Stereographic a fill triangle is dropped when any
-        // vertex exceeds `clip_radius`, matching the perimeter rule so fill and
-        // outline cull in lockstep.
         let append_layer = |mesh: &mut loam_shape::TriangleMesh<3>,
                             proj_scratch: &mut Vec<Vec3>,
                             scratch: &mut SectionScratch,
@@ -845,8 +682,6 @@ pub(crate) fn build_section_layer_meshes(
                 *v = world;
                 proj_scratch.push(projected);
             }
-            // Drop fill triangles touching a near-pole vertex (no-op for the
-            // affine `None` layers).
             retain_in_radius_triangles(
                 &mut mesh.indices,
                 start_i,
@@ -881,17 +716,12 @@ pub(crate) fn build_section_layer_meshes(
     }
 }
 
-/// Style inputs for [`build_wireframe_meshes`] that do not come from the bodies.
 #[derive(Copy, Clone)]
 pub(crate) struct WireframeStyle {
     pub(crate) color_mode: WireframeColorMode,
-    /// Uniform edge alpha, ignored when `nearest_active` grades it per edge.
     pub(crate) alpha: f32,
     pub(crate) width_px: f32,
-    /// Grade each edge's alpha by how close the slice is to the midpoint of the
-    /// cells containing it, so brightness propagates as a wave under a scrub.
     pub(crate) nearest_active: bool,
-    /// Chord-to-arc morph for edge geometry (0 = flat R⁴ chord, 1 = S³ arc).
     pub(crate) space_blend: f32,
     /// `Some(thickness)` runs the Hyperslice cull: keep only edges whose
     /// body-local w-interval intersects the slab around the slice, thinning the
@@ -901,18 +731,10 @@ pub(crate) struct WireframeStyle {
     pub(crate) hyperslice: Option<f32>,
 }
 
-/// Build the cross-section perimeter mesh and the parent-wireframe edge mesh
-/// over the row, in world R³. Non-polychoral shapes are skipped (no
-/// [`loam_shape::polytope::Polytope4`] mapping).
-///
 /// Both meshes and every scratch buffer are the caller's, cleared on entry and
 /// refilled. Under Stereographic the parent mesh reaches ~92k segments for a
 /// full row of 600-cells, so owning them here would be megabytes of
 /// grow-and-copy per frame.
-///
-/// Free function over [`RowFrame`] so "the edges wrap the body physics put
-/// there" is unit-testable without a GPU-backed [`Demo`];
-/// [`Demo::record_wireframe_overlay`] is the one production caller.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_wireframe_meshes(
     frame: &RowFrame<'_>,
@@ -934,25 +756,17 @@ pub(crate) fn build_wireframe_meshes(
     parent_lines.segments.clear();
     parent_lines.colors.clear();
     parent_lines.widths.clear();
-    // `nearest-active` off: uniform `style.alpha`. On: per-edge interp between
-    // DIM (slice misses the cell) and BRIGHT (slice at its midpoint). DIM/BRIGHT
-    // are activity-gradient peaks, not a global opacity.
     const PARENT_ALPHA_DIM: f32 = 0.10;
     const PARENT_ALPHA_BRIGHT: f32 = 0.85;
-    // Active-mode palette: green for edges in an intersected cell, gray
-    // otherwise (binary contrast against the scene backdrop).
     const ACTIVE_GREEN: [f32; 4] = [0.40, 1.00, 0.55, 1.0];
     const INACTIVE_GRAY: [f32; 4] = [0.55, 0.55, 0.58, 1.0];
     let w_slice = frame.w_slice;
-    // Honest layer's outline is forced to drop-w so it can never follow a
-    // distorting projection.
     let cross_section_projection = state::section_layer_projection(true, frame.projection);
 
     for (slot, entry) in frame.row.iter().enumerate() {
         let Some(polytope) = entry.shape.polytope4() else {
             continue;
         };
-        // Per-shape clip radius: finite for the 16-cell, `f32::INFINITY` else.
         let view_radius = stereographic_view_radius(polytope, frame.camera_distance);
         let topo = polytope.topology();
         // The body's `w` rides inside the body-local frame (see
@@ -966,12 +780,6 @@ pub(crate) fn build_wireframe_meshes(
         // the arc cannot drift from the vertices it joins.
         let arc_center = frame.pose(slot).body_local(Vec4::ZERO, frame.body_size);
 
-        // Cross-section perimeter outlines, one per enabled layer.
-        // `polytope_section_perimeter_append` fills the body-local drop-w
-        // perimeter once; the honest layer maps it through drop-w (so its
-        // outline matches the SDF slice), the cap through the active projection.
-        // Under Stereographic a segment is dropped when either endpoint exceeds
-        // the clip radius (per-segment: a perimeter segment is a single cap edge).
         if cross.perimeter || cap.perimeter {
             body_perimeter.segments.clear();
             body_perimeter.colors.clear();
@@ -1015,7 +823,6 @@ pub(crate) fn build_wireframe_meshes(
                     section_edges.widths.push(*width);
                 }
             };
-            // Honest cross-section first (drop-w), then the projected cap.
             if cross.perimeter {
                 push_perimeter(&cross_section_projection);
             }
@@ -1024,12 +831,8 @@ pub(crate) fn build_wireframe_meshes(
             }
         }
 
-        // Per-cell crossing strength in [0, 1], shared with build_points_mesh via
-        // `compute_cell_strengths` so both passes agree on "active".
         compute_cell_strengths(topo.cells, local_vertices, w_slice, cell_strengths);
 
-        // Per-edge brightness: max strength over cells containing both endpoints,
-        // so an edge lights up when any containing cell is crossed.
         let edge_strength = |i: u32, j: u32| -> f32 {
             let mut best = 0.0_f32;
             for (cell, strength) in topo.cells.iter().zip(cell_strengths.iter()) {
@@ -1040,8 +843,6 @@ pub(crate) fn build_wireframe_meshes(
             best
         };
 
-        // Active-mode binary: an edge is active if some containing cell has the
-        // slice strictly inside its w-range (`cell_strength > 0.0`).
         let edge_is_active = |i: u32, j: u32| -> bool {
             topo.cells
                 .iter()
@@ -1052,9 +853,7 @@ pub(crate) fn build_wireframe_meshes(
         // Hyperslice cull, CELL-level to match `edge_is_active`: an edge survives
         // iff some cell containing both endpoints has its w-range overlapping the
         // slab. The edge-level test would cull a far-side edge of an active cell
-        // that the cell-level coloring paints green. The slab band is a superset
-        // of `edge_is_active` (the zero-width plane), so active edges are never
-        // culled while the band thins the graph.
+        // that the cell-level coloring paints green.
         let edge_in_slab_cell = |i: u32, j: u32, thickness: f32| -> bool {
             topo.cells.iter().any(|cell| {
                 if !(cell.contains(&i) && cell.contains(&j)) {
@@ -1065,11 +864,6 @@ pub(crate) fn build_wireframe_meshes(
             })
         };
 
-        // Base RGB per `style.color_mode`: `VertexGradient` position-derived hue,
-        // `UniqueEdge` greedy line-graph coloring, `WDepth` signed-w
-        // cool-to-warm, `Active` binary green/gray. Alpha is then the
-        // `nearest-active` strength or uniform.
-        //
         // UniqueEdge palette is topology-only; memoize by `Polytope4` so the
         // 600-cell's ~520k pair-checks run once per launch, not per frame.
         let edge_palette: &[[f32; 4]] =
@@ -1100,9 +894,6 @@ pub(crate) fn build_wireframe_meshes(
             let ja = j as usize;
             let a = local_vertices[ia];
             let b = local_vertices[ja];
-            // Cell-level Hyperslice cull before any color / projection work, so a
-            // culled edge costs only the membership fold; `is_some_and` skips it
-            // entirely when the affordance is off.
             if style
                 .hyperslice
                 .is_some_and(|thickness| !edge_in_slab_cell(i, j, thickness))
@@ -1139,8 +930,6 @@ pub(crate) fn build_wireframe_meshes(
             };
             color_a[3] = alpha;
             color_b[3] = alpha;
-            // Emit the edge in body-local 4D, projected to world R³; `blend` is
-            // projection-derived (Stereographic -> 1, affine -> 0).
             push_blended_edge(
                 parent_lines,
                 a,
@@ -1159,34 +948,12 @@ pub(crate) fn build_wireframe_meshes(
     }
 }
 
-/// Which of the solver's quantities the debug overlay draws. Four independent
-/// switches rather than one master: the overlay exists to isolate a suspect
-/// quantity, and a contact cloud drawn over the normals hides exactly the
-/// direction error it was turned on to find.
-///
-/// No per-body w-extent layer. It was left out while every body collided as
-/// `Collider::sphere_at_origin` at the row's one radius, which made the extent
-/// `±body_size` on every frame: orientation-invariant, and sitting on a
-/// `w = 0` slice the chamber was closed under. The four polychora that now
-/// collide as their own hull ([`crate::physics::PlaygroundPhysics::sync`])
-/// break both halves, since a hull's extent turns with the row's spin and a
-/// hull contact drives the struck body off the slice. The wireframe's
-/// `w-depth` colour mode reads out the rendered hull's w, which is the part
-/// that has always had real extent.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(crate) struct PhysicsOverlay {
-    /// Axis cross at each contact's world point.
     pub(crate) contacts: bool,
-    /// Ray from each contact along its normal, which points body A toward B.
     pub(crate) normals: bool,
-    /// Bars whose length is the accumulated normal and tangent impulse.
     pub(crate) impulses: bool,
-    /// Per-island colouring of the member bodies and the constraints coupling
-    /// them.
     pub(crate) islands: bool,
-    /// World units of bar length per unit of accumulated impulse. Impulse is
-    /// mass times velocity and carries no length scale of its own, so this is
-    /// the one number a reader has to set for their own scene.
     pub(crate) impulse_scale: f32,
     pub(crate) width_px: f32,
 }
@@ -1250,9 +1017,6 @@ impl Default for PhysicsOverlay {
 }
 
 impl PhysicsOverlay {
-    /// Whether any layer draws. This is the overlay's entire cost while it is
-    /// hidden: [`Demo::record`] never builds a mesh, reads a manifold, or
-    /// touches the raster node unless this returns true.
     pub(crate) fn any_layer(self) -> bool {
         self.contacts || self.normals || self.impulses || self.islands
     }
@@ -1271,9 +1035,6 @@ fn push_overlay_segment(
     mesh.widths.push(width);
 }
 
-/// Three axis-aligned segments centred on `centre`. Axis-aligned rather than
-/// carried into the body frame: the marker reports a position, and an
-/// orientation it does not actually track would read as one it does.
 fn push_axis_cross(mesh: &mut LineMesh<3>, centre: Vec3, half: f32, color: [f32; 4], width: f32) {
     for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
         push_overlay_segment(
@@ -1287,27 +1048,6 @@ fn push_axis_cross(mesh: &mut LineMesh<3>, centre: Vec3, half: f32, color: [f32;
     }
 }
 
-/// Fill `mesh` with the enabled layers of the physics debug overlay, in world
-/// R³. Cleared on entry, reusing the caller's allocation.
-///
-/// Every quantity drawn here is a world-frame quantity of the
-/// [`loam_physics::World`], not body-local geometry, so none of it goes through
-/// the body-local project-then-translate path the shape passes use: a contact
-/// between two bodies belongs to neither one's frame. R⁴ maps to R³ by dropping
-/// w, which is both the honest cross-section layer's own projection and where
-/// every raster path puts a body centre: they project body-LOCAL geometry only,
-/// then translate by [`crate::physics::BodyPose::position_r3`], which truncates
-/// under whatever projection is active. The surfaces are another matter, since
-/// `Stereographic` normalizes onto S³ first and `Schlegel` reads out in a cell
-/// basis; a contact off the `w = 0` slice the chamber's bodies live on
-/// therefore draws where drop-w puts it rather than where the active projection
-/// put the hull around it. A normal pointing along w draws as a zero-length
-/// tick, which is itself the readout that the separating direction left the
-/// slice.
-///
-/// Free function over [`RowFrame`] so the mapping from solver state to emitted
-/// geometry is pinned without a device; [`Demo::record_physics_overlay`] is the
-/// one production caller.
 pub(crate) fn build_physics_overlay_mesh(
     frame: &RowFrame<'_>,
     overlay: &PhysicsOverlay,
@@ -1397,8 +1137,6 @@ pub(crate) fn build_physics_overlay_mesh(
                     width,
                 );
             }
-            // The coupling edges, so the partition reads as a graph and not as
-            // a set of independently tinted bodies.
             for &(a, b) in &island.constraints {
                 push_overlay_segment(
                     mesh,
@@ -1437,8 +1175,6 @@ mod tests {
 
     #[test]
     fn section_layers_merge_exactly_when_they_share_a_node() {
-        // Straddles the opaque threshold in both directions, plus the invisible
-        // alpha that takes a layer out of the frame entirely.
         const ALPHAS: [f32; 4] = [0.0, 0.5, 1.0, 1.5];
         for cross_alpha in ALPHAS {
             for cap_alpha in ALPHAS {
@@ -1474,7 +1210,6 @@ mod tests {
         assert_eq!(dst.vertices.len(), 7);
         assert_eq!(dst.colors.len(), dst.vertices.len());
         assert_eq!(dst.indices, vec![[0, 1, 2], [4, 5, 6], [3, 4, 5]]);
-        // Every rebased index still resolves to the vertex it named in `src`.
         for (tri, src_tri) in dst.indices[1..].iter().zip(&src.indices) {
             for (&i, &si) in tri.iter().zip(src_tri.iter()) {
                 assert_eq!(dst.vertices[i as usize], src.vertices[si as usize]);
@@ -1495,7 +1230,6 @@ mod tests {
             SLICE_W,
             CAMERA_DISTANCE,
         );
-        // Both layers opaque: the case that puts two uploads on one node.
         let opaque = SectionLayer {
             perimeter: false,
             surface_alpha: 1.0,
@@ -1520,8 +1254,6 @@ mod tests {
         }
     }
 
-    /// A one-slot row, so every primitive a builder emits belongs to slot 0 and
-    /// a pin can read the whole mesh instead of slicing per-slot offsets.
     const ROW: &[ShapeEntry] = &[ShapeEntry {
         shape: RaymarchShape::Polytope(Polytope4::Pentatope),
         body_color: [0.95, 0.55, 0.30],
@@ -1529,11 +1261,6 @@ mod tests {
         long_name: "pentachoron",
     }];
 
-    /// The 16-cell is the fixture shape wherever a pin needs a known image:
-    /// its vertices are `±e_i`, so twelve of its edges lie exactly in `w = 0`
-    /// (drop-w loses nothing there) and its w-slices shrink with `|w|` (so a
-    /// cut at the wrong slice is a different cap, not the same one). It is also
-    /// the only polytope `stereographic_view_radius` clips.
     const CELL16: ShapeEntry = ShapeEntry {
         shape: RaymarchShape::Polytope(Polytope4::Cell16),
         body_color: [0.30, 0.70, 0.95],
@@ -1541,47 +1268,21 @@ mod tests {
         long_name: "hexadecachoron",
     };
     const ROW_16: &[ShapeEntry] = &[CELL16];
-    /// Two slots of the same shape: each half of any mesh is the same geometry
-    /// at the other slot's layout position, so a builder that read slot 0's
-    /// pose for every slot collapses the halves onto each other.
     const ROW_16_PAIR: &[ShapeEntry] = &[CELL16, CELL16];
-    /// Two slots of DIFFERENT shapes, which every other fixture here is not.
-    /// The production row is heterogeneous (`catalog::DEFAULT_ROW` is four
-    /// distinct polytopes), so a builder that serves one slot another slot's
-    /// topology is invisible to a homogeneous fixture: the counts still agree
-    /// with each other and nothing is length-inconsistent.
     const ROW_MIXED: &[ShapeEntry] = &[CELL16, ROW[0]];
 
-    /// A slice off `w = 0`, inside the 16-cell's w-extent (`±BODY_SIZE`) so the
-    /// cut is non-degenerate. A builder that substituted `0.0` for the frame's
-    /// own `w_slice` cuts a visibly different cap here.
     const SLICE_W: f32 = 0.2;
 
-    /// Eye-to-focus distance for the fixtures that do not vary it.
     const CAMERA_DISTANCE: f32 = 4.0;
 
-    /// Tolerance for "the same mesh, translated": the pins compare
-    /// `p + (centre + d)` against `(p + centre) + d`, and f32 addition does not
-    /// associate. Four orders of magnitude below the throw's own displacement,
-    /// so a pass that lost the throw cannot pass this.
     const TRANSLATE_TOL: f32 = 1e-5;
 
-    /// Enough fixed steps for a full-speed throw to cross one slot gap and for
-    /// the solver to work the contact to its accumulated peak.
     const STEPS_TO_CROSS_THE_GAP: usize = 120;
 
-    /// Two worlds whose bodies must render identically up to ONE R³
-    /// translation: `thrown` carries both a live centre and a live orientation,
-    /// `at_rest` sits on the layout under the composed spin. The throw is +x
-    /// from a +w lever, so the body's `w` never leaves the layout and both
-    /// worlds cut the same body-local geometry at the same slice.
     struct TranslatedPair {
         thrown: PlaygroundPhysics,
         at_rest: PlaygroundPhysics,
-        /// UI spin the thrown world renders under.
         spin: Rotor4,
-        /// `spin · orientation`: the rotor the thrown body actually renders at,
-        /// and the spin the at-rest world is given so the two match.
         composed: Rotor4,
         delta: Vec3,
     }
@@ -1607,8 +1308,6 @@ mod tests {
             delta.length() > 0.05,
             "throw did not move the body's R³ centre"
         );
-        // A rotation the pins can see: an unwired pass draws `spin` where
-        // physics says `spin · orientation`.
         let probe = Vec4::new(0.3, -0.2, 0.9, 0.1);
         assert!(
             (pose.rotor.apply(probe) - spin.apply(probe)).length() > 1e-2,
@@ -1623,8 +1322,6 @@ mod tests {
         }
     }
 
-    /// Drop-w, on the `w = 0` slice, fixed camera: the builders' clip and scale
-    /// paths then depend on the body pose alone.
     fn frame(physics: &PlaygroundPhysics, spin: Rotor4) -> RowFrame<'_> {
         frame_of(
             physics,
@@ -1636,15 +1333,10 @@ mod tests {
         )
     }
 
-    /// Every slot under one rotor, which is what these geometry fixtures mean
-    /// by "the spin": they pin where a body is drawn, not which body the
-    /// rotation controls are aimed at. Leaked so a fixture can keep taking a
-    /// `Rotor4` and handing back a [`RowFrame`] that borrows the store.
     fn uniform_spins(slots: usize, rotor: Rotor4) -> &'static SlotSpins {
         Box::leak(Box::new(SlotSpins::uniform(slots, rotor)))
     }
 
-    /// Every field of the seam a fixture might vary, spelled out.
     fn frame_of<'a>(
         physics: &'a PlaygroundPhysics,
         row: &'a [ShapeEntry],
@@ -1668,9 +1360,6 @@ mod tests {
         (plane.unit_bivector() * angle).exp().normalize()
     }
 
-    /// Flat chords, no Hyperslice cull, `Active` coloring. `Active` is the one
-    /// color mode derived from `w_slice`, so a pin that compares colors covers
-    /// the slice as well as the pose.
     fn slice_colored_style() -> WireframeStyle {
         WireframeStyle {
             color_mode: WireframeColorMode::Active,
@@ -1682,27 +1371,17 @@ mod tests {
         }
     }
 
-    /// Everything the three mesh builders emit for one frame, as world-R³
-    /// points in build order. Taking all of them at once is what keeps a
-    /// fixture from pinning whichever path it happened to pick.
     struct BuiltRow {
         edges: Vec<[f32; 3]>,
-        /// Cross-section perimeter then projected-cap perimeter, per slot.
         perimeter: Vec<[f32; 3]>,
         sprites: Vec<[f32; 3]>,
         sprite_colors: Vec<[f32; 4]>,
         cross_caps: Vec<[f32; 3]>,
         projected_caps: Vec<[f32; 3]>,
-        /// The cap fill's surviving triangles. The near-pole clip drops these
-        /// and leaves the vertices behind, so it is invisible in
-        /// [`Self::projected_caps`].
         projected_cap_triangles: Vec<[u32; 3]>,
         cross_cap_triangles: Vec<[u32; 3]>,
     }
 
-    /// Every caller-owned buffer the two overlay builders write through, in one
-    /// value. Reusing a live `OverlayBuffers` across builds is what a frame does,
-    /// so the alloc pins and the geometry pins exercise the same seam.
     #[derive(Default)]
     struct OverlayBuffers {
         palette_cache: std::collections::HashMap<Polytope4, Vec<[f32; 4]>>,
@@ -1773,8 +1452,6 @@ mod tests {
         }
     }
 
-    /// Both sprite kinds on, coloring taken from the wireframe style so the two
-    /// builders are pinned under one mode.
     fn points_style_for(style: &WireframeStyle) -> PointsStyle {
         PointsStyle {
             color_mode: style.color_mode,
@@ -1784,8 +1461,6 @@ mod tests {
         }
     }
 
-    /// Both section layers visible and both sprite kinds on, so no branch of a
-    /// builder sits outside the pins.
     fn build_row(frame: &RowFrame<'_>, style: &WireframeStyle) -> BuiltRow {
         let cross = SectionLayer::CROSS_SECTION_DEFAULT;
         let cap = SectionLayer {
@@ -1826,7 +1501,6 @@ mod tests {
     }
 
     impl BuiltRow {
-        /// Each mesh in build order, so a pin covers every path at once.
         fn meshes(&self) -> [(&str, &[[f32; 3]]); 5] {
             [
                 ("parent wireframe", &self.edges),
@@ -1837,8 +1511,6 @@ mod tests {
             ]
         }
 
-        /// Every mesh is `rest`'s carried by `delta`, with the coloring
-        /// untouched: the whole seam moved with the body and nothing else did.
         fn assert_carried_from(&self, rest: &BuiltRow, delta: Vec3) {
             for ((what, live), (_, at_rest)) in self.meshes().iter().zip(rest.meshes().iter()) {
                 assert_translated(live, at_rest, delta, what);
@@ -1854,7 +1526,6 @@ mod tests {
             );
         }
 
-        /// The row's two slots emitted the same geometry, separated by `delta`.
         fn assert_slots_separated_by(&self, delta: Vec3) {
             for (what, all) in self.meshes() {
                 assert!(
@@ -1871,8 +1542,6 @@ mod tests {
         mesh.segments.iter().flat_map(|(a, b)| [*a, *b]).collect()
     }
 
-    /// Each point of `live` is `rest`'s corresponding point carried by `delta`:
-    /// same count, same order, same body-local geometry.
     fn assert_translated(live: &[[f32; 3]], rest: &[[f32; 3]], delta: Vec3, what: &str) {
         assert!(
             !live.is_empty(),
@@ -1952,7 +1621,6 @@ mod tests {
     fn section_caps_follow_the_physics_pose() {
         let pair = translated_pair();
         let cross = SectionLayer::CROSS_SECTION_DEFAULT;
-        // Both layers visible so the projected-cap branch is pinned too.
         let cap = SectionLayer {
             perimeter: true,
             surface_alpha: 0.5,
@@ -2053,12 +1721,8 @@ mod tests {
 
         let live = build_at(&lifted, SLICE_W + lift);
         let rest = build_at(&at_rest, SLICE_W);
-        // The lift is along +w alone, so the R³ centre never moved.
         live.assert_carried_from(&rest, Vec3::ZERO);
 
-        // The same lifted body at the UNSHIFTED slice is a different cut;
-        // without this the pin above would also hold for a build that ignored
-        // the lift and the slice together.
         let off_slice = build_at(&lifted, SLICE_W);
         assert_ne!(
             off_slice.cross_caps, rest.cross_caps,
@@ -2094,12 +1758,8 @@ mod tests {
             Polytope4::Cell16.topology().edges.len() * SPACE_TESSELLATION_SAMPLES * 2,
             "blend 1 did not subdivide the edges, so the arc path is not under test"
         );
-        // The lift is along +w alone, so the R³ image never moved.
         live.assert_carried_from(&rest, Vec3::ZERO);
 
-        // The fixture's lift has to be big enough to see: about the frame
-        // origin it inflates the sphere the endpoints share by far more than
-        // the pin's tolerance.
         let origin_centred = (BODY_SIZE * BODY_SIZE + lift * lift).sqrt();
         assert!(
             origin_centred - BODY_SIZE > 100.0 * TRANSLATE_TOL,
@@ -2137,8 +1797,6 @@ mod tests {
             scale,
             "section cap fill",
         );
-        // The perimeter mesh is the honest outline followed by the cap outline,
-        // one slot, so its halves stand in the same relation.
         let (honest, cap) = built.perimeter.split_at(built.perimeter.len() / 2);
         assert_scaled_about(cap, honest, centre, scale, "section perimeter");
     }
@@ -2168,10 +1826,6 @@ mod tests {
         let topo = Polytope4::Cell16.topology();
         let mut local = Vec::new();
         let centre = frame.body_local(0, topo.vertices, BODY_SIZE, &mut local);
-        // Drop-w and a flat blend, so a kept edge is exactly its two projected
-        // endpoints and the whole mesh is an ordered function of the keep set.
-        // `keep` reads the cell's slab overlap, so the mesh an inverted cull
-        // would emit is one more call.
         let mesh_under = |keep: fn(bool) -> bool| -> Vec<([f32; 3], [f32; 3])> {
             topo.edges
                 .iter()
@@ -2221,8 +1875,6 @@ mod tests {
     #[test]
     fn space_blend_one_bows_edges_onto_the_circumsphere() {
         let physics = PlaygroundPhysics::new(1, BODY_SIZE);
-        // Identity spin, so the body-local vertices are the canonical `±e_i`
-        // scaled by `BODY_SIZE` and the `w = 0` edges are exact.
         let frame = frame_of(
             &physics,
             ROW_16,
@@ -2258,7 +1910,6 @@ mod tests {
             .map(|(e, _)| e)
             .collect();
         assert!(!equatorial.is_empty(), "no edge lies in w = 0");
-        // Endpoints per edge, edges emitted in topology order.
         let block = SPACE_TESSELLATION_SAMPLES * 2;
         for e in equatorial {
             for (k, p) in arcs[e * block..(e + 1) * block].iter().enumerate() {
@@ -2268,8 +1919,6 @@ mod tests {
                     "edge {e} sample {k} sits at {radius}, off the circumsphere {BODY_SIZE}"
                 );
             }
-            // The chord through the same edge cuts inside: without this the pin
-            // above would pass for a build that never left the endpoints.
             let mid = (Vec3::from_array(chords[e * 2]) + Vec3::from_array(chords[e * 2 + 1])) * 0.5;
             assert!(
                 (mid - centre).length() < BODY_SIZE - 0.05,
@@ -2290,8 +1939,6 @@ mod tests {
         );
 
         let physics = PlaygroundPhysics::new(1, BODY_SIZE);
-        // A Zw spin swings a vertex toward the +w pole, where the conformal
-        // image runs out past the near radius but stays inside the far one.
         let spin = rotor_at(Plane4::Zw, 1.1);
         let built_at = |camera_distance| {
             build_row(
@@ -2326,16 +1973,12 @@ mod tests {
                 "{what}: the far view's {far_max} is not between the two clip radii"
             );
         }
-        // The cap fill clips at triangle granularity and leaves its dropped
-        // vertices in the mesh, so its count is the only witness.
         assert!(
             near.projected_cap_triangles.len() < far.projected_cap_triangles.len(),
             "the near camera dropped no cap triangles"
         );
     }
 
-    /// Largest body-local projected magnitude in `points`: what the near-pole
-    /// clip radius bounds.
     fn max_local_radius(points: &[[f32; 3]], centre: Vec3) -> f32 {
         points
             .iter()
@@ -2343,9 +1986,6 @@ mod tests {
             .fold(0.0_f32, f32::max)
     }
 
-    /// One slot, at rest, thrown straight along `+w`: the body leaves the slice
-    /// without rotating or moving in R³, so a world built from it differs from
-    /// the layout in `w` alone. Returns the `w` it reached.
     fn thrown_along_w() -> (PlaygroundPhysics, f32) {
         let mut physics = PlaygroundPhysics::new(1, BODY_SIZE);
         physics.world.bodies[0].apply_impulse(Vec4::W);
@@ -2404,18 +2044,12 @@ mod tests {
     // Crate-wide, not test-wide: `#[global_allocator]` is a per-binary
     // singleton, so every test in this crate allocates through `Counting` and a
     // second declaration anywhere in it is an E0152 hard error, not a merge
-    // conflict. Only the `..._reaches_the_allocator_zero_times` pins read the
-    // counter.
+    // conflict.
     #[global_allocator]
     static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
 
     #[test]
     fn a_warm_overlay_frame_reaches_the_allocator_zero_times() {
-        // Stereographic at blend 1 is the expensive path: every edge
-        // tessellates into `SPACE_TESSELLATION_SAMPLES` sub-segments through
-        // the slerp buffer. `Active` coloring routes through the per-cell
-        // strength buffer, and both sprite kinds route through the inset
-        // cell-centre buffer and the centroid cache.
         let physics = PlaygroundPhysics::new(2, BODY_SIZE);
         let frame = frame_of(
             &physics,
@@ -2547,7 +2181,6 @@ mod tests {
         );
     }
 
-    /// `scaled` is `base` scaled about `centre` by `scale`, point for point.
     fn assert_scaled_about(
         scaled: &[[f32; 3]],
         base: &[[f32; 3]],
@@ -2573,32 +2206,21 @@ mod tests {
         }
     }
 
-    /// Any positive step fills the manifolds from the positions the fixture
-    /// wrote, since the integrator runs before the narrowphase and the fixture
-    /// bodies carry no velocity. Deliberately not the production tick: nothing
-    /// pinned below is a function of it.
     const FIXTURE_DT: f32 = 1.0 / 60.0;
 
-    /// Overlap depth of a fixture pair, in world units. Comfortably past
-    /// `PENETRATION_SLOP` so the narrowphase reports rather than grazes.
+    /// Past `PENETRATION_SLOP`, so the narrowphase reports rather than
+    /// grazes.
     const FIXTURE_OVERLAP: f32 = 0.2;
 
-    /// Separation between fixture pairs. Far past the sum of two bounding
-    /// radii, so the broadphase cannot couple two pairs into one island however
-    /// the sweep prunes.
+    /// Far past the sum of two bounding radii, so the broadphase cannot
+    /// couple two pairs into one island.
     const FIXTURE_GROUP_GAP: f32 = 20.0;
 
-    /// Sideways speed given to one body of the sliding fixture, in world units
-    /// per second. Fast enough that the Coulomb clamp `|jt| <= mu*jn` binds on
-    /// the first step, so the tangent accumulator is the cap rather than a
-    /// rounding artefact of a nearly-stationary contact.
+    /// Fast enough that the Coulomb clamp `|jt| <= mu*jn` binds on the
+    /// first step, so the tangent accumulator is the cap rather than a
+    /// rounding artefact.
     const FIXTURE_SLIDE_SPEED: f32 = 3.0;
 
-    /// A world whose contact set is known by construction: `pairs` disjoint
-    /// pairs of overlapping spheres, one island each. Positions are written
-    /// rather than thrown into place because the property under test is the map
-    /// from solver state to geometry, and routing through a throw would make
-    /// the contact set a function of the integrator and the decay instead.
     fn contacting_world(pairs: usize) -> PlaygroundPhysics {
         let mut physics = PlaygroundPhysics::new(2 * pairs, BODY_SIZE);
         for pair in 0..pairs {
@@ -2616,7 +2238,6 @@ mod tests {
         physics
     }
 
-    /// All four layers on, so no branch of the builder sits outside a pin.
     fn every_layer() -> PhysicsOverlay {
         PhysicsOverlay {
             contacts: true,
@@ -2633,9 +2254,6 @@ mod tests {
         overlay
     }
 
-    /// Fixture rows matching [`contacting_world`]'s body counts. The overlay
-    /// reads the world and not the row, but a frame whose row disagreed with
-    /// the world would be one no production path can build.
     const ROW_PAIR: &[ShapeEntry] = &[ROW[0], ROW[0]];
     const ROW_FOUR: &[ShapeEntry] = &[ROW[0], ROW[0], ROW[0], ROW[0]];
 
@@ -2745,11 +2363,6 @@ mod tests {
             );
         }
 
-        // Sign: the normal bar runs against the normal, which is the direction
-        // the accumulated impulse pushes body A. Flattened over contact points
-        // rather than manifolds, because a manifold holds up to `MAX_POINTS`
-        // slots and one chunk per manifold would leave every slot but the first
-        // unread.
         let points = world.manifolds.values().flat_map(|m| m.points.iter());
         for (cp, chunk) in points.zip(mesh.segments.chunks_exact(2)) {
             let bar = Vec3::from_array(chunk[0].1) - Vec3::from_array(chunk[0].0);
@@ -2778,10 +2391,6 @@ mod tests {
         let mut chunks = mesh.segments.chunks_exact(2);
         let mut braked = 0;
         for (&(a, b), manifold) in world.manifolds.iter() {
-            // One step's friction is capped at `mu*jn`, far too little to
-            // reverse the slide, so A still leads B along the axis the bar has
-            // to oppose. Read off the post-step velocities rather than the
-            // stored `tangent_dir`, which is the quantity under test.
             let lead = (world.bodies[a].velocity - world.bodies[b].velocity).truncate();
             for cp in &manifold.points {
                 let chunk = chunks.next().expect("two bars per contact");
@@ -2845,15 +2454,12 @@ mod tests {
         assert_eq!(islands.len(), 2, "fixture did not split into two islands");
 
         let mesh = overlay_mesh(&physics, &only(|o| o.islands = true));
-        // Three cross arms per member body, plus one link per constraint.
         let expected: usize = islands
             .iter()
             .map(|i| 3 * i.bodies.len() + i.constraints.len())
             .sum();
         assert_eq!(mesh.segments.len(), expected);
 
-        // Colours compared as bit patterns: the palette is a table lookup, so
-        // two entries are the same colour or they are not.
         let mut per_island: Vec<[u32; 4]> = Vec::new();
         for island in &islands {
             let mut colors = std::collections::BTreeSet::new();

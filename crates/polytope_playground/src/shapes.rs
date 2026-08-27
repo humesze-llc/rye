@@ -17,8 +17,6 @@ use crate::state::Demo;
 impl Demo {
     pub(crate) fn render_shapes_section(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        // The 120/600-cell is heavy only on the SDF raymarch path; the
-        // raster and Off paths stay at vsync, so warn only for SDF.
         let has_heavy_sdf = self.surface_mode.uses_sdf_for_polychora()
             && self.row.iter().any(|e| {
                 matches!(
@@ -37,8 +35,6 @@ impl Demo {
         let mut remove_idx: Option<usize> = None;
         let row_len = self.row.len();
         let row_h = CONTROL_H;
-        // Drop slot, computed once from the cursor and last frame's row
-        // rect so every slot agrees on the target.
         let row_rect_id = ui.make_persistent_id("shape-row-rect");
         let last_row_rect: Option<egui::Rect> = ui.ctx().memory(|m| m.data.get_temp(row_rect_id));
         let dragging_shape = egui::DragAndDrop::payload::<usize>(ui.ctx()).is_some();
@@ -101,10 +97,6 @@ impl Demo {
                                 });
                             });
                         }
-                        // Snap per-index pickup animation to default so
-                        // cards shifting into old slots don't inherit the
-                        // prior occupant's pickup_t/ghost-fade. Done in
-                        // this scope so the ids match those rendered.
                         if remove_idx.is_some() {
                             let ctx = ui.ctx();
                             for i in 0..=MAX_ROW_LEN {
@@ -171,8 +163,6 @@ impl Demo {
             .on_hover_cursor(egui::CursorIcon::Grab)
             .on_hover_text(entry.long_name)
             .interact(egui::Sense::click());
-        // Right-click removes, but only above one card (keep-at-least-
-        // one invariant).
         row_len > 1 && resp.clicked_by(egui::PointerButton::Secondary)
     }
 }

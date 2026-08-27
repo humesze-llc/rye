@@ -5,13 +5,11 @@ use loam_shape::polytope::Polytope4;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) enum WireframeProjection {
     /// Orthographic drop-w `(x, y, z, w) -> (x, y, z)`, the shadow down the
-    /// w-axis. Collapses w-opposite vertices to one R³ point, so axis-aligned
-    /// polytopes (the tesseract) render flat; the 5-cell and 24-cell read better.
+    /// w-axis.
     #[default]
     Shadow,
     /// 4D pinhole at `(0, 0, 0, focal_distance)` projecting onto the `w = 0`
-    /// 3-flat, foreshortening by `focal / (focal - w)`. The classical
-    /// cube-within-a-cube tesseract view (+w face outer, -w inner).
+    /// 3-flat, foreshortening by `focal / (focal - w)`.
     WPinhole,
     /// 4D Schlegel diagram: central projection from just outside the chosen
     /// boundary cell onto its 3-flat (Coxeter, *Regular Polytopes*, ch. 13); the
@@ -30,25 +28,19 @@ pub(crate) enum WireframeProjection {
     /// future dedicated Schlegel demo. `allow(dead_code)` marks the variant as
     /// retained on purpose; removing it signals Schlegel is fully gone.
     #[allow(dead_code)]
-    Schlegel {
-        /// Index of the boundary cell in the polytope's canonical cell order.
-        cell_index: u32,
-    },
+    Schlegel { cell_index: u32 },
     /// Conformal stereographic projection from S³ (unit-circumradius vertices) to
     /// R³, casting away from a configurable pole (default
     /// [`STEREOGRAPHIC_DEFAULT_POLE`]; live value `Demo::stereographic_pole`).
     /// Edges render as S³ great-circle arcs (see [`default_edge_blend`]).
-    /// Angle-preserving, distance-distorting: the pole-facing cell balloons
-    /// outward. `EuclideanR4` normalizes each vertex onto S³ first, so the
+    /// `EuclideanR4` normalizes each vertex onto S³ first, so the
     /// `BODY_SIZE`-scaled vertices read correctly.
     Stereographic,
     /// Drop-w paired with the demo-side cell-level w-range cull (the
     /// `wireframe_hyperslice` filter): the wireframe thins to edges of cells whose
     /// body-local w-range overlaps a slab around `w_slice`. Cell-level (not
     /// edge-level) so a kept edge agrees with the active-edge coloring and the
-    /// cross-section. The projection stays drop-w
-    /// ([`loam_math::Projection::Identity`]); the cull does the slicing. Slab width
-    /// is `Demo::wireframe_hyperslice_thickness`.
+    /// cross-section.
     Hyperslice,
 }
 
@@ -66,7 +58,6 @@ pub(crate) enum WireframeProjection {
 pub(crate) struct SchlegelParams {
     /// Polytope resolved against; the cache is invalid if it changes.
     pub(crate) polytope: Polytope4,
-    /// The (already-clamped) boundary cell index.
     pub(crate) cell_index: u32,
     /// Outward unit normal of the chosen cell's hyperplane, CANONICAL coords.
     pub(crate) cell_normal: glam::Vec4,
@@ -185,9 +176,6 @@ pub(crate) fn resolve_schlegel_params(polytope: Polytope4, cell_index: u32) -> S
 /// enum, cache, UI stepper, and console report never disagree about the boundary
 /// cell. Every other mode (and subjectless `Schlegel`) passes through unchanged
 /// and clears the cache.
-///
-/// Pure so the index-sync invariant is unit-testable without a GPU-backed
-/// `Demo`; `Demo::resolve_schlegel_cache` is the one caller.
 pub(crate) fn synced_schlegel_projection(
     projection: WireframeProjection,
     subject: Option<Polytope4>,
@@ -207,8 +195,7 @@ pub(crate) fn synced_schlegel_projection(
 /// Edge geometry for `projection`: S3 great-circle arcs (`blend == 1`) for
 /// Stereographic (a conformal-map edge is a circular arc, not a chord), flat R4
 /// chords (`blend == 0`) otherwise. Derived from the projection, not a separate
-/// control, so it can never disagree with the map. Read per frame by the
-/// wireframe builder (`Demo::record_wireframe_overlay`).
+/// control, so it can never disagree with the map.
 pub(crate) fn default_edge_blend(projection: WireframeProjection) -> f32 {
     match projection {
         WireframeProjection::Stereographic => 1.0,
@@ -237,9 +224,7 @@ pub(crate) struct ModeAnnotation {
 /// Educational annotation for `projection`, or `None` for the default drop-w
 /// (nothing non-obvious to explain). Every other projection returns `Some` with
 /// distinct, non-empty copy.
-///
-/// Pure so the `(mode) -> copy` mapping is unit-testable without a GPU-backed
-/// `Demo`; `Demo::render_mode_annotation` is the one caller. Explanations
+/// Explanations
 /// follow Coxeter, *Regular Polytopes*, ch. 13 (Schlegel) and the conformal map
 /// `(x, y, z) / (1 - w)` (Wikipedia, "Stereographic projection").
 pub(crate) fn mode_annotation(projection: WireframeProjection) -> Option<ModeAnnotation> {

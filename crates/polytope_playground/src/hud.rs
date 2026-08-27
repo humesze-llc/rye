@@ -1,11 +1,3 @@
-//! Owned by the scene, not by the shell. The pre-shell version hung off the
-//! `App` because it had to draw after the demo's own passes; under
-//! `loam_app::shell` a scene's `record` is already the last thing before egui
-//! paints, so that ordering no longer picks an owner. What does: every value
-//! the readout formats is `Demo` state, and the shell hosts scenes whose state
-//! it knows nothing about, so a shell-owned HUD would need a `Scene` hook with
-//! one implementor plus an atlas and pipeline every other scene pays for.
-
 use std::fmt::Write as _;
 
 use anyhow::Result;
@@ -15,37 +7,24 @@ use loam_text::TextRenderer;
 
 use crate::state::Demo;
 
-/// Draw size, in egui points. Scaled to physical pixels by the frame's
-/// pixels-per-point, so the readout keeps its apparent size across displays.
 const HUD_SIZE_PT: f32 = 16.0;
 /// Atlas rasterization size, in physical pixels: four times the draw size, so
 /// the quads still minify at a 4x scale factor. loam-text has no mip chain,
 /// and magnification is the visibly worse direction.
 const HUD_BAKE_PX: f32 = 4.0 * HUD_SIZE_PT;
-/// Inset from the top-left corner of the region the shell's panels leave free.
 const HUD_INSET_PT: f32 = 16.0;
 const HUD_COLOR: [f32; 4] = [0.92, 0.96, 1.0, 1.0];
-/// Drop shadow, offset by [`HUD_SHADOW_OFFSET_PT`]. The readout sits over
-/// arbitrary raymarched color, so a single flat text color is not legible on
-/// its own.
 const HUD_SHADOW_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.7];
 const HUD_SHADOW_OFFSET_PT: f32 = 1.0;
 
 /// Plane order matches `Plane4::ALL`: xy, xz, xw, yz, yw, zw.
 const PLANE_NAMES: [&str; 6] = ["xy", "xz", "xw", "yz", "yw", "zw"];
-/// Placeholder for an inactive plane, same width as a plane name so the strip
-/// keeps a fixed column layout.
 const PLANE_OFF: &str = "..";
 
-/// Live values the readout formats. Copied out of `Demo` so the formatter is
-/// testable without a GPU-backed demo.
 struct Readout {
     w_slice: f32,
     rot_time: f32,
     rate_scale: f32,
-    /// Slot the rotation controls are aimed at, and the row length it sits
-    /// in. The plane strip below is that slot's mask, not the row's, so the
-    /// readout has to name whose planes it is showing.
     selected: usize,
     slots: usize,
     active: [bool; 6],
@@ -64,8 +43,6 @@ impl Readout {
     }
 }
 
-/// Format the readout into `out`, which is cleared first.
-///
 /// Values are right-aligned in a fixed-width column. loam-text lays out on
 /// advance widths only, so column alignment is available exclusively through a
 /// monospace face plus padded formatting.
@@ -103,8 +80,6 @@ pub(crate) struct HudSeat {
 }
 
 impl Default for HudSeat {
-    /// The seat a frame that never ran `ui` would draw at: inset from the
-    /// viewport corner with no chrome to clear.
     fn default() -> Self {
         Self {
             origin_px: [HUD_INSET_PT, HUD_INSET_PT],
@@ -119,14 +94,10 @@ impl HudSeat {
     }
 }
 
-/// The readout's top-left in egui points: inset from `free`, the region egui's
-/// panels leave (`Context::available_rect`), so the shell's menu bar is cleared
-/// by construction rather than by a guessed offset.
 fn hud_origin(free: egui::Rect) -> egui::Pos2 {
     free.left_top() + egui::vec2(HUD_INSET_PT, HUD_INSET_PT)
 }
 
-/// Convert [`hud_origin`] into the physical pixels loam-text takes.
 pub(crate) fn hud_seat(free: egui::Rect, pixels_per_point: f32) -> HudSeat {
     let origin = hud_origin(free);
     HudSeat {
@@ -135,14 +106,6 @@ pub(crate) fn hud_seat(free: egui::Rect, pixels_per_point: f32) -> HudSeat {
     }
 }
 
-/// The block the readout occupies, in egui points, for comparison against the
-/// chrome's rects. Measurement is linear in size, so measuring at
-/// [`HUD_SIZE_PT`] gives points directly whatever the display's scale factor.
-///
-/// Nothing in the draw path needs the extent, only the origin, so this exists
-/// to state the claim the chrome-clearance test checks. It shares
-/// [`hud_origin`] with the draw path rather than restating the inset.
-///
 /// The advance box, not the ink box; see `loam_text::TextMetrics::measure`.
 #[cfg(test)]
 fn hud_rect(free: egui::Rect, metrics: &loam_text::TextMetrics, readout: &str) -> egui::Rect {
@@ -179,13 +142,10 @@ fn draw_list(seat: HudSeat) -> [HudDraw; 2] {
 
 pub(crate) struct TextHud {
     text: TextRenderer,
-    /// Rebuilt every frame with `clear` + `write!`, keeping the allocation.
     line_buf: String,
 }
 
 impl TextHud {
-    /// Bake the atlas and build the pipeline against the device's current
-    /// target format and sample count.
     pub(crate) fn new(rd: &RenderDevice) -> Result<Self> {
         let text = TextRenderer::new(
             &rd.device,
@@ -201,9 +161,6 @@ impl TextHud {
         })
     }
 
-    /// Format and record the readout into the frame's encoder. No-op while
-    /// `Demo::show_text_hud` is off.
-    ///
     /// Recorded, not submitted: a nested submit would reach the GPU before the
     /// scene passes already sitting in this encoder, painting the readout under
     /// the scene instead of over it.
@@ -227,11 +184,8 @@ impl TextHud {
     }
 }
 
-/// Hack Regular, shipped as raw bytes by the `epaint_default_fonts` asset
-/// crate. Chosen over committing a TTF: the file is already in the dependency
-/// tree (egui bundles it) and monospace is what the aligned columns need. The
-/// crate contains no egui code, so this does not re-couple the first-party text
-/// path to egui.
+/// The crate contains no egui code, so this does not re-couple the
+/// first-party text path to egui.
 fn hud_font_bytes() -> &'static [u8] {
     epaint_default_fonts::HACK_REGULAR
 }
@@ -251,9 +205,6 @@ mod tests {
         }
     }
 
-    /// The widest the readout ever gets: every plane named, and value columns
-    /// at full width. Chrome clearance has to hold for this one, not a typical
-    /// one.
     fn widest_readout() -> String {
         let mut out = String::new();
         write_readout(&mut out, &readout(-9.999, -99.99, -9.99, [true; 6]));
@@ -392,9 +343,6 @@ mod tests {
 
     #[test]
     fn hud_rect_clears_the_menu_bar_and_the_bottom_overlay() {
-        /// Share of the viewport height the overlay stand-in claims. The real
-        /// controls overlay auto-sizes to well under this even expanded, so
-        /// clearing the stand-in clears the real one.
         const OVERLAY_PROBE_FRACTION: f32 = 0.5;
 
         let metrics = hud_metrics();
@@ -443,7 +391,6 @@ mod tests {
                 ));
             });
             let (bar, overlay, hud) = rects.expect("run closure fills the rects");
-            // Degenerate chrome would make the disjointness below vacuous.
             assert!(bar.height() > 0.0, "{w}x{h}: menu bar measured empty");
             assert!(
                 overlay.height() >= h * OVERLAY_PROBE_FRACTION,

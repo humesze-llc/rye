@@ -12,46 +12,22 @@ use crate::director::Playback;
 use crate::physics::{BodyPose, PlaygroundPhysics, ThrowDrag};
 use crate::spins::{is_directed, SlotSpins};
 
-// Projection modes live in `projections.rs`; re-export so `impl Demo`, the test
-// module, and the other playground modules keep importing them from `state`.
 pub(crate) use crate::projections::*;
 pub(crate) use crate::sections::*;
 
-/// Continuous-rotation source driving `omega`, picked via the rotation tab row.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RotationMode {
-    /// Sum of unit bivectors of planes whose checkboxes are on (1..6 keys).
     Active,
-    /// Sum of bivectors from the composed seq: each term contributes
-    /// `scalar.unwrap_or(1.0) * sum_of_unit_bivectors`.
     Composer,
 }
 
-/// Visualisation mode (what the scene shows). Orthogonal to [`RotationMode`];
-/// picked by a top-level tab row above the rotation tabs.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ViewMode {
-    /// Multi-shape comparison: `self.row` of [`ShapeEntry`]s side-by-side at one
-    /// common `w_slice`. Drag-and-drop rearranges the left-to-right layout.
     Shapes,
-    /// Single-shape inspection: exactly the `strip_subject` (independent of the
-    /// row) rendered at one `w_slice` through the Shapes render path over a
-    /// one-element row ([`Demo::render_row`]). Stereographic and the
-    /// cross-section read better on one body than across a mixed row.
     Single,
-    /// Single-shape filmstrip: the `strip_subject` rendered N times across
-    /// evenly-spaced `w_slice` values around the slider's current `w`. The row UI
-    /// is hidden.
     Filmstrip,
 }
 
-/// The slice of [`ShapeEntry`]s the scene renders for `view_mode`.
-/// [`ViewMode::Single`] yields exactly the `strip_subject` (no allocation);
-/// every other mode renders the full `row`. Filmstrip draws `strip_subject`
-/// through its own grid path and is not a caller here.
-///
-/// Free function so the row-selection invariant is unit-testable without a
-/// GPU-backed [`Demo`]; [`Demo::render_row`] is the one caller.
 pub(crate) fn render_row_entries<'a>(
     view_mode: ViewMode,
     row: &'a [ShapeEntry],
@@ -65,9 +41,7 @@ pub(crate) fn render_row_entries<'a>(
 
 /// Whether `Demo::update` must re-emit the body uniforms this frame.
 ///
-/// Row, size and surface-mode edits are deliberately absent: each re-emits at
-/// the edit through [`Demo::rebuild_bodies`], so the per-frame test only has to
-/// catch what moves without one. `bodies_moving` must be read BEFORE the
+/// `bodies_moving` must be read BEFORE the
 /// physics step: a body that comes to rest during the step still has a final
 /// pose to upload, and an at-rest world is an exact fixpoint of the integrator
 /// (see [`PlaygroundPhysics::at_rest`]), so it has none.
@@ -83,8 +57,6 @@ pub(crate) fn body_upload_needed(
     bodies_moving || spins.rotors_differ_from(uploaded_rotors)
 }
 
-/// Assign `value` and report whether it differed, so a uniform write that
-/// changes nothing does not cost a buffer upload.
 pub(crate) fn set_if_changed<T: PartialEq>(slot: &mut T, value: T) -> bool {
     if *slot == value {
         return false;
@@ -93,32 +65,16 @@ pub(crate) fn set_if_changed<T: PartialEq>(slot: &mut T, value: T) -> bool {
     true
 }
 
-/// How the parent-wireframe edges are colored. Orthogonal to
-/// [`Demo::wireframe_nearest_active`]: the color mode picks the hue, the
-/// nearest-active toggle modulates alpha on top.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) enum WireframeColorMode {
-    /// Per-vertex RGB from [`loam_shape::polytope::vertex_color_by_position`];
-    /// each edge is a gradient between its endpoint hues (same scheme as
-    /// `Polytope4::lines_colored_by_position`).
     #[default]
     VertexGradient,
-    /// Distinct solid RGB per edge via greedy graph-coloring on the line graph,
-    /// so edges sharing a vertex differ. Deterministic golden-ratio hue spacing.
     UniqueEdge,
-    /// Per-vertex color by SIGNED body-local `w`: blue at `-w`, orange at `+w`,
-    /// neutral at the slice. Normalized against canonical max `|w|` (a fixed band,
-    /// NOT a per-frame rotated extent) so the gradient is temporally stable.
-    /// Mirrors `LineRasterStaticR4`'s depth cue in `tesseract_demo`.
     WDepth,
-    /// Binary green/gray by cell activity: edges of a cell the slice is currently
-    /// intersecting are green, the rest gray. Complements the continuous
-    /// `nearest-active` gradient (which shows how strongly each cell is crossed).
     Active,
 }
 
 impl WireframeColorMode {
-    /// All four modes in console-cycle order.
     pub(crate) const ALL: [Self; 4] = [
         Self::VertexGradient,
         Self::UniqueEdge,
@@ -146,8 +102,6 @@ impl WireframeColorMode {
     }
 }
 
-/// Camera control mode. `Orbit` (default) is the origin-focused
-/// scroll-zoom/drag-to-rotate camera; `FreeRoam` flies via WASD + mouse-look.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CameraMode {
     #[default]
@@ -163,17 +117,10 @@ pub(crate) enum CameraMode {
 /// matters).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RotorTerm {
-    /// Unit-bivector planes summed inside `exp(...)`. An empty term is dropped.
     pub(crate) planes: Vec<Plane4>,
-    /// Optional scalar prefix `phi` in radians. `None` is unit magnitude;
-    /// `Some(phi)` scales the sum before `exp()`. "Add scalar" inits to
-    /// `FRAC_PI_2`; `Default` is `None`.
     pub(crate) scalar: Option<f32>,
 }
 
-/// Render `(p_0 + p_1 + ...)` (parens iff multi-plane) into the current ui, each
-/// plane through `render_plane`. Shared paren + `+` logic keeps a bivector sum
-/// reading identically across all callsites.
 pub(crate) fn render_plane_sum(
     ui: &mut loam_app::egui::Ui,
     planes: &[Plane4],
@@ -194,8 +141,6 @@ pub(crate) fn render_plane_sum(
     }
 }
 
-/// Render a [`RotorTerm`] as the `scalar · bivec` form inside `exp(...)`.
-/// Multi-plane terms get inner parens; an absent scalar is dropped.
 pub(crate) fn render_term(term: &RotorTerm) -> String {
     let plane_str = term
         .planes
@@ -214,8 +159,6 @@ pub(crate) fn render_term(term: &RotorTerm) -> String {
     }
 }
 
-/// Wrap bivector-expression parts into one expression (paren-grouped when
-/// multiple). `None` for an empty list so the caller can return early.
 pub(crate) fn render_bivector_sum(parts: &[String]) -> Option<String> {
     match parts {
         [] => None,
@@ -224,9 +167,6 @@ pub(crate) fn render_bivector_sum(parts: &[String]) -> Option<String> {
     }
 }
 
-/// Displayed angle of one Active-mode plane at time `t`: the baseline plus the
-/// spin `t * BASE_ROTATION_RATE` when active. Free function so the composition
-/// is unit-testable without a GPU-backed `Demo`.
 pub(crate) fn active_plane_angle(base: f32, active: bool, t: f32) -> f32 {
     base + if active { t * BASE_ROTATION_RATE } else { 0.0 }
 }
@@ -265,46 +205,23 @@ pub(crate) fn angular_velocity_from_seq(seq: &[RotorTerm], rate_scale: f32) -> B
 /// overlay's auto-sized height is measured off a mixture of the two.
 #[derive(Clone, Debug)]
 pub(crate) enum DeferredAction {
-    /// `+xy` etc. button on the plane row: append to draft.
     DraftPush(Plane4),
-    /// `Add` button on the draft preview: commit current draft as a new RotorTerm in
-    /// seq, clear draft.
     SeqCommitDraft,
-    /// `×` button on the draft preview: discard the draft.
     DraftClear,
-    /// Typed-formula bar: push a fully-formed term to seq.
     SeqPushTerm(RotorTerm),
 }
 
-/// Drag-and-drop payload for the rotor sequence UI. One enum so a term card is a
-/// single drop zone branching on the variant: `Term` reorders the seq, `Entry`
-/// migrates a plane into this term.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DragPayload {
-    /// The whole term at this seq index is being dragged.
     Term(usize),
-    /// `Entry(term_idx, plane_idx)`: a single plane pill from the given term is being
-    /// dragged.
     Entry(usize, usize),
 }
 
-/// Spawn position of the `slot`-th of `n` bodies, centred on the world origin
-/// and spaced by [`BODY_X_SPACING`]. The static layout only: once a body is
-/// in a [`PlaygroundPhysics`] world its live position comes from there.
 pub(crate) fn body_position(slot: usize, n: usize) -> [f32; 4] {
     let x = (slot as f32 - (n as f32 - 1.0) * 0.5) * BODY_X_SPACING;
     [x, BODY_Y, 0.0, 0.0]
 }
 
-/// SDF body uniform for one entry of a rendered row of `slots`, with polychora
-/// opt-out per [`SurfaceMode`]: in Raster / Off the returned uniform is
-/// `BodyUniform::default()` (kind = Invalid), which the kernel skips, and the
-/// surface comes from the section-face raster (Raster) or nowhere (Off).
-/// Smooth-surface shapes ignore the mode and always produce a live SDF body.
-///
-/// The raymarched body's centre and orientation come from `physics`, not from
-/// `spin` over the static layout: the kernel and the raster passes read the
-/// same pose, so the SDF surface and the wireframe around it cannot separate.
 pub(crate) fn sdf_body_uniform(
     physics: &PlaygroundPhysics,
     entry: &ShapeEntry,
@@ -339,33 +256,17 @@ pub(crate) fn sdf_body_uniform(
     )
 }
 
-/// One frame's rendered row (which shape sits in which slot, where the bodies
-/// actually are, how 4D maps to R³) as its readers see it: the three raster
-/// passes (section caps, wireframe overlay, point sprites) and the egui
-/// overlay anchors. The SDF upload is the Shapes-view path that does NOT read
-/// it; [`sdf_body_uniform`] takes the same poses from the same
-/// [`PlaygroundPhysics`] directly. Filmstrip has no body behind it at all (see
-/// [`crate::physics`]).
-///
 /// A value cannot exist without a [`PlaygroundPhysics`], and each reader takes
 /// ALL of its per-body geometry from one, so no pass can quietly fall back to
 /// the authored spin over the static layout while the others follow the thrown
 /// bodies. [`Demo::row_frame`] is the only production constructor.
 pub(crate) struct RowFrame<'a> {
     pub(crate) physics: &'a PlaygroundPhysics,
-    /// The rendered row (see [`render_row_entries`]); its length is the slot
-    /// count [`PlaygroundPhysics::pose`] checks the world against.
     pub(crate) row: &'a [ShapeEntry],
-    /// Per-slot UI rotation, each applied before its own body's physics
-    /// orientation. A row-wide rotor here is what let one spin drive every
-    /// body; taking it per slot is what lets two bodies hold different
-    /// orientations in one frame.
     pub(crate) spins: &'a SlotSpins,
     pub(crate) body_size: f32,
-    /// The live 4D -> R³ map ([`Demo::resolved_wireframe_projection`]).
     pub(crate) projection: Projection<4>,
     pub(crate) w_slice: f32,
-    /// Eye-to-focus distance; only the stereographic clip radius reads it.
     pub(crate) camera_distance: f32,
 }
 
@@ -375,9 +276,6 @@ impl RowFrame<'_> {
             .pose(slot, self.row.len(), self.spins.rotor(slot))
     }
 
-    /// `canonical` carried into `slot`'s live body frame at `scale` (refilling
-    /// `out`), returning the R³ translate to apply AFTER projection. See
-    /// [`PlaygroundPhysics::body_frame`].
     pub(crate) fn body_local(
         &self,
         slot: usize,
@@ -395,9 +293,6 @@ impl RowFrame<'_> {
         )
     }
 
-    /// World-R³ anchor for one canonical point of `slot`: body frame, then
-    /// projection, then translate. Same order as the raster passes, so a
-    /// callout's leader line lands on the vertex the wireframe drew.
     pub(crate) fn anchor_r3(&self, slot: usize, canonical: Vec4) -> Vec3 {
         let pose = self.pose(slot);
         <loam_math::EuclideanR4 as loam_math::RasterizableSpace<4>>::project_point(
@@ -408,219 +303,73 @@ impl RowFrame<'_> {
 }
 
 pub(crate) struct Demo {
-    /// Rigid-body state for the rendered row, one body per slot. Drives every
-    /// render path's pose; see [`crate::physics`].
     pub(crate) physics: PlaygroundPhysics,
-    /// Flick in progress, from the press that picked a body to the release
-    /// that throws it. See [`Demo::update_throw`].
     pub(crate) throw_drag: Option<ThrowDrag>,
-    /// Last frame's left-button state, so the flick can act on the press and
-    /// release EDGES; `FrameInput` reports the level.
     pub(crate) left_was_down: bool,
-    /// Hypergimbal overlay state: visibility, hover, and the held ring. Ring
-    /// geometry is constant, so nothing about the widget's shape lives here.
     pub(crate) gimbal: crate::hypergimbal::GimbalUi,
-    /// Depth-free line pass for the hypergimbal rings, drawn last so the
-    /// manipulator is never hidden by the geometry it manipulates.
     pub(crate) gimbal_node: loam_render::LineRasterNode,
     pub(crate) camera: Camera<EuclideanR3>,
     pub(crate) orbit: OrbitController<EuclideanR3>,
-    /// Freecam preset (mouse-look + WASD + cursor grab); drives the camera in
-    /// `CameraMode::FreeRoam`. Owns its own yaw/pitch/position/grab state.
     pub(crate) freecam: Freecam,
     pub(crate) camera_mode: CameraMode,
     pub(crate) node: Hyperslice4DNode,
-    /// Set when the CPU-side hyperslice uniforms stop matching the GPU copy: a
-    /// rotor, w-slice, camera, viewport, floor, surface-mode or row edit.
-    /// Cleared by the single flush in [`crate::Demo::record`], so a frame in
-    /// which nothing moved uploads nothing.
     pub(crate) sdf_upload_pending: bool,
-    /// Rotors the body slots were last built from, one per rendered slot.
-    /// [`RotationMode::Active`] recomposes every slot's rotor from `rot_time`
-    /// each frame, so only a value comparison separates a spinning frame from
-    /// a still one. See [`body_upload_needed`].
     pub(crate) uploaded_rotors: Vec<Rotor4>,
-    /// Rasterizer node for the cross-section perimeter (cyan edges around each cap
-    /// polygon). Filled caps are not drawn here; this only outlines the boundaries
-    /// between adjacent cell contributions.
     pub(crate) section_edges: loam_render::LineRasterNode,
-    /// Rasterizer node for the dim "parent wireframe" overlay: the full edge graph
-    /// per body, projected via drop-w.
     pub(crate) parent_wireframe: loam_render::LineRasterNode,
-    /// Whether the cross-section + parent-wireframe overlay renders. Off by
-    /// default; toggle via `wireframe on|off`.
     pub(crate) wireframe_enabled: bool,
-    /// When `true`, parent-wireframe edges are alpha-graded by how close `w_slice`
-    /// is to the midpoint of each cell they belong to, so brightness propagates as
-    /// a wave as the slice scrubs. When `false`, every edge uses a uniform alpha.
     pub(crate) wireframe_nearest_active: bool,
-    /// The honest cross-section layer: the drop-w slice 3-flat, NEVER reprojected
-    /// through [`Self::wireframe_projection`] (the same geometry the SDF raymarch
-    /// shows), so a projection change never distorts the slice. On by default. See
-    /// [`SectionLayer`].
     pub(crate) cross_section: SectionLayer,
-    /// The projected-cap layer: the slice reprojected through the active
-    /// [`Self::wireframe_projection`] so it can sit on a Schlegel / stereographic
-    /// wireframe. Off by default; overlaid with [`Self::cross_section`]. See
-    /// [`SectionLayer`].
     pub(crate) projected_cap: SectionLayer,
-    /// Base RGB for wireframe edges. See [`WireframeColorMode`].
     pub(crate) wireframe_color_mode: WireframeColorMode,
-    /// How the parent wireframe's 4D vertices project to R³ (the cross-section is
-    /// always drop-w; this only affects the overlay).
     pub(crate) wireframe_projection: WireframeProjection,
-    /// Cached canonical Schlegel parameters for the current `(polytope,
-    /// cell_index)`; `Some` only while `wireframe_projection` is `Schlegel` over a
-    /// polychoral row. Resolved at cell-select time via
-    /// [`Demo::resolve_schlegel_cache`], never per frame:
-    /// [`Polytope4::face_planes`] runs a `LazyLock` O(V·D³) fit that must stay off
-    /// the hot path.
     pub(crate) schlegel_params: Option<SchlegelParams>,
-    /// Live pole for the Stereographic projection (default
-    /// [`STEREOGRAPHIC_DEFAULT_POLE`]). A field rather than baked into the
-    /// payload-free [`WireframeProjection::Stereographic`] variant so the enum
-    /// stays a plain marker; [`Self::resolved_wireframe_projection`] substitutes
-    /// it per frame. Console-settable via `wireframe`.
     pub(crate) stereographic_pole: glam::Vec4,
-    /// Wireframe Hyperslice toggle: when `true`, the parent wireframe is culled to
-    /// edges of cells whose body-local w-range intersects a slab of width
-    /// [`Self::wireframe_hyperslice_thickness`] around `w_slice`. Off by default. A
-    /// CPU cell-level cull (so it agrees with the active-edge coloring and the
-    /// cross-section), composable with the SDF and the cyan perimeter.
     pub(crate) wireframe_hyperslice: bool,
-    /// Full width of the Hyperslice slab. An edge survives iff a cell containing
-    /// both endpoints has a w-range intersecting `[w_slice - t/2, w_slice + t/2]`.
-    /// Floored at [`crate::consts::HYPERSLICE_MIN_THICKNESS`] at the test site so
-    /// `0` degrades to "cells straddling `w_slice`." Default
-    /// [`crate::consts::HYPERSLICE_DEFAULT_THICKNESS`].
     pub(crate) wireframe_hyperslice_thickness: f32,
-    /// Pixel width of parent-wireframe edges (default 1.8 px; finer reads poorly
-    /// against the SDF backdrop on hi-DPI). Tuneable via `wireframe width <N>`.
     pub(crate) wireframe_width_px: f32,
-    /// Uniform edge alpha when [`Self::wireframe_nearest_active`] is OFF (default
-    /// 1.0); tuneable via `wireframe alpha <N>`. Ignored when `nearest_active` is
-    /// ON, where alpha follows the per-cell crossing strength (0.10 to 0.85).
     pub(crate) wireframe_alpha: f32,
-    /// Memoized per-edge palette for the `unique-edge` color mode, keyed by
-    /// [`Polytope4`]. A function of topology alone (greedy line-graph coloring), so
-    /// valid for the process lifetime once computed.
     pub(crate) unique_edge_palette_cache: HashMap<Polytope4, Vec<[f32; 4]>>,
-    /// Memoized canonical cell centroids, keyed by [`Polytope4`]. Topology-only
-    /// like [`Self::unique_edge_palette_cache`], so the 600-cell's 600 centroid
-    /// folds run once per launch rather than once per body per frame.
     pub(crate) cell_centers_cache: HashMap<Polytope4, Vec<Vec4>>,
-    /// Runtime multiplier on [`BODY_SIZE`] for all polychora (default 1.0, range
-    /// `(0, 10]`; the bound preserves the SDF marcher's bounded-w assumption). Set
-    /// via `surface scale <N>`; applies uniformly to wireframe, SDF, perimeter, and
-    /// cap-fill geometry.
     pub(crate) surface_scale: f32,
-    /// `y = 0` gridded floor visibility (default on; `floor` command). Gated at the
-    /// kernel via `u.params[0]` so off is zero-cost (the halfspace SDF never
-    /// converges and the checkerboard never paints).
     pub(crate) floor_enabled: bool,
-    /// Filled-faces rasterizer for the polychoral cross-section. When raster mode
-    /// is on it replaces the SDF for the six regular 4-polytopes (those SDF slots
-    /// get `BodyUniform::default()`, which the kernel skips). Per-body solid color
-    /// + face-normal Lambert.
     pub(crate) section_faces: loam_render::TriangleRasterNode,
-    /// Translucent, depth-write-disabled variant of [`Self::section_faces`], used
-    /// when a layer's `surface_alpha < 1.0` so the wireframe shows through caps.
-    /// Same shaders + blend; only `DepthMode::ReadOnly` differs. Both section
-    /// layers route through this pair, picking opaque vs translucent per layer.
     pub(crate) section_faces_translucent: loam_render::TriangleRasterNode,
-    /// Antialiased point-disc rasterizer for vertex + cell-center sprites.
-    /// Uploaded with the combined point mesh each frame the overlay is enabled.
     pub(crate) points_node: loam_render::PointRasterNode,
-    /// Master toggle for the points overlay (off by default).
     pub(crate) points_enabled: bool,
-    /// When [`Self::points_enabled`] is on, render a sprite at each vertex.
     pub(crate) points_show_vertices: bool,
-    /// When [`Self::points_enabled`] is on, render a sprite at each cell centroid.
-    /// Toggleable independently of vertices (600 sprites read as clutter on the
-    /// 600-cell).
     pub(crate) points_show_cell_centers: bool,
-    /// Screen-space radius (px) for both vertex and cell-center sprites.
     pub(crate) points_size_px: f32,
-    /// Scratch buffer reused across frames + bodies inside `render_points`.
     pub(crate) points_mesh_scratch: loam_shape::PointMesh<3>,
-    /// Which solver quantities the physics debug overlay draws. Every layer is
-    /// off by default; the `physics` command flips them. See
-    /// [`crate::render::PhysicsOverlay`].
     pub(crate) physics_overlay: crate::render::PhysicsOverlay,
     /// Line rasterizer for the physics readout. Its own node rather than a
     /// second upload of [`Self::parent_wireframe`]: a frame's queue writes all
     /// land before its single command buffer, so two uploads of one node would
     /// feed both passes the second mesh.
     pub(crate) physics_overlay_node: loam_render::LineRasterNode,
-    /// Combined physics-overlay mesh, reused across frames on the same terms as
-    /// the wireframe scratch. Never filled while every layer is off.
     pub(crate) physics_overlay_mesh_scratch: loam_shape::LineMesh<3>,
-    /// Shared depth attachment for the Shapes-view rasterizer chain, sized to the
-    /// swapchain via [`loam_render::DepthBuffer::ensure`]. Ensured and cleared in
-    /// [`crate::Demo::ensure_and_clear_shared_depth`] on the frames something
-    /// reads it; `section_faces` writes it, `parent_wireframe` reads it for
-    /// occlusion. In SDF mode the cleared `1.0` leaves every wireframe fragment
-    /// passing, preserving the historical visual.
     pub(crate) section_faces_depth: Option<loam_render::DepthBuffer>,
-    /// Scratch reused across frames + bodies inside `render_section_faces` to avoid
-    /// per-body allocation on the 240 fps hot path.
     pub(crate) section_world_vertices_scratch: Vec<glam::Vec4>,
-    /// Combined-mesh scratch for the honest drop-w cross-section layer.
     pub(crate) section_faces_mesh_scratch: loam_shape::TriangleMesh<3>,
-    /// Combined-mesh scratch for the projected-cap layer, separate from
-    /// [`Self::section_faces_mesh_scratch`] so both layers build in one pass over
-    /// the row without clobbering each other's allocation.
     pub(crate) section_faces_projected_scratch: loam_shape::TriangleMesh<3>,
-    /// Per-vertex body-local projected points for the cap-fill near-pole clip,
-    /// reused inside `build_section_layer_meshes`. Lets the triangle-granularity
-    /// Stereographic drop reuse the same `sample_in_radius` predicate the wireframe
-    /// and cap perimeter use, keeping fill and outline culling in lockstep.
     pub(crate) section_clip_projected_scratch: Vec<glam::Vec3>,
-    /// Reused buffer for per-frame body-uniform uploads (see
-    /// `upload_render_row_bodies`).
     pub(crate) body_uniform_scratch: Vec<BodyUniform>,
-    /// Reused great-circle sampling buffer for `push_blended_edge`, taken via
-    /// `mem::take` so the Stereographic arc path does not allocate per frame.
     pub(crate) slerp_scratch: Vec<glam::Vec4>,
-    /// Combined section-perimeter mesh for the wireframe overlay, reused across
-    /// frames. Worst measured case is an eight-slot row of 600-cells with both
-    /// perimeters on: ~12k segments, about 0.7 MB and a dozen grow-and-copy
-    /// rounds if rebuilt from empty each frame. Unlike the parent mesh this
-    /// does not scale with the projection, since the perimeter emits at most
-    /// one segment per cap edge whatever the projection is.
+    /// Reused across frames: worst measured case (an eight-slot row of
+    /// 600-cells, both perimeters on) is ~12k segments, about 0.7 MB
+    /// rebuilt from empty each frame.
     pub(crate) wireframe_section_edges_scratch: loam_shape::LineMesh<3>,
-    /// One body's body-local section perimeter, refilled per body and consumed
-    /// once per enabled section layer (the two layers project the same outline
-    /// differently), then folded into
-    /// [`Self::wireframe_section_edges_scratch`].
     pub(crate) body_perimeter_scratch: loam_shape::LineMesh<3>,
-    /// Per-cell working set of the section core, handed to both
-    /// `polytope_section_perimeter_append` and `polytope_section_faces_append`
-    /// so the cap fit runs out of retained buffers instead of allocating per
-    /// crossed cell. The two are called from different render passes, which is
+    /// The two are called from different render passes, which is
     /// why `Demo::record_section_faces` running before
     /// `Demo::record_wireframe_overlay` is load-bearing and not incidental:
     /// each takes this buffer and restores it before the other runs.
     pub(crate) section_cap_scratch: loam_shape::polytope::SectionScratch,
-    /// Combined parent-wireframe edge mesh, reused across frames. Separate from
-    /// [`Self::wireframe_section_edges_scratch`] because both are built in one
-    /// pass over the row and uploaded to different raster nodes.
     pub(crate) wireframe_parent_lines_scratch: loam_shape::LineMesh<3>,
-    /// Body-local 4D vertex buffer shared by the wireframe and points builders
-    /// (they run sequentially within a frame); refilled per body by
-    /// `RowFrame::body_local`.
     pub(crate) overlay_local_vertices_scratch: Vec<glam::Vec4>,
-    /// Second body-local buffer for the point builder's inset cell centres,
-    /// which are live at the same time as [`Self::overlay_local_vertices_scratch`].
     pub(crate) overlay_center_locals_scratch: Vec<glam::Vec4>,
-    /// Per-cell crossing strengths for the frame's current body, shared by the
-    /// wireframe and points builders.
     pub(crate) overlay_cell_strengths_scratch: Vec<f32>,
-    /// How the six regular convex 4-polytopes are rendered. Smooth-surface shapes
-    /// (Clifford torus, duocylinder) ignore this and always use the SDF.
     pub(crate) surface_mode: SurfaceMode,
-    /// Polytope row from the `shapes` argument (or `DEFAULT_ROW`); drives body
-    /// uniforms and per-body label lookups.
     pub(crate) row: Vec<ShapeEntry>,
 
     pub(crate) w_slice: f32,
@@ -630,98 +379,51 @@ pub(crate) struct Demo {
     pub(crate) slider_right_held: bool,
 
     pub(crate) rotate: bool,
-    /// Per-slot UI rotation for the rendered row, and the slot the rotation
-    /// controls are aimed at. Each slot holds its own baselines, plane mask
-    /// and composed rotor; see [`crate::spins`].
     pub(crate) spins: SlotSpins,
-    /// `--director=<path>` playback, absent on an ordinary run. While it is
-    /// loaded it owns the slice offset and the slots its timeline names, and
-    /// those channels stop answering to `rot_time`; see [`crate::director`].
     pub(crate) playback: Option<Playback>,
     pub(crate) rate_scale: f32,
-    /// Accumulated rotating time (advances only while `rotate`; resets on **R**).
     pub(crate) rot_time: f32,
-    /// Upper bound on the `t` slider; doubles whenever `rot_time` exceeds it so the
-    /// handle stays meaningful at long elapsed times. Reset on `R`.
     pub(crate) t_slider_max: f32,
 
-    /// Whether the bottom controls overlay is expanded. `false` shows only the
-    /// slider strip + rate row; `true` extends to the mode tabs, mode-specific UI,
-    /// and shape row. Toggle via the chevron button or **H**.
     pub(crate) expanded: bool,
 
-    /// Whether the "About / help" modal is open (the `?` button).
     pub(crate) show_help: bool,
-    /// Whether the floating `Render` settings modal is open (off by default; the
-    /// gear button). A discoverability aid for the console-driven render settings.
     pub(crate) show_render_panel: bool,
-    /// Persistent state for the example annotation callout, anchored to the first
-    /// polychoron's vertex 0. Off by default; `View > Example callout` or the
-    /// `callout` command. Hosts the `loam_egui::callout` primitive.
     pub(crate) example_callout: loam_egui::CalloutState,
 
-    /// Persistent state for the per-mode annotation callout: a short explanation of
-    /// the active projection, anchored to the leading polychoron. Draws only when
-    /// [`mode_annotation`] returns `Some` AND this flag is on (on by default).
-    /// Toggle via `View > Mode annotation`.
     pub(crate) mode_annotation_open: loam_egui::CalloutState,
 
-    /// Whether the top-right rotation-formula popup is rendered (off by default;
-    /// checkbox in the expanded section).
     pub(crate) show_formula: bool,
 
-    /// Whether the bottom controls overlay is rendered (on by default). Toggle via
-    /// `View > Rotation controls` or `H` for an unobstructed scene.
     pub(crate) show_controls: bool,
 
-    /// Whether the `loam-text` state readout is drawn (off by default). Toggle
-    /// via the `hud` console command; drawn by `crate::hud::TextHud`.
     pub(crate) show_text_hud: bool,
 
     pub(crate) view_mode: ViewMode,
-    /// Filmstrip-axis toggles; at least one MUST be active when `view_mode ==
-    /// Filmstrip` (the UI enforces this). `strip_w` alone fans across the w slider,
-    /// `strip_t` alone across `rot_time`, both a 2D grid (axis assignment swappable
-    /// via `strip_swap_axes`).
     pub(crate) strip_w: bool,
     pub(crate) strip_t: bool,
-    /// With both `strip_w` and `strip_t` active, swap the default axis assignment
-    /// (w-on-columns / t-on-rows becomes the reverse).
     pub(crate) strip_swap_axes: bool,
-    /// Cell counts along each filmstrip axis. Range 3..=21.
     pub(crate) strip_count_w: usize,
     pub(crate) strip_count_t: usize,
-    /// Forward extent of the t-axis fan in animation seconds.
     pub(crate) strip_t_extent: f32,
-    /// Polytope rendered in each filmstrip cell. Independent of `self.row`.
     pub(crate) strip_subject: ShapeEntry,
 
     pub(crate) rotation_mode: RotationMode,
 
-    /// Mode change requested this frame by the mode tabs, applied after the overlay
-    /// renders so this frame's body still sees the old `rotation_mode`.
     pub(crate) pending_mode: Option<RotationMode>,
 
-    /// View change requested this frame by the view tab row.
     pub(crate) pending_view_mode: Option<ViewMode>,
 
-    /// Composer-mode actions deferred to end-of-frame (as for `pending_mode`).
     pub(crate) pending_actions: Vec<DeferredAction>,
 
-    /// Sequence of [`RotorTerm`]s the user is building in the panel.
     pub(crate) seq: Vec<RotorTerm>,
-    /// In-progress draft for the next term; "Add" commits it to `seq` and clears.
     pub(crate) draft: Vec<Plane4>,
 
-    /// Typed-formula input for the Composer's text bar.
     pub(crate) formula_input: String,
-    /// Last parse error from the formula bar.
     pub(crate) formula_error: Option<String>,
 }
 
 impl Demo {
-    /// The composer seq's net bivector direction (unscaled): sum over terms of
-    /// `scalar * sum_planes`. The scrub slider uses this as its rotation axis.
     pub(crate) fn compose_omega(&self) -> Bivector4 {
         let mut omega = Bivector4::ZERO;
         for term in &self.seq {
@@ -733,11 +435,6 @@ impl Demo {
         omega
     }
 
-    /// Per-animation-second angular velocity (`rate_scale`-independent). Active
-    /// mode sums the toggled basis bivectors; Composer delegates to the seq walker.
-    /// Active composes its rotor as a *product* ([`compose_active_rotor`]), so this
-    /// bivector is exact only for a single active plane (BCH-trivial); Composer's
-    /// sum semantics make its omega exact.
     pub(crate) fn omega_animation(&self) -> Bivector4 {
         match self.rotation_mode {
             RotationMode::Active => {
@@ -753,44 +450,22 @@ impl Demo {
         }
     }
 
-    /// The row slot every rotation control reads and writes. A press on a body
-    /// picks it; see [`crate::spins::SlotSpins::select_picked`].
     pub(crate) fn selected_slot(&self) -> usize {
         self.spins.selected()
     }
 
-    /// The selected slot's live orientation, and the rotor the subject-driven
-    /// UI (formula popup, filmstrip) renders under.
     pub(crate) fn selected_rotor(&self) -> Rotor4 {
         self.spins.rotor(self.spins.selected())
     }
 
-    /// Active-mode angle for the selected slot's plane `i` at time `t`.
-    /// Parameterized over `t` so the filmstrip can sample future times;
-    /// [`Self::active_displayed_angle`] is the `t = rot_time` specialization
-    /// the sliders read.
     pub(crate) fn active_angle_at(&self, plane_idx: usize, t: f32) -> f32 {
         self.spins.selected_spin().angle_at(plane_idx, t)
     }
 
-    /// Displayed Active-mode angle for plane `i` at the current `rot_time`. The
-    /// slider reads this; writing it sets the selected slot's `base_angles[i]`
-    /// so a drag on a spinning slider does not snap back to the pre-drag
-    /// baseline.
     pub(crate) fn active_displayed_angle(&self, plane_idx: usize) -> f32 {
         self.active_angle_at(plane_idx, self.rot_time)
     }
 
-    /// Orientation rotor for the SELECTED slot at time `t`, dispatched on the
-    /// rotation mode. The single source of truth every t-scrub and
-    /// filmstrip-offset site MUST use so they agree with the spin path:
-    ///
-    /// - **Active**: product-of-exp over that slot's baselines and mask
-    ///   (summing would reintroduce BCH coupling).
-    /// - **Composer**: `exp(omega_animation * t)`.
-    ///
-    /// The two coincide for a single active plane; they diverge only with two or
-    /// more non-commuting active planes.
     pub(crate) fn rotor_at_time(&self, t: f32) -> Rotor4 {
         match self.rotation_mode {
             RotationMode::Active => self.spins.selected_spin().active_rotor_at(t),
@@ -798,14 +473,6 @@ impl Demo {
         }
     }
 
-    /// Rebuild the row's rotors for the clock time `t`.
-    ///
-    /// Active mode's orientation is an absolute function of `t`, so every slot
-    /// is recomposed from its own baselines and mask. Composer mode integrates
-    /// a single authored seq, and there is only one of it: applying it to every
-    /// slot would be the row-wide spin per-slot rotation exists to remove, so it
-    /// drives the selected slot alone and the rest hold their pose.
-    ///
     /// Slots a loaded timeline names are skipped in both modes. This is the
     /// choke point every scrub reaches, so the suppression sits here rather
     /// than at each slider.
@@ -822,9 +489,6 @@ impl Demo {
         }
     }
 
-    /// Effective body radius after the [`Self::surface_scale`] multiplier. All
-    /// `BODY_SIZE` consumers route through here so `surface scale` applies
-    /// uniformly.
     pub(crate) fn effective_body_size(&self) -> f32 {
         BODY_SIZE * self.surface_scale
     }
@@ -832,35 +496,18 @@ impl Demo {
     /// True when entering `SurfaceMode::Sdf` would put a 120-cell or 600-cell into
     /// the live SDF kernel (which crashes the browser tab; see [`row_blocks_sdf`]).
     /// The `surface sdf` command and the UI radio gate on this.
-    ///
-    /// Tests the RENDERED row (see [`Self::render_row`]), not `self.row`: in
-    /// [`ViewMode::Single`] only the `strip_subject` uploads, so gating on the
-    /// stored row would both falsely block a light subject and falsely ALLOW a
-    /// heavy subject over a light row.
     pub(crate) fn sdf_blocked_by_heavy_polychora(&self) -> bool {
         row_blocks_sdf(self.render_row())
     }
 
-    /// Effective `w` slider half-range after [`Self::surface_scale`]. Scaling the
-    /// polytope up scales [`crate::consts::W_RANGE`] too so the slice still clears
-    /// the body's hull at the slider extremes.
     pub(crate) fn effective_w_range(&self) -> f32 {
         crate::consts::W_RANGE * self.surface_scale
     }
 
-    /// The slice of [`ShapeEntry`]s the scene renders this frame: the
-    /// `strip_subject` in [`ViewMode::Single`], else the full `row`. Every per-body
-    /// render path and the SDF upload read this. See [`render_row_entries`].
     pub(crate) fn render_row(&self) -> &[ShapeEntry] {
         render_row_entries(self.view_mode, &self.row, &self.strip_subject)
     }
 
-    /// This frame's [`RowFrame`]: the seam its readers take a body pose
-    /// through. Rebuilt per pass rather than cached; the arithmetic is
-    /// [`Self::effective_body_size`]'s multiply,
-    /// [`Self::camera_distance_to_focus`]'s subtract and square root, and,
-    /// under Schlegel, [`Self::resolved_wireframe_projection`]'s rotated normal
-    /// and basis plus its two body-size scalings.
     pub(crate) fn row_frame(&self) -> RowFrame<'_> {
         RowFrame {
             physics: &self.physics,
@@ -873,16 +520,10 @@ impl Demo {
         }
     }
 
-    /// The polytope a Schlegel cell index refers to: the first polychoron in the
-    /// rendered row (a cell index is ambiguous across a mixed row). In
-    /// [`ViewMode::Single`] this is the `strip_subject`.
     pub(crate) fn schlegel_subject(&self) -> Option<Polytope4> {
         self.render_row().iter().find_map(|e| e.shape.polytope4())
     }
 
-    /// Slot [`Self::schlegel_subject`] sits in. The projection is one map for
-    /// the whole scene, so it has to name the slot whose rotation it tracks
-    /// rather than a row-wide rotor.
     fn schlegel_slot(&self) -> Option<usize> {
         self.render_row()
             .iter()
@@ -892,10 +533,7 @@ impl Demo {
     /// Resolve and cache the canonical Schlegel parameters. Call at every
     /// cell-SELECT point (console, UI stepper, switching the radio to Schlegel, any
     /// row edit changing the leading polychoron) so the per-frame path never reruns
-    /// the `LazyLock`-backed [`Polytope4::face_planes`] fit. Idempotent (the fit is
-    /// deterministic); clears the cache when the mode is not Schlegel or the row
-    /// has no polychoron. Writes the clamped `cell_index` back into the projection
-    /// so the enum, cache, UI, and console agree. See [`synced_schlegel_projection`].
+    /// the `LazyLock`-backed [`Polytope4::face_planes`] fit.
     pub(crate) fn resolve_schlegel_cache(&mut self) {
         let (projection, cache) =
             synced_schlegel_projection(self.wireframe_projection, self.schlegel_subject());
@@ -903,14 +541,6 @@ impl Demo {
         self.schlegel_params = cache;
     }
 
-    /// The live [`loam_math::Projection<4>`] for the wireframe overlay this frame.
-    /// For Schlegel it builds the engine projection from the cached
-    /// [`SchlegelParams`], rotating the normal/basis by the subject slot's rotor
-    /// (so the chosen cell stays the outer boundary as THAT body turns) and
-    /// scaling the offsets by [`Self::effective_body_size`]. No allocation, no
-    /// `face_planes` call: the hot-path-safe counterpart to
-    /// [`Self::resolve_schlegel_cache`]. Other modes delegate to
-    /// [`WireframeProjection::to_projection`].
     pub(crate) fn resolved_wireframe_projection(&self) -> Projection<4> {
         match self.wireframe_projection {
             WireframeProjection::Schlegel { .. } => {
@@ -927,12 +557,9 @@ impl Demo {
                             basis,
                         )
                     }
-                    // No polychoron in row: drop-w fallback (the wireframe draws
-                    // nothing anyway).
                     _ => Projection::Identity,
                 }
             }
-            // Substitute the live pole (`to_projection` returns the default).
             WireframeProjection::Stereographic => Projection::Stereographic {
                 pole: self.stereographic_pole,
             },
@@ -944,16 +571,11 @@ impl Demo {
         hyperslice_cull_active(self.wireframe_hyperslice, self.wireframe_projection)
     }
 
-    /// Flip plane `plane_idx` in the selected slot's mask (the 1..6 keys). The
-    /// Active recompose in `update` picks the change up on the next frame.
     pub(crate) fn toggle_selected_plane(&mut self, plane_idx: usize) {
         let spin = self.spins.selected_spin_mut();
         spin.active[plane_idx] = !spin.active[plane_idx];
     }
 
-    /// Recompose the selected slot's Active-mode rotor from its baselines and
-    /// re-emit the row. Every Active control (slider, checkbox, gimbal ring)
-    /// ends here, so a control edit reaches exactly the body it was aimed at.
     pub(crate) fn apply_selected_active_edit(&mut self) {
         let t = self.rot_time;
         let spin = self.spins.selected_spin_mut();
@@ -961,24 +583,8 @@ impl Demo {
         self.rebuild_bodies();
     }
 
-    /// Re-emit every rendered body's uniform, each under its own slot's rotor.
-    /// Called after row mutations, rotation changes, view-mode changes, and
-    /// surface-mode changes.
-    ///
     /// Uploads via `set_bodies` (not slot-wise) so a stale row from a previous
     /// mode cannot keep rendering.
-    ///
-    /// `body_uniform_scratch` is taken out of `self` for the build (so it can
-    /// borrow `&self`) and put back, keeping its capacity so the steady-state spin
-    /// upload does not allocate.
-    ///
-    /// The single choke point where the rendered row's slot count is
-    /// materialized, so it is also where the physics world and the per-slot
-    /// rotations are reconciled with it ([`PlaygroundPhysics::sync`],
-    /// [`SlotSpins::sync`]) and where [`Self::sdf_upload_pending`] is raised.
-    /// Every row, size and surface-mode edit calls it at the edit, which is what
-    /// lets `update` skip it on a frame that changed neither a rotor nor a body
-    /// pose.
     pub(crate) fn rebuild_bodies(&mut self) {
         self.sdf_upload_pending = true;
         let n = self.render_row().len();
@@ -1003,15 +609,9 @@ impl Demo {
         self.body_uniform_scratch = scratch;
     }
 
-    /// Reconcile the physics world with the rendered row: slot count, and the
-    /// collider and inertia each slot's shape and live UI spin imply.
-    ///
     /// Called from `Demo::update` AHEAD of the physics step, so a tick
     /// collides the shape the frame draws rather than the previous frame's
-    /// (up to 0.088 of rim lag at `rate_scale` 4). [`Self::rebuild_bodies`]
-    /// runs it again at every row and size edit, where it is the only path
-    /// that reaches a slot-count change; the cheap exit in
-    /// [`PlaygroundPhysics::sync`] makes the second call of a frame free.
+    /// (up to 0.088 of rim lag at `rate_scale` 4).
     pub(crate) fn sync_physics_row(&mut self) {
         let size = self.effective_body_size();
         let row = render_row_entries(self.view_mode, &self.row, &self.strip_subject);
@@ -1020,9 +620,6 @@ impl Demo {
         self.physics.sync(row, &self.spins, size);
     }
 
-    /// Compact `exp(B · 0.30·t)` form for whichever mode drives the spin, where `B`
-    /// is the bivector velocity (Active: enabled-plane terms; Composer: seq terms).
-    /// Empty string when nothing contributes.
     pub(crate) fn formula_string(&self) -> String {
         let parts: Vec<String> = match self.rotation_mode {
             RotationMode::Active => Plane4::ALL
@@ -1043,9 +640,6 @@ impl Demo {
         }
     }
 
-    /// Full reset: pause spin, slice, rate, every slot's active set and
-    /// orientation, the selection, time, draft, and thrown bodies.
-    /// `rotate` flips off too so the next `update()` does not immediately respin.
     pub(crate) fn reset(&mut self) {
         self.rotate = false;
         self.w_slice = 0.0;
@@ -1058,7 +652,6 @@ impl Demo {
             playback.rewind();
         }
         self.t_slider_max = T_SLIDER_INITIAL;
-        // Honest-slice baseline: drop-w cross-section on, reprojected cap off.
         self.cross_section = SectionLayer::CROSS_SECTION_DEFAULT;
         self.projected_cap = SectionLayer::PROJECTED_CAP_DEFAULT;
         self.draft.clear();
@@ -1170,8 +763,6 @@ mod tests {
 
     #[test]
     fn compose_single_plane_equals_direct_exp() {
-        // One plane, no spin: the product collapses to exp(plane * angle)
-        // (the BCH-trivial case).
         let theta = 0.8_f32;
         let mut base = [0.0; 6];
         base[2] = theta; // Plane4::Xw
@@ -1185,8 +776,6 @@ mod tests {
 
     #[test]
     fn compose_orthogonal_pair_is_order_independent() {
-        // xy and zw are absolutely orthogonal, so their bivectors commute and the
-        // product equals the reverse-order product.
         let (a, b) = (0.6_f32, -0.9_f32);
         let mut base = [0.0; 6];
         base[0] = a; // xy
@@ -1255,22 +844,16 @@ mod tests {
         let heavy = entry(RaymarchShape::Polytope(Polytope4::Cell600));
         let light = entry(RaymarchShape::Polytope(Polytope4::Tesseract));
 
-        // Heavy subject, all-light row: blocked, because Single renders the
-        // 600-cell. Reading the row alone here would WRONGLY allow SDF.
         let light_row = [light, entry(RaymarchShape::Polytope(Polytope4::Cell24))];
         assert!(
             row_blocks_sdf(render_row_entries(ViewMode::Single, &light_row, &heavy)),
             "heavy Single subject blocks SDF even over an all-light row",
         );
-        // Light subject, heavy row: NOT blocked, because Single renders the
-        // tesseract. Reading the row alone here would WRONGLY block SDF.
         let heavy_row = [entry(RaymarchShape::Polytope(Polytope4::Cell120))];
         assert!(
             !row_blocks_sdf(render_row_entries(ViewMode::Single, &heavy_row, &light)),
             "light Single subject keeps SDF available even over a heavy row",
         );
-        // Shapes mode keeps the row-wide gate: the same heavy row blocks SDF
-        // regardless of the (unrendered, in this mode) subject.
         assert!(
             row_blocks_sdf(render_row_entries(ViewMode::Shapes, &heavy_row, &light)),
             "Shapes mode blocks SDF on a heavy row member",
@@ -1279,14 +862,11 @@ mod tests {
 
     #[test]
     fn wireframe_projection_from_token_round_trips() {
-        // Pin the count so an enum addition that skips `ALL`, or a Schlegel
-        // re-wire, is loud.
         assert_eq!(
             WireframeProjection::ALL.len(),
             4,
             "ALL must list every selectable projection mode (Schlegel is excluded)"
         );
-        // Schlegel is intentionally not parseable from the console.
         assert_eq!(
             WireframeProjection::from_token("schlegel"),
             None,
@@ -1298,7 +878,6 @@ mod tests {
                 WireframeProjection::WPinhole => "w-pinhole",
                 WireframeProjection::Stereographic => "stereographic",
                 WireframeProjection::Hyperslice => "hyperslice",
-                // Excluded from ALL; if a re-wire puts it back, this fires loudly.
                 WireframeProjection::Schlegel { .. } => {
                     unreachable!("Schlegel must not be in ALL while it is unwired")
                 }
@@ -1309,7 +888,6 @@ mod tests {
                 "token `{token}` must parse back to {mode:?}"
             );
         }
-        // Context-free engine projections per the documented contract.
         assert_eq!(
             WireframeProjection::Shadow.to_projection(),
             Projection::Identity
@@ -1326,13 +904,10 @@ mod tests {
                 pole: STEREOGRAPHIC_DEFAULT_POLE
             }
         );
-        // Hyperslice: drop-w projection, the cull does the slicing.
         assert_eq!(
             WireframeProjection::Hyperslice.to_projection(),
             Projection::Identity
         );
-        // Schlegel context-free fallback is Identity; the real Schlegel comes
-        // from `Demo::resolved_wireframe_projection` with the cached params.
         assert_eq!(
             WireframeProjection::Schlegel { cell_index: 0 }.to_projection(),
             Projection::Identity
@@ -1342,8 +917,6 @@ mod tests {
     #[test]
     fn stereographic_plus_w_pole_scale_depends_only_on_w() {
         let pole = STEREOGRAPHIC_DEFAULT_POLE;
-        // Two unit directions at w = 0.6 with different x + y + z, so an off-w
-        // pole tells them apart while +w cannot.
         let p = Vec4::new(0.8, 0.0, 0.0, 0.6);
         let q = Vec4::new(0.0, 0.48, 0.64, 0.6);
         assert!((p.w - q.w).abs() < 1e-6, "fixture points must share w");
@@ -1353,8 +926,6 @@ mod tests {
             (denom_p - denom_q).abs() < 1e-6,
             "+w pole must give equal scale at equal w ({denom_p} vs {denom_q})"
         );
-        // An off-w pole (a cell center) breaks the equal-w invariant, which is
-        // exactly the off-center pull the +w pole was reverted to avoid.
         let off_w = Vec4::splat(0.5);
         assert!(
             (1.0 - p.dot(off_w) - (1.0 - q.dot(off_w))).abs() > 1e-3,
@@ -1368,9 +939,6 @@ mod tests {
         let polytope = Polytope4::Cell600;
         let (topo_normals, _) = polytope.face_planes();
         let (dual_normals, _) = cell600_face_planes();
-        // A cell whose topology normal is far from every dual normal; the 96
-        // golden-ratio orbits guarantee one exists (the dual set has only 120
-        // entries for a 600-faced polytope).
         let divergent = (0..topo_normals.len() as u32).find(|&i| {
             let n = topo_normals[i as usize];
             dual_normals
@@ -1498,15 +1066,12 @@ mod tests {
         let polytope = Polytope4::Tesseract;
         let cell_index = 0;
         let params = resolve_schlegel_params(polytope, cell_index);
-        // A non-trivial xw rotation, so the canonical normal actually moves.
         let rot = (Plane4::Xw.unit_bivector() * 0.7).exp().normalize();
         let rotated = rot.apply(params.cell_normal);
         assert!(
             (rotated - params.cell_normal).length() > 1e-3,
             "rotation must actually move the normal for this test to bite"
         );
-        // Rotation preserves unit length, so the rotated normal is still a valid
-        // outward unit normal for the engine `Projection::Schlegel`.
         assert!((rotated.length() - 1.0).abs() < 1e-5);
         let rotated_basis = params.cell_basis.map(|axis| rot.apply(axis));
         for (i, axis) in rotated_basis.iter().enumerate() {
@@ -1516,8 +1081,6 @@ mod tests {
                 "axis {i} remains perpendicular to the rotated normal"
             );
         }
-        // Every chosen-cell vertex stays on the rotated boundary hyperplane:
-        // `dot(rotated_normal, rot.apply(v))` still equals `cell_offset`.
         let topo = polytope.topology();
         let cell = topo.cells[cell_index as usize];
         let anchor = topo.vertices[cell[0] as usize];
@@ -1554,8 +1117,6 @@ mod tests {
         let single = render_row_entries(ViewMode::Single, &row, &subject);
         assert_eq!(single.len(), 1, "Single renders exactly one body");
         assert_eq!(single[0], subject, "the single body is the strip_subject");
-        // The subject is deliberately absent from the row, so a length-1 result
-        // alone cannot accidentally pass by aliasing a row entry.
         assert!(
             !row.contains(&subject),
             "test setup: subject must differ from every row entry",
@@ -1569,13 +1130,10 @@ mod tests {
     #[test]
     fn single_mode_schlegel_cell_bound_from_subject() {
         let subject = entry(RaymarchShape::Polytope(Polytope4::Cell600));
-        // A row whose leading polychoron has a DIFFERENT cell count, so reading
-        // the row instead of the subject would give the wrong bound.
         let row = [
             entry(RaymarchShape::Polytope(Polytope4::Pentatope)), // 5 cells
             entry(RaymarchShape::Polytope(Polytope4::Cell24)),
         ];
-        // Mirror `Demo::schlegel_subject`: first polychoron of the rendered row.
         let subject_poly = render_row_entries(ViewMode::Single, &row, &subject)
             .iter()
             .find_map(|e| e.shape.polytope4())
@@ -1586,8 +1144,6 @@ mod tests {
             Polytope4::Cell600.cell_count(),
             "the cell-index bound is the subject's cell count (600), not the row's leading 5",
         );
-        // And in Shapes mode the same walk yields the ROW's leading polychoron
-        // (the 5-cell), confirming the two modes resolve different subjects.
         let row_poly = render_row_entries(ViewMode::Shapes, &row, &subject)
             .iter()
             .find_map(|e| e.shape.polytope4())
@@ -1643,9 +1199,6 @@ mod tests {
         .fill_visible());
     }
 
-    /// Throw slot 1 along +w, the one axis on which it cannot reach a
-    /// neighbour, from a +x lever point so it picks up an angular velocity
-    /// too. The rest of the row stays a clean control group.
     fn tumbling(slots: usize) -> PlaygroundPhysics {
         let mut physics = PlaygroundPhysics::new(slots, BODY_SIZE);
         let layout = Vec4::from_array(body_position(1, slots));
@@ -1664,9 +1217,6 @@ mod tests {
         let physics = PlaygroundPhysics::new(SLOTS, BODY_SIZE);
         let shape = entry(RaymarchShape::Polytope(Polytope4::Cell24));
         let mut spins = SlotSpins::new(SLOTS);
-        // Two masks that do not commute, so no time can bring them into
-        // agreement, plus a third slot left at the boot mask (xw) so all
-        // three orientations differ.
         spins.select_picked(Some(0));
         spins.selected_spin_mut().active = [true, false, false, false, false, false];
         spins.select_picked(Some(1));
@@ -1782,8 +1332,6 @@ mod tests {
 
         let canonical = Polytope4::Cell24.topology().vertices[0];
         let pose = physics.pose(1, slots, spin);
-        // Drop-w projection, so the anchor is the body-local vertex truncated
-        // and then carried by the body's R³ centre.
         assert_eq!(
             frame.anchor_r3(1, canonical),
             pose.body_local(canonical, BODY_SIZE).truncate() + pose.position_r3()
@@ -1869,8 +1417,6 @@ mod tests {
         assert_eq!(w_slice, 0.25);
         assert!(!set_if_changed(&mut w_slice, 0.25));
 
-        // Component-wise, not whole-array identity: the camera uniforms are
-        // arrays, and one moved component has to dirty the buffer.
         let mut camera_pos = [0.0_f32, 0.0, 5.0];
         assert!(!set_if_changed(&mut camera_pos, [0.0, 0.0, 5.0]));
         assert!(set_if_changed(&mut camera_pos, [0.0, 1e-7, 5.0]));

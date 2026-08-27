@@ -33,11 +33,8 @@ const FOCAL_DISTANCE: f32 = 2.0;
 /// read as plain 3D rotation).
 const SPIN_RATE: f32 = 0.4;
 
-/// Whole-tesseract scale, for a comfortable mid-distance look-at range.
 const POLYTOPE_SCALE: f32 = 1.5;
 
-/// Per-line tint over the shader's w-depth palette (cool-back to warm-front). RGB
-/// near white preserves the depth gradient's hue; alpha is per-line opacity.
 const EDGE_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
 const EDGE_WIDTH_PX: f32 = 1.6;
 
@@ -60,15 +57,9 @@ struct TesseractApp {
     freecam: Freecam,
     mode: CameraMode,
     rotor: Rotor4,
-    /// Spin angular velocity, integrated into `rotor` each tick. Preserved across
-    /// pause + `R` so resuming keeps the same spin.
     omega: Bivector4,
     paused: bool,
-    /// Dev console (backtick): `trace`, `log`, etc. `()` Ctx since no command
-    /// needs demo state.
     console: Console<()>,
-    /// F3-toggle perf overlay: live FPS + frame-gap stats + sparkline. The
-    /// dominant gap on wasm is `between-frames` (browser RAF cadence), not render.
     perf: loam_app::trace::PerfOverlay,
 }
 
@@ -107,8 +98,6 @@ impl TesseractApp {
                 view: &dummy_view,
                 encoder: &mut encoder,
             };
-            // One run of the regular draw path drives the first compile; warming
-            // isn't critical, so discard errors.
             let _ = self.record(&mut ctx);
         }
         rd.queue.submit(Some(encoder.finish()));
@@ -121,8 +110,6 @@ impl App for TesseractApp {
     fn setup(ctx: &mut SetupCtx<'_>) -> Result<Self> {
         let topo = Polytope4::Tesseract.topology();
 
-        // `?spin_rate=N` (rad/s) and `?paused=true|1` override the defaults, for
-        // blog embeds wanting a snapshot or slower animation. Native: `--spin_rate`.
         let args = loam_app::args::Args::current();
         let spin_rate = args.parse::<f32>("spin_rate").unwrap_or(SPIN_RATE);
         let paused = args
@@ -252,8 +239,6 @@ impl App for TesseractApp {
         }
         match code {
             KeyCode::KeyF => {
-                // Toggle camera mode; freecam seeds from the current pose so the
-                // switch is continuous, not a teleport.
                 self.mode = match self.mode {
                     CameraMode::Orbit => {
                         self.freecam.set_active(true, self.camera.position);
@@ -265,8 +250,6 @@ impl App for TesseractApp {
                     }
                 };
             }
-            // T always toggles pause; Space too, but not in FreeRoam (where it's
-            // the jump-up axis).
             KeyCode::KeyT => {
                 self.paused = !self.paused;
             }
@@ -281,8 +264,6 @@ impl App for TesseractApp {
     }
 
     fn record(&mut self, ctx: &mut RenderCtx<'_>) -> Result<()> {
-        // Per-frame work is one uniform write; the vertex shader applies rotor ->
-        // Perspective4D -> view*proj per vertex over the static mesh.
         let cfg = &ctx.rd.surface_bundle.config;
         let aspect = cfg.width as f32 / cfg.height.max(1) as f32;
         let proj = Mat4::perspective_rh(60.0_f32.to_radians(), aspect, 0.05, 100.0);
@@ -347,8 +328,6 @@ impl App for TesseractApp {
                     ui.colored_label(egui::Color32::from_rgb(220, 180, 90), "[paused]");
                 }
             });
-        // Build id (git hash + dirty marker, baked via build.rs) in the faded
-        // bottom-right, for "is this a fresh build?" verification across reloads.
         egui::Area::new(egui::Id::new("tesseract-build-id"))
             .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
             .show(ctx, |ui| {
@@ -370,8 +349,6 @@ impl App for TesseractApp {
 }
 
 fn main() -> Result<()> {
-    // `loam_app::run` handles native + wasm dispatch; the default `WasmConfig`
-    // matches the standard `index.html` element IDs.
     loam_app::run::<TesseractApp>(RunConfig {
         window: WindowAttributes::default()
             .with_title("tesseract demo")

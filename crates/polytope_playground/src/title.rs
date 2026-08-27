@@ -1,28 +1,3 @@
-//! Each letter is a 4D solid parked off the viewer's slice and translated along
-//! `w` until it meets it. Nothing fades and nothing is scaled by a clock: what
-//! grows on screen is the letter's own 3D cross-section, which is what a 4D
-//! solid crossing a 3-flat looks like (Abbott's sphere through Flatland, 1884,
-//! with the sphere replaced by something letter-shaped).
-//!
-//! # The solid, and why it is not the glyph pipeline's slab
-//!
-//! [`loam_text::glyph`] embeds a letter in a `w` slab, a prism whose section is
-//! the same letter at every `w`. A prism crossing a slice is binary: nothing,
-//! then the whole letter, then nothing. That pops, and a pop carries no more
-//! information about the fourth dimension than a hard cut does.
-//!
-//! So the pipeline supplies the section and this module supplies the `w`
-//! profile: the cone over the letter with its apex [`APEX_DEPTH`] behind the
-//! full-size section, continued past it as a prism of length [`HOLD_DEPTH`].
-//! Sections of a cone are the base scaled by the fraction of the way from apex
-//! to base, so the letter opens out of a point; sections of the prism are the
-//! whole letter, which is what gives the title somewhere to come to rest. Only
-//! [`Visualizable`] is read off the pipeline. The letters carry no collider,
-//! this scene stands up no `World`, and `GlyphSolid`'s own 4D distance and
-//! collider cover go untouched.
-//!
-//! # Who writes a letter's place
-//!
 //! [`crate::director::Playback`] refuses a position track outright, because a
 //! row slot's place belongs to its rigid body and a track writing it would run
 //! a second clock against the solver. Neither half of that holds here. A title
@@ -32,12 +7,9 @@
 //! [`Transit::new`] enforces that by refusing any key with a nonzero `x`, `y`
 //! or `z`, so a file cannot quietly claim a place the layout owns.
 //!
-//! # Cost
-//!
-//! The section is rebuilt and reuploaded every frame into one retained scratch
-//! mesh, because every letter mid-transit has its own scale. At
-//! [`GLYPH_RESOLUTION`] the whole title is ~89k vertices, 2.8 MB of vertex
-//! upload per frame, pinned by `the_title_stays_inside_its_per_frame_upload_budget`.
+//! At [`GLYPH_RESOLUTION`] the whole title is ~89k vertices, 2.8 MB of
+//! vertex upload per frame, pinned by
+//! `the_title_stays_inside_its_per_frame_upload_budget`.
 
 use std::borrow::Cow;
 
@@ -63,21 +35,12 @@ const TITLE_LINES: [&str; 2] = ["POLYTOPE", "PLAYGROUND"];
 /// not a title screen.
 const TIMELINE_RON: &str = include_str!("../timelines/title.ron");
 
-/// Prefix a timeline body carries to address a letter.
 const BODY_PREFIX: &str = "letter";
 
-/// World size of one em. `PLAYGROUND` is ten monospace advances wide, so the
-/// title spans about six world units and [`BOOT_ORBIT_DISTANCE`] frames it.
 const EM_SIZE: f32 = 1.0;
 
-/// Extrusion along `z`, in world units. Heavier than the glyph pipeline's
-/// default: the letters are read nearly face-on, and the extrusion is the only
-/// thing that stops them reading as flat glyphs once they land.
 const LETTER_DEPTH: f32 = 0.25;
 
-/// Grid cells per em for the section bake. The pipeline's default, which is set
-/// by legibility; the per-frame vertex count scales with its square, so this is
-/// the knob to turn if the upload budget above ever becomes the constraint.
 const GLYPH_RESOLUTION: u32 = 48;
 
 /// Local `w` from the apex of a letter's solid to its full-size section.
@@ -88,14 +51,8 @@ const APEX_DEPTH: f32 = 1.2;
 /// back out the far side.
 const HOLD_DEPTH: f32 = 0.6;
 
-/// The viewer's slicing 3-flat. The letters move and the slice does not: a
-/// timeline that swept the slice instead would look identical and would be
-/// saying something else, since one slice cannot arrive per letter.
 const SLICE_W: f32 = 0.0;
 
-/// Per-vertex colour of every letter, RGBA linear. One colour for the whole
-/// run: anything that varied with the playhead would be the fade this scene
-/// exists to not be.
 const TITLE_COLOR: [f32; 4] = [0.90, 0.93, 1.00, 1.0];
 
 const BACKGROUND: wgpu::Color = wgpu::Color {
@@ -105,22 +62,14 @@ const BACKGROUND: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// Letters occlude each other where the lines overlap in depth, so the fill
-/// needs a depth attachment of its own.
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Far enough out to hold the full six-unit title at a 4:3 viewport, tilted
-/// just enough to show the extrusion.
 const BOOT_ORBIT_DISTANCE: f32 = 5.0;
 const BOOT_ORBIT_PITCH: f32 = -0.10;
 
 #[derive(Clone, Debug)]
 struct Letter {
-    /// The section at full size, in world R³, already placed by the layout.
     base: TriangleMesh<3>,
-    /// Where the cone's apex sits in R³, i.e. the point the section opens out
-    /// of. The letter's own centre, so it blooms in place rather than sliding
-    /// in from the layout origin.
     apex: Vec3,
 }
 
@@ -138,9 +87,6 @@ fn section_scale(local_w: f32) -> Option<f32> {
     (scale > 0.0).then_some(scale)
 }
 
-/// Rebuild `out` as the union of every letter's section at the given letter
-/// positions along `w`. Retains `out`'s allocations; free function so the
-/// geometry is exercisable without a device.
 fn build_section(letters: &[Letter], letter_w: &[f32], w_slice: f32, out: &mut TriangleMesh<3>) {
     out.vertices.clear();
     out.indices.clear();
@@ -165,7 +111,6 @@ fn build_section(letters: &[Letter], letter_w: &[f32], w_slice: f32, out: &mut T
     }
 }
 
-/// Bake every letter of the title, centred on the origin.
 fn typeset(font: &FontRef<'_>) -> Result<Vec<Letter>> {
     let params = GlyphParams {
         em_size: EM_SIZE,
@@ -201,8 +146,6 @@ fn typeset(font: &FontRef<'_>) -> Result<Vec<Letter>> {
         }
     }
 
-    // Centre the whole block on its ink rather than on the font's metrics: what
-    // has to sit in the middle of the frame is the part that is drawn.
     let (lo, hi) = letters
         .iter()
         .filter_map(|letter| bounds(&letter.base))
@@ -218,7 +161,6 @@ fn typeset(font: &FontRef<'_>) -> Result<Vec<Letter>> {
     Ok(letters)
 }
 
-/// Axis-aligned bounds of a mesh, or `None` when it has no vertices.
 fn bounds(mesh: &TriangleMesh<3>) -> Option<(Vec3, Vec3)> {
     mesh.vertices
         .iter()
@@ -229,7 +171,6 @@ fn bounds(mesh: &TriangleMesh<3>) -> Option<(Vec3, Vec3)> {
 #[derive(Debug)]
 struct Transit {
     director: Director,
-    /// Letter each timeline body drives, in the file's own order.
     bound: Vec<usize>,
     /// Where each letter sits along `w`. The only thing the timeline is allowed
     /// to say about a letter, and the only thing read back out of it.
@@ -239,7 +180,6 @@ struct Transit {
 impl Transit {
     /// Bind `director` to a title of `letters`, refusing everything that would
     /// leave a letter undriven or claim a channel this scene does not own.
-    /// Every rejection is an authoring fault fixed by editing the file.
     fn new(director: Director, letters: usize) -> Result<Self> {
         let mut bound = Vec::with_capacity(director.timeline().bodies.len());
         let mut driven = vec![false; letters];
@@ -343,7 +283,6 @@ pub(crate) struct TitleScene {
     depth: Option<DepthBuffer>,
     letters: Vec<Letter>,
     transit: Transit,
-    /// Rebuilt every frame, keeping its allocation.
     section: TriangleMesh<3>,
     playing: bool,
 }
@@ -383,9 +322,6 @@ impl TitleScene {
     }
 }
 
-/// Hack Regular, the face the HUD already carries. Shared rather than a second
-/// bundled font, and monospace suits a title whose letters arrive one at a time
-/// on an even beat.
 fn title_font() -> Result<FontRef<'static>> {
     FontRef::try_from_slice(epaint_default_fonts::HACK_REGULAR)
         .map_err(|why| anyhow!("bundled title font failed to parse: {why}"))
@@ -491,8 +427,6 @@ impl loam_app::shell::Scene for TitleScene {
             SLICE_W,
             &mut self.section,
         );
-        // The section is already world R³, so the raster node's own projection
-        // is the pass-through; the 4D geometry was resolved above.
         self.triangles.upload::<EuclideanR3, 3>(
             &rd.device,
             &rd.queue,
@@ -510,8 +444,6 @@ impl loam_app::shell::Scene for TitleScene {
         Ok(())
     }
 
-    /// The window bar carries the two hotkeys, because a title screen is the
-    /// one scene that cannot afford an on-canvas panel to advertise them.
     fn title(&self, _fps: f32) -> Cow<'static, str> {
         Cow::Borrowed("polytope playground - title (space: pause, R: replay)")
     }
@@ -523,8 +455,6 @@ mod tests {
     use glam::Vec4;
     use loam_time::director::{BodyTrack, Ease, Timeline, Track};
 
-    /// The shipped title, bound to the shipped timeline. Every geometry test
-    /// runs against exactly what the scene builds.
     fn shipped() -> (Vec<Letter>, Transit) {
         let letters = typeset(&title_font().expect("bundled font")).expect("typeset");
         let director = Director::from_ron(TIMELINE_RON).expect("shipped timeline parses");
@@ -532,8 +462,6 @@ mod tests {
         (letters, transit)
     }
 
-    /// Total triangle area of a section: how much letter is in the slice.
-    ///
     /// Surface area rather than enclosed volume because the glyph pipeline's
     /// mesh is not closed for every letter (`P` at this em and pitch has a
     /// missing side wall of net oriented area 0.052), and the divergence
@@ -597,11 +525,6 @@ mod tests {
                 w_moved[letter] |= seen[letter].is_finite() && seen[letter] != position.w;
                 seen[letter] = position.w;
             }
-            // What is drawn keeps its place in the title while its section
-            // grows. A scale about anything but the letter's own centre, or a
-            // position channel leaking into the layout, moves this. One letter
-            // per frame, cycling, so the whole run is covered without rebuilding
-            // eighteen sections a frame.
             let index = frame as usize % letters.len();
             let w = transit.letter_w()[index];
             let Some(scale) = section_scale(SLICE_W - w) else {
@@ -632,8 +555,6 @@ mod tests {
                 "{offset}: {error:#}"
             );
         }
-        // The same track with the R³ components clear is the whole point of
-        // accepting position tracks at all, so it must bind.
         let director = Director::new(timeline_of(2, Vec4::W * 0.5)).expect("valid timeline");
         let transit = Transit::new(director, 2).expect("a pure w key binds");
         assert_eq!(transit.letter_w(), [0.5, 0.5]);
@@ -728,10 +649,6 @@ mod tests {
             "mid-transit area {mid_area} against a landed {landed}"
         );
 
-        // One letter through its own transit, which runs from frame 0 to frame
-        // 60: a staggered title passes the check above while every letter still
-        // pops in whole. Its bounding box is the direct statement, since the
-        // section is smaller on screen and not merely sparser.
         let first = &letters[..1];
         let mut mesh = TriangleMesh::default();
         let mut measure = |transit: &mut Transit, frame: u32| {
@@ -782,8 +699,6 @@ mod tests {
 
     #[test]
     fn the_section_depends_only_on_the_gap_between_a_letter_and_the_slice() {
-        /// Somewhere the title's own slice never is, so a hard-coded
-        /// [`SLICE_W`] anywhere in the build would be caught.
         const ELSEWHERE: f32 = 0.75;
 
         let (letters, _) = shipped();
@@ -950,8 +865,6 @@ mod tests {
                     pair[1].apex.x > pair[0].apex.x,
                     "letters of `{line}` do not advance"
                 );
-                // Apexes are ink centres, so cap overshoot and descenders move
-                // them a little; a second line would move them by an em.
                 assert!(
                     (pair[1].apex.y - pair[0].apex.y).abs() < 0.1 * EM_SIZE,
                     "`{line}` is not one line"

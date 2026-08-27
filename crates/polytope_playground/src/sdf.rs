@@ -4,22 +4,9 @@
 //! an edit is a shader compile, and `examples/sdf_edit_latency.rs` is what that
 //! costs. Measured on an idle RTX 4090 Laptop over 120 single-parameter edits:
 //! emit p50 0.009ms, shader module 0.352ms, pipeline 0.319ms, total per edit
-//! p50 0.685ms and p95 0.850ms, which is 5% of a 16.7ms frame. Emitting is
-//! free at the scale of a frame and the pipeline build costs about 35x it, not
-//! the three orders of magnitude an earlier run under compile contention
-//! reported. A drag therefore has headroom rather than sitting on the frame
-//! budget. Binding the selected leaf's constants to `RayMarchUniforms::params`
-//! would make a drag write a uniform instead of a module, but on these numbers
-//! it buys margin rather than rescuing the design, so it is a node of its own
-//! and not an urgent one.
-//!
-//! The module assembles WGSL by hand, the way [`crate::Demo::new`] does:
-//! `wgsl_impl` + scene emit + march kernel + the shading fragment below, then
-//! `create_shader_module`. `ShaderDb` is not in the path because it reads
+//! p50 0.685ms and p95 0.850ms, which is 5% of a 16.7ms frame.
+//! `ShaderDb` is not in the path because it reads
 //! source from disk, which is nothing in a browser.
-//!
-//! ## The interaction route, and why it is this one
-//!
 //! Nothing in the panel writes the tree. A widget's only output is a
 //! [`SceneEdit`], and the only way an edit reaches the tree is
 //! [`loam_app::command::submit`], the runner-owned queue that drains once per
@@ -29,14 +16,11 @@
 //! [`SceneEdit`] and a command line are not two surfaces here:
 //! [`SceneEdit::to_args`] and [`SceneEdit::from_args`] round trip bit-exactly,
 //! so the value is the transport and the text is its spelling.
-//!
 //! Selection and the slider draft are the deliberate exceptions, and they are
 //! not mutations of the document: they are written inline because a click that
 //! took a frame to open a parameter panel would read as lag, and because a
 //! slider whose value is re-read from the tree mid-drag snaps back on the frame
-//! between the drag and the drain. The draft resyncs from the tree whenever
-//! the selection moves or an edit lands, so a console `sdf set` shows up under
-//! the cursor.
+//! between the drag and the drain.
 
 use std::borrow::Cow;
 
@@ -53,21 +37,13 @@ use loam_scene::edit::{
 use loam_scene::{Scene, SceneNode};
 use loam_shader::GEODESIC_MARCH_KERNEL;
 
-/// Panel width in egui points. Wide enough for the deepest boot-scene row plus
-/// its label without wrapping, which is what keeps the tree readable as a
-/// tree.
 const PANEL_WIDTH: f32 = 268.0;
 
-/// Fixed width of a slider's value cell, in points. Same purpose as the
-/// control panel's: the slider's right edge must not move as digits change.
 const VALUE_CELL_WIDTH: f32 = 62.0;
 
 const BOOT_ORBIT_DISTANCE: f32 = 4.2;
 const BOOT_ORBIT_PITCH: f32 = -0.22;
 
-/// Shading half of the four-layer assembly. Deliberately plain: this scene is
-/// about the field the user is authoring, so the only cues are a key light, a
-/// hemisphere fill that keeps away-facing surfaces readable, and depth fog.
 const SHADING_WGSL: &str = r#"
 struct RayMarchUniforms {
     camera_pos: vec3<f32>,
@@ -133,8 +109,6 @@ fn boot_scene() -> Scene {
     )
 }
 
-/// The four-layer WGSL the node is compiled from. A free function so the
-/// assembly is checkable without a device.
 fn assemble(scene: &Scene) -> String {
     format!(
         "{prelude}\n{emit}\n{kernel}\n{shading}",
@@ -145,8 +119,6 @@ fn assemble(scene: &Scene) -> String {
     )
 }
 
-/// The document: the tree, plus a counter that identifies its version.
-///
 /// This is the console's `Ctx`, so a console line and a panel widget reach the
 /// same state through the same registry entry. Everything that mutates it goes
 /// through [`edit::apply`].
@@ -249,11 +221,6 @@ fn slider_range(param: Param) -> std::ops::RangeInclusive<f32> {
     }
 }
 
-/// The selected node's parameter values while the user is dragging them.
-///
-/// Held outside the tree so the widgets have somewhere to write that is not
-/// the document, and resynced from the tree when the selection moves or an
-/// edit lands.
 #[derive(Default)]
 struct Draft {
     path: NodePath,
@@ -285,13 +252,10 @@ impl Default for AddChoice {
     }
 }
 
-/// Writes only the selection.
 fn tree_panel(ui: &mut egui::Ui, scene: &Scene, selected: &mut NodePath) {
     edit::for_each_node(&scene.root, |path, node| {
         ui.horizontal(|ui| {
             ui.add_space(12.0 * path.depth() as f32);
-            // The hover text is the node's address, which is what a console
-            // line needs and the only place it is discoverable.
             if ui
                 .selectable_label(*selected == *path, edit::label(node))
                 .on_hover_text(path.to_string())
@@ -303,7 +267,6 @@ fn tree_panel(ui: &mut egui::Ui, scene: &Scene, selected: &mut NodePath) {
     });
 }
 
-/// Add and remove, as one row each. Pushes edits; writes nothing.
 fn structure_panel(
     ui: &mut egui::Ui,
     scene: &Scene,
@@ -355,8 +318,6 @@ fn structure_panel(
     }
 }
 
-/// Sliders for the selected node's parameters. Every change becomes an edit in
-/// `out`; the tree is not touched.
 fn parameter_panel(
     ui: &mut egui::Ui,
     node: &SceneNode,
@@ -422,21 +383,13 @@ pub(crate) struct SdfScene {
     console: Console<Editor>,
     editor: Editor,
     node: GeodesicRayMarchNode,
-    /// Generation the compiled module was emitted from.
     compiled: u64,
     /// View state, one frame ahead of the tree after a structural edit: the
     /// address the edit will have created by the time the queue drains.
     selected: NodePath,
     draft: Draft,
     add: AddChoice,
-    /// Edits the panel produced this frame, drained into the command queue
-    /// once it returns. Held on the scene rather than in `ui` so the buffer is
-    /// reused across frames.
     pending: Vec<SceneEdit>,
-    /// `[x, y, width, height]` in physical pixels of whatever the menu bar and
-    /// the side panel left, read back from egui's own rect rather than
-    /// recomputed from the panel constant, so the march is centred in the
-    /// region the user can actually see.
     region: [u32; 4],
 }
 
@@ -478,8 +431,6 @@ impl SdfScene {
     }
 }
 
-/// The march region, clamped into the framebuffer.
-///
 /// egui's rect is a frame behind the swapchain across a resize and is empty
 /// before the first UI pass; a viewport reaching outside the attachment is a
 /// wgpu validation failure rather than a clipped draw, so neither case is
@@ -519,8 +470,6 @@ fn compile(rd: &loam_render::device::RenderDevice, scene: &Scene) -> GeodesicRay
 }
 
 impl loam_app::shell::Scene for SdfScene {
-    /// Every mutation this scene has arrives here, from the one queue the
-    /// runner drains before the frame's ticks.
     fn apply_command(&mut self, cmd: &CommandLine, _ctx: &mut CommandCtx<'_>) -> Result<()> {
         self.console
             .dispatch(&cmd.name, &cmd.arg_refs(), &mut self.editor);
@@ -848,8 +797,6 @@ mod tests {
                 );
             }
         }
-        // An unset region is the whole framebuffer, which is what the first
-        // frame draws before any UI pass has run.
         assert_eq!(
             march_viewport([0; 4], [1280, 720]),
             Viewport::full([1280, 720])
@@ -865,17 +812,13 @@ mod tests {
         draft.sync(node, &sphere, 0);
         assert_eq!(draft.values, edit::parameters(node));
 
-        // A drag writes the draft; a resync at the same generation and path
-        // must leave it alone.
         draft.values[1] = (Param::Radius, EditValue::Scalar(0.9));
         draft.sync(node, &sphere, 0);
         assert_eq!(draft.values[1], (Param::Radius, EditValue::Scalar(0.9)));
 
-        // The edit landed: the tree is now authoritative again.
         draft.sync(node, &sphere, 1);
         assert_eq!(draft.values, edit::parameters(node));
 
-        // Selecting another node reloads even at the same generation.
         let plane = path("root.0.1");
         let node = edit::node_at(&scene.root, &plane).expect("plane");
         draft.sync(node, &plane, 1);

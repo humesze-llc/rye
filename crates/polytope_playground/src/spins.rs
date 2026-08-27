@@ -1,10 +1,7 @@
 //! Per-slot UI rotation: the orientation the rotation controls author for one
 //! rendered row slot, held apart from that body's physics orientation and
 //! composed with it at [`crate::physics::composed_rotor`].
-//!
-//! One store per rendered row, indexed by the slot index that
-//! [`crate::physics::PlaygroundPhysics`] uses, synced to the row's length
-//! at the same choke point ([`crate::state::Demo::rebuild_bodies`]). Every
+//! Every
 //! rotation control writes exactly one slot, [`SlotSpins::selected`], which a
 //! press on a body picks; the animation path advances all of them, each from
 //! its own baseline and plane mask, which is what lets two polychora in one
@@ -21,14 +18,8 @@ pub(crate) fn is_directed(directed: &[bool], slot: usize) -> bool {
     directed.get(slot).copied().unwrap_or(false)
 }
 
-/// Planes a fresh slot spins in: xw only, the most characteristic 4D
-/// rotation, so the play button shows motion before any checkbox is toggled.
-/// Every slot starts here, so the row still boots in unison and stays
-/// slice-comparable; divergence is something the user asks for.
 const DEFAULT_ACTIVE: [bool; 6] = [false, false, true, false, false, false];
 
-/// One slot's authored rotation.
-///
 /// Orientation is derived, not stored: `rotor` is a cache of
 /// [`compose_active_rotor`] over `base_angles`, `active` and the shared
 /// `rot_time`, refreshed by [`SlotSpins::recompose_active`]. Composer mode
@@ -38,11 +29,7 @@ pub(crate) struct SlotSpin {
     /// Baseline angle per plane in radians. Plane `i`'s displayed angle is
     /// `base_angles[i] + rot_time * RATE * active[i]`.
     pub(crate) base_angles: [f32; 6],
-    /// Which of the six planes this slot spins in. See [`loam_math::Plane4::ALL`]
-    /// for the index -> plane mapping. Two slots with different masks are two
-    /// bodies with different angular velocities.
     pub(crate) active: [bool; 6],
-    /// Last composed orientation, and the value every render path reads.
     pub(crate) rotor: Rotor4,
 }
 
@@ -65,8 +52,6 @@ impl SlotSpin {
         compose_active_rotor(&self.base_angles, &self.active, t)
     }
 
-    /// Return to the unrotated pose, keeping the plane mask.
-    ///
     /// Zeroing `base_angles` is the load-bearing half: Active recomposes
     /// `rotor` from them on the next frame, so clearing `rotor` alone is undone
     /// before it can draw.
@@ -76,13 +61,10 @@ impl SlotSpin {
     }
 }
 
-/// The rendered row's rotations, plus which slot the controls are aimed at.
-///
 /// Never empty: the shape row keeps at least one card, and the rotation UI
 /// always needs a subject to write to.
 pub(crate) struct SlotSpins {
     slots: Vec<SlotSpin>,
-    /// Slot every rotation control writes. Kept in range by [`Self::sync`].
     selected: usize,
 }
 
@@ -94,9 +76,6 @@ impl SlotSpins {
         }
     }
 
-    /// Every slot under one rotor: the row-wide spin the geometry fixtures
-    /// assume when they pin where a body is drawn rather than which body a
-    /// control reaches.
     #[cfg(test)]
     pub(crate) fn uniform(slots: usize, rotor: Rotor4) -> Self {
         let mut spins = Self::new(slots);
@@ -132,8 +111,6 @@ impl SlotSpins {
         &mut self.slots[self.selected]
     }
 
-    /// Aim the rotation controls at the slot a press picked.
-    ///
     /// A ray that entered no body leaves the selection where it was: the
     /// controls must always have a subject, and a press on empty space is a
     /// camera drag, not a request to rotate nothing. Out-of-range slots are
@@ -162,7 +139,6 @@ impl SlotSpins {
         }
     }
 
-    /// Whether any slot is still the UI spin's to write.
     pub(crate) fn any_unowned(&self, directed: &[bool]) -> bool {
         (0..self.slots.len()).any(|slot| !is_directed(directed, slot))
     }
@@ -189,22 +165,17 @@ impl SlotSpins {
                 .any(|(spin, rotor)| spin.rotor != *rotor)
     }
 
-    /// Refill `out` with the row's rotors, keeping its allocation.
     pub(crate) fn record_rotors(&self, out: &mut Vec<Rotor4>) {
         out.clear();
         out.extend(self.slots.iter().map(|spin| spin.rotor));
     }
 
-    /// Return every slot to the unrotated pose, keeping the plane masks and
-    /// the selection. The `Edit > Reset orientation` command.
     pub(crate) fn clear_orientation(&mut self) {
         for slot in &mut self.slots {
             slot.clear_orientation();
         }
     }
 
-    /// Full reset: every slot back to the boot rotation, selection back to the
-    /// leading slot. The row keeps its length; `reset` is not a row edit.
     pub(crate) fn reset(&mut self) {
         *self = Self::new(self.slots.len());
     }
@@ -288,8 +259,6 @@ mod tests {
         assert!(spins.any_unowned(&[false, true]));
         assert!(spins.any_unowned(&[true, true]), "slot 2 is past the mask");
         assert!(!spins.any_unowned(&[true; 3]));
-        // Out-of-range writes are dropped, not panics: a row edit can retire
-        // the slot a timeline names.
         spins.set_rotor(9, Rotor4::IDENTITY);
     }
 
@@ -375,7 +344,6 @@ mod tests {
         spins.recompose_active(2.0, &[]);
 
         spins.clear_orientation();
-        // At t = 0 the masks contribute nothing, so a cleared row is identity.
         spins.recompose_active(0.0, &[]);
         for slot in 0..2 {
             assert_eq!(spins.rotor(slot), Rotor4::IDENTITY, "slot {slot} came back");

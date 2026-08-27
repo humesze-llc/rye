@@ -42,10 +42,6 @@ pub(crate) fn widget(center: Vec3) -> TransformGizmo {
     }
 }
 
-/// Where the handles stand: the live centre of the slot the controls are
-/// aimed at. A widget parked at the row's midpoint while it turns one body
-/// claims to turn the row, and there is nothing else on screen saying which
-/// body a drag will reach.
 pub(crate) fn gimbal_center(physics: &PlaygroundPhysics, slot: usize, slots: usize) -> Vec3 {
     physics.pose(slot, slots, Rotor4::IDENTITY).position_r3()
 }
@@ -55,12 +51,8 @@ pub(crate) fn gimbal_center(physics: &PlaygroundPhysics, slot: usize, slots: usi
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct GimbalDrag {
     held: HandleDrag,
-    /// Active-mode displayed angle for the held ring's plane at the press
-    /// edge. Unread by a translation drag.
     base_displayed: f32,
-    /// Composer-mode pose at the press edge.
     base_rotor: Rotor4,
-    /// Selected body's world position at the press edge.
     base_position: Vec4,
 }
 
@@ -78,8 +70,6 @@ pub(crate) struct GimbalUi {
 impl Default for GimbalUi {
     /// Off at startup, by the maintainer's call: ten rings and arrows drawn
     /// over every body read as clutter before they read as an answer.
-    /// Discovery lives in the View menu ("Transform handles") and the About
-    /// panel, not in the default framing.
     fn default() -> Self {
         Self {
             enabled: false,
@@ -121,8 +111,6 @@ impl Demo {
         ))
     }
 
-    /// Live 4D position of the slot the controls are aimed at, read through
-    /// the same seam the render paths use.
     fn selected_position(&self) -> Vec4 {
         self.physics
             .pose(
@@ -196,8 +184,6 @@ impl Demo {
         true
     }
 
-    /// Turn a held handle into an edit of the SELECTED slot: the widget
-    /// stands on that body, so a drag can only reach the one under it.
     fn apply_gimbal_drag(&mut self, drag: &GimbalDrag, delta: TransformDelta) {
         match delta {
             TransformDelta::Rotate { plane, angle } => match self.rotation_mode {
@@ -301,14 +287,8 @@ mod tests {
 
     const VIEWPORT: (u32, u32) = (1280, 720);
 
-    /// Widest row the runtime "Add" button reaches, so the placement pins
-    /// cover the furthest a selection can push the widget from the origin.
     const WIDEST_ROW: usize = crate::consts::MAX_ROW_LEN;
 
-    /// The one placement a single-body row can produce, and the centre the
-    /// handle-geometry pins use when the claim is about the handles rather
-    /// than where they stand. Taken from the layout rather than restated, so
-    /// it cannot drift from [`gimbal_center`].
     fn row_center() -> Vec3 {
         gimbal_center(&PlaygroundPhysics::new(1, BODY_SIZE), 0, 1)
     }
@@ -320,8 +300,6 @@ mod tests {
             .collect()
     }
 
-    /// Point at great-circle parameter `θ` on the plane's coordinate circle,
-    /// matching `loam_render::hypergimbal`'s `p(θ) = a cos θ + b sin θ`.
     fn great_circle_point(plane: Plane4, theta: f32) -> Vec4 {
         let (cos, sin) = (theta.cos(), theta.sin());
         match plane {
@@ -334,10 +312,6 @@ mod tests {
         }
     }
 
-    /// Every point a handle occupies, at `samples` per handle: the ring
-    /// circumferences and the shaft segments. The one place the two halves
-    /// are enumerated together, so a framing or reachability pin cannot
-    /// silently cover only the rings.
     fn handle_points(gizmo: &TransformGizmo, samples: usize) -> Vec<(HandleId, Vec3)> {
         let mut out = Vec::new();
         for ring in gizmo.rings() {
@@ -356,8 +330,6 @@ mod tests {
         out
     }
 
-    /// The demo's startup framing, reproduced through the same controller
-    /// `Demo::new` + `update` drive.
     fn startup_camera() -> Camera<EuclideanR3> {
         let mut camera = Camera::<EuclideanR3>::at_origin();
         camera.position = Vec3::new(0.0, 3.0, 9.0);
@@ -368,9 +340,6 @@ mod tests {
         camera
     }
 
-    /// Inverse of `Camera::ray_from_ndc`, then the inverse of
-    /// `ndc_from_pixels`: where a world point lands on screen. `None` behind
-    /// the eye.
     fn pixels_of(camera: &Camera<EuclideanR3>, world: Vec3) -> Option<Vec2> {
         let offset = world - camera.position;
         let depth = offset.dot(camera.forward);
@@ -474,8 +443,6 @@ mod tests {
         let gizmo = widget(row_center());
         let delta = 0.55_f32;
         for plane in Plane4::ALL {
-            // Handles cross on screen, so press where this ring is the
-            // front-most candidate; a user picks such a spot by eye.
             let (start_theta, held) = (0..48)
                 .find_map(|step| {
                     let theta = step as f32 / 48.0 * std::f32::consts::TAU;
@@ -488,9 +455,6 @@ mod tests {
                 })
                 .unwrap_or_else(|| panic!("{plane:?} is never the handle a press grabs"));
 
-            // Where `delta` of rotation in this plane actually sends the
-            // grabbed point: the rotated point's projection, not a second
-            // copy of the ring's own angle map.
             let rotated = (plane.unit_bivector() * delta)
                 .exp()
                 .apply(great_circle_point(plane, start_theta));
@@ -514,8 +478,6 @@ mod tests {
                 (asked - delta).abs() < 5e-3,
                 "{plane:?}: drag asked for {asked}, not {delta}"
             );
-            // The spin contribution is subtracted verbatim: the slider owns
-            // it, the drag does not.
             let with_spin = dragged_base_angle(0.25, angle, 0.4);
             assert!((with_spin - (asked + 0.25 - 0.4)).abs() < 1e-6);
         }
@@ -618,8 +580,6 @@ mod tests {
                 .delta(release.origin, release.direction)
                 .expect("release ray reaches the shaft");
 
-            // The write `apply_gimbal_drag` performs, against the same
-            // anchored base position.
             physics.world.bodies[SLOT].position = before[SLOT] + delta.translation();
 
             let after: Vec<Vec4> = (0..SLOTS)
@@ -663,7 +623,6 @@ mod tests {
         assert_eq!(after.position_r3(), before.position_r3());
         assert_eq!(after.position.w - before.position.w, 0.42);
 
-        // The slice frame the section cut and the wireframe read.
         let canonical = Vec4::new(0.3, -0.6, 0.2, 0.5);
         assert_eq!(
             after.body_local(canonical, BODY_SIZE) - before.body_local(canonical, BODY_SIZE),

@@ -5,14 +5,6 @@
 //! `glyph-letter-bodies` built for exactly this. Nothing in the scene needs a
 //! moving faithful cover, so nothing here asks `loam-physics` for the compound
 //! collider that would be required to give it one.
-//!
-//! **Which polychora rain.** Only the four under the narrowphase's vertex cap
-//! carry a hull ([`crate::catalog::ShapeEntry::collider_polytope`]); the 120-cell, the 600-cell
-//! and the four smooth solids keep a bounding ball. A ball has no corner to
-//! catch on a letter and no offset contact to spin itself about, so raining
-//! them would be raining spheres. [`RAIN_SHAPES`] is therefore the hulled four,
-//! and `every_raining_shape_collides_as_its_own_hull_rather_than_a_bounding_ball`
-//! pins it.
 
 use std::borrow::Cow;
 
@@ -33,8 +25,6 @@ use loam_time::director::{BodyTrack, Director, Drive, Ease, Timeline, Track};
 
 const WORD: &str = "LOAM";
 
-/// Host tick rate: the app's fixed sim tick, which is also the rate the
-/// director's frame indices are read at.
 const TICK_HZ: u32 = 60;
 
 /// Solver sub-steps per host tick. `glyph-letter-bodies` measured that a
@@ -49,12 +39,8 @@ const SUBSTEPS_PER_TICK: usize = 4;
 /// Solver step. Fixed and never derived from wall time.
 const SOLVER_DT: f32 = 1.0 / (TICK_HZ as f32 * SUBSTEPS_PER_TICK as f32);
 
-/// Downward acceleration, m/s². Earth gravity, so the fall reads at the rate
-/// an eye expects for objects about a hand wide.
 const GRAVITY: f32 = -9.8;
 
-/// Ticks the director owns the letters for before they become bodies. 1.5 s:
-/// long enough for four staggered slides to read as separate arrivals.
 const ASSEMBLE_TICKS: u32 = 90;
 
 /// Ticks between one letter's slide starting and the next one's. The last
@@ -64,7 +50,6 @@ const LETTER_STAGGER_TICKS: u32 = 12;
 
 const LETTER_SLIDE_TICKS: u32 = 36;
 
-/// How far outside its mark a letter starts, in em, alternating sides.
 const ENTRY_SPAN: f32 = 3.2;
 
 /// Height of the lowest hull vertex above the floor at release, in em. The
@@ -84,16 +69,10 @@ const SETTLE_TICKS: u32 = 120;
 
 const RAIN_START_TICK: u32 = ASSEMBLE_TICKS + SETTLE_TICKS;
 
-/// Length of the whole sequence, in ticks. 9.5 s: the last drop is spawned at
-/// tick 308 and has landed and stopped moving before the end, so a
-/// capture that runs the sequence out ends on a still frame rather than
-/// mid-motion.
 pub(crate) const SEQUENCE_TICKS: u32 = RAIN_START_TICK + 360;
 
 const RAIN_COUNT: usize = 14;
 
-/// Mean ticks between spawns, and the jitter either side of it. The jitter is
-/// what keeps the rain from reading as a metronome.
 const RAIN_INTERVAL_TICKS: u32 = 7;
 const RAIN_INTERVAL_JITTER: u32 = 4;
 
@@ -102,17 +81,10 @@ const RAIN_INTERVAL_JITTER: u32 = 4;
 /// wrap to a spawn tick four billion ticks away.
 const RAIN_INTERVAL_MIN: u32 = RAIN_INTERVAL_TICKS - RAIN_INTERVAL_JITTER;
 
-/// Circumradius of a raining polychoron, in em. Under half a letter's height,
-/// so an impact scatters a letter rather than burying it.
 const RAIN_SIZE: f32 = 0.30;
 
-/// Mass of a letter. Density is unmodelled, so this is the unit the rain's
-/// mass is a ratio against.
 const LETTER_MASS: f32 = 1.0;
 
-/// Mass of a raining polychoron against a letter's 1.0. Density is unmodelled
-/// here as in the flick chamber, so this is a chosen ratio: heavy enough that
-/// one hit moves a letter, light enough that the letter is not launched.
 const RAIN_MASS: f32 = 1.5;
 
 /// Spawn height band above the floor, in em. The lower bound clears the tops
@@ -130,7 +102,6 @@ const RAIN_ENTRY_SPEED: f32 = 1.0;
 /// dimension rather than hit them.
 const RAIN_W_SPREAD: f32 = 0.10;
 
-/// Half-width of the spawn band in `z`, in em, about the letters' own slab.
 const RAIN_Z_SPREAD: f32 = 0.20;
 
 /// Per-plane ceiling on a drop's spawn tumble, rad/s. At [`RAIN_SIZE`] the
@@ -138,17 +109,10 @@ const RAIN_Z_SPREAD: f32 = 0.20;
 /// step, two orders inside the band the narrowphase resolves.
 const RAIN_TUMBLE: f32 = 6.0;
 
-/// Restitution on every body. Zero: the scene is about letters coming to rest
-/// and being knocked out of it, and a bounce that has to damp out first only
-/// delays both.
 const RESTITUTION: f32 = 0.0;
 
-/// Seed the scene boots on. Arbitrary; `N` walks to the next one and the
-/// sequence is a function of it, so a run worth keeping is named by a number.
 const DEFAULT_SEED: u64 = 0x10a3_5eed;
 
-/// The polychora that rain. See the module doc: these are exactly the four
-/// that collide as their own hull.
 const RAIN_SHAPES: [Polytope4; 4] = [
     Polytope4::Cell24,
     Polytope4::Pentatope,
@@ -163,23 +127,12 @@ pub(crate) enum Phase {
     Rain,
 }
 
-/// The character itself is not carried. A letter is addressed by its index in
-/// [`WORD`], the way a timeline body addresses a row slot, because a word can
-/// repeat a character and the index is what stays a name when it does.
 pub(crate) struct HeroLetter {
-    /// Cross-section mesh in the body's own frame, hull centroid at the
-    /// origin, so a pose is a rotate-then-translate of it.
     mesh: TriangleMesh<3>,
-    /// Hull prism vertices, body-local, as [`GlyphSolid::rigid_hull_4d`]
-    /// emits them.
     hull: Vec<Vec4>,
     mark: Vec4,
     entry: Vec4,
-    /// Held rather than formatted per read: the pose is sampled once per
-    /// letter per frame while the director plays, and that is not a place to
-    /// allocate a name.
     track: String,
-    /// `None` until the release tick.
     body: Option<BodyId>,
 }
 
@@ -206,7 +159,6 @@ pub(crate) struct HeroPose {
 }
 
 impl HeroPose {
-    /// The R³ translation, `w` dropped.
     pub(crate) fn position_r3(&self) -> Vec3 {
         self.position.truncate()
     }
@@ -221,13 +173,10 @@ pub(crate) struct HeroSequence {
     /// gets does not depend on how many ticks passed before it.
     rng: u64,
     tick: u32,
-    /// Tick the next drop spawns on, drawn when the previous one spawned.
     next_spawn_tick: u32,
 }
 
 impl HeroSequence {
-    /// `font_bytes` is a TTF the whole word must exist in; `seed` picks the
-    /// rain and nothing else.
     pub(crate) fn new(font_bytes: &[u8], seed: u64) -> Result<Self> {
         let font = ab_glyph::FontRef::try_from_slice(font_bytes)?;
         let solids = layout_word(&font, WORD, &GlyphParams::default())?;
@@ -287,8 +236,6 @@ impl HeroSequence {
         self.tick
     }
 
-    /// The scene keeps stepping past this; it is where a capture stops, not
-    /// where the physics does.
     pub(crate) fn finished(&self) -> bool {
         self.tick >= SEQUENCE_TICKS
     }
@@ -311,8 +258,6 @@ impl HeroSequence {
         &self.drops
     }
 
-    /// Where a letter is: the director's sample while it plays, the body's own
-    /// pose once it has one.
     pub(crate) fn letter_pose(&self, index: usize) -> HeroPose {
         let letter = &self.letters[index];
         match letter.body {
@@ -429,8 +374,6 @@ impl HeroSequence {
         }
     }
 
-    /// Largest speed any body carries, em/s. The per-step travel a tunneling
-    /// argument is made against is this times [`SOLVER_DT`].
     fn fastest_body_speed(&self) -> f32 {
         self.world
             .bodies
@@ -439,7 +382,6 @@ impl HeroSequence {
             .fold(0.0, f32::max)
     }
 
-    /// World-space `y` of a letter's lowest hull vertex.
     fn letter_deepest_y(&self, index: usize) -> f32 {
         let letter = &self.letters[index];
         let pose = self.letter_pose(index);
@@ -450,9 +392,6 @@ impl HeroSequence {
             .fold(f32::INFINITY, f32::min)
     }
 
-    /// Lowest point of any dynamic body's collider, or `+inf` when the world
-    /// holds only the floor. The floor is excluded: a half-space has no
-    /// vertices and is the thing being tunneled through.
     fn deepest_dynamic_point(&self) -> f32 {
         let mut deepest = f32::INFINITY;
         for body in self.world.bodies.iter() {
@@ -499,8 +438,6 @@ fn letter_from(solid: &GlyphSolid, index: usize) -> Result<HeroLetter> {
     }
     let lowest = vertices.iter().fold(f32::INFINITY, |m, v| m.min(v.y));
     let mark = Vec4::new(centre.x, RELEASE_CLEARANCE - lowest, centre.z, centre.w);
-    // Alternating sides so the word assembles from both edges of the frame
-    // rather than sweeping across it in one direction.
     let side = if index.is_multiple_of(2) { -1.0 } else { 1.0 };
     Ok(HeroLetter {
         mesh,
@@ -512,8 +449,6 @@ fn letter_from(solid: &GlyphSolid, index: usize) -> Result<HeroLetter> {
     })
 }
 
-/// The `x` band the word occupies, widened by a drop's own circumradius so a
-/// drop aimed at an end letter can still land on it rather than beside it.
 fn word_span(letters: &[HeroLetter]) -> (f32, f32) {
     let lo = letters.iter().fold(f32::INFINITY, |m, l| m.min(l.mark.x));
     let hi = letters
@@ -522,8 +457,6 @@ fn word_span(letters: &[HeroLetter]) -> (f32, f32) {
     (lo - RAIN_SIZE, hi + RAIN_SIZE)
 }
 
-/// One position track per letter: hold at the entry, ease to the mark, hold
-/// there until the release tick reads the last key.
 fn assembly_timeline(letters: &[HeroLetter]) -> Timeline {
     let seconds = |ticks: u32| ticks as f32 / TICK_HZ as f32;
     Timeline {
@@ -553,14 +486,9 @@ fn assembly_timeline(letters: &[HeroLetter]) -> Timeline {
     }
 }
 
-/// Colour of the hyperplane, and of the letters standing on it. The floor is
-/// dark enough that a white letter reads against it under Lambert shading and
-/// light enough that a letter's shadowed side does not merge into it.
 const FLOOR_COLOR: [f32; 4] = [0.10, 0.11, 0.14, 1.0];
 const LETTER_COLOR: [f32; 4] = [0.92, 0.90, 0.86, 1.0];
 
-/// Half-extent of the drawn floor quad, in em. Wide enough that its edge is
-/// outside the frame at the boot camera, so the hyperplane reads as unbounded.
 const FLOOR_HALF_EXTENT: f32 = 14.0;
 
 /// Slicing hyperplane the caps are cut at. The letters live in a slab about
@@ -572,14 +500,10 @@ const W_SLICE: f32 = 0.0;
 /// 24-cell are thin and densely stacked, and 24-bit depth cracks them.
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Boot framing. The word is 2.6 em wide on the baseline, so the camera sits
-/// back far enough to hold it plus the rain's spawn height above it.
 const BOOT_ORBIT_DISTANCE: f32 = 7.5;
 const BOOT_ORBIT_PITCH: f32 = -0.12;
 const BOOT_EYE_HEIGHT: f32 = 1.4;
 
-/// Not black: an unlit floor at pure black and a background at pure black
-/// have no horizon between them.
 const BACKGROUND: wgpu::Color = wgpu::Color {
     r: 0.020,
     g: 0.022,
@@ -596,8 +520,6 @@ pub(crate) fn hero_font_bytes() -> &'static [u8] {
     epaint_default_fonts::HACK_REGULAR
 }
 
-/// Per-shape colour, taken from the shared catalog so the rain and the row
-/// cannot call the same polychoron different colours.
 fn drop_color(polytope: Polytope4) -> [f32; 3] {
     crate::catalog::SHAPE_CATALOG
         .iter()
@@ -624,8 +546,6 @@ fn push_floor(mesh: &mut TriangleMesh<3>) {
 /// dropped: the letter solid is a product with the glyph slab, so its true
 /// slice is the same cross-section at every `w` the slab covers, and slicing
 /// it would cost a re-extraction per frame to produce the mesh already baked.
-///
-/// Free function so the frame's geometry is exercisable without a device.
 fn build_frame_mesh(
     sequence: &HeroSequence,
     local: &mut Vec<Vec4>,
@@ -668,9 +588,6 @@ fn push_drop_caps(
     for (index, drop) in sequence.drops().iter().enumerate() {
         let pose = sequence.drop_pose(index);
         let topo = drop.polytope().topology();
-        // Body-local posed vertices, carrying the body's own `w` offset, so
-        // the slice cuts the drop where physics put it rather than always
-        // through its centre.
         local.clear();
         local.extend(
             (topo.vertices.iter())
@@ -709,8 +626,6 @@ pub(crate) struct HeroScene {
     mesh: TriangleMesh<3>,
     local_vertices: Vec<Vec4>,
     section_scratch: SectionScratch,
-    /// Held at the last tick of the sequence rather than looping, so the shot
-    /// a capture wants is the one on screen when it stops.
     hold_at_end: bool,
     paused: bool,
 }
@@ -749,10 +664,6 @@ impl HeroScene {
         })
     }
 
-    /// The build can only fail on the font, which the same bytes already
-    /// parsed once at construction, so a failure here means the asset crate
-    /// changed under a running binary; report it and keep the old run
-    /// on screen rather than take the scene down.
     fn replay(&mut self, seed: u64) {
         match HeroSequence::new(hero_font_bytes(), seed) {
             Ok(sequence) => {
@@ -908,9 +819,6 @@ impl loam_app::shell::Scene for HeroScene {
             &mut self.section_scratch,
             &mut self.mesh,
         );
-        // The mesh is already world R³, so `Projection::Identity` over
-        // `EuclideanR3` is the pass-through: the 4D geometry was resolved on
-        // the CPU above, per solid, by the two maps `build_frame_mesh` names.
         self.triangles.upload::<EuclideanR3, 3>(
             &rd.device,
             &rd.queue,
@@ -938,7 +846,6 @@ mod tests {
     use super::*;
     use loam_physics::manifold::PENETRATION_SLOP;
 
-    /// Arbitrary but fixed, so a failure reproduces from the test name alone.
     const SEED: u64 = 0x10a3_5eed;
 
     /// Ticks over which a settled letter must hold still, and the position
@@ -979,9 +886,6 @@ mod tests {
         HeroSequence::new(hero_font_bytes(), SEED).expect("hero scene")
     }
 
-    /// `WORD` holds no whitespace, so its characters and the scene's letters are
-    /// the same list in the same order, which the test
-    /// `the_assembled_word_is_in_reading_order_on_the_baseline` pins.
     fn label(index: usize) -> char {
         WORD.chars()
             .nth(index)
@@ -1238,8 +1142,6 @@ mod tests {
             let Shape::ConvexPolytope4D { vertices } = &body.collider else {
                 panic!("{:?} falls as a {:?}", label(index), body.collider.kind());
             };
-            // Four corners of the (z, w) rectangle per ring vertex, and the
-            // whole list has to fit the narrowphase's fixed polytope buffer.
             assert_eq!(vertices.len() % 4, 0);
             assert!(vertices.len() <= 32, "{:?} overflows the cap", label(index));
         }
@@ -1295,8 +1197,6 @@ mod tests {
             "the frame mesh grew to {count} vertices"
         );
 
-        // Rebuilding into the same buffer must not accumulate: the scene
-        // uploads once per frame from one reused mesh.
         let repeat = mesh.vertices.clone();
         build_frame_mesh(&scene, &mut local, &mut scratch, &mut mesh);
         assert_eq!(mesh.vertices, repeat);

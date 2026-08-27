@@ -472,7 +472,6 @@ impl Demo {
                 }
             }
         }
-        // Drop emptied terms (after entry moves).
         self.seq.retain(|t| !t.planes.is_empty());
         if let Some(i) = remove_term {
             if i < self.seq.len() {
@@ -495,9 +494,6 @@ mod tests {
             "the slider reaches past every rotor's log; a drag there snaps back"
         );
 
-        // A projection inside the range survives the write-then-read the
-        // slider performs each frame. At 360° it does not, which is the
-        // regression this pins.
         let unit = Bivector4 {
             xy: 1.0,
             ..Default::default()

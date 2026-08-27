@@ -4,7 +4,6 @@
 const W_DEPTH_BACK: [f32; 3] = [0.30, 0.42, 0.58];
 const W_DEPTH_FRONT: [f32; 3] = [1.00, 0.78, 0.45];
 
-/// HSV to RGB; h, s, v and output channels in [0, 1].
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
     let h6 = h.fract() * 6.0;
     let c = v * s;

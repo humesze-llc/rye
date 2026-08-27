@@ -8,7 +8,7 @@
 //! great-circle geodesics, but no WGSL ABI, so it serves the CPU rasterizer
 //! wireframe path, not the SDF ray-marcher.
 //!
-//! Curvature `K = +1`; geodesics are great circles. The exp / log / transport
+//! The exp / log / transport
 //! maps are the standard unit-sphere forms (Absil, Mahony & Sepulchre,
 //! *Optimization Algorithms on Matrix Manifolds*, 2008, §3.6, Example 8.1.1);
 //! slerp is Shoemake (*Animating Rotation with Quaternion Curves*, SIGGRAPH
@@ -54,7 +54,7 @@ const TRANSPORT_DENOM_MIN: f32 = 1e-7;
 
 /// Spherical 3-space, full ambient embedding, curvature `K = +1`.
 ///
-/// Stateless unit struct. Points are unit 4-vectors (`|p| = 1`); methods assume
+/// Points are unit 4-vectors (`|p| = 1`); methods assume
 /// that and clamp dot products rather than re-normalizing on the hot path.
 /// [`RasterizableSpace::array_to_point`] normalizes on the way in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -81,21 +81,17 @@ impl Space for SphericalS3Embedded {
         if theta < GEODESIC_DIRECTION_MIN {
             return at;
         }
-        // Unit-sphere exponential cos(θ)·at + sin(θ)·v̂; `at` and `v_tan/θ` are
-        // orthonormal.
         at * theta.cos() + v_tan * (theta.sin() / theta)
     }
 
     fn log(&self, from: Vec4, to: Vec4) -> Vec4 {
         let d = self.distance(from, to);
-        // Component of `to` perpendicular to `from`, the initial geodesic
-        // direction. `dot` clamped so a slightly-off-unit input cannot flip the
+        // `dot` clamped so a slightly-off-unit input cannot flip the
         // sign of the perpendicular term.
         let dot = from.dot(to).clamp(-1.0, 1.0);
         let perp = to - dot * from;
         let n = perp.length();
         if n < GEODESIC_DIRECTION_MIN {
-            // Coincident or antipodal: no defined tangent.
             return Vec4::ZERO;
         }
         perp * (d / n)
@@ -132,7 +128,6 @@ impl IsometryGroup for SphericalS3Embedded {
     }
 
     fn iso_inverse(&self, a: Iso4) -> Iso4 {
-        // SO(4) matrices are orthogonal: M⁻¹ = Mᵀ.
         Iso4 {
             matrix: a.matrix.transpose(),
         }
@@ -164,9 +159,7 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
 
     fn project_point(point: Vec4, projection: &Projection<4>) -> glam::Vec3 {
         match projection {
-            // Compute the conformal map directly (a true spherical view) rather
-            // than delegating to flat R⁴. No normalize: the input is already unit
-            // by this type's invariant.
+            // No normalize: the input is already unit by this type's invariant.
             Projection::Stereographic { pole } => {
                 crate::rasterizable::stereographic_to_r3(point, *pole)
             }

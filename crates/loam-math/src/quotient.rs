@@ -1,11 +1,5 @@
 //! Quotient geometry: [`QuotientSpace`], [`FlatTorus3`] and [`LensSpace`].
 //!
-//! A quotient Space is a [`Space`] whose points are orbits of a discrete
-//! subgroup Γ of its isometry group acting freely and properly discontinuously
-//! (the deck group). Loam represents an orbit by a lift: a point of the
-//! universal cover. Every metric primitive is Γ-invariant, so any lift answers
-//! for the orbit, and [`QuotientSpace::wrap_to_domain`] names the canonical one.
-//!
 //! Two contracts split apart here and must not be conflated:
 //!
 //! - [`Space::exp`] and [`Space::log`] are quotient operations. They accept any
@@ -17,13 +11,6 @@
 //!   the identity and destroy [`QuotientSpace::wrap_to_domain`]'s
 //!   postcondition, which is the one statement that lets a caller ask which
 //!   deck element a crossing used.
-//!
-//! Consequence for SDF emission: a primitive whose formula is raw chart
-//! arithmetic (`dot(p, n) - d`, `abs(p) - b`) is not Γ-periodic and is therefore
-//! wrong across the gluing. Only primitives routed through [`Space::distance`]
-//! (spheres) transfer to a quotient unchanged, which is why [`FlatTorus3`]
-//! reports [`Space::is_chart_flat`] false despite being flat as a Riemannian
-//! manifold.
 
 use std::borrow::Cow;
 use std::f32::consts::{PI, TAU};
@@ -65,8 +52,7 @@ pub trait QuotientSpace: IsometryGroup {
 ///
 /// The fundamental domain is the half-open box `[-cᵢ/2, cᵢ/2)`, so the deck
 /// group is Z³ acting by translations and the six faces are glued in opposite
-/// pairs. Curvature is zero everywhere; all the non-Euclidean behavior lives in
-/// the fundamental group.
+/// pairs.
 ///
 /// Rectangular rather than an arbitrary basis on purpose: for an orthogonal
 /// lattice the closest-vector problem separates per axis, so the reduction to
@@ -108,9 +94,6 @@ impl FlatTorus3 {
         0.5 * self.cell.min_element()
     }
 
-    /// Integer lattice coordinates of the cell containing `p`, as an
-    /// integral-valued `Vec3`.
-    ///
     /// `floor(p/c + 1/2)` alone is not enough: when `pᵢ` sits an ulp inside the
     /// upper face, `pᵢ/cᵢ` can round up onto the tie and send the index one cell
     /// too far, putting the representative outside the domain. The correction
@@ -124,7 +107,6 @@ impl FlatTorus3 {
         index - unit_where(residual.cmplt(-half)) + unit_where(residual.cmpge(half))
     }
 
-    /// The canonical lift of `p`'s orbit.
     fn wrap(&self, p: Vec3) -> Vec3 {
         p - self.cell * self.lattice_index(p)
     }
@@ -144,9 +126,6 @@ impl Space for FlatTorus3 {
         self.wrap(a - b).length()
     }
 
-    /// Travel from `at` along the geodesic and return the *canonical* lift of
-    /// the endpoint. Canonicalizing here is what makes stepped ray continuation
-    /// and a single long geodesic agree without a portal test at the caller.
     fn exp(&self, at: Vec3, v: Vec3) -> Vec3 {
         self.wrap(at + v)
     }
@@ -282,9 +261,6 @@ fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> 
     )
 }
 
-/// The cover every [`LensSpace`] quotients. Metric primitives are computed
-/// there and pushed down: a quotient changes which lift they are handed, never
-/// the formula.
 const COVER: SphericalS3Embedded = SphericalS3Embedded;
 
 /// The lens space `L(p, q) = S³/Z_p`.
@@ -298,10 +274,7 @@ const COVER: SphericalS3Embedded = SphericalS3Embedded;
 /// of the cover.
 ///
 /// The cover is [`SphericalS3Embedded`], so a `Point` is one of its unit
-/// `Vec4` lifts. The hemisphere chart [`crate::SphericalS3`] cannot host this
-/// quotient: it represents only `w ≥ 0`, and a deck element carries lifts
-/// across the equator, which is where the whole point of
-/// [`IsometryGroup::iso_apply`] acting on the cover would be lost.
+/// `Vec4` lifts.
 ///
 /// The fundamental domain is the wedge `arg(z₁) ∈ [-π/p, π/p)`, the Dirichlet
 /// domain of `Vec4::X`. That base point has `z₂ = 0`, so its orbit is the p-th
@@ -388,7 +361,6 @@ impl LensSpace {
         }
     }
 
-    /// Rotation angles of `g^power` in the `z₁` and `z₂` planes.
     fn deck_angles(&self, power: i32) -> (f32, f32) {
         let p = self.p as i64;
         let k = (power as i64).rem_euclid(p);
@@ -408,15 +380,10 @@ impl LensSpace {
         x.y.atan2(x.x) * (self.p as f32 / TAU) + 0.5
     }
 
-    /// Deck power carrying `x` into the fundamental domain.
     fn wedge_offset(&self, x: Vec4) -> i32 {
         -(self.wedge_parameter(x).floor() as i32)
     }
 
-    /// The deck power minimising `d(from, g^power·to)`, that lift, and the
-    /// distance to it: the quotient's metric, `log` and transport all need the
-    /// same three numbers and one pass finds them.
-    ///
     /// Ties go to the smallest non-negative power, so the branch is a pure
     /// function of its inputs. `O(p)`: the two plane angles advance at
     /// unrelated rates, so the maximiser of `⟨x, g^k·y⟩` has no closed form,
@@ -549,9 +516,6 @@ impl Space for LensSpace {
         self.nearest_lift(a, b).2
     }
 
-    /// Travel the cover's great circle and return the *canonical* lift of the
-    /// endpoint. Canonicalising here is what lets a stepped ray march and a
-    /// single long geodesic agree without a portal test at the caller.
     fn exp(&self, at: Vec4, v: Vec4) -> Vec4 {
         self.wrap_to_domain(COVER.exp(at, v)).0
     }

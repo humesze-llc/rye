@@ -11,18 +11,10 @@ use crate::space::{Space, WgslSpace};
 /// A [`Space`] whose metric tensor is a scalar multiple of the identity in its
 /// standard chart: g_ij(p) = f(p)·δ_ij for some positive scalar function f.
 ///
-/// - [`crate::EuclideanR3`]: f ≡ 1.
-/// - [`crate::HyperbolicH3`] (Poincaré ball): f(p) = 4/(1-|p|²)², for |p| < 1.
-///
 /// The claim is about the chart a `Space` ships, not about its manifold: every
 /// constant-curvature 3-manifold is conformally flat in *some* chart, but the
 /// integrator works in the coordinates `Space::Point` actually carries, so only
 /// that chart's metric counts.
-///
-/// Separate trait, not a `Space` method: not every Space is conformally flat
-/// (Sol³, Nil³ have anisotropic metrics). When both sources are conformally
-/// flat the blend is too, and the geodesic ODE collapses to a closed form in
-/// ∇ log f; that is the integrator's fast path.
 pub trait ConformallyFlat: Space {
     /// Conformal scale factor at `p`: the scalar f with g_ij(p) = f(p)·δ_ij.
     ///
@@ -36,7 +28,6 @@ pub trait ConformallyFlat: Space {
     fn scalar_curvature(&self, p: Vec3) -> f32 {
         const EPS: f32 = 5.0e-3;
         let phi_at = self.conformal_log_half(p);
-        // 7-point stencil Laplacian.
         let lap = (self.conformal_log_half(p + Vec3::X * EPS)
             + self.conformal_log_half(p - Vec3::X * EPS)
             + self.conformal_log_half(p + Vec3::Y * EPS)
@@ -91,8 +82,6 @@ impl ConformallyFlat for crate::EuclideanR3 {
     }
 }
 
-// HyperbolicH3 (Poincaré ball): f(p) = 4/(1-|p|²)² for |p| < 1; INFINITY at
-// the ideal boundary |p| = 1 to flag chart-boundary crossings.
 impl ConformallyFlat for crate::HyperbolicH3 {
     fn conformal_factor(&self, p: Vec3) -> f32 {
         let r2 = p.length_squared();
@@ -131,11 +120,9 @@ impl ConformallyFlat for crate::HyperbolicH3 {
 /// g(p) = (1 - α(p))·g_A(p) + α(p)·g_B(p).
 ///
 /// At zone extremes the metric reduces to pure g_A or g_B; in between it is a
-/// variable-metric Riemannian manifold. Sources must use ℝ³ points/vectors and
-/// be [`ConformallyFlat`] (so the blend is too, the integrator's fast path).
-/// The field breaks translation and rotation symmetry, so there are no
-/// non-trivial isometries and this Space does not implement
-/// [`crate::IsometryGroup`].
+/// variable-metric Riemannian manifold. The field breaks translation and
+/// rotation symmetry, so there are no non-trivial isometries and this Space
+/// does not implement [`crate::IsometryGroup`].
 pub struct BlendedSpace<A, B, F>
 where
     A: Space<Point = Vec3, Vector = Vec3>,
@@ -181,7 +168,6 @@ where
     type Vector = Vec3;
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
-        // Both endpoints at the same zone extreme: exact source-Space distance.
         let alpha_a = self.field.weight(a);
         let alpha_b = self.field.weight(b);
         if alpha_a == 0.0 && alpha_b == 0.0 {
@@ -380,7 +366,6 @@ pub fn gauss_newton_log<S: ConformallyFlat>(
             return v;
         }
 
-        // Jacobian column j: (exp(v + ε e_j) − exp(v − ε e_j)) / (2ε).
         let two_eps = 2.0 * LOG_JACOBIAN_EPS;
         let mut jac = Mat3::ZERO;
         for j in 0..3 {
@@ -540,7 +525,6 @@ impl LinearBlendX {
         }
     }
 
-    /// Width of the blending zone in world units.
     fn width(&self) -> f32 {
         self.end - self.start
     }
@@ -550,11 +534,9 @@ impl BlendingField for LinearBlendX {
     fn weight(&self, p: Vec3) -> f32 {
         let w = self.width();
         if w <= 0.0 {
-            // Degenerate zero-width zone: step function at `start`.
             return if p.x < self.start { 0.0 } else { 1.0 };
         }
         let t = ((p.x - self.start) / w).clamp(0.0, 1.0);
-        // Smootherstep: 6t⁵ − 15t⁴ + 10t³.
         t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
     }
 
@@ -567,7 +549,6 @@ impl BlendingField for LinearBlendX {
         if !(0.0..=1.0).contains(&raw_t) {
             return Vec3::ZERO;
         }
-        // 30t²(1−t)² · (1/w).
         let t = raw_t;
         let one_minus_t = 1.0 - t;
         let dx = 30.0 * t * t * one_minus_t * one_minus_t / w;

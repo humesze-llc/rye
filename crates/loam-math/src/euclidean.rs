@@ -80,8 +80,6 @@ impl IsometryGroup for EuclideanR3 {
     }
 
     fn iso_compose(&self, a: Iso3, b: Iso3) -> Iso3 {
-        // (R_a, t_a) ∘ (R_b, t_b) applied to p:
-        //   R_a (R_b p + t_b) + t_a = (R_a R_b) p + (R_a t_b + t_a)
         Iso3 {
             rotation: a.rotation * b.rotation,
             translation: a.rotation * b.translation + a.translation,

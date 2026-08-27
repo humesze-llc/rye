@@ -45,7 +45,6 @@ impl Default for Iso2 {
     }
 }
 
-// Rotor2 needs Serialize/Deserialize for Iso2's derive.
 impl Serialize for Rotor2 {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         (self.a, self.b).serialize(s)
@@ -96,8 +95,6 @@ impl IsometryGroup for EuclideanR2 {
     }
 
     fn iso_compose(&self, a: Iso2, b: Iso2) -> Iso2 {
-        // (R_a, t_a) ∘ (R_b, t_b) applied to p:
-        //   R_a (R_b p + t_b) + t_a = (R_a R_b) p + (R_a t_b + t_a)
         Iso2 {
             rotation: a.rotation * b.rotation,
             translation: a.rotation.apply(b.translation) + a.translation,

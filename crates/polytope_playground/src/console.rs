@@ -1,5 +1,14 @@
 use crate::*;
 
+fn handles_arg(arg: Option<&str>, current: bool) -> anyhow::Result<bool> {
+    match arg {
+        None => Ok(!current),
+        Some("on") => Ok(true),
+        Some("off") => Ok(false),
+        Some(other) => Err(anyhow!("handles: unknown arg `{other}` (try on|off)")),
+    }
+}
+
 impl RotateScene {
     pub(crate) fn build_console() -> Console<Demo> {
         let mut c = Console::<Demo>::new();
@@ -736,6 +745,31 @@ impl RotateScene {
             ]),
         );
 
+        c.register(
+            loam_egui::cmd::<Demo, _>(
+                "handles",
+                "toggle the 4D transform handles (on | off; bare flips)",
+                |args, demo, out| {
+                    let next = handles_arg(args.first().copied(), demo.gimbal.enabled)?;
+                    demo.gimbal.enabled = next;
+                    out.line(format!("handles: {}", if next { "on" } else { "off" }));
+                    Ok(())
+                },
+            )
+            .with_args(&[&["on", "off"]])
+            .with_long_help(
+                "Six interlocked rings, one per rotation plane, from the stereographic\n\
+                 projection of the 16-cell, plus four arrows, one per translation axis.\n\
+                 Drag a ring to rotate the selected body in its plane; drag an arrowhead\n\
+                 to slide it along that axis. The violet arrow is w: it moves the body off\n\
+                 the 3D slice, so the cross-section changes shape rather than travelling.\n\
+                 \n\
+                 Off at startup and reachable only from here. The handles are hidden in\n\
+                 Filmstrip view, which composes per-cell viewports with no shared world\n\
+                 origin for the widget to stand on.",
+            ),
+        );
+
         // The SDF kernel reads `u.params[0]`; when 0.0 the wrapper around
         // `loam_scene_sdf` short-circuits to a huge distance, so the marcher
         // never converges on the floor.
@@ -788,6 +822,26 @@ mod tests {
                 step.command
             );
         }
+    }
+
+    #[test]
+    fn the_console_registers_the_transform_handles_toggle() {
+        assert!(RotateScene::build_console().has_command("handles"));
+    }
+
+    #[test]
+    fn handles_arg_flips_when_bare_and_is_absolute_when_named() {
+        assert!(handles_arg(None, false).unwrap());
+        assert!(!handles_arg(None, true).unwrap());
+        assert!(handles_arg(Some("on"), false).unwrap());
+        assert!(handles_arg(Some("on"), true).unwrap());
+        assert!(!handles_arg(Some("off"), true).unwrap());
+        assert!(!handles_arg(Some("off"), false).unwrap());
+    }
+
+    #[test]
+    fn handles_arg_rejects_an_unknown_token() {
+        assert!(handles_arg(Some("yes"), false).is_err());
     }
 
     #[test]

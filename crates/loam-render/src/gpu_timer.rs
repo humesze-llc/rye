@@ -15,12 +15,12 @@ use wgpu::{
     QuerySetDescriptor, QueryType, Queue, QUERY_RESOLVE_BUFFER_ALIGNMENT,
 };
 
-/// Submitted, on-GPU, staged-for-mapping: one slot each. More slots delay
-/// displayed timings; fewer risk map-vs-write contention.
+// Submitted, on-GPU, staged-for-mapping: one slot each. More slots delay
+// displayed timings; fewer risk map-vs-write contention.
 const FRAMES_IN_FLIGHT: usize = 3;
 
-/// Upper bound on a believable single-frame GPU time; beyond this is a desynced
-/// slot, not a stall.
+// Upper bound on a believable single-frame GPU time; beyond this is a desynced
+// slot, not a stall.
 const MAX_PLAUSIBLE_FRAME_NS: u64 = 1_000_000_000 / 10;
 
 // Above ~120 Hz the triple-buffer cycle can race on some drivers, pairing a

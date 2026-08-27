@@ -91,22 +91,22 @@ use loam_shape::LineMesh;
 /// rings to straight lines through the origin.
 pub const POLE: Vec4 = Vec4::new(0.5, 0.5, 0.5, 0.5);
 
-/// Sine of the smallest ray-to-ring-plane angle the plane hit is trusted at.
-/// The hit distance grows as `1/sin`, so below this a one-pixel cursor move
-/// sweeps an arbitrary arc and the drag stops tracking the cursor.
+// Sine of the smallest ray-to-ring-plane angle the plane hit is trusted at.
+// The hit distance grows as `1/sin`, so below this a one-pixel cursor move
+// sweeps an arbitrary arc and the drag stops tracking the cursor.
 const MIN_PLANE_INCIDENCE: f32 = 1e-2;
 
-/// `1 − p·n` below this puts `p` within f32 noise of the pole, where the
-/// image runs to infinity.
+// `1 − p·n` below this puts `p` within f32 noise of the pole, where the
+// image runs to infinity.
 const MIN_POLE_DISTANCE: f32 = 1e-4;
 
-/// Orthonormal frame of [`POLE`]'s orthogonal complement, read as the image
-/// R³'s x, y, z: the other three 16-cell cell centres orthogonal to `POLE`.
-/// It lands the six ring centres exactly on `±x̂, ±ŷ, ±ẑ`, one
-/// orthogonal-plane pair per axis, and `det[u₁,u₂,u₃,POLE] = +1`, so the
-/// image inherits R⁴'s orientation. A frame with a zero component puts a
-/// ring plane on an image axis, where the default camera sees it edge-on
-/// and cannot grab it at all.
+// Orthonormal frame of `POLE`'s orthogonal complement, read as the image
+// R³'s x, y, z: the other three 16-cell cell centres orthogonal to `POLE`.
+// It lands the six ring centres exactly on `±x̂, ±ŷ, ±ẑ`, one
+// orthogonal-plane pair per axis, and `det[u₁,u₂,u₃,POLE] = +1`, so the
+// image inherits R⁴'s orientation. A frame with a zero component puts a
+// ring plane on an image axis, where the default camera sees it edge-on
+// and cannot grab it at all.
 const IMAGE_AXES: [Vec4; 3] = [
     Vec4::new(0.5, 0.5, -0.5, -0.5),
     Vec4::new(0.5, -0.5, 0.5, -0.5),

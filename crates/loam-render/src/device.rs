@@ -62,7 +62,7 @@ pub(crate) struct UiTargetFormats {
 //
 // The swapchain is the only target reinterpreted: the multisampled
 // attachment's resolve has to stay sRGB at both ends (see
-// [`RenderDevice::resolve_scene_to_swap`]), so it registers nothing.
+// `RenderDevice::resolve_scene_to_swap`), so it registers nothing.
 fn ui_target_formats(surface_format: TextureFormat, downlevel: DownlevelFlags) -> UiTargetFormats {
     // Composite path: the UI paints into the offscreen scene texture and
     // `CompositeNode` encodes gamma afterwards, so nothing is reinterpreted.

@@ -1374,6 +1374,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
     #[test]
     fn tesseract_cpu_port_matches_geometry() {
+        // Inradius 0.5; abs/min/max SDF is bit-exact at the half-extent.
         assert_polytope_geometry(
             "tesseract",
             tesseract_sdf_local_cpu,

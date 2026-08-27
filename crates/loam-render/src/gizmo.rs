@@ -27,31 +27,29 @@ use loam_shape::LineMesh;
 
 use crate::hypergimbal::{Hypergimbal, Ring, RingStyle};
 
-/// Outer reach of the ring shell, in [`TransformGizmo::scale`] units: every
-/// ring is centred `1` out with radius `√2`, per [`crate::hypergimbal::POLE`].
+// Outer reach of the ring shell, in `TransformGizmo::scale` units: every
+// ring is centred `1` out with radius `√2`, per `hypergimbal::POLE`.
 const RING_REACH: f32 = 1.0 + std::f32::consts::SQRT_2;
 
-/// Inner end of a shaft, in `scale` units. Leaves the hub clear by several
-/// grab radii, so a press aimed at the subject still reaches the subject.
+// Inner end of a shaft, in `scale` units. Leaves the hub clear by several
+// grab radii, so a press aimed at the subject still reaches the subject.
 const SHAFT_INNER: f32 = 0.45;
 
-/// Arrowhead length, in `scale` units. Drawn and grabbed extent both, so
-/// the head cannot be grabbable anywhere it is not drawn.
+// Arrowhead length, in `scale` units. Drawn and grabbed extent both, so
+// the head cannot be grabbable anywhere it is not drawn.
 const SHAFT_HEAD: f32 = 0.28;
 
-/// Open space between the ring shell and a shaft's tip, in `scale` units:
-/// two arrowhead lengths, so no head is ever drawn over a ring.
+// Two arrowhead lengths, so no head is ever drawn over a ring.
 const SHAFT_CLEARANCE: f32 = 2.0 * SHAFT_HEAD;
 
 const SHAFT_OUTER: f32 = RING_REACH + SHAFT_CLEARANCE;
 
-/// `1/√3`, the component size of the `w` shaft's world direction.
 const INV_SQRT_3: f32 = 0.577_350_26;
 
-/// Sine of the smallest ray-to-shaft angle a shaft is trusted at. The
-/// closest-approach parameter moves as `1/sin`, so below this a one-pixel
-/// cursor move slides the subject an arbitrary distance. Same conditioning
-/// class, and the same value, as the ring plane's incidence floor.
+// Sine of the smallest ray-to-shaft angle a shaft is trusted at. The
+// closest-approach parameter moves as `1/sin`, so below this a one-pixel
+// cursor move slides the subject an arbitrary distance. Same conditioning
+// class, and the same value, as the ring plane's incidence floor.
 const MIN_SHAFT_INCIDENCE: f32 = 1e-2;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]

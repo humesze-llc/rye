@@ -2203,10 +2203,17 @@ mod tests {
 
     const FIXTURE_DT: f32 = 1.0 / 60.0;
 
+    /// Past `PENETRATION_SLOP`, so the narrowphase reports rather than
+    /// grazes.
     const FIXTURE_OVERLAP: f32 = 0.2;
 
+    /// Far past the sum of two bounding radii, so the broadphase cannot
+    /// couple two pairs into one island.
     const FIXTURE_GROUP_GAP: f32 = 20.0;
 
+    /// Fast enough that the Coulomb clamp `|jt| <= mu*jn` binds on the
+    /// first step, so the tangent accumulator is the cap rather than a
+    /// rounding artefact.
     const FIXTURE_SLIDE_SPEED: f32 = 3.0;
 
     fn contacting_world(pairs: usize) -> PlaygroundPhysics {

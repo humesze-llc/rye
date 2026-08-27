@@ -6,6 +6,10 @@
 //! decides whether the letter meets the slice at all rather than where it sits.
 //! [`Transit::new`] enforces that by refusing any key with a nonzero `x`, `y`
 //! or `z`, so a file cannot quietly claim a place the layout owns.
+//!
+//! At [`GLYPH_RESOLUTION`] the whole title is ~89k vertices, 2.8 MB of
+//! vertex upload per frame, pinned by
+//! `the_title_stays_inside_its_per_frame_upload_budget`.
 
 use std::borrow::Cow;
 

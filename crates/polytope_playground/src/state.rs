@@ -355,6 +355,9 @@ pub(crate) struct Demo {
     pub(crate) section_clip_projected_scratch: Vec<glam::Vec3>,
     pub(crate) body_uniform_scratch: Vec<BodyUniform>,
     pub(crate) slerp_scratch: Vec<glam::Vec4>,
+    /// Reused across frames: worst measured case (an eight-slot row of
+    /// 600-cells, both perimeters on) is ~12k segments, about 0.7 MB
+    /// rebuilt from empty each frame.
     pub(crate) wireframe_section_edges_scratch: loam_shape::LineMesh<3>,
     pub(crate) body_perimeter_scratch: loam_shape::LineMesh<3>,
     /// The two are called from different render passes, which is

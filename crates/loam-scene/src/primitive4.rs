@@ -4,9 +4,10 @@ use loam_shape::Shape;
 use crate::literal::wgsl_f32;
 use crate::SENTINEL_DISTANCE;
 
-/// [`Self::eval_4d`] is the CPU twin of [`Self::to_wgsl_4d`]'s emitted body,
-/// exact up to `f32` rounding. No `space: &S` parameter: ℝ⁴ is the only 4D
-/// Space and it is flat, so chart-coord SDFs are correct.
+/// [`Self::to_wgsl_4d`] emits `fn {name}(p: vec4<f32>) -> f32`;
+/// [`Self::eval_4d`] is the CPU twin of that body, exact up to `f32` rounding.
+/// No `space: &S` parameter: ℝ⁴ is the only 4D Space and it is flat, so
+/// chart-coord SDFs are correct.
 pub trait Primitive4 {
     fn to_wgsl_4d(&self, name: &str) -> String;
 

@@ -60,7 +60,8 @@ impl Scene4 {
         Self { root }
     }
 
-    /// Kind-tracking bindings are emitted but unused.
+    /// Emits `fn loam_scene_sdf_4d(p: vec4<f32>) -> f32`. Kind-tracking
+    /// bindings are emitted but unused.
     pub fn to_wgsl_4d(&self) -> String {
         let mut helpers = String::new();
         let mut body = String::new();
@@ -79,6 +80,8 @@ impl Scene4 {
         )
     }
 
+    /// Emits `struct LoamSceneHit`, `loam_scene_at(p3) -> LoamSceneHit`,
+    /// `loam_scene_sdf(p3) -> f32` and `loam_scene_max_t(ro, rd) -> f32`.
     /// `w_slice_expr` is the slicing w-coord, typically `"u.w_slice"`. Kind
     /// tracking: union picks the closer leaf, intersection the farther
     /// (boundary) leaf, difference returns `LOAM_PRIM_OTHER`.

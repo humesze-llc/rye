@@ -13,7 +13,8 @@ use loam_shape::Shape;
 use crate::literal::wgsl_f32;
 use crate::SENTINEL_DISTANCE;
 
-/// [`Self::eval`] is the CPU twin of [`Self::to_wgsl`]'s emitted body.
+/// [`Self::to_wgsl`] emits `fn {name}(p: vec3<f32>) -> f32`; [`Self::eval`] is
+/// the CPU twin of that body.
 /// Implementations use only `loam_*` Space-prelude functions on the GPU and
 /// only [`Space`] methods on the CPU, never raw chart-coord arithmetic, except
 /// when the Space self-reports flat via [`Space::is_chart_flat`].

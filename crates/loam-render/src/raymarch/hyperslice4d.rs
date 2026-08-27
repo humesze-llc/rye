@@ -1266,6 +1266,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         }
     }
 
+    // Inline vertex generators, mirroring loam_physics::euclidean_r4.
     fn pentatope_vertices() -> Vec<Vec4> {
         let base_w = -0.25_f32;
         let base_r = 15.0_f32.sqrt() / 4.0;

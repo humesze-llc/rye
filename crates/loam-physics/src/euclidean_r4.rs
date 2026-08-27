@@ -146,7 +146,6 @@ fn sphere_sphere_r4(
     })
 }
 
-/// Sphere vs 4D half-space: signed distance from center to plane is penetration.
 fn sphere_halfspace_r4(
     a: &RigidBody<EuclideanR4>,
     b: &RigidBody<EuclideanR4>,
@@ -174,8 +173,6 @@ fn sphere_halfspace_r4(
     })
 }
 
-/// 4D convex polytope vs 4D half-space: the world-space vertex with the
-/// most-negative signed distance to the plane is the contact point.
 fn polytope_halfspace_r4(
     a: &RigidBody<EuclideanR4>,
     b: &RigidBody<EuclideanR4>,
@@ -226,14 +223,9 @@ fn polytope4_bounding_radius(local_vertices: &[Vec4]) -> f32 {
 
 /// Maximum vertex count for any 4D polytope collider. Exceeding it silently
 /// truncates vertices and corrupts collisions, so callers debug-assert.
-///
-/// Public because the choice of collider is the caller's: a consumer holding a
-/// vertex list longer than this has to pick another collider rather than hand
-/// one over and be truncated into a corrupt hull in release.
 pub const MAX_POLYTOPE4_VERTICES: usize = 32;
 
-/// Transform body-local vertices to world space into the caller's stack buffer,
-/// returning the populated prefix. Hot path; allocation-free by contract.
+/// Hot path; allocation-free by contract.
 fn world_vertices4_into<'a>(
     local: &[Vec4],
     pos: Vec4,
@@ -377,8 +369,6 @@ pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR4>) {
         polytope_halfspace_r4,
     );
 }
-
-// Convenience constructors.
 
 /// Solid-ball moment of inertia in 4D about a 2-plane through the center:
 /// `I = (2/(n+2))·m·r² = m·r²/3` for n=4 (cf. `(2/5)·m·r²` for the 3-ball).
@@ -962,8 +952,6 @@ mod tests {
         assert_all_on_circumsphere(&verts, 1.0, "120-cell");
     }
 
-    /// Central symmetry: every vertex's antipode -v is also a vertex. Catches
-    /// sign-mask bugs in the orbit enumeration.
     fn assert_centrally_symmetric(verts: &[Vec4], label: &str) {
         for v in verts {
             let antipode = -*v;
@@ -984,7 +972,6 @@ mod tests {
         assert_centrally_symmetric(&cell120_vertices(1.0), "120-cell");
     }
 
-    /// Pin vertex-set uniqueness so a sign-mask or permutation bug fails loud.
     fn assert_all_unique(verts: &[Vec4], label: &str) {
         for i in 0..verts.len() {
             for j in (i + 1)..verts.len() {
@@ -1197,7 +1184,6 @@ mod tests {
             tesseract_vertices(0.8),
             0.0,
         ));
-        // Zero-mass tesseract is static; we test detection, not solver response.
         let pair_found = {
             let (a, b) = world.bodies.dense_mut().split_at_mut(1);
             world.narrowphase.test(&a[0], &b[0], &EuclideanR4).is_some()
@@ -1257,7 +1243,6 @@ mod tests {
     fn orientation_integration_preserves_unit_rotor() {
         let space = EuclideanR4;
         let mut iso = Iso4Flat::IDENTITY;
-        // Compound angular velocity: rotation in xy and zw planes.
         let omega = Bivector4::new(0.2, 0.0, 0.0, 0.0, 0.0, 0.15);
         for _ in 0..1000 {
             iso = space.integrate_orientation(iso, omega, 1.0 / 60.0);
@@ -1274,7 +1259,6 @@ mod tests {
         let first = determinism_scenario_trajectory();
         let second = determinism_scenario_trajectory();
         assert_eq!(first, second, "fixed-scenario replay must be bit-identical");
-        // Guard against a vacuous pass: the simulation must stay finite.
         for &bits in &first {
             assert!(
                 f32::from_bits(bits).is_finite(),

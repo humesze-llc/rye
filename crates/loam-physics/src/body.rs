@@ -27,8 +27,6 @@ pub struct RigidBody<S: PhysicsSpace> {
 }
 
 impl<S: PhysicsSpace> RigidBody<S> {
-    /// `space` is passed so the caller can source an identity isometry without naming the
-    /// space's [`crate::Collider`] types directly.
     pub fn new(
         position: S::Point,
         velocity: S::Vector,
@@ -37,10 +35,9 @@ impl<S: PhysicsSpace> RigidBody<S> {
         inertia: S::Inertia,
         space: &S,
     ) -> Self {
-        // Half-spaces are infinite planes; a finite mass with infinite extent breaks the
-        // integrator's assumptions (no centre of mass, no bounded inertia). Static-only is the
-        // only sensible mode; catch the misuse in debug builds before it produces silently wrong
-        // physics in release.
+        // Half-spaces are infinite planes; a finite mass with infinite extent
+        // breaks the integrator's assumptions (no centre of mass, no bounded
+        // inertia).
         debug_assert!(
             !matches!(
                 collider,
@@ -141,8 +138,6 @@ impl BodyId {
         self.generation
     }
 
-    /// Handles are minted by [`BodyArena::spawn`]; a test exercising a
-    /// consumer of a handle rather than the arena itself has to forge one.
     #[cfg(test)]
     pub(crate) fn forge(slot: u32, generation: u32) -> Self {
         Self { slot, generation }
@@ -173,18 +168,8 @@ struct Slot {
 /// reorder: `swap`, `reverse`, `sort_unstable_by_key` and the rest no longer
 /// resolve on an arena.
 ///
-/// It is not a seal, and the type cannot make it one. [`Self::iter_mut`]
-/// returns `std::slice::IterMut`, whose `into_slice` hands back the whole
-/// `&mut [RigidBody<S>]`, so `arena.iter_mut().into_slice().reverse()` is one
-/// expression that restores everything dropping `DerefMut` removed. Two of its
-/// items held at once and `mem::swap`ped is a second route, and `mem::replace`
-/// through a filler body reaches the same state through [`Self::get_mut`] or
-/// the [`IndexMut`] impls in three statements. Keeping dense positions in the
-/// order the arena assigned them is the caller's contract, not an invariant
-/// this type enforces.
-///
-/// The three `compile_fail` blocks below share the hidden setup of the passing
-/// one, so each fails on its visible line and not on its fixture.
+/// Keeping dense positions in the order the arena assigned them is the
+/// caller's contract, not an invariant this type enforces.
 ///
 /// ```
 /// # use glam::Vec3;
@@ -327,13 +312,7 @@ impl<S: PhysicsSpace> BodyArena<S> {
 
     /// Mutable iteration in dense order: per-body edits without a handle.
     ///
-    /// Edit bodies in place; do not move them between items. Two routes out
-    /// of this iterator permute the dense slice without the slot table
-    /// following, which is the desynchronization [`BodyArena`] describes:
-    /// `into_slice` returns the whole `&mut [RigidBody<S>]`, and the items
-    /// borrow the slice rather than the iterator, so two can be held at once
-    /// and swapped. Dropping [`DerefMut`](std::ops::DerefMut) made that
-    /// deliberate rather than a one-token slip; it did not make it impossible.
+    /// Edit bodies in place; do not move them between items.
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, RigidBody<S>> {
         self.dense.iter_mut()
     }
@@ -368,7 +347,6 @@ impl<S: PhysicsSpace> IndexMut<BodyId> for BodyArena<S> {
     }
 }
 
-/// Dense-position indexing, the iteration-order view.
 impl<S: PhysicsSpace> Index<usize> for BodyArena<S> {
     type Output = RigidBody<S>;
 
@@ -547,8 +525,6 @@ mod tests {
 
         let (linear_after, angular_after) = momenta(&a, &b);
 
-        // Conservation is also satisfied by doing nothing, so pin that both
-        // channels of both bodies actually responded.
         assert!((a.velocity - a_velocity_before).length() > 0.1);
         assert!((b.velocity - b_velocity_before).length() > 0.1);
         assert!((a.angular_velocity + a_spin_before * -1.0).magnitude() > 0.1);
@@ -723,8 +699,6 @@ mod tests {
         };
         let first = run();
         assert_eq!(first, run());
-        // Two recycled slots and one fresh one, or the sequence never
-        // exercised the free list.
         assert_eq!(first[4].slot(), first[3].slot());
         assert_eq!(first[5].slot(), first[1].slot());
         assert_eq!(first[6].slot(), 4);

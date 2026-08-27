@@ -1,16 +1,5 @@
 //! EPA in R⁴: Expanding Polytope for 4D penetration depth.
 //!
-//! Parallel to [`super::epa`][mod@super::epa] (3D), with three changes:
-//!
-//! 1. **Faces** are tetrahedra (4 vertex indices), not triangles.
-//! 2. **Normals** are the Hodge dual of `(b−a) ∧ (c−a) ∧ (d−a)`, the 4D
-//!    generalized cross product, perpendicular to all three edge vectors.
-//! 3. **Horizon** triangles are those unique to one removed tetra; each plus the
-//!    new support point forms a new tetrahedral face.
-//!
-//! Contact-point reconstruction uses the Gram-matrix projection from
-//! [`super::simplex_r4`] on the terminating face's four vertices.
-//!
 //! Every geometric threshold here is a dimensionless coefficient times the
 //! caller's `scale` raised to the homogeneity degree of the quantity it
 //! guards, so the resolved depth and normal are equivariant under a uniform
@@ -43,7 +32,6 @@ pub struct ContactInfo4 {
     pub point: Vec4,
 }
 
-/// Tetrahedral face of the expanding polytope.
 #[derive(Clone, Copy, Debug)]
 struct Face4 {
     v: [usize; 4],
@@ -51,10 +39,6 @@ struct Face4 {
     distance: f32,
 }
 
-/// The scale-derived thresholds of one `epa_r4` call: each constant times
-/// `scale` raised to that constant's degree, evaluated once at entry because
-/// `scale` is fixed for the call while `build_face` runs once per horizon
-/// triangle per iteration.
 #[derive(Clone, Copy)]
 struct Thresholds {
     support_gap: f32,
@@ -91,8 +75,6 @@ impl Polytope4 {
             + simplex[4].point)
             * 0.2;
 
-        // Five tetrahedral faces of the 4-simplex: each excludes the `l`-th vertex.
-        // Orientation rule lives in `build_face`.
         let mut faces = Vec::with_capacity(5);
         for l in 0..5 {
             let mut tet = [0usize; 4];
@@ -123,9 +105,6 @@ impl Polytope4 {
         }
     }
 
-    /// Face whose plane is nearest the origin, as in the 3D
-    /// [`super::epa`][mod@super::epa].
-    ///
     /// Distance-0 faces are the rule rather than the exception in 4D:
     /// [`gjk_intersect_r4`][super::gjk_r4::gjk_intersect_r4] grows its
     /// terminating sub-simplex to five vertices by adding supports on one side
@@ -150,7 +129,6 @@ impl Polytope4 {
         let new_idx = self.vertices.len();
         self.vertices.push(support);
 
-        // Horizon: triangles unique to one removed tetra. Shared triangles cancel.
         let mut horizon: Vec<Triangle> = Vec::new();
         let mut keep = Vec::with_capacity(self.faces.len());
 
@@ -167,8 +145,6 @@ impl Polytope4 {
         }
         self.faces = keep;
 
-        // Each horizon triangle + new vertex -> a new tetrahedral face, oriented
-        // against the seed centroid (still interior by convexity).
         let centroid = self.centroid;
         let wedge_norm = self.thresholds.wedge_norm;
         for tri in &horizon {
@@ -235,8 +211,8 @@ const SEED_DEGENERATE_VOLUME: f32 = 1e-8;
 /// A triangle index triple; winding implicit in order.
 type Triangle = (usize, usize, usize);
 
-/// The four triangular faces of a tetrahedron, each excluding one vertex. Winding
-/// is irrelevant here: matching is order-insensitive (see `add_or_remove_triangle`).
+/// Winding is irrelevant here: matching is order-insensitive (see
+/// `add_or_remove_triangle`).
 fn tet_triangles(tet: &[usize; 4]) -> [Triangle; 4] {
     let (a, b, c, d) = (tet[0], tet[1], tet[2], tet[3]);
     [(a, b, c), (a, b, d), (a, c, d), (b, c, d)]
@@ -259,9 +235,6 @@ fn sort_triangle(t: Triangle) -> (usize, usize, usize) {
     (a[0], a[1], a[2])
 }
 
-/// Build a tetrahedral face `(a, b, c, d)` with outward unit normal and distance
-/// from origin. `None` when degenerate (near-coplanar edges, tiny normal).
-///
 /// Orientation comes from the seed centroid alone. The origin is the tempting
 /// second reference and is wrong: it is interior only while GJK's containment
 /// verdict holds exactly, and GJK accepts a simplex whose closest point is
@@ -355,7 +328,6 @@ pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
 ) -> Option<ContactInfo4> {
     let thresholds = Thresholds::for_scale(scale);
 
-    // Reject a zero-4-volume seed: |det([p1-p0; p2-p0; p3-p0; p4-p0])|.
     let p0 = initial_simplex[0].point;
     let d1 = initial_simplex[1].point - p0;
     let d2 = initial_simplex[2].point - p0;
@@ -389,7 +361,6 @@ pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
         }
     }
 
-    // Cap hit: return the best-estimate contact rather than failing.
     tracing::debug!(
         max_iterations = EPA_MAX_ITERATIONS,
         vertices = polytope.vertices.len(),
@@ -410,7 +381,6 @@ fn det4(r0: Vec4, r1: Vec4, r2: Vec4, r3: Vec4) -> f32 {
 fn contact_from_face(polytope: &Polytope4, face: Face4) -> Option<ContactInfo4> {
     let tetra = face.v.map(|i| polytope.vertices[i]);
 
-    // Closest point on the face hyperplane to the origin, in Minkowski-diff space.
     let closest = face.normal * face.distance;
     let weights = face_barycentrics(&tetra.map(|p| p.point), closest);
 
@@ -474,7 +444,6 @@ mod tests {
         );
     }
 
-    /// `epa_r4`'s `scale` contract for two circumradius-1 polychora.
     const UNIT_POLYCHORON_SCALE: f32 = 2.0;
 
     #[test]
@@ -625,11 +594,8 @@ mod tests {
         );
     }
 
-    /// Both degeneracy fixtures below drive the same pair of radius-1 spheres.
     const SPHERE_PAIR_SCALE: f32 = 2.0;
 
-    /// Pre-images are irrelevant to a seed that never reaches contact
-    /// reconstruction, so they are the difference points themselves.
     fn seed(points: [Vec4; 5]) -> [MinkowskiPoint4; 5] {
         points.map(|point| MinkowskiPoint4 {
             point,
@@ -738,7 +704,6 @@ mod tests {
         assert!(epa_r4(&a, &b, repeated, SPHERE_PAIR_SCALE).is_none());
     }
 
-    /// 16 corners of an axis-aligned R⁴ box centred at the origin.
     fn box4_vertices(half: Vec4) -> Vec<Vec4> {
         let mut vertices = Vec::with_capacity(16);
         for &x in &[-half.x, half.x] {

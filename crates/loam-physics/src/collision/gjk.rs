@@ -1,13 +1,4 @@
 //! GJK containment test for convex shapes.
-//!
-//! The Minkowski difference `A ⊖ B = { a − b }` contains the origin iff `A ∩ B`
-//! is non-empty. GJK tests this by maintaining a simplex of support points
-//! `s_{A⊖B}(d) = s_A(d) − s_B(−d)` and refining toward the origin until it
-//! either encloses the origin (intersection) or finds a direction with no
-//! progress (separation).
-//!
-//! 3D specialization: simplex up to a tetrahedron. The Voronoi-region logic for
-//! line -> triangle -> tetrahedron is hand-written.
 
 use glam::Vec3;
 
@@ -201,7 +192,6 @@ fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let ao = -a;
     let abc = ab.cross(ac);
 
-    // Edge AC region?
     if abc.cross(ac).dot(ao) > 0.0 {
         if ac.dot(ao) > 0.0 {
             simplex[1] = simplex[2];
@@ -211,7 +201,6 @@ fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
         return fall_back_to_ab(simplex);
     }
 
-    // Edge AB region?
     if ab.cross(abc).dot(ao) > 0.0 {
         return fall_back_to_ab(simplex);
     }

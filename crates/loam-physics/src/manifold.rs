@@ -11,8 +11,8 @@ use crate::response::Contact;
 /// polytopes, which is why Box2D and rapier also use 4 in 3D.
 pub const MAX_POINTS: usize = 4;
 
-// World units, at which a new contact counts as the same slot as an old one.
-// Tuned for unit-scale demos.
+// Squared world units. A new contact within this squared distance of a slot
+// refreshes that slot. Tuned for unit-scale demos.
 const MERGE_RADIUS_SQ: f32 = 0.02 * 0.02;
 
 #[derive(Clone, Copy)]
@@ -64,8 +64,9 @@ where
         }
     }
 
-    /// A slot within `MERGE_RADIUS_SQ` of `contact.point` keeps its accumulated
-    /// impulses, which is the warm-start carryover. At `MAX_POINTS` the slot
+    /// A slot whose squared distance to `contact.point` is under
+    /// `MERGE_RADIUS_SQ` keeps its accumulated impulses, which is the
+    /// warm-start carryover. At `MAX_POINTS` the slot
     /// with the smallest total impulse is evicted: dropping it loses the least
     /// warm-start information.
     pub fn add_or_update(&mut self, contact: Contact<S>)

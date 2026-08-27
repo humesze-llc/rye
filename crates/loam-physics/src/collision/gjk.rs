@@ -1,6 +1,7 @@
 use glam::Vec3;
 
-/// Direction to the shape's farthest point, in world coordinates.
+/// Maps a direction to the shape's farthest point along it, in world
+/// coordinates.
 pub trait SupportFn {
     fn support(&self, direction: Vec3) -> Vec3;
 }

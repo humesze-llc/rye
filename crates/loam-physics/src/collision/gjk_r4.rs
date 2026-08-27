@@ -1,7 +1,6 @@
-//! GJK in R⁴ using dimension-agnostic closest-point-on-simplex.
-//!
-//! Parallels [`crate::collision::gjk`] (3D) but substitutes the 3D's hand-rolled Voronoi-region
-//! simplex analysis with the Gram-matrix projection from [`super::simplex_r4`].
+//! Parallels [`crate::collision::gjk`] but substitutes the 3D hand-rolled
+//! Voronoi-region analysis with the Gram-matrix projection from
+//! [`super::simplex_r4`].
 
 use glam::Vec4;
 
@@ -11,7 +10,6 @@ pub trait SupportFn4 {
     fn support(&self, direction: Vec4) -> Vec4;
 }
 
-/// Convex-hull support from an explicit world-space vertex list.
 pub struct ConvexHull4<'a> {
     pub vertices: &'a [Vec4],
 }
@@ -31,7 +29,7 @@ impl<'a> SupportFn4 for ConvexHull4<'a> {
     }
 }
 
-/// Sphere support in 4D: centre + r·d̂.
+/// Support is `centre + r·d̂`.
 pub struct Sphere4 {
     pub center: Vec4,
     pub radius: f32,
@@ -49,8 +47,8 @@ impl SupportFn4 for Sphere4 {
     }
 }
 
-/// Minkowski-difference support: the point on `A ⊖ B` farthest along `direction`, with the
-/// contributing pre-image points on `A` and `B` cached for EPA's contact-point reconstruction.
+/// The contributing pre-image points on `A` and `B` are cached for EPA's
+/// contact-point reconstruction.
 #[derive(Clone, Copy, Debug)]
 pub struct MinkowskiPoint4 {
     pub point: Vec4,
@@ -72,24 +70,19 @@ pub fn minkowski_support_r4<A: SupportFn4, B: SupportFn4>(
     }
 }
 
-/// GJK result: either the shapes overlap, in which case we hand the final simplex plus its
-/// surviving sub-simplex to EPA, or they don't. In 4D the enclosing simplex always has 5
-/// vertices; EPA receives exactly that.
+/// In 4D the enclosing simplex always has 5 vertices, and EPA receives exactly
+/// that.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum GjkResult4 {
-    Intersecting {
-        /// 4D simplex (5 points) whose convex hull encloses the origin.
-        simplex: [MinkowskiPoint4; 5],
-    },
+    Intersecting { simplex: [MinkowskiPoint4; 5] },
     Separated,
 }
 
 const GJK_MAX_ITERATIONS: u32 = 48;
 const GJK_EPS: f32 = 1e-6;
 
-/// Test whether `a` and `b` overlap via GJK on their Minkowski difference. Returns
-/// `Intersecting` with an enclosing 4-simplex for downstream EPA, or `Separated`.
+/// On overlap the returned 4-simplex is the seed EPA expects.
 pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
     a: &A,
     b: &B,
@@ -112,8 +105,8 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
         if new_point.point.dot(dir) < 0.0 {
             return GjkResult4::Separated;
         }
-        // Duplicate support = can't make further toward-origin progress; treat as enclosure
-        // confirmation.
+        // A duplicate support cannot make further toward-origin progress, so
+        // it confirms enclosure.
         if simplex
             .iter()
             .any(|p| (p.point - new_point.point).length_squared() < 1e-10)
@@ -138,11 +131,10 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
         dir = -closest;
     }
 
-    // ---- Stage 2: grow the (already-enclosing) simplex to 5 points.
-    // Each iteration picks a direction orthogonal to the current simplex's affine hull and adds
-    // the support point there; either it's a genuine new hull vertex (simplex grows) or it's
-    // co-located with an existing vertex (polytope is too thin along that axis, try the opposite
-    // sign, then bail).
+    // Grow the already-enclosing simplex to 5 points. Each iteration adds the
+    // support along a direction orthogonal to the current affine hull; a
+    // co-located result means the polytope is too thin along that axis, so try
+    // the opposite sign and then bail.
     let mut tried: Vec<Vec4> = Vec::new();
     while simplex.len() < 5 {
         let Some(probe) = orthogonal_to_hull(&simplex, &tried) else {
@@ -185,12 +177,9 @@ fn finalize_intersecting(simplex: Vec<MinkowskiPoint4>) -> GjkResult4 {
     }
 }
 
-/// A unit vector perpendicular to the affine hull of the current `simplex`, and not parallel to
-/// any already-tried direction. Used to grow a partial simplex after GJK has already established
-/// that the origin lies in its hull.
-///
-/// `tried` is consulted so we don't re-pick a direction the caller has already probed (which
-/// would just return the same support and stall growth).
+// A unit vector perpendicular to the current simplex's affine hull. `tried` is
+// consulted so a direction the caller has already probed is not re-picked,
+// which would return the same support and stall growth.
 fn orthogonal_to_hull(simplex: &[MinkowskiPoint4], tried: &[Vec4]) -> Option<Vec4> {
     let points: Vec<Vec4> = simplex.iter().map(|p| p.point).collect();
     let basis: Vec<Vec4> = if points.len() <= 1 {
@@ -200,7 +189,7 @@ fn orthogonal_to_hull(simplex: &[MinkowskiPoint4], tried: &[Vec4]) -> Option<Vec
         points[1..].iter().map(|&p| p - v0).collect()
     };
 
-    // Orthonormalize the basis (Gram-Schmidt). Skip near-zero rows.
+    // Gram-Schmidt, skipping near-zero rows.
     let mut onb: Vec<Vec4> = Vec::with_capacity(basis.len());
     for &b in &basis {
         let mut r = b;
@@ -274,8 +263,8 @@ mod tests {
     fn tesseracts_overlap_past_touching() {
         use crate::euclidean_r4::tesseract_vertices;
         let va: Vec<Vec4> = tesseract_vertices(1.0);
-        // Shift less than 1 so they overlap well past a single-corner touch. (Exact-touch at
-        // `(1,1,1,1)` is a boundary case GJK handles probabilistically, dropped as a test case.)
+        // Shift under 1, so they overlap well past a single-corner touch:
+        // exact touch at `(1,1,1,1)` is a case GJK handles probabilistically.
         let vb: Vec<Vec4> = tesseract_vertices(1.0)
             .into_iter()
             .map(|v| v + Vec4::new(0.6, 0.6, 0.6, 0.6))

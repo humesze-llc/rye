@@ -2,13 +2,9 @@ use std::ops::{Add, Mul, Neg, Sub};
 
 use glam::{Vec2, Vec3, Vec4};
 
-/// Vector algebra that GJK, EPA, and the PGS solver share across dimensions.
-///
-/// GJK walks the Minkowski difference of two shapes using nothing but vector algebra and dot
-/// products, no cross products, no bivectors, no dimension-specific machinery. EPA's face-normal
-/// reconstruction is dimension-specific (cross product in 3D, generalized cross in 4D+) and
-/// lives outside this trait, each dimension has its own EPA helper that uses `VectorOps` for the
-/// bulk of the math.
+/// GJK walks the Minkowski difference on vector algebra and dot products
+/// alone. EPA's face-normal reconstruction is dimension-specific and stays
+/// outside this trait.
 pub trait VectorOps:
     Copy
     + Add<Output = Self>
@@ -29,8 +25,8 @@ pub trait VectorOps:
         self.length_squared().sqrt()
     }
 
-    /// Normalize or return `fallback` for near-zero vectors. Chosen over `Option<Self>` because
-    /// every GJK caller has a sensible default direction for the degenerate case.
+    // `fallback` for near-zero vectors, chosen over `Option<Self>` because
+    // every GJK caller has a default direction for the degenerate case.
     fn normalize_or(self, fallback: Self) -> Self {
         let l2 = self.length_squared();
         if l2 > 1e-12 {

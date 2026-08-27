@@ -8,14 +8,14 @@ use loam_shape::Isovolume;
 const MAJOR: f32 = 1.0;
 const MINOR: f32 = 0.3;
 const BOUND: f32 = 1.6;
-/// The resolution the extractor's measured budget names as usable in 3D.
+// The resolution the extractor's measured budget names as usable in 3D.
 const RESOLUTION: usize = 32;
 const DT: f32 = 1.0 / 120.0;
 const SPHERE_RADIUS: f32 = 0.1;
 const DROP_HEIGHT: f32 = 1.1;
 
-/// Torus of revolution about `y`, exact signed distance (Quilez, "distance
-/// functions", 2019, `sdTorus`).
+// Torus of revolution about `y`, exact signed distance (Quilez, "distance
+// functions", 2019, `sdTorus`).
 fn torus(p: [f32; 3]) -> f32 {
     let radial = (p[0] * p[0] + p[2] * p[2]).sqrt() - MAJOR;
     (radial * radial + p[1] * p[1]).sqrt() - MINOR

@@ -1,53 +1,50 @@
-//! Manifolds are keyed by `(body_a, body_b)` with `body_a < body_b`, on generational
-//! [`BodyId`] handles rather than storage positions, so a despawn elsewhere in the world
-//! cannot rebind a key to a different pair of bodies.
+//! Manifolds key on generational [`BodyId`] handles rather than storage
+//! positions, so a despawn elsewhere in the world cannot rebind a key to a
+//! different pair of bodies.
 
 use crate::body::BodyId;
 use crate::collision::VectorOps;
 use crate::integrator::PhysicsSpace;
 use crate::response::Contact;
 
-/// Maximum contact slots per manifold. Box2D / rapier use 4 in 3D because at most 4 vertex /
-/// edge contacts can be coplanar between two convex polytopes.
+/// At most 4 vertex or edge contacts can be coplanar between two convex
+/// polytopes, which is why Box2D and rapier also use 4 in 3D.
 pub const MAX_POINTS: usize = 4;
 
-/// Threshold for "this new contact is the same slot as the old one." In world units. Tuned for
-/// unit-scale demos (1m boxes).
+// World units, at which a new contact counts as the same slot as an old one.
+// Tuned for unit-scale demos.
 const MERGE_RADIUS_SQ: f32 = 0.02 * 0.02;
 
-/// One persistent contact constraint between two bodies.
 #[derive(Clone, Copy)]
 pub struct ContactPoint<S: PhysicsSpace> {
     pub world_point: S::Point,
-    /// Unit vector from A toward B (separating direction).
+    /// Unit, from A toward B, the separating direction.
     pub normal: S::Vector,
     pub penetration: f32,
-    /// Accumulated normal impulse magnitude. Persisted across frames; PGS clamps to be ≥ 0.
+    /// Persisted across frames; PGS clamps it to ≥ 0.
     pub normal_impulse: f32,
-    /// Last-seen tangent direction (along sliding velocity). Cached only within a single step;
-    /// reset between steps because the slide direction can flip and a stale signed accumulator
-    /// would then be inconsistent with the new direction.
+    /// Along the sliding velocity, and valid only within one step: the slide
+    /// direction can flip, which would leave a carried signed accumulator
+    /// inconsistent with it.
     pub tangent_dir: S::Vector,
-    /// Tangent impulse accumulated within the current step, signed along `tangent_dir`. Reset
-    /// to 0 each step; PGS clamps to `|jt| ≤ μ·jn` on the iterations that reach the clamp,
-    /// which is not all of them (see [`crate::world`]'s `solve_normal_then_tangent`).
+    /// Signed along `tangent_dir` and reset to 0 each step. PGS clamps to
+    /// `|jt| ≤ μ·jn` only on the iterations that reach the clamp, which is not
+    /// all of them (see `world::solve_normal_then_tangent`).
     pub tangent_impulse: f32,
-    /// Snapshot of the velocity bias for this contact, taken before the warm-start. Combines
-    /// restitution (`−e · v_n_pre` for approaching contacts) and Baumgarte positional correction
-    /// (`−β/dt · max(0, pen − slop)`). Used as a constant target inside every PGS iteration so
-    /// the iterations converge to the correct post-impulse v_n instead of chasing a moving
-    /// target.
+    /// Snapshot taken before the warm-start, combining restitution
+    /// (`−e · v_n_pre` while approaching) and Baumgarte correction
+    /// (`−β/dt · max(0, pen − slop)`). Constant across the PGS iterations, so
+    /// they converge to a post-impulse v_n instead of chasing a moving target.
     pub velocity_bias: f32,
 }
 
-/// Persistent contact data for one pair of bodies.
 pub struct Manifold<S: PhysicsSpace> {
     /// Always `< body_b`.
     pub body_a: BodyId,
     /// Always `> body_a`.
     pub body_b: BodyId,
-    /// Set on first contact and kept; per-pair restitution
-    /// doesn't change between frames.
+    /// Set on first contact and kept: per-pair restitution does not change
+    /// between frames.
     pub restitution: f32,
     /// `len() ≤ MAX_POINTS`.
     pub points: Vec<ContactPoint<S>>,
@@ -67,13 +64,10 @@ where
         }
     }
 
-    /// Merge a fresh narrowphase contact into the manifold:
-    ///
-    /// - If a slot already exists within `MERGE_RADIUS` of `contact.point`, refresh its geometry
-    ///   but preserve its accumulated impulses (this is the warm-start carryover).
-    /// - Otherwise, add as a new slot. If we're at `MAX_POINTS`, evict the slot with smallest
-    ///   total accumulated impulse; a low-contribution contact is the best candidate to drop
-    ///   because the loss of warm-start info there costs least.
+    /// A slot within `MERGE_RADIUS_SQ` of `contact.point` keeps its accumulated
+    /// impulses, which is the warm-start carryover. At `MAX_POINTS` the slot
+    /// with the smallest total impulse is evicted: dropping it loses the least
+    /// warm-start information.
     pub fn add_or_update(&mut self, contact: Contact<S>)
     where
         S::Point: Copy + std::ops::Sub<Output = S::Vector>,
@@ -118,26 +112,26 @@ where
     }
 }
 
-/// Number of PGS iterations per step. 8 is a common sweet spot in 2D / 3D rigid-body engines:
-/// enough to settle modest stacks without dominating step cost.
+/// The common figure across 2D and 3D rigid-body engines: enough to settle
+/// modest stacks without dominating step cost.
 pub const DEFAULT_PGS_ITERS: usize = 8;
 
-/// Baumgarte bias coefficient: how aggressively the velocity-level constraint corrects positional
-/// error per timestep. β ∈ [0.1, 0.3] is the standard range. Higher -> faster correction, more
-/// energetic (can introduce small bursts of velocity). 0.2 is the Bullet / rapier default.
+/// β ∈ [0.1, 0.3] is the standard range; higher corrects faster and injects
+/// more energy. 0.2 is the Bullet and rapier default.
 pub const BAUMGARTE_BETA: f32 = 0.2;
 
-/// Penetration we tolerate without applying the bias (avoids jitter at rest). 0.5 cm at unit
-/// scale is typical.
+/// Penetration tolerated without any bias, which is what stops jitter at rest.
+/// World units.
 pub const PENETRATION_SLOP: f32 = 0.005;
 
-/// Velocity bias clamp: positional bias contributes a velocity correction `β/dt · (penetration −
-/// slop)`, but capped to avoid blowing up small-dt cases.
+/// Cap on the `β/dt · (penetration − slop)` velocity correction, so a small
+/// `dt` cannot blow it up.
 pub const MAX_LINEAR_CORRECTION: f32 = 0.5;
 
-/// Approaching speed (m/s) below which restitution doesn't apply. Without this, every body at
-/// rest on the floor would micro-bounce each frame from gravity-driven approach velocity.
-/// Standard Box2D trick: 1 m/s reads as "noticeable impact" in the demos' unit scale.
+/// Approach speed, m/s, below which restitution is suppressed. Without it every
+/// body resting on the floor micro-bounces each frame off the gravity-driven
+/// approach velocity. The Box2D figure: 1 m/s reads as a noticeable impact at
+/// the demos' unit scale.
 pub const RESTITUTION_THRESHOLD: f32 = 1.0;
 
 #[cfg(test)]

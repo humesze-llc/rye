@@ -13,15 +13,14 @@ use crate::integrator::PhysicsSpace;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
-/// Linear velocity at offset `r` from angular velocity `omega`, the 4D analogue
-/// of `ω × r`. Negation of the Clifford left-contraction; the sign flip lives
-/// here, not in [`Bivector4::contract_vec`], to keep the math primitive pure.
+/// The 4D analogue of `ω × r`. Negation of the Clifford left-contraction; the
+/// sign flip lives here, not in [`Bivector4::contract_vec`], to keep the math
+/// primitive pure.
 pub fn omega_cross_r(omega: Bivector4, r: glam::Vec4) -> glam::Vec4 {
     -omega.contract_vec(r)
 }
 
-/// Inverse isotropic moment of inertia, treating static or zero-inertia bodies as infinite
-/// (returns 0).
+// Static and zero-inertia bodies are treated as infinite, so 0.
 fn inv_inertia(body: &RigidBody<EuclideanR4>) -> f32 {
     if body.inv_mass > 0.0 && body.inertia > 0.0 {
         1.0 / body.inertia
@@ -32,12 +31,11 @@ fn inv_inertia(body: &RigidBody<EuclideanR4>) -> f32 {
 
 impl PhysicsSpace for EuclideanR4 {
     type AngVel = Bivector4;
-    /// Scalar isotropic moment of inertia, about the centroid.
     type Inertia = f32;
 
     fn integrate_orientation(&self, iso: Iso4Flat, omega: Bivector4, dt: f32) -> Iso4Flat {
-        // Catch non-finite angular velocity before it propagates through the
-        // rotor into the GPU buffer. Debug-only; release trusts internal callers.
+        // Catch a non-finite angular velocity before it reaches the rotor and
+        // the GPU buffer. Release trusts internal callers.
         debug_assert!(
             omega.xy.is_finite()
                 && omega.xz.is_finite()
@@ -211,8 +209,8 @@ fn polytope_halfspace_r4(
     })
 }
 
-/// Conservative bounding-sphere radius about the centroid. Narrowphase pre-cull:
-/// non-overlapping bounding spheres mean non-overlapping polytopes.
+// Non-overlapping bounding spheres mean non-overlapping polytopes, which is
+// the narrowphase pre-cull.
 fn polytope4_bounding_radius(local_vertices: &[Vec4]) -> f32 {
     local_vertices
         .iter()
@@ -221,11 +219,11 @@ fn polytope4_bounding_radius(local_vertices: &[Vec4]) -> f32 {
         .sqrt()
 }
 
-/// Maximum vertex count for any 4D polytope collider. Exceeding it silently
-/// truncates vertices and corrupts collisions, so callers debug-assert.
+/// Exceeding it silently truncates vertices and corrupts collisions, so
+/// callers debug-assert.
 pub const MAX_POLYTOPE4_VERTICES: usize = 32;
 
-/// Hot path; allocation-free by contract.
+// Hot path; allocation-free by contract.
 fn world_vertices4_into<'a>(
     local: &[Vec4],
     pos: Vec4,
@@ -245,8 +243,8 @@ fn world_vertices4_into<'a>(
     &out[..n]
 }
 
-/// Accepted EPA penetration band: below is numerical noise, above is an EPA
-/// iteration-cap fallback on pathological input.
+// Accepted EPA penetration band: below is numerical noise, above is an EPA
+// iteration-cap fallback on pathological input.
 const MIN_POLYTOPE4_PENETRATION: f32 = 1e-4;
 const MAX_POLYTOPE4_PENETRATION: f32 = 5.0;
 
@@ -370,8 +368,8 @@ pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR4>) {
     );
 }
 
-/// Solid-ball moment of inertia in 4D about a 2-plane through the center:
-/// `I = (2/(n+2))·m·r² = m·r²/3` for n=4 (cf. `(2/5)·m·r²` for the 3-ball).
+/// `I = (2/(n+2))·m·r² = m·r²/3` at n = 4, against `(2/5)·m·r²` for the
+/// 3-ball.
 pub fn ball4_inertia(mass: f32, radius: f32) -> f32 {
     mass * radius * radius / 3.0
 }
@@ -432,8 +430,8 @@ pub fn sphere_body_r4(
     )
 }
 
-/// Static 4D half-space body. `normal` is the outward
-/// direction; `offset` places the plane at `dot(p, normal) = offset`.
+/// `normal` is the outward direction; `offset` places the plane at
+/// `dot(p, normal) = offset`.
 pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> RigidBody<EuclideanR4> {
     let n = normal.try_normalize().unwrap_or(Vec4::Y);
     RigidBody::fixed(
@@ -444,9 +442,9 @@ pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> RigidBody<EuclideanR4> {
     )
 }
 
-/// Dynamic 4D convex-polytope body. Inertia uses the bounding-sphere
-/// approximation ([`ball4_inertia`] at the circumradius): exact for sphere-like
-/// shapes, order-of-magnitude for cube-like ones.
+/// Inertia is the bounding-sphere approximation ([`ball4_inertia`] at the
+/// circumradius): exact for sphere-like shapes, order-of-magnitude for
+/// cube-like ones.
 pub fn polytope_body_r4(
     position: Vec4,
     velocity: Vec4,
@@ -538,8 +536,8 @@ mod tests {
         }
     }
 
-    /// SplitMix64 (Steele, Lea and Flood 2014, *OOPSLA*, §4). Present only so
-    /// the estimator below is reproducible bit-for-bit from its seed.
+    // SplitMix64 (Steele, Lea and Flood 2014, *OOPSLA*, §4), so the estimator
+    // below is reproducible bit-for-bit from its seed.
     fn splitmix64(state: &mut u64) -> u64 {
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = *state;
@@ -548,13 +546,11 @@ mod tests {
         z ^ (z >> 31)
     }
 
-    /// `<|x|²>` over the uniform solid `shape` at unit circumradius, by
-    /// rejection sampling the enclosing cube against the shape's own facet
-    /// half-spaces. Cell centroids point along the outward facet normals with
-    /// length equal to the inradius, so `x·c ≤ |c|²` is membership.
-    ///
-    /// f64 throughout and a seeded integer generator, so the estimate is the
-    /// same number on every run and every machine.
+    // `<|x|²>` over the uniform solid at unit circumradius, by rejection
+    // sampling the enclosing cube against the shape's facet half-spaces. Cell
+    // centroids point along the outward facet normals with length equal to the
+    // inradius, so `x·c ≤ |c|²` is membership. f64 and a seeded integer
+    // generator, so the estimate is the same number on every machine.
     fn sampled_mean_radius_sq(shape: Polytope4, trials: u32, seed: u64) -> (f64, u32) {
         let planes: Vec<(glam::DVec4, f64)> = shape
             .cell_centers()
@@ -599,9 +595,9 @@ mod tests {
         for (shape, closed_form) in expected {
             let (measured, hits) = sampled_mean_radius_sq(shape, TRIALS, 0x51ED_5EED);
             assert!(hits > 2000, "{shape:?} accepted only {hits} samples");
-            // 6% of the value, against a sampler whose standard error is under
-            // 2% at the thinnest shape's acceptance rate. The nearest rival
-            // constant is 20% away at the tightest pair.
+            // 6% of the value, against a sampler whose standard error is
+            // under 2% at the thinnest shape's acceptance rate, and a nearest
+            // rival constant 20% away at the tightest pair.
             let tolerance = 0.06 * closed_form;
             assert!(
                 (measured - closed_form).abs() < tolerance,
@@ -708,8 +704,8 @@ mod tests {
             pentatope_vertices(0.5),
             1.0,
         ));
-        // Restitution 0 so the body settles deterministically; we test that the
-        // contact pipeline converges, not that bouncing damps out.
+        // Restitution 0 so the body settles deterministically: the pin is that
+        // the contact pipeline converges, not that bouncing damps out.
         world.bodies[floor].restitution = 0.0;
         world.bodies[body_id].restitution = 0.0;
 
@@ -772,7 +768,7 @@ mod tests {
         }
         let body = &world.bodies[body_id];
 
-        // Circumradius 0.5; band is generous since the rest face/edge/2-face varies.
+        // Circumradius 0.5. The band is generous: the resting feature varies.
         assert!(
             body.position.y.is_finite() && (-0.3..=1.0).contains(&body.position.y),
             "tesseract position out of expected resting band: y = {}",
@@ -1049,8 +1045,8 @@ mod tests {
         }
     }
 
-    /// Tesseract face hyperplanes at unit circumradius (8 axis planes at ±0.5,
-    /// inradius 0.5). Ground-truth polytope for `polytope_sdf_wolfe`.
+    // Tesseract face hyperplanes at unit circumradius: 8 axis planes at ±0.5,
+    // inradius 0.5.
     fn tesseract_face_planes() -> (Vec<Vec4>, f32) {
         let normals = vec![
             Vec4::new(1.0, 0.0, 0.0, 0.0),
@@ -1065,7 +1061,7 @@ mod tests {
         (normals, 0.5)
     }
 
-    /// Closed-form tesseract SDF: `outside + inside` decomposition.
+    // `outside + inside` decomposition.
     fn tesseract_sdf_truth(p: Vec4, half_extent: f32) -> f32 {
         let q = p.abs() - Vec4::splat(half_extent);
         let outside = q.max(Vec4::ZERO).length();

@@ -9,14 +9,13 @@ use crate::integrator::PhysicsSpace;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
-/// Convert a [`Rotor3`] to a [`Quat`] via `(s, xy, yz, zx) ↔ (w, z, x, y)`, the
-/// mapping that makes `Rotor3::apply` agree with `Quat::mul_vec3`.
+// `(s, xy, yz, zx) ↔ (w, z, x, y)` is the mapping that makes `Rotor3::apply`
+// agree with `Quat::mul_vec3`.
 fn rotor_to_quat(r: loam_math::Rotor3) -> Quat {
     Quat::from_xyzw(r.yz, r.zx, r.xy, r.s)
 }
 
-/// Rotational velocity at body-offset `r`: `v(r) = ω⌋r`, matching
-/// `(ω as pseudovector) × r`.
+// `v(r) = ω⌋r`, matching `(ω as pseudovector) × r`.
 fn omega_cross_r(w: Bivector3, r: Vec3) -> Vec3 {
     Vec3::new(
         w.zx * r.z - w.xy * r.y,
@@ -25,8 +24,8 @@ fn omega_cross_r(w: Bivector3, r: Vec3) -> Vec3 {
     )
 }
 
-/// Wedge product `r ∧ f`, matching `r × f` under the (xy↔z, yz↔x, zx↔y)
-/// correspondence used by `rotor_to_quat`.
+// `r ∧ f`, matching `r × f` under the (xy↔z, yz↔x, zx↔y) correspondence
+// `rotor_to_quat` uses.
 fn wedge(r: Vec3, f: Vec3) -> Bivector3 {
     Bivector3::new(
         r.x * f.y - r.y * f.x,
@@ -49,13 +48,11 @@ fn inv_inertia(body: &RigidBody<EuclideanR3>) -> f32 {
 
 impl PhysicsSpace for EuclideanR3 {
     type AngVel = Bivector3;
-    /// Scalar isotropic centroidal moment; exact for spheres and the Platonic
-    /// solids.
     type Inertia = f32;
 
     fn integrate_orientation(&self, iso: Iso3, omega: Bivector3, dt: f32) -> Iso3 {
-        // Catch non-finite ω at the source before it reaches the GPU buffer;
-        // release builds trust internal callers.
+        // Catch a non-finite ω before it reaches the GPU buffer. Release
+        // builds trust internal callers.
         debug_assert!(
             omega.xy.is_finite() && omega.yz.is_finite() && omega.zx.is_finite(),
             "non-finite Bivector3 angular velocity in integrate_orientation",
@@ -192,10 +189,10 @@ fn world_vertices(local: &[Vec3], pos: Vec3, rot: Quat) -> Vec<Vec3> {
     local.iter().map(|&v| rot * v + pos).collect()
 }
 
-/// Below this, treat the contact as a degenerate touching case and drop it.
+// Below the floor the contact is a degenerate touch. Above the ceiling the
+// depth is an EPA iteration-cap fallback on wild input, and an impulse scaled
+// by it would detonate body velocities.
 const MIN_POLYTOPE_PENETRATION: f32 = 1e-4;
-/// Above this, the depth is almost certainly an EPA iteration-cap fallback on
-/// wild input; an impulse scaled by it would detonate body velocities.
 const MAX_POLYTOPE_PENETRATION: f32 = 5.0;
 
 fn validate_contact(
@@ -223,7 +220,7 @@ fn validate_contact(
     })
 }
 
-/// Bounding-sphere radius of a polytope about its centroid; a cheap GJK pre-cull.
+// A cheap GJK pre-cull.
 fn polytope_bounding_radius(local_vertices: &[Vec3]) -> f32 {
     local_vertices
         .iter()
@@ -301,8 +298,8 @@ fn sphere_polytope_r3(
     validate_contact(&info, a, b)
 }
 
-/// Polytope vs half-space: the deepest-penetrating vertex is the contact point;
-/// normal = -plane_normal (A->B into the solid side).
+// The deepest-penetrating vertex is the contact point, and the normal is
+// `-plane_normal`, A->B into the solid side.
 fn polytope_halfspace_r3(
     a: &RigidBody<EuclideanR3>,
     b: &RigidBody<EuclideanR3>,
@@ -367,7 +364,7 @@ pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR3>) {
     );
 }
 
-/// Solid-sphere moment of inertia `I = (2/5)·m·r²`.
+/// `I = (2/5)·m·r²`.
 pub fn sphere_inertia(mass: f32, radius: f32) -> f32 {
     (2.0 / 5.0) * mass * radius * radius
 }
@@ -388,8 +385,8 @@ pub fn sphere_body_r3(
     )
 }
 
-/// Static half-space body. `normal` is the outward direction (the side where the world is);
-/// `offset` places the plane at `dot(p, normal) = offset`.
+/// `normal` points to the side the world is on; `offset` places the plane at
+/// `dot(p, normal) = offset`.
 pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> RigidBody<EuclideanR3> {
     let n = normal.try_normalize().unwrap_or(Vec3::Y);
     RigidBody::fixed(
@@ -400,8 +397,8 @@ pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> RigidBody<EuclideanR3> {
     )
 }
 
-/// Isotropic box inertia `m·(w² + h² + d²)/18`, the mean of the principal-axis
-/// tensor's diagonal. Reduces to the exact cube inertia `m·s²/6`.
+/// `m·(w² + h² + d²)/18`, the mean of the principal-axis tensor's diagonal,
+/// which reduces to the exact cube inertia `m·s²/6`.
 pub fn box_inertia(mass: f32, half_extents: Vec3) -> f32 {
     let w = half_extents.x * 2.0;
     let h = half_extents.y * 2.0;
@@ -409,7 +406,7 @@ pub fn box_inertia(mass: f32, half_extents: Vec3) -> f32 {
     mass * (w * w + h * h + d * d) / 18.0
 }
 
-/// CCW-wound vertices of an axis-aligned box centred at origin.
+/// CCW-wound, centred at the origin.
 pub fn box_vertices(half_extents: Vec3) -> Vec<Vec3> {
     let (hx, hy, hz) = (half_extents.x, half_extents.y, half_extents.z);
     vec![
@@ -442,8 +439,7 @@ pub fn box_body(
     )
 }
 
-/// Dynamic convex polytope body. Inertia approximates the bounding sphere's
-/// `(2/5)·m·r²`; order-of-magnitude correct for prototypes.
+/// Inertia is the bounding sphere's `(2/5)·m·r²`, order-of-magnitude correct.
 pub fn polytope_body(
     position: Vec3,
     velocity: Vec3,
@@ -465,10 +461,9 @@ pub fn polytope_body(
     )
 }
 
-// Platonic solid vertex generators, each centered at origin with bounding-sphere
-// radius `r`. Vertex lists are convex hulls; GJK ignores face winding.
+// The Platonic generators below are centred at the origin with
+// bounding-sphere radius `r`. GJK ignores face winding.
 
-/// Tetrahedron (4 vertices), bounding-sphere radius `r`.
 pub fn tetrahedron_vertices(r: f32) -> Vec<Vec3> {
     // Alternating corners of a cube, scaled to circumradius `r`.
     let k = r / 3.0_f32.sqrt();
@@ -480,13 +475,12 @@ pub fn tetrahedron_vertices(r: f32) -> Vec<Vec3> {
     ]
 }
 
-/// Cube (8 vertices). Bounding-sphere radius = `r`; side length = 2r/√3.
+/// Side length `2r/√3`.
 pub fn cube_vertices(r: f32) -> Vec<Vec3> {
     let h = r / 3.0_f32.sqrt();
     box_vertices(Vec3::splat(h))
 }
 
-/// Octahedron (6 vertices). Bounding-sphere radius = `r`.
 pub fn octahedron_vertices(r: f32) -> Vec<Vec3> {
     vec![
         Vec3::new(r, 0.0, 0.0),
@@ -498,7 +492,6 @@ pub fn octahedron_vertices(r: f32) -> Vec<Vec3> {
     ]
 }
 
-/// Icosahedron (12 vertices). Bounding-sphere radius = `r`.
 pub fn icosahedron_vertices(r: f32) -> Vec<Vec3> {
     // Built from the golden ratio: (0, ±1, ±φ) and cyclic permutations.
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
@@ -521,7 +514,6 @@ pub fn icosahedron_vertices(r: f32) -> Vec<Vec3> {
     ]
 }
 
-/// Dodecahedron (20 vertices). Bounding-sphere radius = `r`.
 pub fn dodecahedron_vertices(r: f32) -> Vec<Vec3> {
     // Vertices: (±1, ±1, ±1) and cyclic permutations of (0, ±1/φ, ±φ).
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;

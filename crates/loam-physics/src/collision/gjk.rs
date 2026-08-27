@@ -1,13 +1,10 @@
-//! GJK containment test for convex shapes.
-
 use glam::Vec3;
 
-/// A function from direction to the shape's farthest point in world coordinates.
+/// Direction to the shape's farthest point, in world coordinates.
 pub trait SupportFn {
     fn support(&self, direction: Vec3) -> Vec3;
 }
 
-/// Convex hull of a world-space vertex set; the support for polytope colliders.
 pub struct ConvexHull<'a> {
     pub vertices: &'a [Vec3],
 }
@@ -27,7 +24,7 @@ impl<'a> SupportFn for ConvexHull<'a> {
     }
 }
 
-/// Sphere collider; support is `center + radius·normalize(direction)`.
+/// Support is `center + radius·normalize(direction)`.
 pub struct Sphere {
     pub center: Vec3,
     pub radius: f32,
@@ -40,8 +37,8 @@ impl SupportFn for Sphere {
     }
 }
 
-/// Support point on `A ⊖ B` plus the contributing points `sa`, `sb` on each shape,
-/// cached because EPA reconstructs contact positions from them.
+/// `sa` and `sb` are the contributing points on each shape, cached because EPA
+/// reconstructs contact positions from them.
 #[derive(Clone, Copy, Debug)]
 pub struct MinkowskiPoint {
     pub point: Vec3,
@@ -63,8 +60,6 @@ pub fn minkowski_support<A: SupportFn, B: SupportFn>(
     }
 }
 
-/// Result of [`gjk_intersect`]: overlapping (with the terminating tetrahedron for
-/// EPA) or separated.
 #[derive(Debug)]
 pub enum GjkResult {
     Intersecting { simplex: [MinkowskiPoint; 4] },
@@ -74,8 +69,7 @@ pub enum GjkResult {
 const GJK_MAX_ITERATIONS: u32 = 32;
 const GJK_EPS: f32 = 1e-6;
 
-/// Test whether shapes `a` and `b` overlap, returning the enclosing tetrahedron
-/// for EPA on intersection or `Separated` otherwise.
+/// On intersection the returned tetrahedron is the seed EPA expects.
 pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
     a: &A,
     b: &B,
@@ -111,9 +105,8 @@ pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
             return GjkResult::Intersecting { simplex };
         }
         if new_dir.length_squared() < GJK_EPS {
-            // Origin on a boundary feature, or simplex collapsed. Only hand EPA a
-            // full tetrahedron; otherwise report Separated rather than feed it a
-            // degenerate simplex.
+            // Origin on a boundary feature, or the simplex collapsed. EPA
+            // takes only a full tetrahedron, never a degenerate simplex.
             if n >= 4 {
                 return GjkResult::Intersecting { simplex };
             }
@@ -122,15 +115,13 @@ pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
         dir = new_dir;
     }
 
-    // Cap hit without convergence: almost always thrashing at a tangent boundary.
-    // Report Separated rather than feed EPA a bad tetrahedron.
+    // Cap hit without convergence, which is almost always thrashing at a
+    // tangent boundary. Reported as Separated rather than fed to EPA.
     GjkResult::Separated
 }
 
-/// Reduce the simplex to the feature closest to the origin and return a search
-/// direction from that feature toward the origin; `true` iff the simplex encloses
-/// the origin. On entry `simplex[0..n]` has the newest point at `n-1`; on exit
-/// `simplex[0..new_n]` holds the survivors.
+// Returns `true` iff the simplex encloses the origin. On entry `simplex[0..n]`
+// has the newest point at `n-1`; on exit `simplex[0..new_n]` holds survivors.
 fn do_simplex(simplex: &mut [MinkowskiPoint; 4], n: usize) -> (bool, usize, Vec3) {
     match n {
         2 => do_line(simplex),
@@ -140,8 +131,7 @@ fn do_simplex(simplex: &mut [MinkowskiPoint; 4], n: usize) -> (bool, usize, Vec3
     }
 }
 
-/// Line case: simplex [b, a], `a` newest. Origin is in the AB edge region or past
-/// A (past B is impossible since `a` was chosen along `-b`).
+// [b, a] with `a` newest. Past B is impossible since `a` was chosen along `-b`.
 fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let a = simplex[1].point;
     let b = simplex[0].point;
@@ -162,8 +152,8 @@ fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     }
 }
 
-/// A vector perpendicular to `v`, crossing with the cardinal axis `v` is least
-/// aligned with to avoid a near-zero cross product.
+// Crosses with the cardinal axis `v` is least aligned with, to avoid a
+// near-zero cross product.
 fn any_perpendicular(v: Vec3) -> Vec3 {
     if v.x.abs() <= v.y.abs() && v.x.abs() <= v.z.abs() {
         v.cross(Vec3::X)
@@ -180,8 +170,8 @@ fn fall_back_to_ab(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     do_line(simplex)
 }
 
-/// Triangle case: [c, b, a], `a` newest. Origin is in a vertex, edge, or face
-/// Voronoi region (above or below the triangle plane).
+// [c, b, a] with `a` newest. The origin is in a vertex, edge, or face Voronoi
+// region, above or below the triangle plane.
 fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let a = simplex[2].point;
     let b = simplex[1].point;
@@ -215,12 +205,9 @@ fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     }
 }
 
-/// Tetrahedron case: [d, c, b, a], `a` newest. Origin is either inside
-/// (intersection) or in the Voronoi region of a face adjacent to `a` (ABC/ACD/ADB).
-///
-/// We do not rely on the textbook winding invariant (the `do_triangle` swap branch
-/// breaks it); each face normal is oriented away from the opposite vertex, which
-/// is always outward.
+// [d, c, b, a] with `a` newest. The textbook winding invariant does not hold
+// here (`do_triangle`'s swap branch breaks it), so each face normal is oriented
+// away from the opposite vertex instead, which is always outward.
 fn do_tetrahedron(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let a = simplex[3].point;
     let b = simplex[2].point;
@@ -371,10 +358,9 @@ mod tests {
 
     #[test]
     fn box_vs_sphere_corner_contact() {
-        // Unit box with corner at (1,1,1). Sphere at (1+d, 1+d, 1+d) reaches the corner when
-        // d·√3 ≤ r, i.e. d ≤ r/√3. For r=0.5: threshold d ≈ 0.2887.
-        //   d = 0.35 -> distance 0.606 > 0.5 -> no overlap
-        //   d = 0.20 -> distance 0.346 < 0.5 -> overlap
+        // Unit box with corner at (1,1,1). A sphere at (1+d, 1+d, 1+d) reaches
+        // the corner when `d·√3 ≤ r`, so r = 0.5 puts the threshold at
+        // d ≈ 0.2887.
         let vb = box_vertices(Vec3::ZERO, Vec3::ONE);
         let b = ConvexHull { vertices: &vb };
 
@@ -399,9 +385,9 @@ mod tests {
 
     #[test]
     fn rotated_boxes_separate_as_axes_allow() {
-        // Two unit boxes, one rotated 45° about Z. Axis-aligned box extends x∈[-1,1]; the
-        // diamond (rotated box) has x-extent of ±√2 ≈ ±1.414. At centre distance 2.5 they
-        // separate; at 2.2 they barely overlap.
+        // Two unit boxes, one rotated 45° about Z: x ∈ [-1, 1] against the
+        // diamond's ±√2 ≈ ±1.414. They separate at centre distance 2.5 and
+        // barely overlap at 2.2.
         use glam::Quat;
         let va = box_vertices(Vec3::ZERO, Vec3::ONE);
         let rot = Quat::from_rotation_z(std::f32::consts::FRAC_PI_4);

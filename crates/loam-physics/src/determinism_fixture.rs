@@ -1,8 +1,6 @@
-//! The determinism scenarios and one committed golden constant per scenario,
-//! shared by every determinism gate in the crate. Callers drive
-//! [`World::step`] through this module rather than re-implementing the phase
-//! loop, so a schedule variant is always compared against the simulation the
-//! golden hash pins.
+//! Callers drive [`World::step`] through this module rather than
+//! re-implementing the phase loop, so a schedule variant is always compared
+//! against the simulation the golden hash pins.
 
 use std::ops::Range;
 
@@ -29,33 +27,22 @@ pub fn fnv1a64(words: &[u32]) -> u64 {
 }
 
 /// FNV-1a of [`ScenarioRun::trajectory`] under the default schedule, recorded
-/// on x86_64. Scoped to one architecture family, since glam's SIMD dot
-/// reduces in a different order than its scalar fallback.
+/// on x86_64 and scoped to that architecture family: glam's SIMD dot reduces
+/// in a different order than its scalar fallback.
 ///
-/// Re-recording: the scenario is chaotic, so the hash alone cannot say whether
-/// a mismatch is an intended simulation change or a solver regression.
-/// [`assert_scenario_stays_physical`] is what separates them, and it runs
-/// first. If it passed and only the hash moved, the change is intended:
-/// replace this constant with the value the hash assertion prints. If it
-/// failed, the scenario stopped being physical and no re-recorded hash is
-/// correct.
+/// The scenario is chaotic, so a mismatch is re-recordable only when
+/// [`assert_scenario_stays_physical`] still passes.
 pub const GOLDEN_TRAJECTORY_HASH: u64 = 0xfcfa_9165_cc85_e57b;
 
 pub struct ScenarioRun {
-    /// Every step, every body, linear and angular state as raw f32 bits, so
-    /// the pins see the path and not just the endpoint.
+    /// Every step, every body, linear and angular state as raw f32 bits.
     pub trajectory: Vec<u32>,
     /// Running hash after each step over a superset of `trajectory`: the same
-    /// body words plus the manifold key list, each manifold's point count, and
-    /// each point's accumulated normal impulse.
+    /// body words plus the manifold keys, point counts, and normal impulses.
     pub step_hashes: Vec<u64>,
-    /// The physical readings the golden hash cannot supply on its own.
     pub envelope: PhysicalEnvelope,
 }
 
-/// Extremes of the two quantities [`assert_scenario_stays_physical`] pins,
-/// with the step each was reached on so a failure names when the scenario
-/// stopped being physical rather than only that it did.
 pub struct PhysicalEnvelope {
     /// Mechanical energy of the pre-step configuration. Never sampled into
     /// [`ScenarioRun::trajectory`], so recording it cannot move a golden hash.
@@ -70,20 +57,18 @@ pub struct PhysicalEnvelope {
 
 const STEPS: usize = 240;
 
-/// Both fixtures fall along -y at this magnitude onto a static half-space at
-/// `y = 0`, so heights and potential energies are read off the y component
-/// directly.
+// Both fixtures fall along -y onto a static half-space at `y = 0`, so heights
+// and potential energies read off the y component directly.
 const GRAVITY_MAGNITUDE: f32 = 9.8;
 const UP_COMPONENT: usize = 1;
 
-/// Sampled words for one body: `dims` position, `dims` velocity, and the
-/// `C(dims, 2)` bivector components.
+// `dims` position, `dims` velocity, and the `C(dims, 2)` bivector components.
 const fn words_per_body(dims: usize) -> usize {
     2 * dims + dims * (dims - 1) / 2
 }
 
-/// Every space here uses a scalar isotropic moment, so the rotational term is
-/// `½·I·|ω|²` with `|ω|` the Euclidean norm of the bivector components.
+// Every space here uses a scalar isotropic moment, so the rotational term is
+// `½·I·|ω|²` with `|ω|` the Euclidean norm of the bivector components.
 fn mechanical_energy(words: &[u32], dims: usize, mass: f32, inertia: f32) -> f32 {
     let read = |i: usize| f32::from_bits(words[i]);
     let sum_squares = |range: Range<usize>| range.map(|i| read(i) * read(i)).sum::<f32>();
@@ -92,8 +77,8 @@ fn mechanical_energy(words: &[u32], dims: usize, mass: f32, inertia: f32) -> f32
         + mass * GRAVITY_MAGNITUDE * read(UP_COMPONENT)
 }
 
-/// Statics are skipped rather than contributing zero: their sampled height is
-/// whatever the constructor gave them, not their plane's.
+// Statics are skipped rather than contributing zero: their sampled height is
+// whatever the constructor gave them, not their plane's.
 fn configuration_energy<S>(world: &World<S>, words: &[u32], dims: usize) -> f32
 where
     S: PhysicsSpace<Inertia = f32>,
@@ -107,23 +92,17 @@ where
         .sum()
 }
 
-/// The physical envelope a golden-hash fixture must stay inside for a hash
-/// mismatch to be readable as an intended change. Neither limit is a recorded
-/// measurement: both follow from the scenario, so tripping one says the
-/// simulation stopped being physical rather than that it moved.
+/// Neither limit is a recorded measurement: both follow from the scenario, so
+/// tripping one says the simulation stopped being physical.
 ///
-/// Floor: no dynamic body's centre ever reaches the plane. A sphere centre at
-/// or below `y = 0` is more than half-buried, which is tunnelling and not a
-/// settling depth; the depth the solver actually targets is
-/// `PENETRATION_SLOP`, a small fraction of either fixture's radius.
+/// Floor: a sphere centre at or below `y = 0` is more than half-buried, which
+/// is tunnelling and not a settling depth; the solver targets
+/// `PENETRATION_SLOP`.
 ///
 /// Energy: the scenario has no source. Semi-implicit Euler in a uniform field
-/// loses `½·|g|²·dt²` per unit mass per step (velocity is advanced before
-/// position, so the position update uses the post-gravity velocity), the
-/// default restitution is 0.2 and is suppressed entirely below
+/// loses `½·|g|²·dt²` per unit mass per step, restitution is suppressed below
 /// `RESTITUTION_THRESHOLD`, and Coulomb friction only opposes sliding. The
-/// Baumgarte positional bias is the one term that can add energy, and it must
-/// not add enough to beat the starting configuration.
+/// Baumgarte bias is the one term that can add energy.
 pub fn assert_scenario_stays_physical(run: &ScenarioRun) {
     let envelope = &run.envelope;
     assert!(
@@ -145,9 +124,8 @@ pub fn assert_scenario_stays_physical(run: &ScenarioRun) {
     );
 }
 
-/// Every fixture routes through here so all of them hash the same quantities
-/// in the same order, and so none of them can drift into re-implementing the
-/// phase loop instead of driving [`World::step`].
+// Every fixture routes through here so all of them hash the same quantities in
+// the same order.
 fn run_scenario<S, F>(
     world: &mut World<S>,
     dt: f32,
@@ -164,9 +142,8 @@ where
     let words = words_per_body(dims);
     let per_step = world.bodies.len() * words;
 
-    // Sampled through the same closure as every hashed step, but into its own
-    // buffer, so the energy budget is the configuration the scenario starts
-    // from rather than the first step's already-fallen state.
+    // Into its own buffer, so the energy budget is the starting configuration
+    // and not the first step's already-fallen state.
     let mut initial = Vec::with_capacity(per_step);
     for body in world.bodies.iter() {
         sample(body, &mut initial);
@@ -211,8 +188,7 @@ where
 
         hash.write_u32s(&trajectory[step_start..]);
         // `BTreeMap` key order under every schedule, so a moved hash means the
-        // simulation diverged and never that the instrument read the same
-        // state in a different order.
+        // simulation diverged and never that the instrument reordered.
         world.hash_contacts(&mut hash);
         step_hashes.push(hash.finish());
     }
@@ -229,12 +205,10 @@ where
     }
 }
 
-/// Orientation is deliberately not sampled by either sampler. `Bivector::exp`
-/// routes through libm `sin`/`cos`, whose last-ULP results differ between
-/// platform libms, and for sphere colliders orientation never feeds back into
-/// the dynamics. Every sampled quantity comes from +, -, *, / and sqrt, which
-/// IEEE-754 rounds exactly, so a trajectory is reproducible wherever glam takes
-/// the same reduction path.
+// Orientation is deliberately not sampled. `Bivector::exp` routes through libm
+// `sin`/`cos`, whose last-ULP results differ between platform libms, and for
+// sphere colliders orientation never feeds back into the dynamics. Everything
+// sampled comes from +, -, *, / and sqrt, which IEEE-754 rounds exactly.
 fn sample_body_r4(body: &RigidBody<EuclideanR4>, words: &mut Vec<u32>) {
     let p = body.position;
     let v = body.velocity;
@@ -305,8 +279,6 @@ pub fn determinism_scenario_trajectory() -> Vec<u32> {
     determinism_scenario_run(Schedule::default()).trajectory
 }
 
-/// Index of the first step whose hash differs, for an assertion message that
-/// names where a schedule diverged instead of only that it did.
 pub fn first_divergent_step(a: &ScenarioRun, b: &ScenarioRun) -> Option<usize> {
     a.step_hashes
         .iter()
@@ -321,9 +293,9 @@ const ISLAND_GAP: f32 = 0.05;
 pub const MULTI_ISLAND_DT: f32 = 1.0 / 60.0;
 pub const MULTI_ISLAND_STEPS: usize = 240;
 
-/// Dynamic body slot ranges, one per group. Slot 0 is the static floor and
-/// belongs to no group. Slots rather than handles because the fixture never
-/// despawns, so slot allocation is dense and contiguous by group.
+/// Slot 0 is the static floor and belongs to no group. Slots rather than
+/// handles because the fixture never despawns, so slot allocation is dense and
+/// contiguous by group.
 pub fn multi_island_groups() -> [Range<usize>; 3] {
     std::array::from_fn(|group| {
         let start = 1 + ISLAND_SIZES[..group].iter().sum::<usize>();
@@ -331,14 +303,10 @@ pub fn multi_island_groups() -> [Range<usize>; 3] {
     })
 }
 
-/// Three spatially disjoint sphere groups over one static floor: a four-body
-/// chain, a pair, and a singleton.
-///
-/// Every body starts on its group's vertical axis at rest, every contact normal
-/// in the scenario is therefore vertical, and the friction solve returns early
-/// below its 1e-8 tangential-speed floor, so no group ever moves laterally.
-/// That is what makes the island partition constant for the whole run rather
-/// than a property that happens to hold for the first few hundred steps.
+/// Every body starts on its group's vertical axis at rest, so every contact
+/// normal is vertical and the friction solve returns early below its 1e-8
+/// tangential-speed floor. No group moves laterally, which is what makes the
+/// island partition constant for the whole run.
 pub fn multi_island_world(schedule: Schedule) -> World<EuclideanR3> {
     let mut world = World::new(EuclideanR3);
     register_narrowphase_r3(&mut world.narrowphase);
@@ -374,33 +342,29 @@ pub fn multi_island_scenario_run(schedule: Schedule) -> ScenarioRun {
     )
 }
 
-/// FNV-1a of [`multi_island_scenario_run`]'s trajectory under the default
-/// schedule, recorded on x86_64 on the same terms as
-/// [`GOLDEN_TRAJECTORY_HASH`].
+/// Recorded on x86_64 on the same terms as [`GOLDEN_TRAJECTORY_HASH`].
 pub const GOLDEN_MULTI_ISLAND_HASH: u64 = 0x56fd_21a0_2e4f_76e2;
 
-/// Words per recorded tick: the target handle as `(slot, generation)`, then the
-/// impulse. A handle rather than a storage position, because `despawn` compacts
-/// the arena and a tape outlives the run that wrote it.
+// The target handle as `(slot, generation)`, then the impulse. A handle rather
+// than a storage position, because `despawn` compacts the arena and a tape
+// outlives the run that wrote it.
 const THROW_WORDS: u32 = 5;
-/// `slot` value meaning the tick carried no throw.
+// `slot` value meaning the tick carried no throw.
 const NO_THROW: u32 = u32::MAX;
 const THROW_PERIOD: u64 = 20;
-/// Per-component impulse bound, kg·m/s. The fixture's spheres are unit mass,
-/// so one throw adds under `sqrt(3)·THROW_IMPULSE` m/s of speed, i.e. under
-/// 0.058 m of travel per step, against the 0.150 m per-step bound the
-/// `thin_wall_holds_only_below_a_recorded_per_step_displacement_r3` fixture
-/// records.
+// Per-component bound, kg·m/s. The spheres are unit mass, so one throw adds
+// under `sqrt(3)·THROW_IMPULSE` m/s, i.e. under 0.058 m of travel per step,
+// against the 0.150 m per-step bound
+// `thin_wall_holds_only_below_a_recorded_per_step_displacement_r3` records.
 const THROW_IMPULSE: f32 = 2.0;
 pub const REPLAY_TICKS: u64 = 180;
 pub const REPLAY_SEED: u64 = 0x5eed_f11c_c0de_0001;
 const CHECKPOINT_PERIOD: u64 = 30;
-/// Tick rate written into the tape header: the reciprocal of
-/// [`MULTI_ISLAND_DT`], the step the flick chamber runs at.
+// The reciprocal of [`MULTI_ISLAND_DT`], the step the flick chamber runs at.
 const REPLAY_TICK_HZ: u32 = 60;
 
-/// xorshift64* (Vigna 2016, *An experimental exploration of Marsaglia's
-/// xorshift generators, scrambled*, §4).
+// xorshift64* (Vigna 2016, *An experimental exploration of Marsaglia's
+// xorshift generators, scrambled*, §4).
 fn xorshift64star(state: &mut u64) -> u64 {
     *state ^= *state >> 12;
     *state ^= *state << 25;
@@ -408,9 +372,8 @@ fn xorshift64star(state: &mut u64) -> u64 {
     state.wrapping_mul(0x2545_f491_4f6c_dd1d)
 }
 
-/// Draw in `[-1, 1)`. The top 24 bits convert to `f32` exactly and the scale is
-/// a power of two, so the draw is the same value on any host that rounds
-/// IEEE-754.
+// Draw in `[-1, 1)`. The top 24 bits convert to `f32` exactly and the scale is
+// a power of two, so the draw is the same on any host that rounds IEEE-754.
 fn signed_unit(draw: u64) -> f32 {
     ((draw >> 40) as u32) as f32 * (1.0 / 8_388_608.0) - 1.0
 }
@@ -453,9 +416,8 @@ fn apply_throw(world: &mut World<EuclideanR3>, frame: [u32; THROW_WORDS as usize
     }
 }
 
-/// Recording and replaying differ only in the `input` they pass, so a replay
-/// cannot drift into a second implementation of the scenario it is supposed to
-/// reproduce.
+// Recording and replaying differ only in the `input` they pass, so a replay
+// cannot drift into a second implementation of the scenario.
 fn drive_flick_chamber(
     ticks: u64,
     input: impl Fn(u64) -> [u32; THROW_WORDS as usize],
@@ -475,8 +437,8 @@ fn drive_flick_chamber(
     checkpoints
 }
 
-/// Record a run of the flick chamber: the scripted input stream for `seed`,
-/// plus the state hashes that run passed through.
+/// The returned tape carries the scripted input stream for `seed` and the
+/// state hashes that run passed through.
 pub fn record_flick_chamber_tape(seed: u64) -> Tape {
     // Slot 0 is the static floor, which absorbs no impulse; throwing at it
     // would silently turn a throw into a quiet tick.
@@ -493,12 +455,9 @@ pub fn record_flick_chamber_tape(seed: u64) -> Tape {
     tape
 }
 
-/// Replay `tape` from its recorded input alone and return the state hashes the
-/// replay observed, for comparison against [`Tape::checkpoints`].
-///
-/// Panics if the tape's frame width is not [`THROW_WORDS`]: a tape recorded
-/// against another input layout is a tape this scenario cannot drive, and
-/// reading it anyway would compare hashes of two different runs.
+/// Drives from the tape's recorded input alone, for comparison against
+/// [`Tape::checkpoints`]. Panics if the frame width is not `THROW_WORDS`:
+/// another input layout would compare hashes of two different runs.
 pub fn replay_flick_chamber_tape(tape: &Tape) -> Vec<Checkpoint> {
     assert_eq!(
         tape.words_per_tick(),

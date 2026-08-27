@@ -34,38 +34,33 @@ use loam_render::raymarch::{
 use loam_render::Viewport;
 use wgpu::*;
 
-/// Probe framebuffer. 1280 * 4 bytes per row is a multiple of
-/// `COPY_BYTES_PER_ROW_ALIGNMENT`, so the readback needs no row padding, and
-/// 720 rows of 384-iteration marches put the measurement in the fragment
-/// shader rather than in submission overhead.
+// 1280 * 4 bytes per row is a multiple of `COPY_BYTES_PER_ROW_ALIGNMENT`, so
+// the readback needs no row padding, and 720 rows of 384-iteration marches
+// put the measurement in the fragment shader, not in submission overhead.
 const SIZE: [u32; 2] = [1280, 720];
 
-/// Body circumradius, spacing and height, matching the playground's
-/// `BODY_SIZE` / `BODY_X_SPACING` / `BODY_Y`. The circumradius is also each
-/// body's w half-extent: the per-shape SDFs are unit-circumradius and the
-/// dispatcher scales by `polytope_size`.
+// Matches the playground's `BODY_SIZE` / `BODY_X_SPACING` / `BODY_Y`. The
+// circumradius is also each body's w half-extent: the per-shape SDFs are
+// unit-circumradius and the dispatcher scales by `polytope_size`.
 const BODY_SIZE: f32 = 0.7;
 const BODY_X_SPACING: f32 = 1.8;
 const BODY_Y: f32 = 0.9;
 
-/// Row lengths to price: the demo's usual three and its `MAX_ROW_LEN` of
-/// eight, since the body loop is linear in the count and the cull's saving
-/// grows with it.
+// The demo's usual three and its `MAX_ROW_LEN` of eight; the body loop is
+// linear in the count, so the cull's saving grows with it.
 const PROBE_BODY_COUNTS: [usize; 2] = [3, 8];
 
-/// Slices inside every body's bounding 4-ball, so the slab test provably
-/// cannot fire and the images must match bit for bit. Not the same set as the
-/// slices that draw a cross-section, which stops at 0.35 for the tesseract and
-/// 0.495 for the 24-cell; the probe prints the occupancy it actually gets.
+// Inside every body's bounding 4-ball, so the slab test provably cannot fire
+// and the images must match bit for bit. Not the same set as the slices that
+// draw a cross-section; the probe prints the occupancy it actually gets.
 const SLICES_INSIDE_BOUNDING_BALLS: [f32; 4] = [0.0, 0.25, 0.5, 0.68];
 
-/// Slices past every body's bounding 4-ball, where the cull fires on all of
-/// them and bit-exactness is exactly what is at stake.
+// Slices past every body's bounding 4-ball, where the cull fires on all of
+// them and bit-exactness is exactly what is at stake.
 const SLICES_PAST_BOUNDING_BALLS: [f32; 2] = [0.75, 1.2];
 
-/// A slice no body's bounding ball reaches, so its frame is floor and sky and
-/// serves as the occupancy reference. Reusing the largest probe slice keeps
-/// the reference inside the set the cost probe already prices.
+// No body's bounding ball reaches it, so its frame is floor and sky. Reusing
+// the largest probe slice keeps the reference inside the priced set.
 const EMPTY_REFERENCE_SLICE: f32 = 1.2;
 
 fn probe_slices() -> Vec<f32> {
@@ -75,9 +70,8 @@ fn probe_slices() -> Vec<f32> {
         .collect()
 }
 
-/// Floor at `y = 0` tagged `HALFSPACE4D`, which is what the demo scenes put
-/// under the row and what makes the marcher walk the depth of the frame
-/// instead of escaping to `max_t` on the first step.
+// What the demo scenes put under the row, and what makes the marcher walk the
+// depth of the frame instead of escaping to `max_t` on the first step.
 const FLOOR_SCENE_WGSL: &str = r#"
 const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;
 const LOAM_PRIM_HALFSPACE4D: u32 = 1u;
@@ -95,24 +89,23 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 }
 "#;
 
-/// Head of both body loops in the kernel (`loam_dynamic_bodies_sdf` and
-/// `loam_total_sdf`), which is where a w-slab cull would go.
+// Head of both body loops in the kernel (`loam_dynamic_bodies_sdf` and
+// `loam_total_sdf`), which is where a w-slab cull would go.
 const BODY_LOOP_HEAD: &str = "    for (var i: u32 = 0u; i < body_count; i = i + 1u) {
         let b = u.bodies[i];
         let kind = u32(b.kind + 0.5);
 ";
 
-/// The candidate. `radius_or_shape` is the radius for a sphere and the shape
-/// index for a polytope, so the half-extent is selected on kind;
-/// `polytope_size` is the polytope's bounding-4-ball radius.
+// The candidate. `radius_or_shape` is the radius for a sphere and the shape
+// index for a polytope, so the half-extent is selected on kind;
+// `polytope_size` is the polytope's bounding-4-ball radius.
 const W_SLAB_CULL: &str =
     "        let w_extent = select(b.radius_or_shape, b.polytope_size, kind == BODY_KIND_POLYTOPE);
         if (abs(u.w_slice - b.position.w) > w_extent) { continue; }
 ";
 
-/// The shipped kernel with the candidate spliced into both body loops. A
-/// splice rather than a second copy of the kernel: the two must differ in
-/// exactly this and nothing else, or the comparison prices a typo.
+// A splice rather than a second copy of the kernel: the two must differ in
+// exactly this and nothing else, or the comparison prices a typo.
 fn culled_kernel() -> String {
     let culled =
         HYPERSLICE_KERNEL_WGSL.replace(BODY_LOOP_HEAD, &format!("{BODY_LOOP_HEAD}{W_SLAB_CULL}"));
@@ -132,9 +125,8 @@ fn module_for(device: &Device, kernel: &str, label: &str) -> ShaderModule {
     })
 }
 
-/// A row of polychora above the floor, all centred at `w = 0`, which is the
-/// Shapes-view layout the demo raymarches. Shapes cycle so the row exercises
-/// three different branches of the SDF dispatcher.
+// The Shapes-view layout the demo raymarches. Shapes cycle so the row
+// exercises three different branches of the SDF dispatcher.
 fn probe_bodies(count: usize) -> Vec<BodyUniform> {
     const SHAPES: [u32; 3] = [SHAPE_TESSERACT, SHAPE_24CELL, SHAPE_PENTATOPE];
     const COLORS: [[f32; 3]; 3] = [[0.85, 0.35, 0.30], [0.30, 0.75, 0.85], [0.80, 0.75, 0.30]];
@@ -152,8 +144,8 @@ fn probe_bodies(count: usize) -> Vec<BodyUniform> {
         .collect()
 }
 
-/// Camera above the floor looking slightly down at the row. `up` is `forward`
-/// rotated a quarter turn in the yz-plane, so the basis stays orthonormal.
+// `up` is `forward` rotated a quarter turn in the yz-plane, so the basis
+// stays orthonormal.
 fn probe_node(device: &Device, module: &ShaderModule, body_count: usize) -> Hyperslice4DNode {
     let mut node = Hyperslice4DNode::new(device, TextureFormat::Rgba8Unorm, module, 1);
     let pitch: f32 = -0.22;
@@ -186,8 +178,8 @@ fn probe_target(device: &Device) -> Texture {
     })
 }
 
-/// One full-frame draw at `w_slice`, submitted and waited on, so the caller's
-/// wall clock brackets the GPU work and not just the encode.
+// Submitted and waited on, so the caller's wall clock brackets the GPU work
+// and not just the encode.
 fn render_slice(
     device: &Device,
     queue: &Queue,
@@ -261,9 +253,9 @@ fn read_back_rgba(device: &Device, queue: &Queue, texture: &Texture) -> Vec<u8> 
     data
 }
 
-/// FNV-1a over the whole RGBA buffer (Fowler/Noll/Vo, 1991). The assertion is
-/// equality, so collision resistance is not load-bearing and a 64-bit
-/// non-cryptographic mixer is the right cost.
+// FNV-1a over the whole RGBA buffer (Fowler/Noll/Vo, 1991). The assertion is
+// equality, so collision resistance is not load-bearing and a 64-bit
+// non-cryptographic mixer is the right cost.
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
@@ -273,8 +265,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     h
 }
 
-/// Count of differing bytes, so a report says how far off the image is and not
-/// only that it moved.
+// So a report says how far off the image is, not only that it moved.
 fn differing_bytes(a: &[u8], b: &[u8]) -> usize {
     a.iter().zip(b).filter(|(x, y)| x != y).count()
 }
@@ -369,11 +360,11 @@ fn the_w_slab_cull_is_bit_exact_inside_every_bounding_ball_gpu_probe() {
 #[test]
 #[ignore = "perf probe; needs an adapter, run with --include-ignored"]
 fn the_w_slab_cull_frame_cost_perf() {
-    /// Draws per timed batch, enough that the submit-and-wait floor is a small
-    /// share of the total at this resolution.
+    // Draws per timed batch, enough that the submit-and-wait floor is a small
+    // share of the total at this resolution.
     const REPS: u32 = 40;
-    /// Batches per cell, reported as the median so one scheduler hiccup does
-    /// not decide the verdict.
+    // Batches per cell, reported as the median so one scheduler hiccup does
+    // not decide the verdict.
     const BATCHES: usize = 9;
 
     let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");

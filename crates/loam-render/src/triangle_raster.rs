@@ -1,12 +1,9 @@
-//! Parallel to [`crate::line_raster::LineRasterNode`]; the two share a depth
-//! attachment within a frame so fills and edges occlude correctly. The caller
-//! owns the depth texture and clears it once per frame
-//! ([`TriangleRasterNode::record`] uses `LoadOp::Load`).
-//!
-//! Normals are omitted because R⁴ has no standard lighting convention (see
-//! `TriangleMesh<N>`). For lit shading [`FragmentShading::FaceNormalLambert`]
-//! derives the face normal from screen-space derivatives of world position,
-//! exact for the flat-triangle case and needing no normal attribute.
+//! Shares a depth attachment with [`crate::line_raster::LineRasterNode`]
+//! within a frame so fills and edges occlude correctly; the caller owns the
+//! depth texture and clears it once per frame ([`TriangleRasterNode::record`]
+//! uses `LoadOp::Load`). Normals are omitted because R⁴ has no standard
+//! lighting convention; [`FragmentShading::FaceNormalLambert`] derives the
+//! face normal from screen-space derivatives of world position instead.
 
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
@@ -53,8 +50,7 @@ pub struct TriangleVertex {
     pub color: [f32; 4],
 }
 
-/// Fragment-shader selector, fixed at construction so the pipeline state matches
-/// the entry point. Switching modes needs a new pipeline.
+/// Fixed at construction: switching modes needs a new pipeline.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum FragmentShading {
     #[default]
@@ -73,7 +69,6 @@ impl FragmentShading {
     }
 }
 
-/// Triangle rasterizer node, parallel to [`crate::line_raster::LineRasterNode`].
 pub struct TriangleRasterNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
@@ -87,16 +82,13 @@ pub struct TriangleRasterNode {
     /// Number of indices currently uploaded; `0` means [`Self::record`] is a no-op.
     index_count: u32,
 
-    /// Whether the pipeline has a depth attachment; [`Self::record`] validates
-    /// the caller's depth-view argument against it.
     has_depth: bool,
 }
 
 impl TriangleRasterNode {
     /// - `surface_format` must match the color attachment at draw time.
-    /// - `depth`: see [`crate::DepthMode`]. Determines whether the pipeline reads depth,
-    ///   reads + writes depth, or skips it.
-    /// - `shading`: which fragment shader the pipeline binds; see [`FragmentShading`].
+    /// - `depth`: see [`crate::DepthMode`].
+    /// - `shading`: which fragment shader the pipeline binds.
     /// - `sample_count` must match the attachment's MSAA sample count.
     pub fn new(
         device: &Device,
@@ -248,9 +240,8 @@ impl TriangleRasterNode {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Upload a [`TriangleMesh`], projecting each vertex from R^N to R³ via
-    /// [`RasterizableSpace::project_point`] and copying indices verbatim. Empty
-    /// meshes are no-ops.
+    /// Projects each vertex from R^N to R³ via
+    /// [`RasterizableSpace::project_point`]. An empty mesh is a no-op.
     pub fn upload<S, const N: usize>(
         &mut self,
         device: &Device,
@@ -313,19 +304,15 @@ impl TriangleRasterNode {
         self.index_count = indices.len() as u32;
     }
 
-    /// Record a pass drawing the uploaded triangles into `view` on the caller's
-    /// `encoder`. **Does NOT call `encoder.finish()` or `queue.submit`**; the
-    /// runner owns one encoder per frame and submits it once.
-    ///
-    /// `LoadOp::Load` for color and depth so raster nodes share one cleared
-    /// buffer per frame. `depth_view` must be `Some` iff the pipeline has a
-    /// depth format; mismatch panics.
+    /// Does not call `encoder.finish()` or `queue.submit`: the runner owns one
+    /// encoder per frame and submits it once. `LoadOp::Load` for color and depth
+    /// so raster nodes share one cleared buffer per frame. `depth_view` must be
+    /// `Some` iff the pipeline has a depth format; a mismatch panics.
     ///
     /// One node holds one vertex buffer, and `Queue::write_buffer` lands before
     /// the frame's whole command buffer, so a caller must not
     /// [`upload`](Self::upload) between two `record` calls on the same node in
-    /// one frame: both passes would read the second mesh. Merge the meshes
-    /// instead.
+    /// one frame: both passes would read the second mesh. Merge the meshes.
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,

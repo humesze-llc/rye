@@ -1,17 +1,13 @@
-//! Final composite pass for browser-WebGPU: sample the offscreen scene texture
-//! and write gamma-encoded values to a linear swapchain.
-//!
 //! Native (D3D/Vulkan/Metal) swapchains advertise sRGB formats, so the GPU
-//! encodes linear output on write and no pass is needed; `RenderDevice::new`
-//! skips the [`CompositeNode`] there. Browser WebGPU (Chrome 2026-05) only
-//! advertises linear canvas formats, so direct writes display ~2.2x dark.
-//! Instead the scene renders into an offscreen target carrying the canvas
-//! format's sRGB sibling (`Bgra8Unorm` -> `Bgra8UnormSrgb`), or the canvas
-//! format itself where it has none (`Rgba16Float`), and this pass samples it,
-//! applies `linear_to_srgb`, and writes the sRGB-encoded bits the compositor
-//! expects. Scene texels read back linear either way, by sampler decode or by
-//! storage; egui-painted texels do not on the no-sibling arm, where egui-wgpu
-//! writes encoded values that this pass then encodes twice.
+//! encodes linear output on write and `RenderDevice::new` skips this node.
+//! Browser WebGPU (Chrome 2026-05) only advertises linear canvas formats, so
+//! direct writes display ~2.2x dark. The scene instead renders into an
+//! offscreen target carrying the canvas format's sRGB sibling (`Bgra8Unorm`
+//! -> `Bgra8UnormSrgb`), or the canvas format itself where it has none
+//! (`Rgba16Float`), and this pass samples it, applies `linear_to_srgb`, and
+//! writes the sRGB-encoded bits the compositor expects. Scene texels read
+//! back linear either way; egui-painted texels do not on the no-sibling arm,
+//! where egui-wgpu writes encoded values that this pass then encodes twice.
 
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
@@ -23,8 +19,7 @@ use wgpu::{
     TextureView, TextureViewDimension, VertexState,
 };
 
-/// Final-pass gamma encoder. The bind group is rebuilt on resize, since the
-/// scene texture view changes when the surface resizes.
+/// The bind group is rebuilt on resize, when the scene texture view changes.
 pub struct CompositeNode {
     pipeline: RenderPipeline,
     sampler: Sampler,
@@ -118,8 +113,7 @@ impl CompositeNode {
         }
     }
 
-    /// Refresh the cached bind group when the scene-target view changes, e.g.
-    /// after a resize reallocates the scene texture.
+    /// Call after a resize reallocates the scene texture.
     pub fn set_scene_view(&mut self, device: &Device, scene_view: &TextureView) {
         let bg = device.create_bind_group(&BindGroupDescriptor {
             label: Some("loam-render::composite::bg"),

@@ -7,7 +7,6 @@ use loam_asset::{AssetEvent, AssetEventKind};
 use loam_math::WgslSpace;
 use wgpu::{Device, ShaderModule, ShaderModuleDescriptor, ShaderSource};
 
-/// WGSL parse or validation failure.
 #[derive(Debug, thiserror::Error)]
 pub enum WgslValidationError {
     #[error("WGSL parse error: {0}")]
@@ -16,14 +15,12 @@ pub enum WgslValidationError {
     Validate(Box<naga::WithSpan<naga::valid::ValidationError>>),
 }
 
-/// Opaque handle to a shader in a [`ShaderDb`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ShaderId(u32);
 
-/// Identifies who loaded a shader. The Space prelude is a property of the
-/// loader, not of the file, so one path loaded by two owners is two modules;
-/// hot-reload is scoped by owner so a host fanning one event slice at every
-/// owner it holds recompiles each module once rather than once per owner.
+/// A prelude belongs to the loader, not the file: one path under two owners
+/// is two modules, and hot-reload is scoped by owner so a host fanning one
+/// event slice at every owner recompiles each module once.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ShaderOwner(u32);
 
@@ -31,34 +28,28 @@ struct Entry {
     path: PathBuf,
     module: ShaderModule,
     scene_source: Option<String>,
-    /// The Space prelude this module was assembled with, kept so a reload
-    /// reproduces the entry's own geometry without the caller re-supplying a
-    /// Space it may no longer hold. Re-specializing against a mutated Space is
-    /// a fresh `load` on the same owner and path, which overwrites this.
+    /// Kept so a reload reproduces the entry's geometry without the caller
+    /// re-supplying a Space it may no longer hold.
     prelude: Cow<'static, str>,
-    /// Bumped on every successful (re)compile; render code rebuilds its pipeline
-    /// on a generation mismatch.
     generation: u64,
     label: String,
 }
 
-/// Cache of compiled shaders, invalidated on asset events. A failed hot-reload
-/// (or removed file) keeps the last good module rather than crashing; a later
-/// create/modify restores it.
+/// A failed hot-reload or a removed file keeps the last good module; a later
+/// create or modify restores it.
 pub struct ShaderDb {
     device: Device,
     entries: HashMap<ShaderId, Entry>,
-    /// Path index per owner rather than one shared map: two owners loading the
-    /// same file need two entries, since a module carries exactly one prelude.
+    /// Per owner rather than one shared map: two owners loading the same file
+    /// need two entries, since a module carries exactly one prelude.
     path_index: HashMap<ShaderOwner, HashMap<PathBuf, ShaderId>>,
     next_id: u32,
     next_owner: u32,
 }
 
 impl ShaderDb {
-    /// The owner every db starts with, for a host that loads all its shaders
-    /// against one Space. Sub-scenes with Spaces of their own take an owner
-    /// from [`ShaderDb::new_owner`] instead.
+    /// The owner every db starts with. Sub-scenes with Spaces of their own take
+    /// an owner from [`ShaderDb::new_owner`] instead.
     pub const ROOT_OWNER: ShaderOwner = ShaderOwner(0);
 
     pub fn new(device: Device) -> Self {
@@ -71,18 +62,16 @@ impl ShaderDb {
         }
     }
 
-    /// Mint an owner distinct from [`ShaderDb::ROOT_OWNER`] and from every other
-    /// owner this db has issued.
+    /// Distinct from [`ShaderDb::ROOT_OWNER`] and from every owner already issued.
     pub fn new_owner(&mut self) -> ShaderOwner {
         let owner = ShaderOwner(self.next_owner);
         self.next_owner += 1;
         owner
     }
 
-    /// Load a shader from disk, prepending the Space's WGSL prelude. The returned
-    /// [`ShaderId`] is stable across reloads; the same `owner` loading the same
-    /// path again yields the same ID and a fresh compilation, while a different
-    /// owner loading it gets its own ID and its own prelude.
+    /// Prepends the Space's WGSL prelude. The [`ShaderId`] is stable across
+    /// reloads for one owner and path; another owner loading the same path gets
+    /// its own ID and its own prelude.
     pub fn load<S: WgslSpace>(
         &mut self,
         owner: ShaderOwner,
@@ -92,8 +81,7 @@ impl ShaderDb {
         self.load_inner(owner, path, None, space)
     }
 
-    /// Load a shader plus a scene module; the scene source is stored and reused on
-    /// reloads of the shader file.
+    /// The scene source is stored and reused on reloads of the shader file.
     pub fn load_with_scene<S: WgslSpace>(
         &mut self,
         owner: ShaderOwner,
@@ -104,10 +92,8 @@ impl ShaderDb {
         self.load_inner(owner, path, Some(scene_source), space)
     }
 
-    /// Load a shader for geodesic ray marching: assembles Space prelude + scene
-    /// SDF + geodesic march kernel ([`crate::GEODESIC_MARCH_KERNEL`], which defines
-    /// `loam_march_geodesic` / `loam_estimate_normal` / `loam_safe_normalize`) + user
-    /// shading. The scene + kernel is stored and reused on reloads.
+    /// Assembles Space prelude + scene SDF + [`crate::GEODESIC_MARCH_KERNEL`] +
+    /// user shading, in that order. Scene and kernel are reused on reloads.
     pub fn load_geodesic_scene<S: WgslSpace>(
         &mut self,
         owner: ShaderOwner,
@@ -174,7 +160,6 @@ impl ShaderDb {
         self.path_index.get(&owner)?.get(path).copied()
     }
 
-    /// Borrow the current compiled module for `id`.
     pub fn module(&self, id: ShaderId) -> &ShaderModule {
         &self
             .entries
@@ -189,10 +174,9 @@ impl ShaderDb {
         self.entries.get(&id).map(|e| e.generation).unwrap_or(0)
     }
 
-    /// Apply filesystem events to the shaders `owner` loaded, recompiling each
-    /// against the prelude it was loaded with. Entries under any other owner
-    /// are untouched, including entries for the same path. Compile errors are
-    /// logged but keep the last good module; rendering continues until fixed.
+    /// Recompiles each of `owner`'s shaders against the prelude it was loaded
+    /// with. Other owners are untouched, including entries for the same path.
+    /// A compile error keeps the last good module.
     pub fn apply_events(&mut self, owner: ShaderOwner, events: &[AssetEvent]) {
         for event in events {
             let canonical = match canonicalize(&event.path) {
@@ -259,8 +243,6 @@ fn canonicalize(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("canonicalizing {}", path.display()))
 }
 
-/// Concatenate the Space's WGSL prelude with the user shader source. Extracted for
-/// testability; the Device-free part of the hot-reload path.
 #[cfg(test)]
 pub(crate) fn assemble_source(space_wgsl: &str, user_source: &str) -> String {
     assemble_source_with_scene(space_wgsl, None, user_source)
@@ -290,9 +272,8 @@ pub(crate) fn assemble_source_with_scene(
     out
 }
 
-/// Parse and validate a complete WGSL module. Headless: rejects a broken
-/// [`loam_math::WgslSpace`] prelude or user shader without a GPU adapter. `wgpu`
-/// still does its own backend validation at module creation.
+/// Headless: rejects a broken prelude or user shader without a GPU adapter.
+/// `wgpu` still does its own backend validation at module creation.
 pub fn validate_wgsl(source: &str) -> std::result::Result<(), WgslValidationError> {
     let module = naga::front::wgsl::parse_str(source)?;
     let flags = naga::valid::ValidationFlags::all();
@@ -459,9 +440,8 @@ fn main() {
     }
 
     // `loam_origin_distance` as the Space preludes ship it, verbatim. The S3
-    // saturation constant is pinned next to the body because the body only names
-    // it: the two live on different lines of the prelude and could otherwise
-    // drift apart at the shell without either pin noticing.
+    // saturation constant is pinned beside the body because the body only names
+    // it, and the two could otherwise drift apart at the shell.
     const R3_ORIGIN_DISTANCE_FN: &str =
         "fn loam_origin_distance(p: vec3<f32>) -> f32 { return length(p); }";
     const S3_R2_MAX_DECL: &str = "const LOAM_S3_R2_MAX: f32 = 0.999999;";
@@ -469,12 +449,8 @@ fn main() {
         "    let r2 = min(dot(p, p), LOAM_S3_R2_MAX);\n    return asin(sqrt(r2));\n}";
     const S3_R2_MAX: f32 = 0.999999;
 
-    /// CPU port of `EuclideanR3`'s shipped `loam_origin_distance`.
-    ///
-    /// The text pin lives in the constructor rather than in a standalone test so
-    /// that a prelude which moves out from under the port fails the `cpu_march_*`
-    /// tests themselves; a port that can silently stop mirroring the shader is
-    /// the defect this indirection exists to prevent.
+    // The text pin lives in the constructor so a prelude that moves out from
+    // under this port fails the `cpu_march_*` tests themselves.
     fn euclidean_origin_distance_mirror() -> impl Fn(Vec3) -> f32 {
         assert!(
             EuclideanR3.wgsl_impl().contains(R3_ORIGIN_DISTANCE_FN),
@@ -483,9 +459,6 @@ fn main() {
         |p: Vec3| p.length()
     }
 
-    /// CPU port of `SphericalS3`'s shipped `loam_origin_distance`, expression for
-    /// expression. See [`euclidean_origin_distance_mirror`] for why the pin runs
-    /// here.
     fn spherical_origin_distance_mirror() -> impl Fn(Vec3) -> f32 {
         let prelude = SphericalS3.wgsl_impl();
         assert!(
@@ -498,11 +471,9 @@ fn main() {
         }
     }
 
-    // CPU port of `kernel.wgsl::loam_march_geodesic`, mirrored line-for-line, so
-    // the `cpu_march_*` tests can check hit points against a known SDF without a
-    // GPU adapter. `loam_origin_distance` and `loam_max_arc` are parameters here
-    // (the kernel reads both from the Space prelude) so each test supplies the
-    // pinned mirror of the one and the value it exercises for the other.
+    // Line-for-line CPU port of `kernel.wgsl::loam_march_geodesic`.
+    // `loam_origin_distance` and `loam_max_arc` are parameters (the kernel reads
+    // both from the Space prelude) so each test supplies its own pinned mirror.
     fn march_geodesic_cpu<S: Space<Point = Vec3, Vector = Vec3>>(
         space: &S,
         sdf: impl Fn(Vec3) -> f32,
@@ -726,12 +697,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ParityCase { corner, a, b, v }
     }
 
-    /// Corners for the two flat charts: coincident, separated below one ulp of
-    /// the coordinates, at 1e-4 radius, generic, and widely separated. Nothing
-    /// here is a domain boundary because ℝⁿ has none, so these pin the plumbing
-    /// and the exp/log/transport algebra rather than a conditioning class.
-    ///
-    /// The ℝ⁴ probe reuses these and supplies `w` from [`FLAT_CORNER_W`].
+    // Nothing here is a domain boundary: R^n has none, so these pin the plumbing
+    // and the exp/log/transport algebra rather than a conditioning class.
     fn flat_corners() -> Vec<ParityCase> {
         vec![
             corner(
@@ -767,16 +734,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ]
     }
 
-    /// Interior corners of the S³ upper-hemisphere chart: the pole, a radius
-    /// small enough to expose an ill-conditioned origin distance, and the
-    /// near-antipodal pairs whose transport denominator is the smallest the
-    /// chart holds. Outside the chart is [`out_of_domain_corners`].
-    ///
-    /// Radii are literals rather than offsets from the prelude's saturation
-    /// constant: a fixture that reads the constant it probes retunes with it
-    /// and stops failing. `0.9999` is inside today's shell; a retune that moves
-    /// the shell inside it turns this into an out-of-domain fixture, which is
-    /// visible to a reader in a way a derived radius would not be.
+    // Radii are literals rather than offsets from the prelude's saturation
+    // constant: a fixture that reads the constant it probes retunes with it and
+    // stops failing. `0.9999` is inside today's shell.
     fn hemisphere_corners() -> Vec<ParityCase> {
         vec![
             corner(
@@ -819,10 +779,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ]
     }
 
-    /// Interior corners of the H³ Poincaré-ball chart. Same regimes and the
-    /// same literal-radius discipline as [`hemisphere_corners`]; near-antipodal
-    /// here means opposite sides of the ideal boundary, along a segment whose
-    /// conformal factor runs from 4 at its centre to 1.0e4 at each endpoint.
+    // Near-antipodal here means opposite sides of the ideal boundary, along a
+    // segment whose conformal factor runs from 4 at its centre to 1.0e4 at each
+    // endpoint.
     fn ball_corners() -> Vec<ParityCase> {
         vec![
             corner(
@@ -858,15 +817,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ]
     }
 
-    /// Out-of-domain probes for both `|p| < 1` charts: the unit boundary
-    /// itself, one ulp past it, and radii far outside, crossed with directions
-    /// that are axis-aligned, oblique and irrational, and with in-domain,
-    /// on-boundary and far-outside partners.
-    ///
-    /// The radii are literals rather than offsets from either chart's
-    /// saturation constant. Both charts clamp onto a shell a few f32 ulps
-    /// inside `|p| = 1`; a fixture parameterised on that shell would move with
-    /// a retune and stop being out of domain at all.
+    // The radii are literals: both charts clamp onto a shell a few f32 ulps
+    // inside `|p| = 1`, and a fixture parameterised on that shell would move
+    // with a retune and stop being out of domain at all.
     fn out_of_domain_corners() -> Vec<ParityCase> {
         let directions = [
             Vec3::new(1.0, 0.0, 0.0),
@@ -936,12 +889,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_prelude_matches_cpu(&EuclideanR3, &flat_corners(), 1e-6);
     }
 
-    /// The `w` component each [`flat_corners`] entry carries in ℝ⁴, as
-    /// `[a, b, v]` in that fixture's order. Per-corner rather than one constant
-    /// triple because a constant one destroys the two regimes the fixture
-    /// exists for: it separates the coincident pair and swamps the sub-ulp one.
-    /// Away from those two, `a`, `b` and `v` carry distinct nonzero `w`, so a
-    /// dropped or duplicated component still cannot pass.
+    // Per-corner rather than one constant triple: a constant one separates the
+    // coincident pair and swamps the sub-ulp one, destroying the two regimes
+    // the fixture exists for.
     const FLAT_CORNER_W: [[f32; 3]; 5] = [
         [0.0, 0.0, 0.125],
         [1.0, 1.0 + 1e-8, 1e-8],
@@ -1022,8 +972,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_prelude_survives_out_of_domain(&HyperbolicH3, "HyperbolicH3");
     }
 
-    /// Dispatch one workgroup per element of `inputs` against a two-binding
-    /// compute shader (`read` at 0, `read_write` at 1) and read the output back.
+    // Two-binding compute shader: `read` at 0, `read_write` at 1.
     async fn run_compute_probe<In: Pod, Out: Pod>(
         source: &str,
         label: &str,
@@ -1177,13 +1126,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         Ok(rows)
     }
 
-    /// Every entry point of `space`'s prelude against the Rust `Space` it
-    /// mirrors, at each corner of the chart's domain.
-    ///
-    /// `loam_origin_distance` is checked against `distance` from the chart
-    /// origin because that identity is the entire content of the function. Its
-    /// absence from this probe is why S³ shipped an `acos` form that reads zero
-    /// for every radius under 1.73e-4.
+    // `loam_origin_distance` is checked against `distance` from the chart origin
+    // because that identity is the whole content of the function. Its absence
+    // here is why S3 shipped an `acos` form that reads zero under 1.73e-4.
     fn assert_prelude_matches_cpu<S>(space: &S, cases: &[ParityCase], eps: f32)
     where
         S: WgslSpace + Space<Point = Vec3, Vector = Vec3>,
@@ -1218,20 +1163,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    /// Outside a `|p| < 1` chart neither twin contracts a value, only a
-    /// degraded-but-finite one. Both clamp onto a saturation shell whose
-    /// thickness is a few f32 ulps, and `artanh`, the `1/w` tangent lift and
-    /// the conformal ratio all carry derivatives past 10⁶ with respect to where
-    /// exactly that clamp lands, so two compilers rounding the clamp
-    /// differently disagree by whole percent on the outputs. No parity budget
-    /// separates that from a transcription error, and one written loose enough
-    /// to pass would not fail on one either.
-    ///
-    /// What does survive out there is the contract the chart modules state:
-    /// finite, never NaN, and a returned point still inside the chart. That is
-    /// what a missing clamp, an unfloored divisor or the gyration's
-    /// zero-denominator all break, so it is what this gates on. The divergence
-    /// it declines to gate on is printed instead of inferred.
+    // Out there both charts clamp onto a saturation shell a few f32 ulps thick,
+    // and `artanh`, the `1/w` tangent lift and the conformal ratio all carry
+    // derivatives past 1e6 in where that clamp lands, so two compilers rounding
+    // it differently disagree by whole percent. No parity budget separates that
+    // from a transcription error, so this gates on the chart contract instead:
+    // finite, never NaN, and a returned point still inside the chart.
     fn assert_prelude_survives_out_of_domain<S>(space: &S, label: &str)
     where
         S: WgslSpace + Space<Point = Vec3, Vector = Vec3>,
@@ -1461,8 +1398,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    /// Writes `loam_scene_sdf(p.xyz)` per sample point. Assembled as
-    /// prelude + `Scene::to_wgsl` + this.
+    // Assembled as prelude + `Scene::to_wgsl` + this.
     const SCENE_SDF_PROBE: &str = r#"
 @group(0) @binding(0) var<storage, read> points: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> out: array<vec4<f32>>;
@@ -1474,8 +1410,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-    /// 4D counterpart: writes both fields of `loam_scene_at`, so the probe
-    /// covers `Scene4::eval_at`'s kind tracking and not only its distance.
+    // Covers `Scene4::eval_at`'s kind tracking, not only its distance.
     const SCENE4_HIT_PROBE: &str = r#"
 @group(0) @binding(0) var<storage, read> points: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> out: array<vec4<f32>>;
@@ -1488,19 +1423,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-    // Geometry shared by the probe scenes and the explicit boundary sample
-    // points, so "on the surface" and "in the blend band" stay true when a
-    // constant is retuned.
+    // Shared by the probe scenes and the explicit boundary sample points, so
+    // "on the surface" and "in the blend band" stay true when one is retuned.
     const PROBE_BALL_A: (Vec3, f32) = (Vec3::new(0.10, 0.00, 0.05), 0.22);
     const PROBE_BALL_B: (Vec3, f32) = (Vec3::new(-0.15, 0.08, 0.00), 0.18);
     const PROBE_BOX_HALF_EXTENTS: Vec3 = Vec3::new(0.20, 0.15, 0.25);
     const PROBE_PLANE_OFFSET: f32 = -0.30;
-    /// The two smooth-union blend radii, an order of magnitude apart, so the
-    /// probe sees both a wide active band and a nearly hard `min`.
+    // An order of magnitude apart, so the probe sees a wide active band and a
+    // nearly hard `min`.
     const PROBE_SMOOTH_K: [f32; 2] = [0.12, 0.012];
 
-    /// One scene per emit feature so a parity failure localises to a single
-    /// combinator or leaf rather than to "the tree walk".
+    // One scene per emit feature, so a parity failure localises to one combinator.
     fn probe_scenes() -> Vec<(&'static str, loam_scene::Scene)> {
         use loam_scene::{Scene, SceneNode};
         let ball_a = || SceneNode::sphere(PROBE_BALL_A.0, PROBE_BALL_A.1);
@@ -1538,10 +1471,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ]
     }
 
-    /// Seeded lattice plus the analytically interesting points: leaf centres
-    /// (where a sphere reads `-r`), leaf surfaces, the `Difference` seam, the
-    /// midpoint of the two balls (inside every blend band), and the box corner.
-    /// `extent` shrinks the random cloud for charts with a boundary shell.
+    // `extent` shrinks the random cloud for charts with a boundary shell.
     fn scene_probe_points(extent: f32) -> Vec<[f32; 4]> {
         let mut points: Vec<Vec3> = vec![
             Vec3::ZERO,
@@ -1684,19 +1614,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    /// Absolute floor under the relative budget. Two f32 pipelines that agree
-    /// to their last bits still differ by ~1e-7 on a coordinate of order 1, and
-    /// a lane whose true value is 0 has no relative scale to be held to. One
-    /// order above that single-ulp figure and no higher: the small-radius
-    /// corner works at 1e-4, so a floor of 1e-6 still holds it to 1% and the
-    /// `acos(sqrt(1 − r²))` origin distance, which reads exactly 0 there,
-    /// cannot pass under it.
+    // Two f32 pipelines that agree to their last bits still differ by ~1e-7 on a
+    // coordinate of order 1, and a lane whose true value is 0 has no relative
+    // scale. One order above that and no higher: the small-radius corner works
+    // at 1e-4, so 1e-6 holds it to 1% and the `acos(sqrt(1 - r^2))` origin
+    // distance, which reads exactly 0 there, cannot pass under it.
     const PARITY_ABSOLUTE_FLOOR: f32 = 1e-6;
 
-    /// Relative, because the curved charts carry conformal factors reaching
-    /// 10⁷ near their boundaries and metric quantities down at 1e-4 near their
-    /// origins; a flat absolute bound would either pass everything at one end
-    /// or fail everything at the other.
+    // Relative: the curved charts carry conformal factors reaching 1e7 near
+    // their boundaries and metric quantities down at 1e-4 near their origins, so
+    // a flat absolute bound would pass everything at one end or fail the other.
     fn assert_near(what: &str, actual: f32, expected: f32, eps: f32) {
         let budget = eps * expected.abs() + PARITY_ABSOLUTE_FLOOR;
         assert!(
@@ -1705,12 +1632,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
     }
 
-    /// A `Device` from wgpu's noop backend. `create_shader_module` is a stub
-    /// there, which is exactly the layer the owner-scoping tests do not care
-    /// about: naga still validates every assembled source inside
-    /// [`ShaderDb::compile`], and the entry bookkeeping under test is the db's
-    /// own. Buys these tests a real `ShaderDb` with no GPU, so they run
-    /// unconditionally instead of behind `#[ignore]`.
+    // The noop backend stubs `create_shader_module`, the one layer these tests
+    // do not care about: naga still validates every assembled source inside
+    // `ShaderDb::compile`. No GPU, so they run without `#[ignore]`.
     fn noop_device() -> Device {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::NOOP,
@@ -1743,9 +1667,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }]
     }
 
-    /// Rewrite `path` with source that still validates but differs byte-wise,
-    /// so a recompile is observable as a generation bump rather than a no-op.
-    /// The needle is arity-free so it hits both probes.
+    // Differs byte-wise but still validates, so a recompile shows up as a
+    // generation bump. The needle is arity-free so it hits both probes.
     fn touch_with_edit(path: &Path) {
         let previous = std::fs::read_to_string(path).unwrap();
         let edited = previous.replace("0.1, 0.2, 0.3", "0.15, 0.25, 0.35");

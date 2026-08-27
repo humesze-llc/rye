@@ -13,8 +13,8 @@
 use loam_render::raymarch::Hyperslice4DNode;
 use loam_render::{LineRasterNode, PointRasterNode, TriangleRasterNode};
 
-/// The three rasterizer nodes share one recording shape: caller's encoder,
-/// color view, optional depth view, optional viewport, no return.
+// Caller's encoder, color view, optional depth view, optional viewport, no
+// return.
 type RecordRaster<N> = fn(
     &N,
     &mut wgpu::CommandEncoder,

@@ -10,13 +10,11 @@ use wgpu::*;
 use crate::device::RenderDevice;
 use crate::graph::RenderNode;
 
-/// Maximum dynamic bodies per frame. Hard cap: the uniform layout is
-/// fixed-size, so raising it is a recompile, not a runtime knob.
+/// The uniform layout is fixed-size, so raising this is a recompile.
 pub const MAX_BODIES: usize = 32;
 
-/// Shape table indices for `BodyKind::Polytope` bodies, stored in
-/// [`BodyUniform::radius_or_shape`]. Mirrored as `SHAPE_*` constants in
-/// [`HYPERSLICE_KERNEL_WGSL`]; keep in sync.
+/// Stored in [`BodyUniform::radius_or_shape`]. Mirrored as `SHAPE_*`
+/// constants in [`HYPERSLICE_KERNEL_WGSL`]; keep in sync.
 pub const SHAPE_PENTATOPE: u32 = 0;
 pub const SHAPE_TESSERACT: u32 = 1;
 pub const SHAPE_16CELL: u32 = 2;
@@ -28,23 +26,9 @@ pub const SHAPE_DUOCYLINDER: u32 = 7;
 pub const SHAPE_CLIFFORD_TORUS: u32 = 8;
 pub const SHAPE_SPHERINDER: u32 = 9;
 
-/// One dynamic-body slot, a discriminated record over sphere and polytope cases
-/// (`kind` selects which fields the shader reads).
-///
-/// Layout (std140-aligned, 80 bytes total):
-///
-/// | offset | bytes | field |
-/// |---|---|---|
-/// |  0 | 16 | `position` (`vec4<f32>`) |
-/// | 16 |  4 | `kind` (`f32`: 0 = sphere, 1 = polytope) |
-/// | 20 |  4 | `radius_or_shape` (sphere radius / polytope shape index) |
-/// | 24 |  4 | `polytope_size` (polytope circumradius; ignored when kind = sphere) |
-/// | 28 |  4 | `_pad0` |
-/// | 32 | 12 | `color` (`vec3<f32>`) |
-/// | 44 |  4 | `_pad1` |
-/// | 48 | 32 | `rotor` (8 × f32packed as 2 × `vec4<f32>`, `rotor_lo` then `rotor_hi`; Rotor4 ordering: scalar, xy, xz, xw, yz, yw, zw, pseudoscalar) |
-///
-/// The rotor packs into two `vec4<f32>` so std140 matches Rust's `[f32; 8]`; an
+/// One dynamic-body slot; `kind` selects which fields the shader reads.
+/// `std140`-aligned, 80 bytes, matching the kernel's `BodyUniform`. The rotor
+/// packs into two `vec4<f32>` so std140 matches Rust's `[f32; 8]`; an
 /// `array<f32, 8>` would pad each element to 16 bytes (128-byte slot).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -80,17 +64,14 @@ impl Default for BodyUniform {
 pub enum BodyKind {
     /// `HyperSphere4D`. Reads `position` and `radius_or_shape`; ignores `rotor`.
     Sphere = 0,
-    /// `ConvexPolytope4D`. Reads `position`, `rotor`, and `radius_or_shape` (the
-    /// shape table index).
+    /// `ConvexPolytope4D`. Reads `position`, `rotor`, and `radius_or_shape`.
     Polytope = 1,
-    /// Sentinel for slots the kernel skips. No dispatch branch matches it, so the
-    /// slot stays inert; `BodyUniform::default()` produces it. `255` (`u8::MAX`)
-    /// is far outside the live range and exactly representable as `f32`.
+    /// Sentinel for slots the kernel skips: no dispatch branch matches, so the
+    /// slot stays inert. `255` is outside the live range and exact in `f32`.
     Invalid = 255,
 }
 
 impl BodyUniform {
-    /// Build a sphere body at world-space 4D `position` with the given radius.
     pub fn sphere(position: [f32; 4], radius: f32, color: [f32; 3]) -> Self {
         Self {
             position,
@@ -101,9 +82,8 @@ impl BodyUniform {
         }
     }
 
-    /// Build a polytope body. `shape_index` references the kernel's shape table,
-    /// `size` is the circumradius, `rotor` is the Rotor4 packed via
-    /// `<[f32; 8]>::from(Rotor4)`.
+    /// `shape_index` indexes the kernel's shape table, `size` is the
+    /// circumradius, `rotor` is the Rotor4 packed via `<[f32; 8]>::from(Rotor4)`.
     pub fn polytope(
         position: [f32; 4],
         shape_index: u32,
@@ -122,8 +102,6 @@ impl BodyUniform {
         }
     }
 
-    /// [`Self::polytope`] taking a [`Rotor4`] directly via loam-math's canonical
-    /// `[f32; 8]` packing, so the rotor field order isn't spelled out at the call.
     pub fn polytope_with_rotor(
         position: [f32; 4],
         shape_index: u32,
@@ -155,8 +133,7 @@ pub struct Hyperslice4DUniforms {
     pub w_slice: f32,
     /// Active body-slot count. `f32` for std140 alignment; kernel rounds to int.
     pub body_count: f32,
-    /// Pixel offset of the viewport's top-left in the framebuffer, so the shader
-    /// can map framebuffer-space `frag_pos.xy` into the viewport:
+    /// Pixel offset of the viewport's top-left in the framebuffer:
     /// `uv = (frag_pos.xy - viewport_origin) / resolution`. Zero unless a side
     /// panel carves out a sub-region.
     pub viewport_origin: [f32; 2],
@@ -189,8 +166,7 @@ impl Default for Hyperslice4DUniforms {
     }
 }
 
-/// Hyperslice ray-march kernel: `Uniforms`, fullscreen triangle, and the
-/// ray-march loop. The user's `Scene4` emit supplies `loam_scene_sdf`.
+/// The user's `Scene4` emit supplies `loam_scene_sdf`.
 pub const HYPERSLICE_KERNEL_WGSL: &str = r#"
 const MAX_BODIES: u32 = 32u;
 
@@ -210,12 +186,10 @@ const SHAPE_DUOCYLINDER: u32 = 7u;
 const SHAPE_CLIFFORD_TORUS: u32 = 8u;
 const SHAPE_SPHERINDER: u32 = 9u;
 // Mirrors `BodyKind::Invalid` (CPU). Intentionally absent from the
-// dispatch chain in `loam_dynamic_bodies_sdf` and `loam_total_sdf` below:
-// neither the sphere nor the polytope branch matches, so the SDF
-// accumulator keeps its 1e9 initial value for that slot. `255` is the
-// CPU-side `u8::MAX` sentinel, far outside the live discriminator
-// range. Do NOT delete: `BodyUniform::default()` produces this kind so
-// uninitialised slots are inert. CPU/GPU protocol breaks if removed.
+// dispatch chain below: neither the sphere nor the polytope branch
+// matches, so the SDF accumulator keeps its 1e9 initial value for that
+// slot. `BodyUniform::default()` produces this kind, so uninitialised
+// slots are inert; the CPU/GPU protocol breaks if it is removed.
 const BODY_KIND_INVALID: u32 = 255u;
 
 struct BodyUniform {
@@ -256,14 +230,10 @@ fn body_sphere_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
     return length(p4 - b.position) - b.radius_or_shape;
 }
 
-// `Rotor4::apply` (CPU) computes the forward sandwich `R̃ · v · R`,
-// rotating a body-local vector into world coordinates. To go the
-// other way (world -> body local) we flip the bivector signs of `R`
-// to get its reverse `R̃`, then run the same formula with R̃ as the
-// "rotor". That equals `R · v · R̃`, the inverse rotation.
-//
-// Component order matches `Rotor4` { s, xy, xz, xw, yz, yw, zw, xyzw }
-// packed into rotor_lo (s, xy, xz, xw) and rotor_hi (yz, yw, zw, xyzw).
+// `Rotor4::apply` (CPU) computes the forward sandwich `R̃ · v · R`. To go
+// world -> body local, flip the bivector signs of `R` to get its reverse
+// `R̃` and run the same formula with R̃ as the rotor: that equals
+// `R · v · R̃`, the inverse rotation.
 fn rotor4_inverse_apply(rotor_lo: vec4<f32>, rotor_hi: vec4<f32>, v: vec4<f32>) -> vec4<f32> {
     let rs  = rotor_lo.x;
     // Bivector signs flipped (reverse of R).
@@ -278,13 +248,8 @@ fn rotor4_inverse_apply(rotor_lo: vec4<f32>, rotor_hi: vec4<f32>, v: vec4<f32>) 
 
     let vx = v.x; let vy = v.y; let vz = v.z; let vw = v.w;
 
-    // Stage 1: R̃ · v. R̃ for the inner rotor here re-flips the
-    // bivector signs (back to original R's bivector signs); the
-    // formula below is the direct port of `Rotor4::apply` Stage 1
-    // with bivector terms using positive r{xy,...}, but since we
-    // already inverted the signs above, this works out to using the
-    // negated values. Keeping the formula identical to the CPU
-    // implementation:
+    // Stage 1: R̃ · v. The signs were inverted above, so this stays a direct
+    // port of `Rotor4::apply` Stage 1, whose bivector terms are positive.
     let p1 = rs * vx - rxy * vy - rxz * vz - rxw * vw;
     let p2 = rs * vy + rxy * vx - ryz * vz - ryw * vw;
     let p3 = rs * vz + rxz * vx + ryz * vy - rzw * vw;
@@ -309,23 +274,15 @@ fn rotor4_inverse_apply(rotor_lo: vec4<f32>, rotor_hi: vec4<f32>, v: vec4<f32>) 
     return vec4<f32>(q1, q2, q3, q4);
 }
 
-// Per-shape SDFs assume the polytope is centered at the origin and
-// oriented in its canonical frame. The dispatcher transforms world
-// coordinates into body-local coordinates first (translate +
-// inverse-rotor), then scales the result by the body's circumradius.
+// Per-shape SDFs take the polytope centred at the origin in its canonical
+// frame. The dispatcher translates and inverse-rotates into body-local
+// coordinates first, then scales by the body's circumradius.
 
-// Pentatope (5-cell, 4D simplex) at unit circumradius. Five face
-// hyperplanes; signed distance is the max plane distance.
-//
-// Vertex set (matching `loam_physics::euclidean_r4::pentatope_vertices(1.0)`):
-//   v0 = (0, 0, 0, 1)
-//   v1 = (t, t, t, -0.25), v2 = (t, -t, -t, -0.25),
-//   v3 = (-t, t, -t, -0.25), v4 = (-t, -t, t, -0.25)
-// where t = sqrt(15) / (4 * sqrt(3)) = sqrt(5) / 4 ≈ 0.55901699.
-//
-// Face i is opposite vertex i; outward normal is -v_i (since |v_i|
-// = 1 for unit-circumradius). Inradius for an n-simplex is R/n; for
-// pentatope (n=4) at R=1 the inradius is 0.25.
+// Pentatope at unit circumradius: five face hyperplanes, signed distance is
+// the max plane distance. Vertices match
+// `loam_physics::euclidean_r4::pentatope_vertices(1.0)`; face i is opposite
+// vertex i with outward normal -v_i, t = sqrt(5)/4, and the n-simplex
+// inradius R/n is 0.25 at n = 4, R = 1.
 fn pentatope_sdf_local(p: vec4<f32>) -> f32 {
     let t  = 0.55901699437;  // sqrt(5) / 4
     let n0 = vec4<f32>(0.0, 0.0, 0.0, -1.0);
@@ -342,9 +299,8 @@ fn pentatope_sdf_local(p: vec4<f32>) -> f32 {
     return d;
 }
 
-// Tesseract (8-cell / hypercube) at unit circumradius. Vertices at
-// (±0.5, ±0.5, ±0.5, ±0.5); faces at ±0.5 along each axis. SDF is
-// the standard infinity-norm box form.
+// Tesseract at unit circumradius: faces at ±0.5 along each axis, the
+// standard infinity-norm box form.
 fn tesseract_sdf_local(p: vec4<f32>) -> f32 {
     let q = abs(p) - vec4<f32>(0.5, 0.5, 0.5, 0.5);
     let outside = length(max(q, vec4<f32>(0.0, 0.0, 0.0, 0.0)));
@@ -352,33 +308,21 @@ fn tesseract_sdf_local(p: vec4<f32>) -> f32 {
     return outside + inside;
 }
 
-// 16-cell (cross-polytope / hexadecachoron) at unit circumradius.
-// Vertices at ±e_x, ±e_y, ±e_z, ±e_w. Face normals are the 16
-// unit vectors `(±1, ±1, ±1, ±1) / 2`; each face is at perpendicular
-// distance 0.5 from origin (inradius). The max-over-faces signed
-// plane distance reduces in any octant to:
-//
-//     (|p.x| + |p.y| + |p.z| + |p.w| - 1) / 2
-//
-// The `/ 2` is the unit-normal normalisation, without it the
-// function returns the L1 distance (twice the Euclidean), which
-// over-estimates the true SDF and causes sphere-tracing tunneling
-// (rays step past the surface, surface appears to "disappear" or
-// shift when the camera orbits).
+// 16-cell at unit circumradius. The 16 face normals are `(±1, ±1, ±1, ±1)/2`
+// at perpendicular distance 0.5, so the max-over-faces plane distance
+// reduces in any octant to `(|p.x| + |p.y| + |p.z| + |p.w| - 1) / 2`. The
+// `/ 2` is the unit-normal normalisation; without it this returns the L1
+// distance, which over-estimates the true SDF and tunnels under sphere
+// tracing.
 fn cell16_sdf_local(p: vec4<f32>) -> f32 {
     let q = abs(p);
     return (q.x + q.y + q.z + q.w - 1.0) * 0.5;
 }
 
-// 24-cell (icositetrachoron) at unit circumradius. The 24-cell is
-// the intersection of a tesseract scaled to 1/sqrt(2) (so its
-// vertices land at distance 1) with a 16-cell scaled to sqrt(2)
-// (so its faces tangent the same sphere). The intersection's
-// vertices are the 24 permutations of (±1/sqrt(2), ±1/sqrt(2), 0, 0):
-// the canonical 24-cell vertex set.
-//
-// Intersection of two convex shapes: SDF = max(sdf_a, sdf_b).
-// The cross-polytope component carries the same `/ 2` correction
+// 24-cell at unit circumradius: the intersection of a tesseract scaled to
+// 1/sqrt(2) with a 16-cell scaled to sqrt(2), whose 24 vertices are the
+// permutations of (±1/sqrt(2), ±1/sqrt(2), 0, 0). Intersection of convex
+// shapes is `max`; the cross-polytope leg carries the same `/ 2` correction
 // as `cell16_sdf_local`.
 fn cell24_sdf_local(p: vec4<f32>) -> f32 {
     let inv_sqrt2: f32 = 0.70710678;
@@ -393,12 +337,10 @@ fn sphere3_sdf_local(p: vec4<f32>) -> f32 {
     return length(p) - 1.0;
 }
 
-// Duocylinder (D² × D²) at unit circumradius. The Cartesian
-// product of two 2-discs in orthogonal 2-planes (xy and zw),
-// each of radius 1/sqrt(2) so the bounding 4-ball has radius 1.
-// SDF uses the same outside/inside split as the box SDF: the
-// outside leg is the 2-D Euclidean distance to the disc-pair
-// (correct, not an underestimate).
+// Duocylinder (D² × D²) at unit circumradius: two 2-discs in the orthogonal
+// xy and zw planes, each of radius 1/sqrt(2) so the bounding 4-ball is unit.
+// Outside/inside split as in the box SDF; the outside leg is the true 2-D
+// Euclidean distance, not an underestimate.
 fn duocylinder_sdf_local(p: vec4<f32>) -> f32 {
     let r = 0.7071068;
     let dxy = length(p.xy) - r;
@@ -408,11 +350,10 @@ fn duocylinder_sdf_local(p: vec4<f32>) -> f32 {
     return outside + inside;
 }
 
-// Clifford torus, "filled" as a 4-D tube of radius `tube`
-// around the 2-D torus surface `length(p.xy) = r1, length(p.zw) = r2`. The center curve is
-// codimension 2, so the SDF takes a
-// vec2 length in the (q1, q2) normal plane and subtracts the
-// tube radius. Numbers chosen so the bounding 4-ball is unit.
+// Clifford torus filled as a 4-D tube of radius `tube` around the surface
+// `length(p.xy) = r1, length(p.zw) = r2`. The centre curve is codimension 2,
+// so the SDF takes a vec2 length in the (q1, q2) normal plane. Numbers
+// chosen so the bounding 4-ball is unit.
 fn clifford_torus_sdf_local(p: vec4<f32>) -> f32 {
     let r1 = 0.5;
     let r2 = 0.5;
@@ -422,11 +363,8 @@ fn clifford_torus_sdf_local(p: vec4<f32>) -> f32 {
     return length(vec2<f32>(q1, q2)) - tube;
 }
 
-// Spherinder (B³ × [-h, h]) at unit circumradius. A 3-ball
-// extruded along the w-axis. Cross-sections at |w_slice| <= h
-// are 3-spheres of radius `r`; outside the extent, empty.
-// Box-style SDF combining the radial distance from the w-axis
-// (length of p.xyz) and the slab distance along w.
+// Spherinder (B³ × [-h, h]) at unit circumradius: a 3-ball extruded along w.
+// Box-style SDF over the radial distance from the w-axis and the w slab.
 fn spherinder_sdf_local(p: vec4<f32>) -> f32 {
     let r = 0.7071068;
     let h = 0.7071068;
@@ -437,12 +375,10 @@ fn spherinder_sdf_local(p: vec4<f32>) -> f32 {
     return outside + inside;
 }
 
-// Bounding-sphere fast-path: any unit-circumradius polytope is
-// contained in the unit 4-ball. For points well outside, the ball
-// SDF (`|world_v| - size`) is a Lipschitz-1 lower bound on the true
-// polytope SDF, so the marcher can take a safe step without paying
-// for the rotor inverse + per-shape eval. The 1.5 factor leaves
-// margin for Wolfe to kick in slightly before silhouette.
+// Any unit-circumradius polytope sits inside the unit 4-ball, so well
+// outside it the ball SDF `|world_v| - size` is a Lipschitz-1 lower bound on
+// the true polytope SDF and the marcher can step on it without paying for
+// the rotor inverse. The 1.5 factor leaves margin before silhouette.
 fn body_polytope_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
     let size = max(b.polytope_size, 1.0e-6);
     let world_v = p4 - b.position;
@@ -549,10 +485,8 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32
     return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
 }
 
-// Normal via central differences on the dominating SDF only:
-// static-scene hits sample `loam_scene_sdf`, body hits sample that
-// body's SDF in isolation. Sampling the combined SDF blends
-// gradients at silhouettes.
+// Central differences on the dominating SDF only; sampling the combined SDF
+// blends gradients at silhouettes.
 fn estimate_normal(p: vec3<f32>, body_idx: u32) -> vec3<f32> {
     let h = 0.001;
     if (body_idx >= MAX_BODIES) {
@@ -589,10 +523,8 @@ fn ground_color(p: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     // `frag_pos.xy` is in framebuffer coordinates regardless of any
-    // `set_viewport` carve-out. Subtract the viewport's top-left
-    // origin and normalise by the viewport size (passed in
-    // `u.resolution`) so the centre of the visible region maps to
-    // NDC (0, 0) and the camera stays centred.
+    // `set_viewport` carve-out, so subtract the viewport origin and normalise
+    // by `u.resolution` to keep the camera centred.
     let uv = ((frag_pos.xy - u.viewport_origin) / u.resolution) * 2.0 - vec2<f32>(1.0, 1.0);
     let aspect = u.resolution.x / u.resolution.y;
     let ndc = vec2<f32>(uv.x * aspect, -uv.y);
@@ -604,34 +536,27 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     let ro = u.camera_pos;
 
     var t: f32 = 0.0;
-    // Analytical far-clip from any HalfSpace4D leaves; +1.0 buffer
-    // lets the marcher land its hit on the floor itself. Caps at
-    // 60.0 when no analytical contribution exists. Without this,
-    // near-horizon rays exhaust the iter budget and return sky.
+    // Analytical far-clip from any HalfSpace4D leaves, +1.0 so the marcher lands
+    // its hit on the floor itself; 60.0 where there is no analytical
+    // contribution. Without it, near-horizon rays exhaust the iter budget.
     let scene_max_t = loam_scene_max_t(ro, rd);
     let max_t = min(60.0, scene_max_t + 1.0);
     var hit = false;
     var hit_idx: u32 = MAX_BODIES + 1u;
-    // Sphere-trace step: the whole reported distance, floored at
-    // min_step < hit_eps so a march grazing a surface still advances.
+    // The whole reported distance, floored at min_step < hit_eps so a march
+    // grazing a surface still advances.
     //
-    // A full step is the largest step sphere tracing can prove safe,
-    // and everything this kernel composes earns it. Each body-local SDF
-    // above is 1-Lipschitz and vanishes on its own surface S, so for
-    // any b in S, d(p) = d(p) - d(b) <= |p - b|, hence d(p) <=
-    // dist(p, S): a lower bound, which cannot tunnel. Looseness (the
-    // pentatope, 16-cell and 24-cell return a max-over-face-planes
-    // distance, tight only in the face-Voronoi regions) costs
-    // iterations, never safety, so it earns no under-step. The
-    // bounding-sphere fast path and the extended-polytope Wolfe
-    // fast path are lower bounds by their own arguments rather than by
-    // continuity; both are safe, neither is 1-Lipschitz across its
-    // switch. `min` and `max` preserve a lower bound, so the union over
-    // bodies and Scene4's CSG tree inherit it, on the one precondition
-    // Scene4 does not enforce: a HalfSpace4D leaf's normal must be
-    // unit, or its SDF scales by |n| and overshoots.
-    //
-    // 384 iters covers tangent-grazing convergence.
+    // A full step is the largest sphere tracing can prove safe, and everything
+    // this kernel composes earns it: each body-local SDF above is 1-Lipschitz
+    // and vanishes on its own surface S, so d(p) = d(p) - d(b) <= |p - b| for
+    // any b in S, hence d(p) <= dist(p, S), a lower bound that cannot tunnel.
+    // Looseness costs iterations, never safety. The bounding-sphere and Wolfe
+    // fast paths are lower bounds by their own arguments rather than by
+    // continuity. `min` and `max` preserve a lower bound, so the union over
+    // bodies and Scene4's CSG tree inherit it, on the one precondition Scene4
+    // does not enforce: a HalfSpace4D leaf's normal must be unit, or its SDF
+    // scales by |n| and overshoots. 384 iters covers tangent-grazing
+    // convergence.
     let hit_eps = 0.001;
     let min_step = 0.0001;
     for (var i: i32 = 0; i < 384; i = i + 1) {
@@ -659,8 +584,6 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     if (hit_idx < MAX_BODIES) {
         base = u.bodies[hit_idx].color;
     } else if (loam_scene_at(p_hit).kind == LOAM_PRIM_HALFSPACE4D) {
-        // Floor classification routes on the closest leaf's kind tag
-        // (set by Scene4's emit).
         base = ground_color(p_hit);
     }
     let lit = base * (ambient + lambert * 0.85);
@@ -672,10 +595,9 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 const HYPERSLICE_UNIFORMS_SIZE: u64 = std::mem::size_of::<Hyperslice4DUniforms>() as u64;
 
-/// Distance between adjacent filmstrip cells' uniform images. A bind group may
-/// only view a uniform buffer at a multiple of the adapter's
-/// `min_uniform_buffer_offset_alignment` (256 on most desktop backends, 32 at
-/// the spec floor), so the stride rounds the uniform size up to it.
+// A bind group may only view a uniform buffer at a multiple of the adapter's
+// `min_uniform_buffer_offset_alignment` (256 on most desktop backends, 32 at
+// the spec floor), so the stride rounds the uniform size up to it.
 fn strip_cell_stride(min_uniform_buffer_offset_alignment: u64) -> u64 {
     HYPERSLICE_UNIFORMS_SIZE.div_ceil(min_uniform_buffer_offset_alignment)
         * min_uniform_buffer_offset_alignment
@@ -696,12 +618,8 @@ fn strip_cell_uniforms(
     cell
 }
 
-/// Grown to fit and retained across frames; a shrinking strip reuses the head
-/// of the buffer.
 struct StripCellUniforms {
     buffer: Buffer,
-    /// `bind_groups[i]` views `buffer` at `i * stride`, which is what keeps
-    /// cell `i`'s draw reading cell `i`'s image.
     bind_groups: Vec<BindGroup>,
     stride: u64,
 }
@@ -739,8 +657,6 @@ impl StripCellUniforms {
     }
 }
 
-/// Render node that ray-marches the 3D cross-section of a 4D scene at `u.w_slice`. Pairs with
-/// `loam_scene::Scene4`.
 pub struct Hyperslice4DNode {
     pipeline: RenderPipeline,
     uniforms: Hyperslice4DUniforms,
@@ -752,9 +668,8 @@ pub struct Hyperslice4DNode {
 }
 
 impl Hyperslice4DNode {
-    /// Build the node from a pre-compiled [`ShaderModule`] (kernel + scene emit;
-    /// see the module docs). `sample_count` must match the color attachment at
-    /// draw time ([`crate::device::RenderDevice::sample_count`]; 1 in tests).
+    /// `sample_count` must match the color attachment at draw time
+    /// ([`crate::device::RenderDevice::sample_count`]; 1 in tests).
     pub fn new(
         device: &Device,
         surface_format: TextureFormat,
@@ -860,33 +775,28 @@ impl Hyperslice4DNode {
         self.clear_color = color;
     }
 
-    /// Replace the active body slots with `bodies` and set the count. Does not
-    /// auto-flush; pair with [`Self::flush_uniforms`].
+    /// Does not auto-flush; pair with [`Self::flush_uniforms`].
     pub fn set_bodies(&mut self, bodies: &[BodyUniform]) {
         let n = bodies.len().min(MAX_BODIES);
         self.uniforms.bodies[..n].copy_from_slice(&bodies[..n]);
         self.uniforms.body_count = n as f32;
     }
 
-    /// Update one body slot in-place, for per-frame updates after
-    /// [`Self::set_bodies`] when only individual slots change.
     pub fn set_body(&mut self, index: usize, body: BodyUniform) {
         if index < MAX_BODIES {
             self.uniforms.bodies[index] = body;
         }
     }
 
-    /// Override the active body count without rewriting slot data.
     pub fn set_body_count(&mut self, count: usize) {
         self.uniforms.body_count = count.min(MAX_BODIES) as f32;
     }
 }
 
 impl Hyperslice4DNode {
-    /// Like [`RenderNode::execute`] but records into the caller's `encoder` and
-    /// restricts the fragment shader to a sub-region (the clear still covers the
-    /// whole attachment). **Does NOT submit**; the runner owns one encoder per
-    /// frame.
+    /// Records into the caller's `encoder` and restricts the fragment shader to
+    /// a sub-region; the clear still covers the whole attachment. Does not
+    /// submit: the runner owns one encoder per frame.
     pub fn record_in_viewport(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -914,16 +824,12 @@ impl Hyperslice4DNode {
         rp.draw(0..3, 0..1);
     }
 
-    /// Render N independent slices into one texture, each cell at a different
-    /// `w_slice`: a filmstrip of the 4D shape across `w` without scrubbing.
-    /// Zero-size cells are skipped; the node's own uniform buffer and
-    /// [`Self::uniforms`] are left untouched.
+    /// Zero-size cells are skipped; the node's own uniforms are left untouched.
     ///
-    /// One encoder, one render pass, one submit for the whole strip. What makes
-    /// that legal is that every cell gets its own uniform image and its own
-    /// bind group viewing it. Sharing one image cannot work, because
-    /// `Queue::write_buffer` lands ahead of the whole command buffer it
-    /// precedes, so every cell would read the last cell's write.
+    /// One encoder, one pass, one submit. Legal only because every cell gets its
+    /// own uniform image and its own bind group viewing it: `Queue::write_buffer`
+    /// lands ahead of the whole command buffer it precedes, so a shared image
+    /// would give every cell the last cell's write.
     pub fn execute_strip(
         &mut self,
         device: &Device,
@@ -955,9 +861,8 @@ impl Hyperslice4DNode {
             .expect("strip cells allocated above");
 
         {
-            // One staging map for the whole strip: `write_buffer` per cell
-            // would put every cell's image through its own belt allocation and
-            // its own copy command.
+            // One staging map for the whole strip: `write_buffer` per cell would put
+            // every cell's image through its own belt allocation and copy command.
             let upload_size =
                 BufferSize::new(drawn as u64 * strip.stride).expect("at least one cell");
             let mut staging = queue
@@ -1182,9 +1087,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         }
     }
 
-    // Polytope SDF parity: each `*_sdf_local_cpu` is a 1:1 port of the matching
-    // WGSL function. The parity tests assert the geometry (vertices, inradius,
-    // sign), so a silent divergence from the WGSL fails.
+    // Each `*_sdf_local_cpu` is a 1:1 port of the matching WGSL function.
 
     use glam::{Vec2, Vec4};
 
@@ -1219,8 +1122,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     }
 
     fn cell24_sdf_local_cpu(p: Vec4) -> f32 {
-        // CPU uses stdlib consts; WGSL ships 8-digit truncations. Test tolerance
-        // absorbs the delta.
+        // CPU uses stdlib consts, WGSL 8-digit truncations; the tolerance absorbs it.
         let inv_sqrt2 = std::f32::consts::FRAC_1_SQRT_2;
         let sqrt2 = std::f32::consts::SQRT_2;
         let q = p.abs();
@@ -1234,8 +1136,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     }
 
     fn duocylinder_sdf_local_cpu(p: Vec4) -> f32 {
-        // WGSL ships the 8-digit truncation 0.7071068; the tolerances below
-        // absorb the delta, as they do for the 24-cell mirror.
         let r = std::f32::consts::FRAC_1_SQRT_2;
         let dxy = Vec2::new(p.x, p.y).length() - r;
         let dzw = Vec2::new(p.z, p.w).length() - r;
@@ -1260,10 +1160,8 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
     type LocalSdf = fn(Vec4) -> f32;
 
-    /// Every hand-written body SDF in the kernel, paired with its name. The
-    /// 120-cell and 600-cell are absent on purpose: their SDFs are emitted by
-    /// `polytope_data`, are piecewise across a fast-path boundary, and carry
-    /// their own certification test there.
+    // The 120-cell and 600-cell are absent on purpose: `polytope_data` emits
+    // their SDFs and they carry their own certification test there.
     fn kernel_body_sdfs() -> [(&'static str, LocalSdf); 8] {
         [
             ("pentatope", pentatope_sdf_local_cpu),
@@ -1277,8 +1175,8 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         ]
     }
 
-    /// Deterministic unit-interval-ish sampler: the LCG multiplier and increment
-    /// are Knuth's MMIX constants. Seeded so the sweeps below are reproducible.
+    // LCG multiplier and increment are Knuth's MMIX constants. Seeded so the
+    // sweeps below are reproducible.
     fn lcg_signed_unit(state: &mut u64) -> f32 {
         *state = state
             .wrapping_mul(6364136223846793005)
@@ -1369,7 +1267,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     }
 
     // Inline vertex generators, mirroring loam_physics::euclidean_r4.
-
     fn pentatope_vertices() -> Vec<Vec4> {
         let base_w = -0.25_f32;
         let base_r = 15.0_f32.sqrt() / 4.0;
@@ -1490,7 +1387,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
     #[test]
     fn cell16_cpu_port_matches_geometry() {
-        // Inradius 0.5.
         assert_polytope_geometry(
             "16-cell",
             cell16_sdf_local_cpu,
@@ -1572,15 +1468,13 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         }
     }
 
-    // CPU port of the hyperslice marcher: 1:1 mirror of `fs_main`'s sphere-trace
-    // loop. Constants must match the kernel.
+    // 1:1 mirror of `fs_main`'s sphere-trace loop; constants must match.
 
     use glam::Vec3;
 
-    /// The kernel's sphere-trace step scale. 1.0 because every SDF the kernel
-    /// composes is 1-Lipschitz and vanishes on its surface, hence bounds the
-    /// true distance from below; see `fs_main`. Kept as a parameter of the
-    /// marcher below so a test can drive the superseded under-step and compare.
+    // 1.0 because every SDF the kernel composes is 1-Lipschitz and vanishes on
+    // its surface, hence bounds the true distance from below; see `fs_main`.
+    // A parameter of the marcher below so a test can drive the superseded step.
     const KERNEL_STEP_SCALE: f32 = 1.0;
     const KERNEL_HIT_EPS: f32 = 0.001;
 
@@ -1651,8 +1545,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         .hit
         .expect("ray pointing at solo sphere should hit something");
         assert_eq!(hit.body_idx, MAX_BODIES as u32, "static-scene hit");
-        // Solo sphere at (0, 1, 1.5) r=1; top at y=2.0. Hit registers when SDF < hit_eps =
-        // 0.001, and the last step before that lands within min_step of it.
+        // Solo sphere top is y = 2.0; the hit registers within hit_eps of it.
         assert!(
             (hit.hit_pos.y - 2.0).abs() < 5e-3,
             "hit y {} should be near 2.0 (sphere top)",
@@ -1720,8 +1613,8 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         assert!(hit.is_none(), "ray into sky should miss the scene");
     }
 
-    /// The step scale the kernel used before the Lipschitz certification, kept
-    /// only so the tests below can measure what replacing it bought.
+    // The step scale the kernel used before the Lipschitz certification, kept
+    // only so the tests below can measure what replacing it bought.
     const SUPERSEDED_UNDER_STEP: f32 = 0.85;
 
     const PROBE_WIDTH: usize = 160;
@@ -1733,7 +1626,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         sdf: LocalSdf,
     }
 
-    /// Mirror of `body_polytope_sdf_4d`, bounding-sphere fast path included.
     fn probe_body_sdf(p4: Vec4, body: &ProbeBody) -> f32 {
         let world_v = p4 - body.center;
         let world_dist2 = world_v.dot(world_v);
@@ -1829,13 +1721,11 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             }
         }
 
-        /// Bilinear on depth, nearest on the attribution (an interpolated
-        /// primitive index has no meaning), which is the cheapest upscale a
-        /// half-res pass could use and therefore the most favourable error it
-        /// could report. `depth` is `Some` only where all four taps attribute
-        /// to the same primitive: blending across a depth discontinuity
-        /// measures the discontinuity, which the attribution mask already
-        /// counts.
+        // Bilinear on depth, nearest on the attribution (an interpolated primitive
+        // index has no meaning), the cheapest upscale a half-res pass could use and
+        // so the most favourable error it could report. `depth` is `Some` only
+        // where all four taps attribute to the same primitive: blending across a
+        // depth discontinuity measures the discontinuity, which the mask counts.
         fn upscale_to(&self, width: usize, height: usize) -> (Vec<Option<f32>>, Vec<u32>) {
             let mut depth = vec![None; width * height];
             let mut primitive = vec![NO_PRIMITIVE; width * height];
@@ -1923,9 +1813,8 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
     #[test]
     fn half_res_upscale_error_against_the_full_res_field_is_bounded() {
-        // Bounds as measured on the probe scene, rounded up. They exist so a
-        // change that makes reconstruction worse is visible; they are not a
-        // claim that this much error is acceptable.
+        // Measured on the probe scene and rounded up, so a change that makes
+        // reconstruction worse is visible. Not a claim that this error is fine.
         const SAME_PRIMITIVE_DEPTH_LINF_BOUND: f32 = 2.0;
         const SAME_PRIMITIVE_DEPTH_RMS_BOUND: f64 = 0.3;
         const MISATTRIBUTION_FRACTION_BOUND: f64 = 0.02;
@@ -2061,9 +1950,8 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         }
     }
 
-    /// Static scene contributing nothing, so the filmstrip probe below sees
-    /// only the dynamic body. A static surface would be `w`-independent and
-    /// would dilute the per-cell difference the probe measures.
+    // A static surface would be `w`-independent and would dilute the per-cell
+    // difference the probe measures.
     const EMPTY_SCENE_STUB: &str = r#"
 const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;
 const LOAM_PRIM_HALFSPACE4D: u32 = 1u;
@@ -2197,9 +2085,8 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         node.execute_strip(&device, &queue, &view, &cells)
             .expect("filmstrip should render");
 
-        // The body is pure red and the sky gradient is blue-dominant, so
-        // `r > b` separates body pixels from background without depending on
-        // the shading constants.
+        // The body is pure red and the sky gradient blue-dominant, so `r > b`
+        // separates body from background without depending on shading constants.
         let pixels = read_back_rgba(&device, &queue, &target, SIZE);
         let footprints: Vec<usize> = cells
             .iter()

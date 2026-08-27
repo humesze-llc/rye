@@ -1,16 +1,14 @@
 //! Sample count must match the color attachment's MSAA configuration.
-//!
-//! The framework doesn't surface a resize hook on `App`, so [`DepthBuffer::ensure`] checks
-//! size + sample count each frame and recreates the texture only when they change. Holds
-//! the [`wgpu::TextureView`] only; the underlying texture stays alive via wgpu's internal
-//! Arc reference held by the view.
+//! [`DepthBuffer::ensure`] rechecks size and sample count every frame
+//! because the framework surfaces no resize hook. Only the
+//! [`wgpu::TextureView`] is held; the texture stays alive through the
+//! view's own Arc.
 
 use wgpu::{
     Device, Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
     TextureView, TextureViewDescriptor,
 };
 
-/// Owns a depth texture view sized to the swapchain, recreated on resize.
 pub struct DepthBuffer {
     pub view: TextureView,
     pub format: TextureFormat,
@@ -48,7 +46,6 @@ impl DepthBuffer {
         }
     }
 
-    /// Intended to be called once per frame at the top of the render function.
     pub fn ensure(
         slot: &mut Option<DepthBuffer>,
         device: &Device,

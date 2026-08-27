@@ -1,11 +1,6 @@
-//! The rotation half is [`crate::hypergimbal`], whose six rings are the
-//! stereographic images of the six coordinate great circles of S³; the
-//! derivation lives there and is not repeated. This module adds the
-//! translation half and the arbitration between the two, so a caller drives
-//! all ten handles through one [`TransformGizmo::pick`], one
-//! [`HandleDrag`] and one [`TransformDelta`] per frame. Nothing here reads
-//! or stores the subject's pose: a drag reports a delta for the caller to
-//! compose.
+//! The rotation half is [`crate::hypergimbal`], whose derivation is not
+//! repeated here. Nothing in either half reads or stores the subject's pose:
+//! a drag reports a delta for the caller to compose.
 //!
 //! # Translating in R⁴ with a pointer that lives in R³
 //!
@@ -17,17 +12,14 @@
 //! and `ẑ` (125.26° to each): `max(d·x̂, d·ŷ, d·ẑ)` is convex and symmetric
 //! under permuting the axes, so its minimiser is the fixed point of that
 //! symmetry group, and the antipode of the diagonal is the only unit vector
-//! there. It is the direction least confusable with a scene axis, and it
-//! lies in no coordinate plane.
+//! there. It lies in no coordinate plane.
 //!
 //! A shaft is grabbed by its arrowhead (see [`Shaft::head_start`]) and read
 //! by the closest approach of the cursor ray to the shaft's whole LINE
 //! (Ericson, *Real-Time Collision Detection*, 2005, §5.1.9), so the drag
 //! runs past both ends of the drawn arrow and the subject travels one world
 //! unit per world unit of cursor travel along it. `w` moves at that same
-//! rate. There is nothing to scale it against, and any other rate would make
-//! the one handle with no visible motion also the one with no predictable
-//! size.
+//! rate; there is nothing to scale it against.
 
 use glam::{Vec3, Vec4};
 use loam_math::{Bivector, Plane4, Rotor4};
@@ -35,37 +27,31 @@ use loam_shape::LineMesh;
 
 use crate::hypergimbal::{Hypergimbal, Ring, RingStyle};
 
-/// Outer reach of the ring shell, in [`TransformGizmo::scale`] units: every
-/// ring is centred `1` out with radius `√2`, which is what the pole choice
-/// in [`crate::hypergimbal::POLE`] buys.
+// Outer reach of the ring shell, in `TransformGizmo::scale` units: every
+// ring is centred `1` out with radius `√2`, per `hypergimbal::POLE`.
 const RING_REACH: f32 = 1.0 + std::f32::consts::SQRT_2;
 
-/// Inner end of a shaft, in `scale` units. Leaves the hub clear by several
-/// grab radii at a usable widget size, so a press aimed at the subject
-/// itself still reaches the subject rather than a handle.
+// Inner end of a shaft, in `scale` units. Leaves the hub clear by several
+// grab radii, so a press aimed at the subject still reaches the subject.
 const SHAFT_INNER: f32 = 0.45;
 
-/// Arrowhead length, in `scale` units. Drawn and grabbed extent both, so
-/// the head cannot be grabbable anywhere it is not drawn.
+// Arrowhead length, in `scale` units. Drawn and grabbed extent both, so
+// the head cannot be grabbable anywhere it is not drawn.
 const SHAFT_HEAD: f32 = 0.28;
 
-/// Open space between the ring shell and a shaft's tip, in `scale` units:
-/// two arrowhead lengths, so no head is ever drawn over a ring.
+// Two arrowhead lengths, so no head is ever drawn over a ring.
 const SHAFT_CLEARANCE: f32 = 2.0 * SHAFT_HEAD;
 
 const SHAFT_OUTER: f32 = RING_REACH + SHAFT_CLEARANCE;
 
-/// `1/√3`, the component size of the `w` shaft's world direction.
 const INV_SQRT_3: f32 = 0.577_350_26;
 
-/// Sine of the smallest ray-to-shaft angle a shaft is trusted at. The
-/// closest-approach parameter moves as `1/sin`, so below this a one-pixel
-/// cursor move slides the subject an arbitrary distance and the drag stops
-/// tracking the cursor. Same conditioning class, and the same value, as
-/// the ring plane's incidence floor.
+// Sine of the smallest ray-to-shaft angle a shaft is trusted at. The
+// closest-approach parameter moves as `1/sin`, so below this a one-pixel
+// cursor move slides the subject an arbitrary distance. Same conditioning
+// class, and the same value, as the ring plane's incidence floor.
 const MIN_SHAFT_INCIDENCE: f32 = 1e-2;
 
-/// One of R⁴'s four coordinate axes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub enum Axis4 {
@@ -89,7 +75,6 @@ impl Axis4 {
         }
     }
 
-    /// The R⁴ unit vector a drag on this shaft translates along.
     pub fn unit(self) -> Vec4 {
         match self {
             Self::X => Vec4::X,
@@ -111,8 +96,6 @@ impl Axis4 {
     }
 }
 
-/// One translation axis' handle: the world segment its arrow occupies, and
-/// the R⁴ axis a slide along it moves.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Shaft {
     pub axis: Axis4,
@@ -120,9 +103,8 @@ pub struct Shaft {
     pub origin: Vec3,
     /// Unit world direction, [`Axis4::shaft_direction`].
     pub direction: Vec3,
-    /// Drawn extent as distances from [`Self::origin`] along
-    /// [`Self::direction`]. Neither the pick nor the drag is clipped to it;
-    /// see [`Self::head_start`].
+    /// Drawn extent as distances from [`Self::origin`] along [`Self::direction`].
+    /// Neither the pick nor the drag is clipped to it; see [`Self::head_start`].
     pub inner: f32,
     pub outer: f32,
     /// Arrowhead length, measured back from [`Self::outer`].
@@ -134,20 +116,18 @@ impl Shaft {
         self.origin + self.direction * along
     }
 
-    /// Where the grabbable arrowhead begins.
-    ///
-    /// The head is the handle; the stem behind it is a rail showing where
-    /// the drag will run, not a grab surface.
+    /// The head is the handle; the stem behind it is a rail showing where the
+    /// drag will run, not a grab surface.
     pub fn head_start(&self) -> f32 {
         self.outer - self.head
     }
 
-    /// Distance along the shaft of the point on the shaft's LINE closest to
-    /// the ray. `None` within 0.6° of parallel, where the answer moves as
-    /// `1/sin` and the drag stops tracking the cursor.
+    /// Distance along the shaft of the point on the shaft's LINE closest to the
+    /// ray. `None` within 0.6° of parallel, where the answer moves as `1/sin`
+    /// and the drag stops tracking the cursor.
     ///
-    /// Ericson, *Real-Time Collision Detection* (2005), §5.1.9, specialised
-    /// to a unit [`Self::direction`].
+    /// Ericson, *Real-Time Collision Detection* (2005), §5.1.9, specialised to a
+    /// unit [`Self::direction`].
     pub fn ray_parameter(&self, ray_origin: Vec3, ray_direction: Vec3) -> Option<f32> {
         let offset = self.origin - ray_origin;
         let alignment = self.direction.dot(ray_direction);
@@ -164,9 +144,6 @@ impl Shaft {
         )
     }
 
-    /// Depth along the ray at which it passes the arrowhead, when that pass
-    /// is within `tolerance` of it. `None` for a miss, a near-parallel ray,
-    /// or a pass behind the eye.
     fn hit_depth(&self, ray_origin: Vec3, ray_direction: Vec3, tolerance: f32) -> Option<f32> {
         let along = self.ray_parameter(ray_origin, ray_direction)?;
         let nearest = self.point(along.clamp(self.head_start(), self.outer));
@@ -180,14 +157,11 @@ impl Shaft {
         Some(depth)
     }
 
-    /// Translation a slide from shaft parameter `grab` to `cursor` asks for.
     pub fn drag_translation(&self, grab: f32, cursor: f32) -> Vec4 {
         self.axis.unit() * (cursor - grab)
     }
 
-    /// Append the arrow as a stem chord plus [`ShaftStyle::head_barbs`]
-    /// barbs. `scale` is the widget's, which is what the barb spread is read
-    /// in.
+    // `scale` is the widget's, which is what the barb spread is read in.
     fn append_line_mesh(&self, style: &ShaftStyle, scale: f32, out: &mut LineMesh<3>) {
         let color = style.colors[self.axis as usize];
         let mut push = |from: Vec3, to: Vec3| {
@@ -212,15 +186,14 @@ impl Shaft {
     }
 }
 
-/// Which handle, stripped of its geometry. The key an overlay dirties its
-/// retained mesh against, and the one an editor persists.
+/// The key an overlay dirties its retained mesh against, and the one an
+/// editor persists.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum HandleId {
     Rotate(Plane4),
     Translate(Axis4),
 }
 
-/// A handle with the geometry a drag is read against.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Handle {
     Rotate(Ring),
@@ -236,21 +209,19 @@ impl Handle {
     }
 }
 
-/// What one drag asks the subject for. A handle drives exactly one of the
-/// two, which is why this is a sum and not a pose delta with an identity
-/// half.
+/// A handle drives exactly one of the two, which is why this is a sum and
+/// not a pose delta with an identity half.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum TransformDelta {
-    /// Turn by `angle` in `plane`.
+    /// `angle` in radians.
     Rotate { plane: Plane4, angle: f32 },
     /// Slide `distance` world units along `axis`.
     Translate { axis: Axis4, distance: f32 },
 }
 
 impl TransformDelta {
-    /// The rotation as a rotor, identity for a translation. Compose onto the
-    /// subject's pose from the left, matching
-    /// [`crate::hypergimbal::Ring::drag_rotor`].
+    /// Identity for a translation. Compose onto the subject's pose from the
+    /// left, matching [`crate::hypergimbal::Ring::drag_rotor`].
     pub fn rotor(self) -> Rotor4 {
         match self {
             Self::Rotate { plane, angle } => (plane.unit_bivector() * angle).exp(),
@@ -268,9 +239,7 @@ impl TransformDelta {
 }
 
 /// A held handle, anchored at the press edge so the whole drag is measured
-/// against one origin rather than accumulated frame by frame.
-///
-/// The anchored copy is the handle as it stood at the press. A widget that
+/// against one origin rather than accumulated frame by frame. A widget that
 /// follows a subject the drag is moving therefore slides under a line that
 /// does not, which is what keeps a translation drag from chasing itself.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -288,9 +257,8 @@ pub enum HandleDrag {
 }
 
 impl HandleDrag {
-    /// Anchor `handle` where the press ray meets it. `None` when the ray
-    /// cannot be read against the handle, which the pick that produced the
-    /// handle has already ruled out.
+    /// `None` when the ray cannot be read against the handle, which the pick
+    /// that produced the handle has already ruled out.
     pub fn press(handle: Handle, ray_origin: Vec3, ray_direction: Vec3) -> Option<Self> {
         match handle {
             Handle::Rotate(ring) => ring
@@ -309,12 +277,11 @@ impl HandleDrag {
         }
     }
 
-    /// What the drag asks for with the cursor ray here, measured from the
-    /// press anchor rather than from the previous frame.
+    /// Measured from the press anchor rather than from the previous frame.
     ///
-    /// `None` while the ray cannot be read against the handle: a cursor off
-    /// the window, or a camera that swung the handle edge-on. Callers hold
-    /// the last delta rather than snapping the subject somewhere arbitrary.
+    /// `None` while the ray cannot be read against the handle: a cursor off the
+    /// window, or a camera that swung the handle edge-on. Callers hold the last
+    /// delta rather than snapping the subject somewhere arbitrary.
     pub fn delta(&self, ray_origin: Vec3, ray_direction: Vec3) -> Option<TransformDelta> {
         match self {
             Self::Rotate { ring, grab } => {
@@ -335,10 +302,8 @@ impl HandleDrag {
     }
 }
 
-/// Placement of the whole handle set in world R³.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TransformGizmo {
-    /// World position of the subject the handles act on.
     pub center: Vec3,
     /// World length of one widget unit. The ring shell reaches `1 + √2` of
     /// it and the arrow tips just under `3`.
@@ -346,8 +311,7 @@ pub struct TransformGizmo {
 }
 
 impl TransformGizmo {
-    /// The rotation half on its own, for callers that want the projection
-    /// (`Hypergimbal::project`) rather than the handles.
+    /// The rotation half on its own, for callers that want the projection.
     pub fn hypergimbal(&self) -> Hypergimbal {
         Hypergimbal {
             center: self.center,
@@ -365,7 +329,6 @@ impl TransformGizmo {
         Axis4::ALL.map(|axis| self.shaft(axis))
     }
 
-    /// The shaft translating one axis.
     pub fn shaft(&self, axis: Axis4) -> Shaft {
         Shaft {
             axis,
@@ -377,15 +340,13 @@ impl TransformGizmo {
         }
     }
 
-    /// Handle the ray reaches within `tolerance`, or `None` when it reaches
-    /// none of the ten.
+    /// Handle the ray reaches within `tolerance`, or `None` for none of the ten.
     ///
     /// A shaft beats a ring wherever both are in range, rather than the two
     /// arbitrating by depth. The widget is one depth-free overlay and
-    /// [`Self::append_line_mesh`] emits the shafts after the rings, so an
-    /// arrow is the line actually on screen everywhere they cross; a pick
-    /// that disagreed with what is drawn is a pick nobody can aim. Depth
-    /// still separates shaft from shaft, and ring from ring.
+    /// [`Self::append_line_mesh`] emits the shafts after the rings, so an arrow
+    /// is the line actually on screen everywhere they cross. Depth still
+    /// separates shaft from shaft, and ring from ring.
     pub fn pick(&self, ray_origin: Vec3, ray_direction: Vec3, tolerance: f32) -> Option<Handle> {
         let mut nearest: Option<(f32, Shaft)> = None;
         for shaft in self.shafts() {
@@ -404,8 +365,7 @@ impl TransformGizmo {
             .map(Handle::Rotate)
     }
 
-    /// Append every handle as chord runs. Existing contents are kept, so the
-    /// widget can share a mesh with other overlay geometry.
+    /// Existing contents are kept, so the widget can share a mesh.
     pub fn append_line_mesh(&self, style: &GizmoStyle, out: &mut LineMesh<3>) {
         self.hypergimbal().append_line_mesh(&style.rings, out);
         for shaft in self.shafts() {
@@ -414,17 +374,14 @@ impl TransformGizmo {
     }
 }
 
-/// Tessellation and colour for [`TransformGizmo::append_line_mesh`].
 #[derive(Clone, Debug, Default)]
 pub struct GizmoStyle {
     pub rings: RingStyle,
     pub shafts: ShaftStyle,
 }
 
-/// Arrow geometry and colour for the four translation shafts.
 #[derive(Clone, Debug)]
 pub struct ShaftStyle {
-    /// Screen-space line width.
     pub width_px: f32,
     /// Barbs per arrowhead, spread evenly around the stem.
     pub head_barbs: usize,
@@ -437,10 +394,9 @@ pub struct ShaftStyle {
 }
 
 impl ShaftStyle {
-    /// `x`, `y`, `z` on the red / green / blue convention every 3D editor
-    /// already trained the user on; `w` on a violet no scene axis uses, so
-    /// the one shaft with no world direction is also the one with no
-    /// borrowed hue.
+    /// `x`, `y`, `z` on the red / green / blue convention every 3D editor already
+    /// trained the user on; `w` on a violet no scene axis uses, so the one shaft
+    /// with no world direction is also the one with no borrowed hue.
     pub const AXIS_COLORS: [[f32; 4]; 4] = [
         [0.96, 0.36, 0.34, 1.0],
         [0.42, 0.90, 0.46, 1.0],
@@ -471,8 +427,8 @@ mod tests {
         scale: 0.8,
     };
 
-    /// Off-axis eye: no ring is seen edge-on, no two handles line up, and no
-    /// shaft points at it.
+    // Off-axis eye: no ring is seen edge-on, no two handles line up, and no
+    // shaft points at it.
     const EYE: Vec3 = Vec3::new(4.6, 4.4, 7.3);
 
     fn ray_to(target: Vec3) -> (Vec3, Vec3) {

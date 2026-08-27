@@ -18,11 +18,9 @@ pub use hyperslice4d::{
 };
 pub use polytope_data::{polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl};
 
-/// Bridge a raymarch shape ID (one of the `SHAPE_*` u32 constants re-exported above) to
-/// the corresponding [`loam_shape::polytope::Polytope4`] variant for the six convex
-/// regular polychora. Returns `None` for the smooth-surface SDFs (`SHAPE_3SPHERE`,
-/// `SHAPE_DUOCYLINDER`, `SHAPE_CLIFFORD_TORUS`, `SHAPE_SPHERINDER`) which have no polytope
-/// topology -- the cross-section algorithm and per-vertex coloring don't apply to them.
+/// Bridge a raymarch shape ID (one of the `SHAPE_*` constants re-exported
+/// above) to its [`loam_shape::polytope::Polytope4`] variant. `None` for the
+/// smooth-surface SDFs, which have no polytope topology.
 pub fn polytope4_from_shape_id(shape: u32) -> Option<loam_shape::polytope::Polytope4> {
     use loam_shape::polytope::Polytope4;
     Some(match shape {
@@ -36,8 +34,6 @@ pub fn polytope4_from_shape_id(shape: u32) -> Option<loam_shape::polytope::Polyt
     })
 }
 
-/// All shapes the hyperslice raymarch kernel can render, unified across the polychoral
-/// and smooth-surface families.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RaymarchShape {
     Polytope(loam_shape::polytope::Polytope4),
@@ -67,8 +63,7 @@ impl RaymarchShape {
         }
     }
 
-    /// The polytope variant for polychoral shapes, or `None` for smooth-surface shapes
-    /// that don't have a polytope topology.
+    /// `None` for the smooth-surface shapes, which have no polytope topology.
     pub fn polytope4(&self) -> Option<loam_shape::polytope::Polytope4> {
         match self {
             RaymarchShape::Polytope(p) => Some(*p),
@@ -96,10 +91,9 @@ use wgpu::*;
 use crate::device::RenderDevice;
 use crate::graph::RenderNode;
 
-/// Uniform buffer for [`RayMarchNode`]. Bind group 0, binding 0.
-///
-/// Layout is `std140`-compatible (every `vec3` is padded to 16 bytes) so WGSL uniform access
-/// matches without `@align` annotations.
+/// Uniform buffer for [`RayMarchNode`]. Bind group 0, binding 0. `std140`
+/// layout: every `vec3` is padded to 16 bytes, so WGSL uniform access matches
+/// without `@align` annotations.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct RayMarchUniforms {
@@ -115,9 +109,9 @@ pub struct RayMarchUniforms {
     pub resolution: [f32; 2],
     /// Seconds since app start.
     pub time: f32,
-    /// Current sim tick as f32 (for shader-side animation).
+    /// Current sim tick, as f32 for the std140 layout.
     pub tick: f32,
-    /// Four scalar knobs exposed to the shader; semantics are up to the user shader.
+    /// Four scalar knobs; semantics are up to the user shader.
     pub params: [f32; 4],
 }
 
@@ -140,8 +134,6 @@ impl Default for RayMarchUniforms {
     }
 }
 
-/// A render node that draws a fullscreen triangle using a user-provided fragment shader, with a
-/// single UBO of [`RayMarchUniforms`].
 pub struct RayMarchNode {
     pipeline: RenderPipeline,
     uniforms: RayMarchUniforms,
@@ -151,10 +143,8 @@ pub struct RayMarchNode {
 }
 
 impl RayMarchNode {
-    /// Construct a fullscreen-triangle raymarch pipeline. `sample_count` must match the color
-    /// attachment's sample count at draw time (use
-    /// [`crate::device::RenderDevice::sample_count`] in app code; pass 1 in tests / headless
-    /// contexts).
+    /// `sample_count` must match the color attachment's sample count at draw time
+    /// ([`crate::device::RenderDevice::sample_count`] in app code, 1 in tests).
     pub fn new(
         device: &Device,
         surface_format: TextureFormat,
@@ -251,22 +241,16 @@ impl RayMarchNode {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
     }
 
-    /// Flush current [`RayMarchUniforms`] to the GPU. Use after mutating via
-    /// [`RayMarchNode::uniforms_mut`].
-    ///
-    /// Render loops must call this (or [`set_uniforms`](Self::set_uniforms)) before the first
-    /// draw; the UBO is undefined at construction time.
+    /// Render loops must call this, or [`set_uniforms`](Self::set_uniforms),
+    /// before the first draw; the UBO is undefined at construction.
     pub fn flush_uniforms(&self, queue: &Queue) {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
     }
 }
 
 impl RayMarchNode {
-    /// Execute into a sub-region of the view.
-    ///
-    /// `clear` selects `LoadOp::Clear` (first panel) or `LoadOp::Load` (subsequent panels).
-    /// `scissor` is `[x, y, width, height]` in pixels; fragments outside this rect are
-    /// discarded by the GPU.
+    /// `clear` selects `LoadOp::Clear` (first panel) or `LoadOp::Load`
+    /// (subsequent panels). `scissor` is `[x, y, width, height]` in pixels.
     pub fn execute_panel(
         &mut self,
         rd: &RenderDevice,
@@ -277,16 +261,13 @@ impl RayMarchNode {
         self.execute_impl(rd, view, clear, Some(scissor))
     }
 
-    /// Like [`RenderNode::execute`] but records into the caller's `encoder` and
-    /// draws only inside `viewport` (the clear still covers the whole
-    /// attachment). **Does not submit**: a host that owns one encoder per frame
-    /// cannot use the submitting entry points without reordering its own
-    /// passes behind this one.
+    /// Records into the caller's `encoder` and draws only inside `viewport`; the
+    /// clear still covers the whole attachment. Does not submit, so a host owning
+    /// one encoder per frame need not reorder its passes behind this one.
     ///
-    /// The fragment shader still receives framebuffer-space
-    /// `@builtin(position)`, so a shader drawn into an offset viewport gets its
-    /// own origin from the caller (the four free
-    /// [`RayMarchUniforms::params`] slots are the place for it).
+    /// The fragment shader still receives framebuffer-space `@builtin(position)`,
+    /// so a shader drawn into an offset viewport takes its own origin from the
+    /// caller; the free [`RayMarchUniforms::params`] slots are the place for it.
     pub fn record_in_viewport(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,

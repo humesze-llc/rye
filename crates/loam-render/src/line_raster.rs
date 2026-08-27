@@ -1,6 +1,6 @@
-//! The caller owns the depth texture lifecycle: examples create a swapchain-sized depth
-//! texture, recreate it on resize, and clear it via a dedicated clear pass before the
-//! rasterizer's draw (which uses `LoadOp::Load` for both color and depth).
+//! The caller owns the depth texture: create it swapchain-sized, recreate on
+//! resize, and clear it in a dedicated pass before this node's draw, which
+//! loads both color and depth.
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
@@ -26,11 +26,9 @@ const LINE_RASTER_WGSL: &str = include_str!("line_raster.wgsl");
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct LineRasterUniforms {
-    /// World-to-clip transform. Bit-identical to whatever the raymarcher uses for the same
-    /// frame; both passes consume this to produce consistent screen-space projection.
+    /// Must be bit-identical to the raymarcher's for the same frame.
     pub view_projection: [[f32; 4]; 4],
-    /// Render target size in pixels. Used by the vertex shader to convert pixel widths into
-    /// NDC offsets.
+    /// Render target size in pixels; the vertex shader turns pixel widths into NDC.
     pub viewport_size: [f32; 2],
     /// Padding to round the struct to 16-byte alignment for `std140` uniform layout.
     pub _pad: [f32; 2],
@@ -46,7 +44,7 @@ impl Default for LineRasterUniforms {
     }
 }
 
-/// Layout matches the `@location(1..=5)` attribute slots in `line_raster.wgsl`.
+// Layout matches the `@location(1..=5)` attribute slots in `line_raster.wgsl`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
 struct LineInstance {
@@ -60,7 +58,7 @@ struct LineInstance {
     _pad2: [f32; 3],
 }
 
-/// Antialiased line-list rasterizer. Construct once per `RenderDevice`; reuse across frames.
+/// Antialiased line-list rasterizer. Construct once per `RenderDevice`.
 pub struct LineRasterNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
@@ -71,23 +69,18 @@ pub struct LineRasterNode {
     instance_buf: Buffer,
     /// Number of segments currently uploaded. `0` means [`Self::record`] is a no-op.
     instance_count: u32,
-    /// Allocated capacity of `instance_buf` in instances. The buffer is re-created if a future
-    /// upload exceeds this.
     instance_capacity: u32,
-    /// `true` if the pipeline was created with a depth attachment; [`Self::record`] then
-    /// requires the matching depth view.
+    /// `true` if [`Self::record`] requires the matching depth view.
     has_depth: bool,
-    /// Per-call scratch for the instances vector built inside [`Self::upload`].
-    /// Persisted on the node so the Vec's heap capacity is reused across calls.
+    /// Persisted so the Vec's heap capacity is reused across [`Self::upload`] calls.
     instances_scratch: Vec<LineInstance>,
 }
 
 impl LineRasterNode {
     /// - `surface_format` must match the color attachment at draw time.
-    /// - `depth`: see [`crate::DepthMode`]. Determines whether the pipeline reads depth,
-    ///   reads + writes depth, or skips it entirely.
-    /// - `sample_count` must match the attachment's MSAA sample count (color and depth
-    ///   must share it when depth is enabled).
+    /// - `depth`: see [`crate::DepthMode`].
+    /// - `sample_count` must match the attachment's MSAA sample count; color and
+    ///   depth must share it when depth is enabled.
     pub fn new(
         device: &Device,
         surface_format: TextureFormat,
@@ -217,12 +210,9 @@ impl LineRasterNode {
             depth_stencil: depth.format().map(|format| DepthStencilState {
                 format,
                 depth_write_enabled: depth.writes(),
-                // `LessEqual` rather than the usual `Less`: lines are typically drawn on top
-                // of filled triangles as overlays / outlines / wireframes, and the polygon
-                // outline use case puts the line at *exactly* the polygon's depth. Strict
-                // `Less` would discard the line in that case (`line_depth < tri_depth` fails
-                // when they're equal), making outlines invisible wherever they coincide with
-                // their own polygon. `LessEqual` keeps them visible.
+                // `LessEqual` rather than `Less`: an outline sits at exactly its polygon's
+                // depth, and strict `Less` would discard it there, making outlines invisible
+                // wherever they coincide with their own polygon.
                 depth_compare: CompareFunction::LessEqual,
                 stencil: StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -279,10 +269,8 @@ impl LineRasterNode {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Upload a [`LineMesh`] for rendering. Tessellates each segment via the space's
-    /// [`RasterizableSpace::tessellate_segment`] (for flat spaces with `samples_per_segment ==
-    /// 1` this is just the endpoints), projects each tessellated point through `projection` to
-    /// R³, and packs the result into the instance buffer.
+    /// Tessellates each segment via [`RasterizableSpace::tessellate_segment`],
+    /// then projects each tessellated point to R³.
     pub fn upload<S, const N: usize>(
         &mut self,
         device: &Device,
@@ -319,18 +307,13 @@ impl LineRasterNode {
         self.instance_count = needed_capacity;
     }
 
-    /// Record a render pass that draws the uploaded line mesh into `view`, using the
-    /// caller-supplied `encoder`. **Does NOT call `encoder.finish()` or
-    /// `queue.submit`**; those are the caller's responsibility: the runner owns
-    /// one encoder per frame and submits it once (the `App::record` path).
+    /// Does not call `encoder.finish()` or `queue.submit`: the runner owns one
+    /// encoder per frame and submits it once.
     ///
-    /// `LoadOp::Load` preserves the existing color attachment contents; the
-    /// rasterizer composes with whatever ran before it.
-    ///
-    /// `depth_view` is required when the pipeline was created with
-    /// `Some(depth_format)` and must be `None` otherwise. Mismatch panics with a
-    /// descriptive message rather than surfacing a less-readable wgpu validation
-    /// error.
+    /// `LoadOp::Load` preserves the existing color attachment. `depth_view` is
+    /// required when the pipeline was created with a depth format and must be
+    /// `None` otherwise; a mismatch panics rather than surfacing a less readable
+    /// wgpu validation error.
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -391,21 +374,16 @@ impl LineRasterNode {
     }
 }
 
-/// Tessellate, project, and pack a [`LineMesh`] into `out` (one [`LineInstance`]
-/// per rendered sub-segment). `out` is caller-owned scratch; it is `clear()`-ed
-/// here (preserving heap capacity, so a reused buffer does zero allocations in
-/// the steady state) and `reserve`-d for the worst-case segment count, so the
-/// only allocation is the first-call growth or a growth past the prior high
-/// watermark.
-///
-/// Sub-segments with a non-finite projected endpoint are dropped: a central
-/// projection (Schlegel, Stereographic, Perspective4D) can map a vertex on the
-/// projection center / pole to a NaN or infinity, and a single non-finite point
-/// poisons the GPU view-projection divide into a full-screen garbage quad rather
-/// than a missing line. `is_finite` rejects every quiet-NaN bit pattern AND both
-/// infinities (an `== NAN` sentinel test would miss infinities and signaling
-/// NaNs); the `continue` drops the offending sub-segment without pushing, so the
-/// scratch capacity is untouched (no `filter().collect()` reallocation).
+// `out` is caller-owned scratch, `clear()`-ed here and `reserve`-d for the
+// worst-case segment count, so a reused buffer allocates only past its prior
+// high watermark.
+//
+// Sub-segments with a non-finite projected endpoint are dropped: a central
+// projection (Schlegel, Stereographic, Perspective4D) can map a vertex on the
+// projection center or pole to a NaN or infinity, and one non-finite point
+// poisons the GPU view-projection divide into a full-screen garbage quad
+// rather than a missing line. `is_finite` rejects every quiet-NaN bit pattern
+// and both infinities, which an `== NAN` sentinel test would not.
 fn build_line_instances<S, const N: usize>(
     out: &mut Vec<LineInstance>,
     mesh: &LineMesh<N>,

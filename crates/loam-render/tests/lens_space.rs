@@ -16,16 +16,15 @@ use wgpu::util::DeviceExt;
 const P: u32 = 5;
 const Q: u32 = 2;
 
-/// A centre off both degenerate circles, so its deck orbit is p distinct points
-/// and the distance minimisation has something to choose between.
+// A centre off both degenerate circles, so its deck orbit is p distinct points
+// and the distance minimisation has something to choose between.
 fn probe_centre() -> Vec4 {
     Vec4::new(0.62, 0.18, 0.55, 0.52).normalize()
 }
 
-/// Deterministic lifts: a fixed spiral over S³ plus the wedge walls and an ulp
-/// either side of them, which is where the wrap's correction step decides.
-/// Constructed rather than sampled, so the probe set is identical on every
-/// machine.
+// A fixed spiral over S³ plus the wedge walls and an ulp either side of them,
+// which is where the wrap's correction step decides. Constructed rather than
+// sampled, so the probe set is identical on every machine.
 fn probe_lifts() -> Vec<Vec4> {
     let mut lifts = Vec::new();
     for i in 0..192 {
@@ -178,8 +177,8 @@ async fn request_device() -> (wgpu::Device, wgpu::Queue) {
         .expect("wgpu device")
 }
 
-/// One dispatch of a `@workgroup_size(64)` entry point over `input` at binding
-/// 0, reading one `O` per element back from binding 1.
+// One dispatch of a `@workgroup_size(64)` entry point over `input` at binding
+// 0, reading one `O` per element back from binding 1.
 fn dispatch<I: bytemuck::Pod, O: bytemuck::Pod>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

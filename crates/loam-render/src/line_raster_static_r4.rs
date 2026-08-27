@@ -1,8 +1,7 @@
-//! Line rasterizer: static-mesh R⁴ variant. Use for R⁴ line meshes that don't
-//! change between frames (polytope edges, static field-line bundles) where the
-//! rotation + Perspective4D projection runs on the GPU. Eliminating the
-//! per-frame instance upload also halves wasm JS-interop pressure (each
-//! `queue.write_buffer` spawns short-lived JS proxies).
+//! For R⁴ line meshes that do not change between frames, with the rotation
+//! and Perspective4D projection running on the GPU. Dropping the per-frame
+//! instance upload also halves wasm JS-interop pressure: each
+//! `queue.write_buffer` spawns short-lived JS proxies.
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
@@ -50,8 +49,8 @@ impl Default for LineRasterStaticR4Uniforms {
     }
 }
 
-/// Per-instance line data for the R⁴ pipeline. 80 bytes, matching the R³
-/// `LineInstance`, with full Vec4 positions instead of Vec3+pad.
+// 80 bytes, matching the R³ `LineInstance`, with full Vec4 positions instead
+// of Vec3 + pad.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
 struct LineInstance4D {
@@ -63,9 +62,8 @@ struct LineInstance4D {
     _pad: [f32; 3],
 }
 
-/// Antialiased line rasterizer with GPU-side rotor + Perspective4D transforms.
 /// One instance per edge, uploaded once; the per-frame uniform carries the
-/// rotor + camera + viewport + focal_distance.
+/// rotor, camera, viewport and focal distance.
 pub struct LineRasterStaticR4Node {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
@@ -80,9 +78,8 @@ pub struct LineRasterStaticR4Node {
 }
 
 impl LineRasterStaticR4Node {
-    /// `surface_format`, `depth`, and `sample_count` mirror
-    /// [`crate::LineRasterNode::new`]; the pipeline-state knobs that have to
-    /// match the attachments at draw time. See those docs for the contract.
+    /// `surface_format`, `depth` and `sample_count` must match the attachments at
+    /// draw time, as in [`crate::LineRasterNode::new`].
     pub fn new(
         device: &Device,
         surface_format: TextureFormat,
@@ -261,10 +258,9 @@ impl LineRasterStaticR4Node {
         }
     }
 
-    /// Upload an R⁴ line mesh, intended to be called once (or on topology
-    /// change); per-frame rotation goes through `Self::set_transform`. Allocates
-    /// a scratch `Vec` per call, fine at setup time; for per-frame uploads use
-    /// [`crate::LineRasterNode`] instead.
+    /// Intended to be called once, or on topology change; per-frame rotation goes
+    /// through [`Self::set_transform`]. Allocates a scratch `Vec` per call, so
+    /// per-frame uploads belong in [`crate::LineRasterNode`] instead.
     pub fn upload_mesh(&mut self, device: &Device, queue: &Queue, mesh: &LineMesh<4>) {
         let n = mesh.segments.len();
         debug_assert_eq!(mesh.colors.len(), n);
@@ -305,8 +301,6 @@ impl LineRasterStaticR4Node {
         self.instance_count = needed;
     }
 
-    /// Write the per-frame uniform: rotor (as a 4×4 matrix, host-converted from
-    /// `Rotor4` via [`Rotor4::to_mat4`]), view*proj, viewport, focal_distance.
     /// One `queue.write_buffer` call per frame on the hot path.
     pub fn set_transform(
         &self,
@@ -326,9 +320,8 @@ impl LineRasterStaticR4Node {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Record the draw pass. Mirrors [`crate::LineRasterNode::record`]; same
-    /// `LoadOp::Load` discipline, same depth-attachment contract, same panic
-    /// messages for mismatches.
+    /// Same `LoadOp::Load` discipline and depth-attachment contract as
+    /// [`crate::LineRasterNode::record`].
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -391,7 +384,6 @@ impl LineRasterStaticR4Node {
         rp.draw_indexed(0..6, 0, 0..self.instance_count);
     }
 
-    /// Number of segments currently uploaded.
     pub fn instance_count(&self) -> u32 {
         self.instance_count
     }

@@ -139,10 +139,7 @@ pub(crate) fn local_r3_to_world(p: [f32; 3], section_scale: f32, body_pos_r3: Ve
 
 /// Map one body-local section-cap vertex to world R³ under the active wireframe
 /// projection, returning both its body-local projected point (what the
-/// stereographic clip tests) and its world R³ point. Returning the projected
-/// point lets the perimeter outline and cap fill drop the same near-pole samples
-/// the edges do, against the radius [`stereographic_clip_radius`] defines.
-///
+/// stereographic clip tests) and its world R³ point.
 /// `section_scale` is the affine fast path: `Some(scale)` just scales and
 /// translates (as [`local_r3_to_world`]). `None` (non-affine Schlegel /
 /// Stereographic) reconstructs the cap's 4D vertex and projects it per-vertex
@@ -176,10 +173,6 @@ pub(crate) fn cap_vertex_projected_and_world(
     }
 }
 
-/// Project a body-local 4D point through the wireframe's `projection`, then
-/// translate by the body's R³ position. No extra scale (unlike
-/// [`local_r3_to_world`]); Perspective4D folds the w-scale into the projection.
-///
 /// Test-only oracle: the render paths inline this because they also need the
 /// pre-translate projected point for the stereographic clip, which this discards.
 #[cfg(test)]
@@ -233,17 +226,11 @@ pub(crate) fn cell_w_range(cell: &[u32], local_vertices: &[Vec4]) -> (f32, f32) 
 
 /// Append a flat R⁴ chord `a` -> `b` to `mesh`, subdivided into
 /// [`SPACE_TESSELLATION_SAMPLES`] sub-segments and projected per-sample so a
-/// non-affine `projection` renders the edge as the curve it actually is. The
-/// chord geometry is unchanged (each sample `a.lerp(b, s)`); only the polyline
-/// is refined. Colors lerp linearly, matching [`push_blended_edge`].
-///
+/// non-affine `projection` renders the edge as the curve it actually is.
 /// Under [`loam_math::Projection::Stereographic`] a sub-segment is emitted only
 /// when both endpoints are within the clip radius; near-pole samples are dropped
 /// rather than rescaled (rescaling keeps the pole-crossing direction flip), and
 /// the polyline resumes from the next in-bounds sample without bridging the gap.
-///
-/// Future escape hatch for a flat-to-curved projection; no built-in mode uses it
-/// for `blend == 0` (those use endpoint chords).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn push_projected_chord(
     mesh: &mut LineMesh<3>,
@@ -258,7 +245,6 @@ pub(crate) fn push_projected_chord(
 ) {
     let samples = SPACE_TESSELLATION_SAMPLES;
     let clip_radius = stereographic_clip_radius(projection, view_radius);
-    // Returns the pre-translate projected point (clip test) and world point (mesh).
     let sample_at = |p4: Vec4| {
         let projected = <loam_math::EuclideanR4 as loam_math::RasterizableSpace<4>>::project_point(
             p4, projection,
@@ -329,9 +315,6 @@ pub(crate) fn radius_crossing_t(p_in: Vec3, p_out: Vec3, r: f32) -> f32 {
     ((-b + disc.sqrt()) / a).clamp(0.0, 1.0)
 }
 
-/// The clip-sphere boundary point at `t` (from [`radius_crossing_t`]) along
-/// `p_in -> p_out`, as `(world_point, color)`: the projected crossing translated
-/// by `body_pos`, with colors lerped by the same `t`.
 pub(crate) fn clip_point(
     p_in: Vec3,
     p_out: Vec3,
@@ -350,12 +333,6 @@ pub(crate) fn clip_point(
     (boundary, color)
 }
 
-/// Emit one tessellation sub-segment into `mesh` under the stereographic radius
-/// clip. Each end is `(projected, world, color, in_radius)`. With no clip both
-/// ends are in-radius (bit-identical to the unclipped path). Under the clip: a
-/// fully-inside sub-segment is emitted whole; a straddling one is cut at the
-/// boundary via [`radius_crossing_t`] / [`clip_point`] (so the arc end rides the
-/// sphere smoothly, killing the "bounce"); a fully-outside one is dropped.
 pub(crate) fn push_clipped_subsegment(
     mesh: &mut LineMesh<3>,
     clip_radius: Option<f32>,
@@ -374,13 +351,11 @@ pub(crate) fn push_clipped_subsegment(
     match (clip_radius, prev_in, cur_in) {
         (None, _, _) | (Some(_), true, true) => push(prev_world, cur_world, prev_c, cur_c),
         (Some(_), false, false) => {}
-        // Inside -> outside: cut the far end to the clip sphere.
         (Some(r), true, false) => {
             let t = radius_crossing_t(prev_proj, cur_proj, r);
             let (bw, bc) = clip_point(prev_proj, cur_proj, prev_c, cur_c, t, body_pos_r3);
             push(prev_world, bw, prev_c, bc);
         }
-        // Outside -> inside: cut the near end (measured from the inside sample).
         (Some(r), false, true) => {
             let t = radius_crossing_t(cur_proj, prev_proj, r);
             let (bw, bc) = clip_point(cur_proj, prev_proj, cur_c, prev_c, t, body_pos_r3);
@@ -427,12 +402,6 @@ pub(crate) fn stereographic_view_point(p: Vec4, projection: &loam_math::Projecti
 /// vertices are within `radius`, mirroring the per-segment perimeter rule so
 /// fill and outline cull in lockstep (a mixed triangle would tear into a gap the
 /// perimeter already drops).
-///
-/// `projected[i - start_v]` is mesh vertex `i`'s projected point
-/// ([`cap_vertex_projected_and_world`]'s first element); `start_v` rebases the
-/// absolute index into the per-append slice. `radius == None` keeps every
-/// triangle (affine layers), bit-identical to the unclipped path. Streaming
-/// two-pointer retain, no allocation; truncates to the kept-triangle count.
 pub(crate) fn retain_in_radius_triangles(
     indices: &mut Vec<[u32; 3]>,
     start_i: usize,
@@ -458,19 +427,6 @@ pub(crate) fn retain_in_radius_triangles(
     indices.truncate(start_i + write);
 }
 
-/// Append one polytope edge to `mesh`, morphed between a flat R⁴ chord and an
-/// S³ great-circle arc by `blend` (0 = chord, 1 = arc; derived from the
-/// projection via [`crate::state::default_edge_blend`]).
-///
-/// `a` / `b` are the body-local 4D endpoints and `arc_center` is the centre of
-/// the circumsphere they sit on, in that same frame. Both curves share the
-/// endpoints (the vertices sit on the circumsphere), so the morph only bows the
-/// interior onto the sphere. `blend == 0` renders the R3 chord between projected
-/// endpoints (under stereographic, a comparison overlay; the faithful arc is
-/// `blend == 1`); `blend > 0` subdivides into [`SPACE_TESSELLATION_SAMPLES`]
-/// with a per-sample chord/arc blend and a linear color gradient.
-/// `slerp_scratch` is a caller-owned reused buffer, cleared on entry.
-///
 /// An off-centre body frame is HANDLED, not refused: the arc is taken about
 /// `arc_center` and carried back, so a body a hull contact has pushed off the
 /// `w = 0` slice (whose frame then carries
@@ -479,7 +435,6 @@ pub(crate) fn retain_in_radius_triangles(
 /// instead bows onto a sphere through the frame origin, which the body's
 /// vertices stop sharing the moment `position.w` is nonzero. Pass `Vec4::ZERO`
 /// for an origin-centred frame, where the two forms agree.
-///
 /// Each sample is a direct `flat.lerp(sphere, blend)` in ambient R⁴, not a
 /// metric (`BlendedSpace::exp_target`) geodesic. The wireframe only needs the
 /// visual chord-to-arc bow, which the lerp delivers bit-deterministically and
@@ -522,7 +477,6 @@ pub(crate) fn push_blended_edge(
             }
             return;
         }
-        // Future non-line-preserving flat projection: sample the chord.
         push_projected_chord(
             mesh,
             a,
@@ -592,10 +546,6 @@ pub(crate) fn push_blended_edge(
         slerp_scratch,
     );
 
-    // Sample 0 is `a` exactly; seed `prev` from it and walk indices 1..=samples
-    // (`slerp_scratch` holds `samples + 1` points). Per-sub-segment clipping
-    // lives in `push_clipped_subsegment`; `stereographic_view_point` corrects the
-    // near-pole denominator-clamp deflation (see its docs).
     let proj0 = stereographic_view_point(a, projection);
     let mut prev_proj = proj0;
     let mut prev_world = (proj0 + body_pos_r3).to_array();

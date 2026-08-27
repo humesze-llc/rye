@@ -36,8 +36,6 @@ impl ShapeEntry {
     }
 }
 
-/// Default row when no `shapes` argument is given. 24-cell first (most
-/// 4D-distinct cross-section), then visually contrasting shapes.
 pub(crate) const DEFAULT_ROW: &[ShapeEntry] = &[
     ShapeEntry {
         shape: RaymarchShape::Polytope(Polytope4::Cell24),
@@ -65,8 +63,6 @@ pub(crate) const DEFAULT_ROW: &[ShapeEntry] = &[
     },
 ];
 
-/// Every shipped 4D shape: the six convex regular polychora plus four
-/// smooth solids (3-sphere, duocylinder, Clifford torus, spherinder).
 /// `body_color` channels pass straight to the WGSL kernel.
 pub(crate) const SHAPE_CATALOG: &[ShapeEntry] = &[
     ShapeEntry {
@@ -170,8 +166,6 @@ const SHAPE_CATEGORIES: &[ShapeCategory] = &[
     },
 ];
 
-/// Resolve a shape name. Both `n-cell` math names and Platonic-slice
-/// aliases (`tetrahedron`, `cube`, ...) map to the same shape.
 pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
     let n = name.to_lowercase();
     let needle: &str = n.as_str();
@@ -266,8 +260,6 @@ mod tests {
 
     #[test]
     fn row_comes_from_the_args_value_not_the_process_environment() {
-        // The wasm defect this pins: reading the environment yielded
-        // DEFAULT_ROW in the browser no matter what the URL said.
         assert_eq!(parse_row(&Args::default()).unwrap(), DEFAULT_ROW);
         assert_eq!(
             parse_row(&Args::from_pairs([("seed", "42")])).unwrap(),

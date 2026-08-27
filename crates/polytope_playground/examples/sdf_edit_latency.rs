@@ -1,13 +1,5 @@
 //! What one edit costs the SDF editor, measured rather than assumed.
-//!
-//! Every constant in a `loam_scene::Scene` is a baked WGSL literal, so moving a
-//! slider re-emits the module, parses and validates it, and builds a render
-//! pipeline. Whether that reads as a live editor or as a hitch per frame is the
-//! single measurement the design turns on, and it is a property of the driver,
-//! not of the design.
-//!
 //! Run: `cargo run -p polytope_playground --release --example sdf_edit_latency`
-//!
 //! Headless: an adapter and a device, no surface and no window. Reports the
 //! per-stage distribution over a scripted drag against a 60Hz frame.
 

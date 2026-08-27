@@ -26,9 +26,6 @@ fn wrap_slider_deg(d: f32) -> f32 {
 }
 use crate::state::Demo;
 
-/// Name a recognizable combination of active planes. Indices match
-/// `Plane4::ALL`: `0=xy 1=xz 2=xw 3=yz 4=yw 5=zw`. Only the active
-/// set matters; order-independent.
 pub(crate) fn combo_name(active: &[bool; 6]) -> Option<&'static str> {
     let mut mask = 0u8;
     for (i, &on) in active.iter().enumerate() {
@@ -97,10 +94,6 @@ impl Demo {
         }
     }
 
-    /// The slider
-    /// reads/writes the SELECTED slot's `base_angles[plane_idx]` via
-    /// `base + spin_contribution`, keeping each slider an independent
-    /// factor in that body's rotor product (no log/exp round-trips).
     pub(crate) fn render_plane_slider_cell(
         &mut self,
         ui: &mut egui::Ui,
@@ -170,8 +163,6 @@ impl Demo {
             },
         );
         if slider_resp.changed() || popup_changed {
-            // base = displayed - spin_contribution, so the displayed angle
-            // matches the slider's new position.
             let target_rad = deg.to_radians();
             let spin_contribution = if self.spins.selected_spin().active[plane_idx] {
                 self.rot_time * crate::consts::BASE_ROTATION_RATE

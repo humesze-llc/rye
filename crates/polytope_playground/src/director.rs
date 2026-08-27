@@ -15,15 +15,11 @@ use loam_time::{Director, Drive};
 use crate::spins::{is_directed, SlotSpins};
 use crate::state::RotationMode;
 
-/// Prefix a timeline body name carries to address a row slot.
 const SLOT_PREFIX: &str = "slot";
 
-/// A loaded timeline bound to the row it plays against.
 #[derive(Debug)]
 pub(crate) struct Playback {
     director: Director,
-    /// Row slot per timeline body, in the timeline's own order, so a sample
-    /// keyed by name lands on the slot the file asked for.
     slots: Vec<usize>,
     /// `directed[slot]`: the timeline gives this slot an orientation track, so
     /// the director writes its rotor for the whole run and the UI spin never
@@ -70,19 +66,14 @@ impl Playback {
         })
     }
 
-    /// Slots this timeline writes, indexed by slot. Every `false` is the UI
-    /// spin's.
     pub(crate) fn directed(&self) -> &[bool] {
         &self.directed
     }
 
-    /// Whether the slice offset is the timeline's rather than the sliders'.
     pub(crate) fn owns_w_slice(&self) -> bool {
         matches!(self.director.w_slice(), Drive::Directed(_))
     }
 
-    /// Back to the first frame, for the full reset. The row's rotors follow on
-    /// the next [`step_row_rotation`], which is the only writer of them.
     pub(crate) fn rewind(&mut self) {
         self.director.seek(0);
     }
@@ -154,8 +145,6 @@ mod tests {
     use loam_math::{Plane4, Rotor4};
     use loam_time::director::{BodyTrack, Ease, Timeline, Track};
 
-    /// Frame rate every fixture below is authored at, matching the shipped
-    /// file so a frame index means the same thing in both.
     const FPS: u32 = 60;
 
     fn quarter_turn_xw() -> Rotor4 {
@@ -191,8 +180,6 @@ mod tests {
         const SLOTS: usize = 3;
         let mut spins = SlotSpins::new(SLOTS);
         let mut playback = playback_over(SLOTS, turn_slots(&[0]));
-        // A second director stepped in lockstep, to compare against without
-        // reaching through the playback's own arbitration.
         let mut reference = Director::new(turn_slots(&[0])).unwrap();
 
         let mut w_slice = 0.25;
@@ -218,9 +205,6 @@ mod tests {
                 "slot 0 left the playhead at frame {}",
                 reference.frame()
             );
-            // The undirected slots keep spinning off `rot_time`, which is what
-            // makes the assertion above a statement about ownership rather
-            // than about a clock that happened to be stopped.
             assert_eq!(spins.rotor(1), spins.rotor(2));
             ui_clock_moved_the_row |= spins.rotor(1) != Rotor4::IDENTITY;
         }
@@ -279,9 +263,6 @@ mod tests {
                 omega,
             );
         }
-        // Slot 0 is the selection in both rows. The undirected one integrated
-        // away from identity; the directed one sits on the timeline's last
-        // key, which frame 60 of a 60 fps second reaches exactly.
         assert_ne!(free_row.rotor(0), Rotor4::IDENTITY);
         assert_eq!(directed_row.rotor(0), quarter_turn_xw());
     }

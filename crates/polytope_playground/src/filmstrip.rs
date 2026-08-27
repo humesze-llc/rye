@@ -142,8 +142,6 @@ impl Demo {
         });
     }
 
-    /// Carries its own heavy-shape warning since
-    /// `render_shapes_section`, which usually shows it, is hidden here.
     pub(crate) fn render_filmstrip_body(&mut self, ui: &mut egui::Ui) {
         let heavy = matches!(
             self.strip_subject.shape,

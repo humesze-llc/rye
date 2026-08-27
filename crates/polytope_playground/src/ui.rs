@@ -56,8 +56,6 @@ fn section_layer_controls(
     }
     ui.horizontal(|ui| {
         ui.label("Fill alpha");
-        // 0 is the off state; below 1.0 composites through the no-depth-write
-        // pipeline so layers behind show through.
         ui.add(egui::Slider::new(&mut layer.surface_alpha, 0.0..=1.0).fixed_decimals(2))
             .on_hover_text("0 = off; below 1.0 composites translucently over the layers behind");
     });
@@ -80,7 +78,6 @@ impl Demo {
         }
     }
 
-    /// Staged into `pending_view_mode`; see [`DeferredAction`] for why.
     pub(crate) fn render_view_tab_row(&mut self, ui: &mut egui::Ui) {
         let mut staged = self.view_mode;
         ui.horizontal(|ui| {
@@ -129,9 +126,6 @@ impl Demo {
                 .on_hover_text("Return every body in the row to its unrotated pose")
                 .clicked()
             {
-                // Clears the per-plane baselines too, not just the rotors:
-                // Active recomposes from the baselines on the next frame, so a
-                // reset that cleared only the rotors is undone before it draws.
                 self.spins.clear_orientation();
                 self.rebuild_bodies();
                 ui.close_kind(egui::UiKind::Menu);
@@ -165,7 +159,6 @@ impl Demo {
         });
     }
 
-    /// Each control writes the same Demo fields the console handlers do.
     pub(crate) fn render_render_panel(&mut self, ctx: &egui::Context) {
         // Snapshot fields the panel mutates so the surface-mode rebuild and
         // Schlegel re-resolve can run AFTER the destructure-borrow's lifetime
@@ -251,9 +244,6 @@ impl Demo {
                     ui.horizontal(|ui| {
                         ui.label("Projection");
                         for mode in WireframeProjection::ALL {
-                            // Compare by variant, not full `PartialEq`, so a
-                            // Schlegel cell-index change keeps the button selected
-                            // (the contextual stepper below owns the index).
                             let selected = wireframe_projection.same_variant(mode);
                             if ui.radio(selected, mode.label()).clicked() && !selected {
                                 let next = match (mode, *wireframe_projection) {
@@ -268,9 +258,6 @@ impl Demo {
                             }
                         }
                     });
-                    // Dormant: Schlegel is omitted from `WireframeProjection::ALL`,
-                    // so the radio never offers it; kept so re-wiring needs no UI
-                    // change.
                     if let WireframeProjection::Schlegel { cell_index } = wireframe_projection {
                         ui.horizontal(|ui| {
                             ui.label("Boundary cell");
@@ -327,7 +314,6 @@ impl Demo {
                 });
             },
         );
-        // Destructure-borrow ended; `&mut self` is safe again.
         if self.surface_mode != prev_surface {
             self.rebuild_bodies();
         }
@@ -494,9 +480,6 @@ impl Demo {
     /// The only reading a user gets of the drag-to-impulse mapping before
     /// committing to it, so the number is the mapping's own `charge`, not a
     /// second estimate of it.
-    ///
-    /// Painted on the background layer so the controls overlay stays on top,
-    /// and skipped entirely when the body is off-screen.
     pub(crate) fn render_throw_aim(&self, ctx: &egui::Context, frame: &FrameCtx<'_>) {
         let Some(drag) = self.throw_drag else {
             return;
@@ -521,7 +504,6 @@ impl Demo {
         };
 
         let charge = drag.charge();
-        // Cool at a nudge, hot at the ceiling.
         let color = egui::Color32::from_rgb(
             (90.0 + 165.0 * charge) as u8,
             (210.0 - 100.0 * charge) as u8,
@@ -546,8 +528,6 @@ impl Demo {
 
     pub(crate) fn render_overlay(&mut self, ctx: &egui::Context) {
         let screen = ctx.content_rect();
-        // Cap to roughly the 800x600 layout; full-screen widths stretched the
-        // slider strip unusably wide. Falls back to the window width if narrower.
         const OVERLAY_MAX_WIDTH: f32 = 768.0;
         const OVERLAY_MIN_WIDTH: f32 = 280.0;
         let natural_w = screen.width() - 2.0 * OVERLAY_PAD;
@@ -596,9 +576,6 @@ impl Demo {
         }
         if let Some(new_view) = self.pending_view_mode.take() {
             self.view_mode = new_view;
-            // The rendered row changes with the view mode, so re-emit the SDF body
-            // slots and re-resolve the Schlegel cache (the leading polychoron can
-            // differ between the row and the single subject).
             self.rebuild_bodies();
             self.resolve_schlegel_cache();
         }
@@ -618,9 +595,6 @@ impl Demo {
                 DeferredAction::SeqPushTerm(term) => self.seq.push(term),
             }
         }
-        // A Single-view subject change is a render-row change; rebuild + re-resolve
-        // against the new topology. Gated on `Single` so a Filmstrip subject pick
-        // skips the work.
         if self.view_mode == ViewMode::Single && self.strip_subject != prev_strip_subject {
             self.rebuild_bodies();
             self.resolve_schlegel_cache();
@@ -628,8 +602,6 @@ impl Demo {
     }
 
     pub(crate) fn render_slider_strip(&mut self, ui: &mut egui::Ui, _area_w: f32) {
-        // Sized for "w +0.000" / "t  7.12s" (8 monospace chars). Larger t values
-        // clip the tail; an acceptable trade for killing the deadspace.
         const VALUE_CELL_W: f32 = 72.0;
         let avail = ui.available_width();
         let spacing = ui.spacing().item_spacing.x;
@@ -638,7 +610,6 @@ impl Demo {
 
         let row_size = egui::vec2(avail, CONTROL_H);
         let row_layout = egui::Layout::left_to_right(egui::Align::Center);
-        // Surface-scaled W range so a scaled body's slider reaches past it.
         let w_range = self.effective_w_range();
         ui.allocate_ui_with_layout(row_size, row_layout, |ui| {
             let formatted = format!("w {:>+.3}", self.w_slice);
@@ -671,9 +642,6 @@ impl Demo {
             t_dragged = interaction.dragged;
         });
         if t_dragged {
-            // `recompose_spins_at` dispatches Active vs Composer, so scrubbing
-            // reproduces what the spin would have integrated to at this
-            // `rot_time` for every slot it drives.
             self.recompose_spins_at(self.rot_time);
             self.rebuild_bodies();
         }
@@ -720,8 +688,6 @@ impl Demo {
                 {
                     self.expanded = !self.expanded;
                 }
-                // Gear + `?` sized `CONTROL_W × CONTROL_H` so the utility buttons
-                // match the chevron + play / step set.
                 let util_size = egui::vec2(CONTROL_W, CONTROL_H);
                 if ui
                     .add(egui::Button::new(egui::RichText::new("⚙").strong()).min_size(util_size))

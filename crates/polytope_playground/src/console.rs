@@ -3,8 +3,6 @@ use crate::*;
 impl RotateScene {
     pub(crate) fn build_console() -> Console<Demo> {
         let mut c = Console::<Demo>::new();
-        // Shell-provided scene switcher. The only in-app switcher under
-        // `--embed=1` / `?embed=1`, where the menu bar is hidden.
         loam_app::shell::register_command::<Demo, shell::Playground>(&mut c);
         c.register(loam_egui::cmd(
             "reset",
@@ -201,8 +199,6 @@ impl RotateScene {
                     &[&["shadow", "w-pinhole", "stereographic", "hyperslice"]],
                     &[],
                     |d, args, out| {
-                        // Schlegel is omitted here (it wants its own demo): both
-                        // `from_token` and `ALL` exclude it.
                         let next = match args.first().copied() {
                             None => {
                                 let all = WireframeProjection::ALL;
@@ -223,7 +219,6 @@ impl RotateScene {
                             d.wireframe_projection,
                             &mut d.wireframe_enabled,
                         );
-                        // No-op for these modes; kept for a future Schlegel re-wire.
                         d.resolve_schlegel_cache();
                         out.line(format!(
                             "wireframe perspective: {}",
@@ -254,8 +249,6 @@ impl RotateScene {
                                 d.stereographic_pole = Vec4::W;
                                 out.line("stereographic pole: set to +w (textbook map)");
                             }
-                            // Explicit pole: four floats normalized onto S³ (only
-                            // the direction matters); reject a near-zero vector.
                             Some(_) => {
                                 let coords: Result<Vec<f32>> = args
                                     .iter()
@@ -404,9 +397,6 @@ impl RotateScene {
                 ),
         );
 
-        // Solver readout. Each layer is its own switch because the overlay is
-        // there to isolate a suspect quantity; bare flips all four together so
-        // "show me everything" is one word.
         c.register(
             loam_egui::subcommands::<Demo>(
                 "physics",
@@ -632,7 +622,6 @@ impl RotateScene {
         loam_app::capture::bind_default_hotkeys(&mut c);
 
         loam_app::log::register_command(&mut c);
-        // from.
         loam_app::trace::register_command(&mut c);
         loam_app::fps::register_command(&mut c);
         loam_app::vsync::register_command(&mut c);
@@ -649,10 +638,6 @@ impl RotateScene {
                 "camera",
                 "camera mode: orbit | freecam; bare cycles. `camera freecam speed=<N>` / `cursor_mode hold|toggle` tune the preset",
                 |args, demo, out| {
-                    // Freecam-tuning forms have a second positional token.
-                    // `speed=<N>` is parsed as one token (matches the user's
-                    // `speed=<N>` spec); `speed` alone queries; `cursor_mode
-                    // <m>` is two tokens.
                     if matches!(args.first().copied(), Some("freecam")) && args.len() >= 2 {
                         let second = args[1];
                         if let Some(value) = second.strip_prefix("speed=") {
@@ -713,9 +698,6 @@ impl RotateScene {
                             }
                             return Ok(());
                         }
-                        // Unknown second token under `camera freecam`: fall
-                        // through to the mode-switch path which will yell
-                        // about it.
                     }
 
                     let next = match args.first().copied() {
@@ -735,19 +717,12 @@ impl RotateScene {
                     demo.camera_mode = next;
                     match next {
                         CameraMode::Orbit => {
-                            // Reset orbit so the camera returns to a known
-                            // framing around (0, 0, 0) regardless of where
-                            // freecam left it. Freecam's `set_active(false)`
-                            // releases the cursor grab.
                             demo.orbit = OrbitController::default();
                             demo.orbit.set_orbit(8.0, -0.25);
                             demo.freecam.set_active(false, demo.camera.position);
                             out.line("camera: orbit (reset to world origin)");
                         }
                         CameraMode::FreeRoam => {
-                            // Preset grabs cursor + seeds position from the
-                            // camera's current pose so the toggle is
-                            // continuous, not a teleport.
                             demo.freecam.set_active(true, demo.camera.position);
                             out.line(
                                 "camera: freecam (WASD + Space/Shift; mouse-look; Alt to free cursor)",

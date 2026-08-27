@@ -1,8 +1,6 @@
-//! Typed 4D scene tree, the 4D analogue of [`crate::scene::Scene`].
-//!
-//! Parallel to [`crate::scene::Scene`] rather than `Scene<S, const DIM>`: the 3D
-//! and 4D paths share no shader code, so genericizing saves nothing and obscures
-//! the difference.
+//! Parallel to [`crate::scene::Scene`] rather than `Scene<S, const DIM>`: the
+//! 3D and 4D paths share no shader code, so genericizing saves nothing and
+//! obscures the difference.
 
 use std::boxed::Box;
 
@@ -14,13 +12,12 @@ use crate::primitive4::Primitive4;
 use crate::SENTINEL_DISTANCE;
 pub use loam_shape::Shape;
 
-/// A node in the 4D scene tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SceneNode4 {
     Leaf(Shape),
     Union(Box<SceneNode4>, Box<SceneNode4>),
     Intersection(Box<SceneNode4>, Box<SceneNode4>),
-    /// Carve `right` out of `left`: `max(left, −right)`.
+    /// `max(left, −right)`: `right` is carved out of `left`.
     Difference(Box<SceneNode4>, Box<SceneNode4>),
 }
 
@@ -33,10 +30,9 @@ impl SceneNode4 {
         SceneNode4::Leaf(Shape::HalfSpace4D { normal, offset })
     }
 
-    /// The static `Primitive4` emit returns a sentinel;
-    /// the live path is `Hyperslice4DNode`'s per-frame uniform buffer (face
-    /// hyperplanes computed CPU-side). Until that lands, polytope leaves are
-    /// invisible.
+    /// The static `Primitive4` emit returns a sentinel; the live path is
+    /// `Hyperslice4DNode`'s per-frame uniform buffer of CPU-computed face
+    /// hyperplanes. Until that lands, polytope leaves are invisible.
     pub fn polytope(vertices: Vec<Vec4>) -> Self {
         SceneNode4::Leaf(Shape::ConvexPolytope4D { vertices })
     }
@@ -54,8 +50,6 @@ impl SceneNode4 {
     }
 }
 
-/// A complete 4D SDF scene: a single root [`SceneNode4`] emitting either the
-/// native-4D or hyperslice SDF.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene4 {
     pub root: SceneNode4,
@@ -66,8 +60,7 @@ impl Scene4 {
         Self { root }
     }
 
-    /// Emit `fn loam_scene_sdf_4d(p: vec4<f32>) -> f32` for future full-4D ray
-    /// marchers. Kind-tracking bindings are emitted but unused.
+    /// Kind-tracking bindings are emitted but unused.
     pub fn to_wgsl_4d(&self) -> String {
         let mut helpers = String::new();
         let mut body = String::new();
@@ -86,25 +79,18 @@ impl Scene4 {
         )
     }
 
-    /// Emit the hyperslice SDF module: kind constants, `LoamSceneHit`,
-    /// `loam_scene_at(p3) -> LoamSceneHit`, `loam_scene_sdf(p3) -> f32`, and
-    /// `loam_scene_max_t(ro, rd) -> f32` (analytical far-clip from HalfSpace4D
-    /// leaves). `w_slice_expr` is the slicing w-coord, typically `"u.w_slice"`.
-    ///
-    /// Kind tracking: union picks the closer leaf, intersection the farther
+    /// `w_slice_expr` is the slicing w-coord, typically `"u.w_slice"`. Kind
+    /// tracking: union picks the closer leaf, intersection the farther
     /// (boundary) leaf, difference returns `LOAM_PRIM_OTHER`.
     pub fn to_hyperslice_wgsl(&self, w_slice_expr: &str) -> String {
         emit_hyperslice(self, w_slice_expr, None)
     }
 
-    /// Like [`Self::to_hyperslice_wgsl`] but with a runtime gate on every
-    /// [`Shape::HalfSpace4D`] leaf: when `halfspace_gate_expr` is `< 0.5` the
-    /// halfspace SDF returns [`SENTINEL_DISTANCE`] and its `loam_scene_max_t`
-    /// contribution is skipped; `>= 0.5` matches the ungated emit. Lets a uniform
-    /// flip floor / ceiling / cutaway planes per frame without recompiling.
-    ///
     /// `halfspace_gate_expr` is a scalar `f32` WGSL expression in scope at
-    /// `loam_scene_at` / `loam_scene_max_t` (e.g. `"u.params.x"`, `"1.0"`, `"0.0"`).
+    /// `loam_scene_at` and `loam_scene_max_t`. Below 0.5 each
+    /// [`Shape::HalfSpace4D`] leaf returns [`SENTINEL_DISTANCE`] and drops its
+    /// `loam_scene_max_t` term; at or above 0.5 the emit matches
+    /// [`Self::to_hyperslice_wgsl`].
     pub fn to_hyperslice_wgsl_gated(
         &self,
         w_slice_expr: &str,
@@ -113,39 +99,28 @@ impl Scene4 {
         emit_hyperslice(self, w_slice_expr, Some(halfspace_gate_expr))
     }
 
-    /// CPU twin of the emitted `loam_scene_at`: the signed distance at
-    /// `vec4(p3, w_slice)` and the kind of the primitive that produced it.
-    ///
-    /// `halfspace_gate` is the value the gate uniform holds this frame; the CPU
-    /// cannot evaluate [`Self::to_hyperslice_wgsl_gated`]'s WGSL expression
-    /// string, so the caller supplies its truth value. Pass `true` to mirror the
-    /// ungated [`Self::to_hyperslice_wgsl`], whose emit is identical to a gate
-    /// that is always on.
+    /// CPU twin of the emitted `loam_scene_at`. The CPU cannot evaluate
+    /// [`Self::to_hyperslice_wgsl_gated`]'s WGSL expression string, so
+    /// `halfspace_gate` is the truth value that expression holds this frame;
+    /// `true` mirrors the ungated emit.
     pub fn eval_at(&self, p3: Vec3, w_slice: f32, halfspace_gate: bool) -> (f32, u32) {
         eval_node_4d(&self.root, p3.extend(w_slice), halfspace_gate)
     }
 
-    /// Signed distance alone, the `.dist` projection of [`Self::eval_at`],
-    /// exactly as the emitter derives `loam_scene_sdf` from `loam_scene_at`.
     pub fn eval(&self, p3: Vec3, w_slice: f32, halfspace_gate: bool) -> f32 {
         self.eval_at(p3, w_slice, halfspace_gate).0
     }
 }
 
-// Kind of the primitive a `Scene4` hit belongs to, as returned by
-// `Scene4::eval_at` and as emitted into WGSL by `scene_kind_constants`. The
-// marcher routes floor classification on these.
+// The marcher routes floor classification on these values, which must match the
+// `LOAM_PRIM_*` constants `scene_kind_constants` emits.
 
-/// A [`Shape::HyperSphere4D`] leaf.
 pub const PRIM_KIND_HYPERSPHERE4D: u32 = 0;
-/// A [`Shape::HalfSpace4D`] leaf.
 pub const PRIM_KIND_HALFSPACE4D: u32 = 1;
 /// A `Difference` node, which has no single owning primitive, or a leaf with no
 /// 4D closed form.
 pub const PRIM_KIND_OTHER: u32 = 255;
 
-/// WGSL kind constants emitted atop every Scene4 module, formatted from the
-/// `PRIM_KIND_*` values so the shader and [`Scene4::eval_at`] cannot drift.
 fn scene_kind_constants() -> String {
     format!(
         "const LOAM_PRIM_HYPERSPHERE4D: u32 = {PRIM_KIND_HYPERSPHERE4D}u;\n\
@@ -154,10 +129,9 @@ fn scene_kind_constants() -> String {
     )
 }
 
-/// `None` produces
-/// the ungated form; `Some` wraps every `HalfSpace4D` leaf's SDF in
-/// `select(SENTINEL_DISTANCE, raw, <expr> >= 0.5)` and skips its
-/// `loam_scene_max_t` term.
+// `Some` wraps every `HalfSpace4D` leaf's SDF in
+// `select(SENTINEL_DISTANCE, raw, <expr> >= 0.5)` and skips its
+// `loam_scene_max_t` term.
 fn emit_hyperslice(
     scene: &Scene4,
     w_slice_expr: &str,
@@ -190,11 +164,8 @@ fn emit_hyperslice(
          fn loam_scene_sdf(p3: vec3<f32>) -> f32 {{\n\
          \treturn loam_scene_at(p3).dist;\n\
          }}\n\
-         // Analytical upper bound on march distance: ray-plane intersection\n\
-         // for every HalfSpace4D leaf in the scene whose 3D-projected\n\
-         // normal points against the ray. Returns +infinity if no leaf\n\
-         // contributes; the kernel uses this to terminate near-horizon\n\
-         // rays that would otherwise exhaust the iteration budget.\n\
+         // Analytical march bound from the HalfSpace4D leaves, so a\n\
+         // near-horizon ray does not exhaust the iteration budget.\n\
          fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {{\n\
          \tvar t_max: f32 = {SENTINEL_DISTANCE:e};\n\
          {max_t_body}\
@@ -203,9 +174,8 @@ fn emit_hyperslice(
     )
 }
 
-/// Emit the body of `loam_scene_max_t`: a ray-plane intersection per `HalfSpace4D`
-/// leaf, folded into `t_max` via `min`. Only the 3D normal is used (the slice
-/// fixes `p.w`); combinator-agnostic, visits every leaf.
+// Only the 3D normal is used, since the slice fixes `p.w`. Combinator-agnostic:
+// every leaf contributes.
 fn emit_max_t_body(node: &SceneNode4, halfspace_gate_expr: Option<&str>) -> String {
     let mut body = String::new();
     walk_max_t(node, &mut body, halfspace_gate_expr);
@@ -215,9 +185,8 @@ fn emit_max_t_body(node: &SceneNode4, halfspace_gate_expr: Option<&str>) -> Stri
 fn walk_max_t(node: &SceneNode4, body: &mut String, halfspace_gate_expr: Option<&str>) {
     match node {
         SceneNode4::Leaf(Shape::HalfSpace4D { normal, offset }) => {
-            // t = (offset - dot(ro, n)) / dot(rd, n), guarded by dot(rd, n) < 0 to
-            // catch only rays heading toward the solid side. A set gate wraps the
-            // whole t-contribution so a gated-off halfspace yields no bound.
+            // t = (offset - dot(ro, n)) / dot(rd, n), guarded by dot(rd, n) < 0
+            // so only rays heading toward the solid side contribute.
             let inner = format!(
                 "\t\tlet n = vec3<f32>({nx}, {ny}, {nz});\n\
                  \t\tlet dr = dot(rd, n);\n\
@@ -251,9 +220,8 @@ fn walk_max_t(node: &SceneNode4, body: &mut String, halfspace_gate_expr: Option<
     }
 }
 
-/// Map a Shape variant to its WGSL kind-constant name and its numeric value.
-/// One match, two consumers, so the emitted identifier and the value
-/// [`Scene4::eval_at`] returns are the same decision.
+// One match, two consumers, so the emitted identifier and the value
+// `Scene4::eval_at` returns are the same decision.
 fn primitive_kind(shape: &Shape) -> (&'static str, u32) {
     match shape {
         Shape::HyperSphere4D { .. } => ("LOAM_PRIM_HYPERSPHERE4D", PRIM_KIND_HYPERSPHERE4D),
@@ -262,8 +230,8 @@ fn primitive_kind(shape: &Shape) -> (&'static str, u32) {
     }
 }
 
-/// Returns `(dist_var, kind_var)`, the WGSL identifiers for this node's
-/// distance and closest-primitive kind.
+// Returns `(dist_var, kind_var)`, the WGSL identifiers for this node's distance
+// and closest-primitive kind.
 fn emit_node_4d(
     node: &SceneNode4,
     counter: &mut u32,
@@ -321,17 +289,16 @@ fn emit_node_4d(
             let d_var = format!("d{idx}");
             let k_var = format!("k{idx}");
             body.push_str(&format!("\tlet {d_var} = max({ld}, -({rd}));\n"));
-            // Difference has no clean per-region kind (the active surface
-            // alternates between left's outside and right's inside); sentinel.
+            // Difference has no clean per-region kind: the active surface
+            // alternates between left's outside and right's inside.
             body.push_str(&format!("\tlet {k_var}: u32 = LOAM_PRIM_OTHER;\n"));
             (d_var, k_var)
         }
     }
 }
 
-/// Scalar twin of [`emit_node_4d`], one arm per variant in the same order,
-/// returning `(dist, kind)` where the emitter returns the names of the two
-/// `let` bindings. Allocation-free.
+// Returns `(dist, kind)` where the emitter returns the names of the two `let`
+// bindings. Allocation-free.
 fn eval_node_4d(node: &SceneNode4, p: Vec4, halfspace_gate: bool) -> (f32, u32) {
     match node {
         SceneNode4::Leaf(prim) => {

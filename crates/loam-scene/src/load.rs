@@ -1,12 +1,10 @@
 //! [`Primitive::to_wgsl`](crate::Primitive) asserts on constants WGSL cannot
 //! spell, so a description that merely deserializes is not yet safe to emit.
-//! Both entry points here run the same check, and every rejection is a
-//! [`SceneLoadError`] naming its origin rather than a panic in the emitter.
+//! Both entry points here run the same check.
 //!
-//! `load` is the native path. wasm32 has no filesystem, so a browser build
-//! fetches the text itself and calls `from_ron` with the URL as the origin; the
-//! origin is a parameter and not an internal detail of `load` for exactly that
-//! reason.
+//! wasm32 has no filesystem, so a browser build fetches the text itself and
+//! calls `from_ron` with the URL as the origin; the origin is a parameter and
+//! not an internal detail of `load` for exactly that reason.
 
 use std::path::{Path, PathBuf};
 
@@ -17,7 +15,6 @@ use thiserror::Error;
 use crate::scene::{Scene, SceneNode};
 use crate::scene4::{Scene4, SceneNode4};
 
-/// Why a RON scene description did not produce a scene.
 #[derive(Debug, Error)]
 pub enum SceneLoadError {
     #[error("{}: {source}", origin.display())]
@@ -35,20 +32,18 @@ pub enum SceneLoadError {
         source: ron::error::SpannedError,
     },
 
-    /// The description deserialized but holds a constant no emitter can bake.
+    /// Deserialized, but holds a constant no emitter can bake.
     #[error("{}: {reason}", origin.display())]
     Invalid { origin: PathBuf, reason: String },
 }
 
 impl Scene {
-    /// Read a scene description from a `.ron` file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, SceneLoadError> {
         let path = path.as_ref();
         Self::from_ron(path, &read_to_string(path)?)
     }
 
-    /// Deserialize a scene description, attributing failures to `origin` (the
-    /// file, URL, or label `src` came from).
+    /// `origin` is the file, URL, or label `src` came from; failures name it.
     pub fn from_ron(origin: impl AsRef<Path>, src: &str) -> Result<Self, SceneLoadError> {
         let origin = origin.as_ref();
         let scene: Self = parse(origin, src)?;
@@ -65,13 +60,11 @@ impl Scene {
 }
 
 impl Scene4 {
-    /// Read a 4D scene description from a `.ron` file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, SceneLoadError> {
         let path = path.as_ref();
         Self::from_ron(path, &read_to_string(path)?)
     }
 
-    /// Deserialize a 4D scene description, attributing failures to `origin`.
     pub fn from_ron(origin: impl AsRef<Path>, src: &str) -> Result<Self, SceneLoadError> {
         let origin = origin.as_ref();
         let scene: Self = parse(origin, src)?;
@@ -94,9 +87,9 @@ fn read_to_string(path: &Path) -> Result<String, SceneLoadError> {
     })
 }
 
-/// `ron::from_str` caps nesting at 128 frames (`ron::Options` default), which
-/// is also what bounds the recursion in [`check_node`] and in every later walk
-/// of a loaded tree: file input cannot drive them to a stack overflow.
+// `ron::from_str` caps nesting at 128 frames (`ron::Options` default), which is
+// also what bounds the recursion in `check_node` and in every later walk of a
+// loaded tree: file input cannot drive them to a stack overflow.
 fn parse<T: DeserializeOwned>(origin: &Path, src: &str) -> Result<T, SceneLoadError> {
     ron::from_str(src).map_err(|source| SceneLoadError::Parse {
         origin: origin.to_path_buf(),
@@ -104,12 +97,10 @@ fn parse<T: DeserializeOwned>(origin: &Path, src: &str) -> Result<T, SceneLoadEr
     })
 }
 
-/// First constant in `shape` that has no WGSL literal.
-///
-/// Every variant is scanned, not only the ones an emitter bakes today: the
-/// sentinel set shrinks as closed forms land, and a description that survives
-/// loading only because its shape is currently unemittable is a trap laid for
-/// that lap.
+// Every variant is scanned, not only the ones an emitter bakes today: the
+// sentinel set shrinks as closed forms land, and a description that survives
+// loading only because its shape is currently unemittable is a trap laid for
+// that lap.
 fn non_finite_constant(shape: &Shape) -> Option<f32> {
     fn first(values: impl IntoIterator<Item = f32>) -> Option<f32> {
         values.into_iter().find(|v| !v.is_finite())
@@ -132,8 +123,8 @@ fn non_finite_constant(shape: &Shape) -> Option<f32> {
     }
 }
 
-/// Shared with [`crate::edit`], so a tree an editor writes is a tree this
-/// module would have accepted from a file.
+// Shared with `crate::edit`, so a tree an editor writes is a tree this module
+// would have accepted from a file.
 pub(crate) fn check_leaf(shape: &Shape) -> Result<(), String> {
     match non_finite_constant(shape) {
         None => Ok(()),
@@ -157,10 +148,10 @@ fn check_node(node: &SceneNode) -> Result<(), String> {
     }
 }
 
-/// The emitted `smin` divides by `k` and the CPU twin divides by the same
-/// constant, so a zero blend radius is an infinity in the distance field and a
-/// negative one inverts the blend into a field that is no longer an
-/// underestimate of `min`. Shared with [`crate::edit`].
+// The emitted `smin` divides by `k` and the CPU twin divides by the same
+// constant, so a zero blend radius is an infinity in the distance field and a
+// negative one inverts the blend into a field that is no longer an
+// underestimate of `min`.
 pub(crate) fn check_blend_radius(k: f32) -> Result<(), String> {
     if !k.is_finite() || k <= 0.0 {
         return Err(format!(

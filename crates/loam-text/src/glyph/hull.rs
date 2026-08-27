@@ -1,21 +1,18 @@
-//! The convex ring a dynamic letter collides with: the convex hull of the
-//! collider cover, simplified down to a bounded side count.
-//! Simplification only ever grows the ring, so a hull of the cover stays a
-//! hull of the letter at every side count.
+//! Simplification only ever grows the ring, so a hull of the collider cover
+//! stays a hull of the letter at every side count.
 
 use glam::Vec2;
 
-/// Sides the reduced ring is capped at. The 4D prism repeats the ring once per
-/// `(z, w)` corner, so its vertex count is `4 * sides`, and `loam-physics`
-/// carries a 4D polytope through a fixed 32-vertex stack buffer.
+// The 4D prism repeats the ring once per `(z, w)` corner, so its vertex count
+// is `4 * sides`, and `loam-physics` carries a 4D polytope through a fixed
+// 32-vertex stack buffer.
 pub(super) const MAX_HULL_SIDES: usize = 8;
 
-/// Convex hull of `points`, counter-clockwise, with collinear points dropped.
-///
-/// Andrew's monotone chain (Andrew 1979, "Another efficient algorithm for
-/// convex hulls in two dimensions", Inf. Process. Lett. 9(5)). Sorting by
-/// `total_cmp` rather than a partial comparator keeps the order total, so the
-/// hull is a function of the point set and not of its arrival order.
+// Counter-clockwise, with collinear points dropped. Andrew's monotone chain
+// (Andrew 1979, "Another efficient algorithm for convex hulls in two
+// dimensions", Inf. Process. Lett. 9(5)). Sorting by `total_cmp` rather than a
+// partial comparator keeps the order total, so the hull is a function of the
+// point set and not of its arrival order.
 pub(super) fn convex_hull(mut points: Vec<Vec2>) -> Vec<Vec2> {
     points.sort_unstable_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
     points.dedup();
@@ -37,9 +34,9 @@ pub(super) fn convex_hull(mut points: Vec<Vec2>) -> Vec<Vec2> {
     hull
 }
 
-/// Drop trailing vertices of `hull` until appending `p` turns strictly left,
-/// keeping at least `floor` of them. A non-strict test would retain collinear
-/// runs, and a collinear vertex has no removable edge for [`reduce_sides`].
+// Strictly left, keeping at least `floor` vertices: a non-strict test would
+// retain collinear runs, and a collinear vertex has no removable edge for
+// `reduce_sides`.
 fn pop_non_left_turns(hull: &mut Vec<Vec2>, p: Vec2, floor: usize) {
     while hull.len() >= floor {
         let b = hull[hull.len() - 1];
@@ -51,19 +48,16 @@ fn pop_non_left_turns(hull: &mut Vec<Vec2>, p: Vec2, floor: usize) {
     }
 }
 
-/// Shrink a counter-clockwise convex ring to at most `sides` vertices by
-/// repeatedly deleting the edge whose deletion adds the least area.
-///
-/// Deleting edge `(b, c)` extends its two neighbouring edges to their
-/// intersection `x` and replaces both endpoints by it, so the ring stays convex
-/// and gains exactly the triangle `(b, c, x)`. The result therefore still
-/// contains everything the input contained, which is the property the collider
-/// needs; it is not a bounded-error approximation and none is claimed.
-///
-/// A ring of `n >= 5` vertices always has a deletable edge: exterior angles sum
-/// to `2*pi`, so some adjacent pair sums to at most `4*pi/n < pi` and its two
-/// edges meet ahead of the deleted one. Below five the loop is already done,
-/// since `sides >= 4`.
+// Deleting edge `(b, c)` extends its two neighbouring edges to their
+// intersection `x` and replaces both endpoints by it, so the ring stays convex
+// and gains exactly the triangle `(b, c, x)`. The result therefore still
+// contains everything the input contained, which is the property the collider
+// needs; it is not a bounded-error approximation and none is claimed.
+//
+// A ring of `n >= 5` vertices always has a deletable edge: exterior angles sum
+// to `2*pi`, so some adjacent pair sums to at most `4*pi/n < pi` and its two
+// edges meet ahead of the deleted one. Below five the loop is already done,
+// since `sides >= 4`.
 pub(super) fn reduce_sides(ring: &mut Vec<Vec2>, sides: usize) {
     debug_assert!(sides >= 4, "a convex ring cannot be reduced below a quad");
     while ring.len() > sides {
@@ -88,8 +82,8 @@ pub(super) fn reduce_sides(ring: &mut Vec<Vec2>, sides: usize) {
     }
 }
 
-/// Intersection of line `a -> b` extended past `b` with line `c -> d` extended
-/// back before `c`, or `None` when the two do not meet on that side.
+// Line `a -> b` extended past `b` against line `c -> d` extended back before
+// `c`. `None` when the two do not meet on that side.
 fn extend_to_meet(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Option<Vec2> {
     let ab = b - a;
     let cd = d - c;
@@ -107,8 +101,7 @@ fn extend_to_meet(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Option<Vec2> {
     Some(a + ab * t)
 }
 
-/// Twice the signed area of a ring, positive when counter-clockwise (the
-/// shoelace formula).
+// Shoelace formula: twice the signed area, positive when counter-clockwise.
 pub(super) fn double_area(ring: &[Vec2]) -> f32 {
     let n = ring.len();
     (0..n)
@@ -120,9 +113,9 @@ pub(super) fn double_area(ring: &[Vec2]) -> f32 {
         .sum()
 }
 
-/// Area centroid of a counter-clockwise convex ring, i.e. the centre of mass of
-/// a uniform prism over it. The vertex mean is not: it weights a subdivided
-/// edge as if the shape had mass there.
+// Area centroid, the centre of mass of a uniform prism over the ring. The
+// vertex mean is not: it weights a subdivided edge as if the shape had mass
+// there.
 pub(super) fn centroid(ring: &[Vec2]) -> Vec2 {
     let n = ring.len();
     let mut moment = Vec2::ZERO;
@@ -228,9 +221,8 @@ mod tests {
 
     #[test]
     fn reduction_deletes_the_cheapest_edge_first() {
-        // A square with one corner shaved by a tiny chamfer. Deleting the
-        // chamfer restores the corner and costs almost nothing; deleting any
-        // other edge costs a quarter of the square or more.
+        // A square with one corner shaved by a tiny chamfer: deleting the
+        // chamfer costs almost nothing, any other edge a quarter of the square.
         let mut ring = vec![
             Vec2::new(-1.0, -1.0),
             Vec2::new(1.0, -1.0),

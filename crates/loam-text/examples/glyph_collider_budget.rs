@@ -1,5 +1,3 @@
-//! Collider budget for a laid-out word: how many convex bodies the glyph path
-//! emits at each collider pitch, and what a solver pays to carry them. Run with
 //! `cargo run --release -p loam-text --example glyph_collider_budget`.
 
 use std::time::Instant;
@@ -19,7 +17,7 @@ const TIMED_STEPS: usize = 60;
 const BALL_RADIUS: f32 = 0.04;
 const BALLS: usize = 30;
 
-/// Fonts are not vendored; probe the usual system locations.
+// Fonts are not vendored.
 fn system_font() -> Option<Vec<u8>> {
     const CANDIDATES: &[&str] = &[
         r"C:\Windows\Fonts\arial.ttf",
@@ -39,8 +37,8 @@ fn system_font() -> Option<Vec<u8>> {
         })
 }
 
-/// Xorshift64 (Marsaglia, 2003, "Xorshift RNGs", eq. for the 13/7/17 triple),
-/// so the drop pattern is seeded and the timing is reproducible.
+// Xorshift64 (Marsaglia, 2003, "Xorshift RNGs", the 13/7/17 triple), so the
+// drop pattern is seeded and the timing is reproducible.
 struct Xorshift64(u64);
 
 impl Xorshift64 {
@@ -123,9 +121,8 @@ fn main() {
     );
 }
 
-/// Cross-section area of a letter's dynamic hull. The first `sides` vertices of
-/// the 4D prism are the ring itself, in order, so the shoelace formula reads
-/// straight off them.
+// The first `sides` vertices of the 4D prism are the ring itself, in order, so
+// the shoelace formula reads straight off them.
 fn hull_area(letter: &GlyphSolid) -> f32 {
     let Some((_, Shape::ConvexPolytope4D { vertices })) = letter.rigid_hull_4d() else {
         return 0.0;
@@ -141,12 +138,12 @@ fn hull_area(letter: &GlyphSolid) -> f32 {
     0.5 * doubled
 }
 
-/// Returns the body count and the mean microseconds per fixed step.
+// Returns the body count and the mean microseconds per fixed step.
 fn time_word(letters: &[GlyphSolid]) -> (usize, f64) {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
     // Along -z, so the spheres land on the letters' front faces rather than
-    // edge-on against a silhouette one cell thick.
+    // edge-on.
     world.push_field(Box::new(Gravity::new(Vec4::new(0.0, 0.0, -9.8, 0.0))));
 
     for letter in letters {

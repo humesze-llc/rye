@@ -1,24 +1,15 @@
-//! `Primitive4`, 4D-SDF emit and CPU evaluation for the [`loam_shape::Shape`]
-//! variants in ℝ⁴.
-
 use glam::Vec4;
 use loam_shape::Shape;
 
 use crate::literal::wgsl_f32;
 use crate::SENTINEL_DISTANCE;
 
-/// Emit and evaluate a 4D signed-distance function. Counterpart of
-/// [`crate::Primitive`] for 4D variants.
-///
-/// No `space: &S` parameter today: ℝ⁴ is the only 4D Space and it's flat, so
-/// chart-coord SDFs are correct.
+/// [`Self::eval_4d`] is the CPU twin of [`Self::to_wgsl_4d`]'s emitted body,
+/// exact up to `f32` rounding. No `space: &S` parameter: ℝ⁴ is the only 4D
+/// Space and it is flat, so chart-coord SDFs are correct.
 pub trait Primitive4 {
-    /// Emit a WGSL function named `name` taking `vec4<f32>` and returning `f32`.
     fn to_wgsl_4d(&self, name: &str) -> String;
 
-    /// Signed distance from `p` to `self`, the CPU twin of [`Self::to_wgsl_4d`]'s
-    /// emitted body. Exact up to `f32` rounding: the 4D emitter prints constants
-    /// in Rust's shortest round-tripping form, so no decimal truncation enters.
     fn eval_4d(&self, p: Vec4) -> f32;
 }
 

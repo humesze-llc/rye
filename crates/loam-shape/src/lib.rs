@@ -1,13 +1,7 @@
-//! `loam-shape`: the canonical geometric-primitive data model.
-//!
-//! Pose is extrinsic. Most shapes (Sphere, Box3, the polytopes) are defined in a local
-//! "shape frame" and positioned by the caller's transform: the physics body's
-//! `position`+`orientation`, or an SDF scene node's transform. The one exception is
-//! [`Shape::Sphere`], which carries a `center` field so SDF scenes can place spheres without a
-//! transform combinator. Physics ignores that field (it always uses the body's position), the
-//! physics sphere constructors set `center = Vec3::ZERO`.
-
-#![warn(missing_docs)]
+//! Pose is extrinsic: shapes are defined in a local frame and positioned by
+//! the caller's transform. [`Shape::Sphere`] and [`Shape::HyperSphere4D`] are
+//! the exceptions, carrying a `center` that SDF scenes use in place of a
+//! transform combinator and that physics ignores.
 
 pub mod isovolume;
 pub mod polytope;
@@ -20,11 +14,8 @@ pub use visualizable::{LineMesh, NotVisualizable, PointMesh, TriangleMesh, Visua
 use glam::{Vec2, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
-/// A geometric primitive. Used by both SDF rendering and physics collision; which subset of
-/// variants each role supports is documented on the per-role trait in each consumer crate.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Shape {
-    /// Sphere with a local center and radius.
     Sphere {
         /// Geodesic center in the shape frame. Ignored by physics.
         center: Vec3,
@@ -33,41 +24,35 @@ pub enum Shape {
         radius: f32,
     },
 
-    /// A half-space `{ p : dot(p, normal) − offset ≤ 0 }`, equivalent to a totally-geodesic plane
-    /// with the "solid" side picked by sign convention.
+    /// `{ p : dot(p, normal) − offset ≤ 0 }` is the solid side.
     HalfSpace {
         /// Assumed unit: `dot(p, normal) - offset` is read directly as a
         /// signed distance, which a non-unit normal rescales.
         normal: Vec3,
-        /// Signed distance from the origin to the plane along `normal`.
         offset: f32,
     },
 
-    /// Only meaningful on a static body
-    /// (`inv_mass = 0`); a dynamic half-space isn't physically sensible.
+    /// Only meaningful on a static body (`inv_mass = 0`); a dynamic
+    /// half-space is not physically sensible.
     HalfSpace4D {
         /// Assumed unit, as in [`Shape::HalfSpace`].
         normal: Vec4,
-        /// Signed distance from the origin to the 3-flat along `normal`.
         offset: f32,
     },
 
-    /// Axis-aligned 3D box, centered at the origin of its local frame.
     Box3 {
         /// Per-axis distance from the local origin to each face, so the box
         /// spans `[-half_extents, half_extents]`.
         half_extents: Vec3,
     },
 
-    /// Convex 2D polygon, counter-clockwise vertices in the local frame.
     Polygon2D {
-        /// Boundary loop in the local frame. Convexity is a precondition
-        /// SAT cannot detect the violation of; fewer than three vertices
-        /// yields no contact at all rather than an error.
+        /// Counter-clockwise boundary loop in the local frame. Convexity is a
+        /// precondition SAT cannot detect the violation of; fewer than three
+        /// vertices yields no contact at all rather than an error.
         vertices: Vec<Vec2>,
     },
 
-    /// Convex 3D polytope, arbitrary vertex list, assumed convex.
     ConvexPolytope3D {
         /// Unordered point set in the shape frame. The collider is its
         /// convex hull, so a non-convex list silently collides as the hull
@@ -75,14 +60,12 @@ pub enum Shape {
         vertices: Vec<Vec3>,
     },
 
-    /// Convex 4D polytope.
     ConvexPolytope4D {
         /// Unordered point set in R⁴; same hull semantics as
         /// [`Shape::ConvexPolytope3D`].
         vertices: Vec<Vec4>,
     },
 
-    /// 4D ball with a local centre and radius, the 4D analogue of [`Shape::Sphere`].
     HyperSphere4D {
         /// Center in the shape frame; unlike [`Shape::Sphere`] this is the
         /// pose, since `Scene4` has no transform combinator to carry it.
@@ -93,8 +76,6 @@ pub enum Shape {
 }
 
 impl Shape {
-    /// Runtime discriminant, used by physics narrowphase dispatch and by any consumer that needs
-    /// to route on shape type without pattern-matching on the enum.
     pub fn kind(&self) -> ShapeKind {
         match self {
             Shape::Sphere { .. } => ShapeKind::Sphere,
@@ -108,7 +89,6 @@ impl Shape {
         }
     }
 
-    /// Convenience constructor: a sphere at the origin of its local frame.
     pub fn sphere_at_origin(radius: f32) -> Self {
         Self::Sphere {
             center: Vec3::ZERO,
@@ -116,34 +96,22 @@ impl Shape {
         }
     }
 
-    /// Convenience constructor: an SDF-scene sphere placed at an arbitrary `center`.
     pub fn sphere_at(center: Vec3, radius: f32) -> Self {
         Self::Sphere { center, radius }
     }
 }
 
-/// Runtime discriminant of [`Shape`]. Keyed into dispatch tables by physics narrowphase and
-/// (eventually) any other consumer that needs O(1) variant routing.
-///
-/// One variant per `Shape` variant and [`Shape::kind`] is total, so a dispatch table indexed
-/// by this enum is exhaustive over shapes by construction.
+/// One variant per [`Shape`] variant, and [`Shape::kind`] is total, so a
+/// dispatch table indexed by this enum is exhaustive by construction.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ShapeKind {
-    /// Selects [`Shape::Sphere`].
     Sphere,
-    /// Selects [`Shape::HalfSpace`].
     HalfSpace,
-    /// Selects [`Shape::HalfSpace4D`].
     HalfSpace4D,
-    /// Selects [`Shape::Box3`].
     Box3,
-    /// Selects [`Shape::Polygon2D`].
     Polygon2D,
-    /// Selects [`Shape::ConvexPolytope3D`].
     ConvexPolytope3D,
-    /// Selects [`Shape::ConvexPolytope4D`].
     ConvexPolytope4D,
-    /// Selects [`Shape::HyperSphere4D`].
     HyperSphere4D,
 }
 

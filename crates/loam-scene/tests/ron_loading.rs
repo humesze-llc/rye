@@ -10,8 +10,7 @@ fn scenes_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes")
 }
 
-/// A file the test owns for the duration of one case. Named after the case so
-/// concurrently running tests cannot collide on it.
+// Named after the case so concurrently running tests cannot collide on it.
 struct TempScene(PathBuf);
 
 impl TempScene {

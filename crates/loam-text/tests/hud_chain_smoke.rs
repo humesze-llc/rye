@@ -1,7 +1,4 @@
-//! Smoke pin for the `TextRenderer` chain: construct, queue, record.
-//!
-//! The atlas and layout halves are pure-CPU and pinned in the crate's own unit
-//! tests. Only the wgpu half needs a device, and only it is `#[ignore]`d. The
+//! Only the wgpu half needs a device, and only it is `#[ignore]`d. The
 //! `gpu_probe` suffix is what CI's software-adapter job selects on.
 
 use loam_text::TextRenderer;
@@ -26,10 +23,8 @@ fn draw_hud_frame(
     Ok(())
 }
 
-/// First readable TTF from the well-known system font directories. The crate
-/// ships no font asset, so a machine without one panics naming the paths it
-/// probed: libtest reports an early return as a pass, which would leave this
-/// test green while asserting nothing.
+// Panics naming the paths it probed rather than returning: libtest reports an
+// early return as a pass, which would leave the test green asserting nothing.
 fn system_font() -> Vec<u8> {
     const CANDIDATES: &[&str] = &[
         r"C:\Windows\Fonts\arial.ttf",

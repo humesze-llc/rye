@@ -1,10 +1,6 @@
-//! Glyph letter pipeline: font outline to a slab-embedded 4D solid.
-//!
 //! Unlike [`crate::TextRenderer`]'s HUD path, which skips characters it cannot
 //! draw so a per-frame overlay never fails, this pipeline is a build-time step
-//! and rejects anything it cannot represent: a character the font has no glyph
-//! for, a control character, or an outline with no area all return
-//! [`GlyphError`].
+//! and returns [`GlyphError`] for anything it cannot represent.
 
 mod field;
 mod hull;
@@ -17,8 +13,8 @@ pub use solid::GlyphSolid;
 use ab_glyph::{Font, FontRef, GlyphId};
 use glam::Vec2;
 
-/// Distance reported by a blank glyph, which has no surface to be near. Finite
-/// so callers can still combine it with `min`/`max` without producing NaN.
+/// Reported by a blank glyph, which has no surface to be near. Finite so
+/// callers can still combine it with `min`/`max` without producing NaN.
 pub const BLANK_DISTANCE: f32 = 1.0e9;
 
 /// Floor for both grid pitches. Below this many cells per em the render bake
@@ -26,7 +22,6 @@ pub const BLANK_DISTANCE: f32 = 1.0e9;
 /// rather than a letter.
 pub const MIN_RESOLUTION: u32 = 4;
 
-/// Why a character could not be turned into a solid.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum GlyphError {
     #[error("font has no glyph for {ch:?}")]
@@ -51,26 +46,24 @@ pub enum GlyphError {
     },
 }
 
-/// How a word is turned into solids. All lengths are world units except
-/// [`Self::flatten_tolerance_em`], which is relative to the em so it is
-/// independent of [`Self::em_size`].
+/// All lengths are world units except [`Self::flatten_tolerance_em`], which is
+/// relative to the em so it is independent of [`Self::em_size`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlyphParams {
     /// World size of one em.
     pub em_size: f32,
     /// Extent along `z`, centred on `z = 0`.
     pub depth: f32,
-    /// `w` extent of the slab the letter occupies, `(min, max)`.
+    /// `(min, max)` `w` extent of the slab the letter occupies.
     pub slab: (f32, f32),
     /// Grid cells per em for the bake and the render decomposition.
     pub resolution: u32,
-    /// Grid cells per em for the collider cover, independent of
-    /// [`Self::resolution`]: legibility sets that one, the solver's body budget
-    /// sets this one.
+    /// Grid cells per em for the collider cover. Legibility sets
+    /// [`Self::resolution`]; the solver's body budget sets this one.
     pub collider_resolution: u32,
     /// Maximum chord deviation when flattening Bezier segments, in em.
     pub flatten_tolerance_em: f32,
-    /// Per-vertex colour of the emitted meshes, RGBA linear.
+    /// RGBA linear.
     pub color: [f32; 4],
 }
 
@@ -83,10 +76,9 @@ impl Default for GlyphParams {
             // 48 cells across an em resolves the thinnest stems of a text-weight
             // face while keeping the bake under a few million distance tests.
             resolution: 48,
-            // The same pitch for the cover, which is the conservative end of
-            // the useful range: LOAM comes out at 96 boxes and a 0.042 em
-            // margin, against 73 boxes and 0.063 em at 32 and 39 boxes and
-            // 0.125 em, about a stem width, at 16. See
+            // The conservative end of the useful range: LOAM measures 96 boxes
+            // at a 0.042 em margin here, against 73 boxes and 0.063 em at 32,
+            // and 39 boxes and 0.125 em (about a stem width) at 16. Measured by
             // `examples/glyph_collider_budget.rs`.
             collider_resolution: 48,
             flatten_tolerance_em: 0.002,
@@ -119,12 +111,9 @@ impl GlyphParams {
     }
 }
 
-/// Lay out `text` and bake one [`GlyphSolid`] per character, advancing the pen
-/// by each glyph's horizontal advance plus the pair's kerning.
-///
-/// Geometry is emitted in a shared word frame: baseline at `y = 0`, the first
-/// character's pen origin at `x = 0`. Characters the font defines with no
-/// outline (whitespace) yield a blank solid that carries only its advance.
+/// One [`GlyphSolid`] per character, in a shared word frame: baseline at
+/// `y = 0`, the first character's pen origin at `x = 0`. Characters the font
+/// defines with no outline yield a blank solid carrying only its advance.
 pub fn layout_word(
     font: &FontRef<'_>,
     text: &str,
@@ -187,8 +176,7 @@ mod tests {
     use super::*;
     use loam_shape::{Shape, Visualizable};
 
-    /// Fonts are not vendored; probe the usual system locations and skip
-    /// cleanly when none is present, matching `examples/text_smoke`.
+    // Fonts are not vendored, so these tests skip when the host has none.
     fn system_font() -> Option<Vec<u8>> {
         const CANDIDATES: &[&str] = &[
             r"C:\Windows\Fonts\arial.ttf",
@@ -352,9 +340,8 @@ mod tests {
             );
             previous_centroid_x = centroid_x;
 
-            // Ink stays inside the letter's own advance box. The margin covers
-            // side bearings a face may make negative, plus the padding cells
-            // the bake adds around the outline.
+            // Margin covers side bearings a face may make negative, plus the
+            // padding cells the bake adds around the outline.
             let cell = letter.field().expect("field").cell_size();
             let left = letter.pen_origin().x - 0.2 * letter.advance() - 2.0 * cell;
             let right = letter.pen_origin().x + 1.2 * letter.advance() + 2.0 * cell;
@@ -475,8 +462,7 @@ mod tests {
             assert!(!cover.clipped(), "{:?} ran off its domain", letter.ch());
             let margin = letter.collider_margin();
 
-            // Sweep the letter's advance box and a full em of height, offset
-            // off both grids so probes never land on a cell centre.
+            // Offset off both grids so probes never land on a cell centre.
             const PROBES: usize = 161;
             let x0 = letter.pen_origin().x - 0.25 * letter.advance();
             let width = 1.5 * letter.advance();

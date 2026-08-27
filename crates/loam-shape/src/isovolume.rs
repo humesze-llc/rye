@@ -1,40 +1,25 @@
-//! Conservative isovolume extraction: a signed-distance field turned into a
-//! set of convex boxes whose union encloses the field's solid region, so a
-//! shape that exists only as an SDF can be handed to a narrowphase.
-//!
-//! This is the collider-side analogue of marching cubes (Lorensen & Cline,
-//! 1987), and it deliberately solves a different problem. A mesher wants the
-//! isosurface interpolated; a collider wants the solid *enclosed*, because a
-//! piece of shape that no convex hull covers is a hole a body tunnels
-//! through. So the primitive here is a cell-occupancy test with a proof
-//! attached rather than an edge-crossing table:
+//! The collider-side analogue of marching cubes (Lorensen & Cline, 1987), but
+//! enclosing rather than interpolating the isosurface: a piece of shape that no
+//! convex hull covers is a hole a body tunnels through.
 //!
 //! An SDF is 1-Lipschitz (Hart, "Sphere Tracing", 1996, §2), so for a cell of
 //! centre `c` and half-diagonal `m` and any point `p` in that cell,
 //! `f(p) >= f(c) - m`. Marking every cell with `f(c) <= m` therefore marks a
 //! superset of the cells that meet `{f <= 0}`: the union of marked cells
 //! encloses the whole solid, and overshoots it by at most `2m` (a corner of a
-//! marked cell satisfies `f <= 2m`). No interpolation, no saddle cases, no
-//! per-cell topology table, and the guarantee holds in any dimension, which
-//! is what makes the 4D instantiation the same code as the 3D one.
+//! marked cell satisfies `f <= 2m`). The guarantee holds in any dimension,
+//! which is what makes the 4D instantiation the same code as the 3D one.
 //!
-//! Piece count is the whole problem. One convex piece per occupied cell is
-//! correct and useless: `res^D` shell cells is thousands of colliders before
-//! the resolution is interesting. The marked set is instead covered by
-//! first-fit maximal boxes: seed at the first uncovered cell in row-major
-//! order, grow the box one layer at a time in each of the `2D` axis
-//! directions while the new layer stays inside the marked set, emit it,
-//! repeat. Boxes may overlap (growth reads occupancy, only seeding reads
-//! coverage), which is what lets a later box swallow a whole interior slab
-//! instead of being fenced in by its predecessors. Seeding by scan order
-//! rather than by largest coverage is not the greedy set-cover rule, so
-//! Chvátal's `O(log n)` ratio (1979) does not transfer and no approximation
-//! bound is claimed here; the measured table below is the only evidence for
-//! the piece count.
+//! The marked set is covered by first-fit maximal boxes seeded in row-major
+//! scan order. Boxes may overlap because growth reads occupancy and only
+//! seeding reads coverage, which lets a later box swallow an interior slab.
+//! Scan-order seeding is not the greedy set-cover rule, so Chvátal's
+//! `O(log n)` ratio (1979) does not transfer and no approximation bound is
+//! claimed; the table below is the only evidence for the piece count.
 //!
-//! Measured on a torus and its 4D analogue (minor radius 0.3, major 1.0) by
-//! `examples/isovolume_piece_budget.rs`, `cover/solid` being the extracted
-//! volume over the analytic one:
+//! Measured on a torus and its 4D analogue (minor 0.3, major 1.0) by
+//! `examples/isovolume_piece_budget.rs`; `cover/solid` is extracted volume over
+//! analytic:
 //!
 //! | dim | resolution | occupied cells | pieces | cover/solid |
 //! |-----|-----------:|---------------:|-------:|------------:|
@@ -45,34 +30,27 @@
 //! | 4D  |         16 |          6 032 |    114 |        2.66 |
 //! | 4D  |         24 |         23 920 |    382 |        2.08 |
 //!
-//! Resolution 32 in 3D and 16 in 4D are the usable settings: roughly a
-//! hundred pieces, two to three percent of the occupied cells, and a cover
-//! under 3x the solid. The finer row under each buys fidelity at three to
-//! four times the piece count, which suits one hero shape rather than a
-//! scene of them. Piece count tracks the cover's shape complexity, not its
-//! cell count: refining the grid 4x in 3D multiplied cells by 64 and pieces
-//! by 13.
+//! Resolution 32 in 3D and 16 in 4D are the usable settings. Piece count tracks
+//! the cover's shape complexity, not its cell count: refining the grid 4x in 3D
+//! multiplied cells by 64 and pieces by 13.
 //!
-//! Everything is a fixed-order scan over `f32` with no hashing, so a given
-//! field and grid always produce the same boxes in the same order.
+//! Fixed-order scan over `f32` with no hashing, so a given field and grid always
+//! produce the same boxes in the same order.
 
 use glam::{Vec3, Vec4};
 
 use crate::Shape;
 
-/// A cell range, both corners inclusive, in grid index space.
+// Both corners inclusive, in grid index space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellBox<const D: usize> {
     lo: [usize; D],
     hi: [usize; D],
 }
 
-/// A signed-distance field covered by axis-aligned convex boxes.
-///
-/// Constructed by [`Isovolume::extract`]. The union of the boxes contains
-/// `{p : f(p) <= 0}` restricted to the sampled domain; [`Isovolume::clipped`]
-/// reports whether that domain was large enough for the containment to be
-/// unconditional.
+/// The union of the boxes contains `{p : f(p) <= 0}` restricted to the sampled
+/// domain; [`Isovolume::clipped`] reports whether that domain was large enough
+/// for the containment to be unconditional.
 #[derive(Clone, Debug)]
 pub struct Isovolume<const D: usize> {
     origin: [f32; D],
@@ -83,13 +61,11 @@ pub struct Isovolume<const D: usize> {
 }
 
 impl<const D: usize> Isovolume<D> {
-    /// Cover `{p : sdf(p) <= 0}` with convex boxes over the domain
-    /// `[min, max]`, sampling `resolution` cells along the longest axis.
-    ///
-    /// `sdf` must be a true signed distance (1-Lipschitz); a field that
-    /// merely has the right sign, such as an unnormalised implicit surface,
-    /// breaks the enclosure guarantee. `min`/`max` must contain the solid
-    /// with room for one cell of margin, which [`Isovolume::clipped`] checks.
+    /// `resolution` counts cells along the longest axis. `sdf` must be a true
+    /// signed distance (1-Lipschitz); a field that merely has the right sign,
+    /// such as an unnormalised implicit surface, breaks the enclosure
+    /// guarantee. `min`/`max` must contain the solid with room for one cell of
+    /// margin, which [`Isovolume::clipped`] checks.
     pub fn extract(
         min: [f32; D],
         max: [f32; D],
@@ -103,8 +79,7 @@ impl<const D: usize> Isovolume<D> {
             assert!(*e > 0.0, "domain must be non-degenerate on every axis");
         }
         // One cell size for every axis: the Lipschitz margin is the cell's
-        // half-diagonal, and a per-axis size would make that margin
-        // direction-dependent for no gain.
+        // half-diagonal, which a per-axis size would make direction-dependent.
         let cell = extent.iter().copied().fold(0.0f32, f32::max) / resolution as f32;
         let mut counts = [0usize; D];
         for (n, e) in counts.iter_mut().zip(extent.iter()) {
@@ -156,13 +131,10 @@ impl<const D: usize> Isovolume<D> {
         }
     }
 
-    /// Number of convex pieces.
     pub fn piece_count(&self) -> usize {
         self.boxes.len()
     }
 
-    /// Cells the occupancy test marked, i.e. the exact cell count the pieces
-    /// cover between them.
     pub fn occupied_cells(&self) -> usize {
         self.occupied_cells
     }
@@ -190,7 +162,7 @@ impl<const D: usize> Isovolume<D> {
         self.clipped
     }
 
-    /// Corner-to-corner bounds of piece `index` in the grid frame.
+    /// Corner-to-corner, in the grid frame.
     pub fn piece_bounds(&self, index: usize) -> ([f32; D], [f32; D]) {
         let b = self.boxes[index];
         let mut lo = [0.0f32; D];
@@ -202,8 +174,7 @@ impl<const D: usize> Isovolume<D> {
         (lo, hi)
     }
 
-    /// Whether `p` lies in the covered region. Linear in piece count: a
-    /// verification query, not a broadphase.
+    /// Linear in piece count: a verification query, not a broadphase.
     pub fn contains(&self, p: [f32; D]) -> bool {
         (0..self.boxes.len()).any(|i| {
             let (lo, hi) = self.piece_bounds(i);
@@ -213,9 +184,8 @@ impl<const D: usize> Isovolume<D> {
 }
 
 impl Isovolume<3> {
-    /// One collider per piece: the piece centre in the grid frame, paired
-    /// with an origin-centred 8-vertex hull. Pose is extrinsic per the
-    /// [`Shape`] contract, so the centre is the body position.
+    /// Pose is extrinsic per the [`Shape`] contract, so the returned centre is
+    /// the body position and the hull is origin-centred.
     pub fn colliders(&self) -> Vec<(Vec3, Shape)> {
         (0..self.boxes.len())
             .map(|i| {
@@ -237,8 +207,7 @@ impl Isovolume<3> {
 }
 
 impl Isovolume<4> {
-    /// One collider per piece: the piece centre in the grid frame, paired
-    /// with an origin-centred 16-vertex hull.
+    /// Same extrinsic-pose contract as the 3D form.
     pub fn colliders(&self) -> Vec<(Vec4, Shape)> {
         (0..self.boxes.len())
             .map(|i| {
@@ -269,7 +238,7 @@ fn cell_centre<const D: usize>(origin: &[f32; D], cell: f32, coords: &[usize; D]
     p
 }
 
-/// Axis 0 varies fastest.
+// Axis 0 varies fastest.
 fn flatten<const D: usize>(coords: &[usize; D], counts: &[usize; D]) -> usize {
     let mut index = 0;
     for k in (0..D).rev() {
@@ -287,7 +256,7 @@ fn unflatten<const D: usize>(mut index: usize, counts: &[usize; D]) -> [usize; D
     coords
 }
 
-/// Call `f` on every cell of `b` in row-major order until it returns false.
+// Row-major order; stops when `f` returns false.
 fn visit_cells<const D: usize>(b: &CellBox<D>, mut f: impl FnMut(&[usize; D]) -> bool) {
     let mut coords = b.lo;
     loop {
@@ -318,10 +287,9 @@ fn all_occupied<const D: usize>(b: &CellBox<D>, occupied: &[bool], counts: &[usi
     ok
 }
 
-/// Grow a single-cell box outwards one layer at a time, cycling the `2D`
-/// directions in a fixed order until a full round adds nothing. Round-robin
-/// rather than axis-at-a-time keeps the box from committing to one long
-/// direction and then being unable to thicken.
+// Round-robin over the `2D` directions rather than axis-at-a-time keeps the box
+// from committing to one long direction and then being unable to thicken. The
+// fixed order is what makes the piece set reproducible.
 fn grow<const D: usize>(seed: [usize; D], occupied: &[bool], counts: &[usize; D]) -> CellBox<D> {
     let mut b = CellBox { lo: seed, hi: seed };
     loop {
@@ -356,9 +324,8 @@ fn grow<const D: usize>(seed: [usize; D], occupied: &[bool], counts: &[usize; D]
 mod tests {
     use super::*;
 
-    /// Exact SDF of a torus of revolution about the y axis (Quilez,
-    /// "distance functions", 2019, `sdTorus`). Non-convex and smooth: the
-    /// case a vertex list cannot author and a primitive cannot approximate.
+    // Exact SDF of a torus of revolution about the y axis (Quilez, "distance
+    // functions", 2019, `sdTorus`).
     fn torus_3d(major: f32, minor: f32) -> impl Fn([f32; 3]) -> f32 {
         move |p| {
             let radial = (p[0] * p[0] + p[2] * p[2]).sqrt() - major;
@@ -366,8 +333,8 @@ mod tests {
         }
     }
 
-    /// The 4D analogue: revolve a 2-sphere of radius `minor` about the `w`
-    /// axis at distance `major`. Exact for the same reason the 3D form is.
+    // Revolve a 2-sphere of radius `minor` about the `w` axis at distance
+    // `major`. Exact for the same reason the 3D form is.
     fn torus_4d(major: f32, minor: f32) -> impl Fn([f32; 4]) -> f32 {
         move |p| {
             let radial = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() - major;
@@ -396,11 +363,10 @@ mod tests {
         )
     }
 
-    /// A deterministic low-discrepancy direction sequence: the additive
-    /// recurrence with the plastic-number constants (Roberts, "The unreasonable
-    /// effectiveness of quasirandom sequences", 2018) mapped to a sphere by
-    /// the cylindrical-equal-area construction. Seeded arithmetic only, so the
-    /// enclosure tests are reproducible bit for bit.
+    // Additive recurrence with the plastic-number constants (Roberts, "The
+    // unreasonable effectiveness of quasirandom sequences", 2018) mapped to a
+    // sphere by the cylindrical-equal-area construction. Seeded arithmetic
+    // only, so the enclosure tests are reproducible bit for bit.
     fn direction_3d(i: usize) -> [f32; 3] {
         const ALPHA_1: f32 = 0.754_877_7;
         const ALPHA_2: f32 = 0.569_840_3;
@@ -412,10 +378,9 @@ mod tests {
         [r * phi.cos(), r * phi.sin(), z]
     }
 
-    /// March out from an interior point along `dir` to the first sign change,
-    /// then bisect onto the zero level. Marching rather than assuming a
-    /// bracket matters for near-tangential rays, which leave the tube far
-    /// later than the minor radius would suggest.
+    // Marching to the first sign change rather than assuming a bracket matters
+    // for near-tangential rays, which leave the tube far later than the minor
+    // radius would suggest.
     fn surface_point_3d(
         sdf: &impl Fn([f32; 3]) -> f32,
         from: [f32; 3],

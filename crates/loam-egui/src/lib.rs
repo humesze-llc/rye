@@ -1,12 +1,7 @@
 //! `loam-egui`: integration glue between `loam-app` and the [egui] immediate-mode UI
 //! library.
 //!
-//! Wraps egui with a wgpu paint pass plus a few widgets; a future UI-framework
-//! migration replaces this crate rather than retargeting it.
-//!
 //! [egui]: https://github.com/emilk/egui
-//!
-//! ## Input gating
 //!
 //! Gameplay code gates on [`UiCapture`], reached through
 //! `loam_app::FrameCtx::ui_capture`: mouselook and picking on

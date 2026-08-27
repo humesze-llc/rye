@@ -50,8 +50,7 @@ pub struct Camera<S: Space> {
 
 impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
     /// Origin camera looking down −Z, 60° vertical FOV, near/far for
-    /// unit-scale scenes. A `Default` stand-in for `S` instances that
-    /// can't derive it; controllers usually overwrite the pose at once.
+    /// unit-scale scenes.
     pub fn at_origin() -> Self {
         Self {
             position: Vec3::ZERO,
@@ -215,19 +214,12 @@ mod tests {
         assert!((a - b).length() < tol, "expected {a:?} ≈ {b:?}");
     }
 
-    /// The pipeline the flat callers projected through before
-    /// [`Camera::ndc_from_world`] existed. `camera.aspect` stands in for the
-    /// ratio the old free function derived from its viewport argument.
     fn matrix_clip(camera: &Camera<EuclideanR3>, world: Vec3) -> Vec4 {
         let view = Mat4::look_to_rh(camera.position, camera.forward, camera.up);
         let proj = Mat4::perspective_rh(camera.fov_y, camera.aspect, camera.near, camera.far);
         proj * view * world.extend(1.0)
     }
 
-    /// Every visible sample is on the geodesic the renderer would march down
-    /// its own pixel: unproject the NDC, walk `exp` for the length of the
-    /// log, arrive at the point. Pinned against the Space's own exp/log, not
-    /// against a second implementation of the projection.
     fn assert_anchors_sit_on_their_own_geodesic<S>(space: &S, eye: Vec3, samples: &[Vec3], tol: f32)
     where
         S: Space<Point = Vec3, Vector = Vec3>,
@@ -266,7 +258,6 @@ mod tests {
         assert!((cam.right.length() - 1.0).abs() < 1e-6);
         assert!((cam.up.length() - 1.0).abs() < 1e-6);
         assert!((cam.forward.length() - 1.0).abs() < 1e-6);
-        // Right-handed: right × up = -forward.
         close(cam.right.cross(cam.up), -cam.forward, 1e-6);
         assert!(cam.right.dot(cam.up).abs() < 1e-6);
         assert!(cam.right.dot(cam.forward).abs() < 1e-6);
@@ -293,7 +284,6 @@ mod tests {
         let original = cam.view();
         cam.translate(Vec3::new(1.0, 2.0, -3.0), 1.0, &space);
         close(cam.position, Vec3::new(1.0, 2.0, -3.0), 1e-6);
-        // Transport is the identity in E³.
         close(cam.right, original.right, 1e-6);
         close(cam.up, original.up, 1e-6);
         close(cam.forward, original.forward, 1e-6);

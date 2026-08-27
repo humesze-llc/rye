@@ -1,15 +1,5 @@
 //! Frame-indexed playback of an authored timeline.
 //!
-//! A [`Timeline`] is keyframes in a file, a [`Playhead`] is an integer frame
-//! index, and sampling is a pure function of that index: [`Playhead::advance`]
-//! takes no argument and nothing here reads a wall-clock delta. That is what
-//! makes a capture re-shootable, because the host steps exactly one frame per
-//! update and the same binary plus the same file yields the same frames
-//! whatever the machine did between them.
-//!
-//! Three channel types and no more: `f32` for the slice offset and any scalar
-//! knob, [`Vec4`] for a body's translation, [`Rotor4`] for its orientation.
-//!
 //! This is presentation timing, not the crate's Tier-0 same-bits contract, and
 //! it must never feed simulation state. The property it does carry is the
 //! weaker same-binary-same-frames one.
@@ -21,9 +11,6 @@ use loam_math::{Bivector, Rotor, Rotor4};
 use serde::{Deserialize, Serialize};
 
 /// Named easing curve on `[0, 1] -> [0, 1]`.
-///
-/// Named rather than a function pointer, which is what `rye-anim` carried: a
-/// track is authored in a file and a pointer has no serialized form.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ease {
     #[default]
@@ -127,8 +114,7 @@ impl<T> Track<T> {
         Self::default()
     }
 
-    /// Append a key. Builder form for tracks written in code rather than RON;
-    /// order is checked by [`Timeline::validate`], not here.
+    /// Append a key.
     pub fn key(mut self, t: f32, value: T, ease: Ease) -> Self {
         self.keys.push(Key { t, value, ease });
         self
@@ -140,10 +126,7 @@ impl<T> Track<T> {
 }
 
 impl<T: Interpolate> Track<T> {
-    /// Value at `frame`. `t = frame / fps` is computed here rather than
-    /// carried by the caller: the clock outside is an integer, so a sampled
-    /// second is a function of the frame index and the file's rate and never
-    /// of elapsed wall-clock.
+    /// Value at `frame`.
     ///
     /// `None` only for an empty track, which [`Timeline::validate`] refuses.
     pub fn sample(&self, frame: u32, fps: NonZeroU32) -> Option<T> {
@@ -186,8 +169,7 @@ pub struct Timeline {
     pub fps: u32,
     /// Frame count; valid indices are `0..frames`.
     pub frames: u32,
-    /// The viewer's slicing hyperplane offset. No object owns it, so it is a
-    /// channel of the timeline rather than of a body.
+    /// The viewer's slicing hyperplane offset.
     #[serde(default)]
     pub w_slice: Option<Track<f32>>,
     #[serde(default)]
@@ -278,8 +260,7 @@ fn validate_rotors(track: &Track<Rotor4>, channel: &str) -> Result<(), TimelineE
     Ok(())
 }
 
-/// Why a timeline cannot be played. Every variant is an authoring fault, so
-/// the caller that gets one edits the file; none can arise mid-playback.
+/// Why a timeline cannot be played.
 #[derive(Debug, thiserror::Error)]
 pub enum TimelineError {
     #[error("fps must be nonzero")]
@@ -371,10 +352,8 @@ impl Playhead {
 
 /// Which clock writes a channel this frame.
 ///
-/// A host reads every channel a director might own through this, so "who
-/// writes this frame" is answered at the read rather than by a separate flag
-/// the caller can forget to check. Two clocks on one rotor is the defect the
-/// director exists to prevent; the `Host` arm is where a host runs its own
+/// Two clocks on one rotor is the defect the director exists to prevent; the
+/// `Host` arm is where a host runs its own
 /// clock, and nothing outside the host enforces that it does not run one in
 /// the other arm too.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -459,8 +438,6 @@ impl Director {
         self.timeline.bodies.iter().map(|b| b.name.as_str())
     }
 
-    // Linear: a timeline names a handful of bodies and a map would cost more
-    // per frame than the scan it replaces.
     fn body(&self, name: &str) -> Option<&BodyTrack> {
         self.timeline.bodies.iter().find(|b| b.name == name)
     }
@@ -530,9 +507,6 @@ mod tests {
         assert_eq!(track.sample(0, thirty), Some(0.0));
         assert_eq!(track.sample(15, thirty), Some(5.0));
         assert_eq!(track.sample(30, thirty), Some(10.0));
-        // The same key list read at twice the rate reaches the same value at
-        // twice the frame index, which is what makes fps a file property and
-        // not a machine one.
         assert_eq!(track.sample(30, FPS), Some(5.0));
         assert_eq!(track.sample(60, FPS), Some(10.0));
     }
@@ -594,8 +568,6 @@ mod tests {
             assert_eq!(walked.position("row"), other.position("row"));
             assert_eq!(walked.orientation("row"), other.orientation("row"));
         }
-        // Re-reading the same frame is also idempotent: nothing in the path
-        // carries state between reads.
         assert_eq!(walked.orientation("row"), walked.orientation("row"));
     }
 
@@ -625,7 +597,6 @@ mod tests {
         playhead.seek(99);
         assert_eq!(playhead.frame(), 9);
         assert!(playhead.finished());
-        // A paused playhead still seeks: that is the scrub path.
         playhead.seek(0);
         assert_eq!(playhead.frame(), 0);
     }
@@ -861,11 +832,6 @@ mod tests {
 
     #[test]
     fn a_directed_channel_never_advances_the_hosts_wall_clock() {
-        // Models the playground's spin path, `rot_time += dt * rate_scale`
-        // once per update, written the way `Drive` invites: the clock runs in
-        // the `Host` arm only. The pin is that the `Directed` arm is taken on
-        // every frame the timeline names the channel, so a host shaped this
-        // way never integrates.
         let mut director = Director::new(spin_timeline()).unwrap();
         let mut host_rot_time = 0.0f32;
         let mut directed_frames = 0;
@@ -880,8 +846,6 @@ mod tests {
 
         assert_eq!(directed_frames, 200);
         assert_eq!(host_rot_time, 0.0);
-        // Ownership does not lapse when the timeline runs out, nor when the
-        // playhead is paused mid-scrub.
         assert!(director.finished());
         assert!(matches!(director.orientation("row"), Drive::Directed(_)));
         director.set_playing(false);

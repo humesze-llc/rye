@@ -53,7 +53,6 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> PlayerState<S> {
         if len2 < 1e-8 {
             return;
         }
-        // Normalize so diagonal movement isn't faster, then scale by speed.
         let t = tangent * (speed / len2.sqrt());
         self.position = space.exp(self.position, t);
     }

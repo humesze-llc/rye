@@ -1,13 +1,3 @@
-//! egui's stock [`Slider`](egui::Slider) renders its value as a variable-width text
-//! inside the slider, which means the slider's visual right edge shifts as the value's
-//! character count changes (e.g., `0.5` -> `12.34`). When several sliders sit in a
-//! vertical stack, that shift makes the whole column jitter frame-to-frame.
-//!
-//! This widget separates the value display into a fixed-width side cell and disables
-//! the slider's own value rendering. The side cell exposes a context menu with a
-//! [`DragValue`](egui::DragValue) for precise numeric entry, useful when the slider's
-//! drag granularity is too coarse for the desired value.
-
 use egui::{
     vec2, Align, Button, CursorIcon, DragValue, Layout, RichText, Slider, SliderClamping, Ui,
 };

@@ -837,8 +837,9 @@ pub(crate) fn build_wireframe_meshes(
             } else {
                 &[]
             };
-        // max, so the color stays temporally stable. Per-polytope: the bands
-        // differ.
+        // Normalized against the CANONICAL max |w|, not the rotated per-frame
+        // max, so the color stays temporally stable as the rotor swings a
+        // vertex from -w to +w. Per-polytope: the band differs.
         let w_extent_local: f32 = if matches!(style.color_mode, WireframeColorMode::WDepth) {
             let canonical_max_w = topo
                 .vertices

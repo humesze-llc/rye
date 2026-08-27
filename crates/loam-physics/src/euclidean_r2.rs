@@ -8,13 +8,11 @@ use crate::integrator::PhysicsSpace;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
-/// Scalar bivector component of `u ∧ v` in R²: `u.x*v.y - u.y*v.x`.
 fn cross2d(u: Vec2, v: Vec2) -> f32 {
     u.x * v.y - u.y * v.x
 }
 
-/// Inverse moment of inertia; 0 for static or zero-inertia bodies (infinite
-/// inertia).
+// Static and zero-inertia bodies are treated as infinite, so 0.
 fn inv_inertia(body: &RigidBody<EuclideanR2>) -> f32 {
     if body.inv_mass > 0.0 && body.inertia > 0.0 {
         1.0 / body.inertia
@@ -25,7 +23,6 @@ fn inv_inertia(body: &RigidBody<EuclideanR2>) -> f32 {
 
 impl PhysicsSpace for EuclideanR2 {
     type AngVel = Bivector2;
-    /// Scalar moment of inertia I about the body's center.
     type Inertia = f32;
 
     fn integrate_orientation(&self, iso: Iso2, omega: Bivector2, dt: f32) -> Iso2 {
@@ -96,7 +93,7 @@ impl PhysicsSpace for EuclideanR2 {
     }
 }
 
-/// Moment of inertia for a solid disk: `I = ½·m·r²`.
+/// `I = ½·m·r²`.
 pub fn disk_inertia(mass: f32, radius: f32) -> f32 {
     0.5 * mass * radius * radius
 }
@@ -117,8 +114,7 @@ pub fn sphere_body(
     )
 }
 
-/// Register the 2D Euclidean narrowphase functions (reversed pairs handled by
-/// the dispatch table's auto-flip).
+/// Reversed pairs are handled by the dispatch table's auto-flip.
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR2>) {
     np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r2);
     np.register(
@@ -167,9 +163,8 @@ fn sphere_sphere_r2(
     })
 }
 
-// Polygon-polygon via SAT (Separating Axis Theorem). Axis of minimum overlap
-// gives the contact normal and penetration depth. Local vertices must be CCW;
-// outward edge normals are `(edge.y, -edge.x) / |edge|`.
+// SAT: the axis of minimum overlap gives normal and depth. Local vertices must
+// be CCW, so outward edge normals are `(edge.y, -edge.x) / |edge|`.
 
 use loam_math::Rotor;
 
@@ -192,8 +187,7 @@ fn project_onto(axis: Vec2, verts: &[Vec2]) -> (f32, f32) {
     (lo, hi)
 }
 
-/// Smallest-overlap axis over `sides`'s edge normals; `None` if any axis
-/// separates the two polygons.
+// `None` if any axis separates the two polygons.
 fn best_axis_from(sides: &[Vec2], other: &[Vec2]) -> Option<(Vec2, f32)> {
     let n = sides.len();
     let mut best: Option<(Vec2, f32)> = None;
@@ -256,9 +250,8 @@ fn polygon_polygon_r2(
         normal = -normal;
     }
 
-    // Contact-point heuristic: deepest vertex of each polygon along the normal,
-    // then whichever lies inside the other (the penetrating vertex in a
-    // vertex-face contact). Edge-edge or grazing falls back to the midpoint.
+    // Heuristic: the deepest vertex of each polygon along the normal, then
+    // whichever lies inside the other. Edge-edge or grazing takes the midpoint.
     let mut deepest_a = va[0];
     let mut max_proj = va[0].dot(normal);
     for &v in &va[1..] {
@@ -294,7 +287,6 @@ fn polygon_polygon_r2(
     })
 }
 
-/// True if `p` lies inside the convex polygon given by CCW vertices `poly`.
 fn point_in_convex_ccw(poly: &[Vec2], p: Vec2) -> bool {
     for i in 0..poly.len() {
         let v0 = poly[i];
@@ -308,12 +300,10 @@ fn point_in_convex_ccw(poly: &[Vec2], p: Vec2) -> bool {
     true
 }
 
-/// Closest point on the polygon boundary (edges) to `p`, its distance, and the
-/// outward unit normal of the edge realizing it. `None` when no edge has usable
-/// length, which leaves the polygon without a boundary to be closest to.
-///
-/// The edge normal is the only orientation signal left when `p` sits on the
-/// boundary, where `p − closest` underflows and carries no direction.
+// Returns the closest boundary point, its distance, and the outward unit
+// normal of the edge realizing it; `None` when no edge has usable length. The
+// edge normal is the only orientation signal left when `p` sits on the
+// boundary, where `p − closest` underflows and carries no direction.
 fn closest_on_polygon_boundary(poly: &[Vec2], p: Vec2) -> Option<(Vec2, f32, Vec2)> {
     let mut best: Option<(Vec2, f32, Vec2)> = None;
     for i in 0..poly.len() {
@@ -358,11 +348,9 @@ fn sphere_polygon_r2(
         return None;
     }
 
-    // The solver drives A along `−normal`, so `−normal` has to be the way out
-    // of the polygon. The nearest boundary point lies that way from inside and
-    // the opposite way from outside; `center − closest` for both points into
-    // the polygon from inside, which makes a slab thinner than the disk a trap
-    // rather than a stop.
+    // The solver drives A along `−normal`, so `−normal` must be the way out.
+    // Using `center − closest` for both cases points into the polygon from
+    // inside, making a slab thinner than the disk a trap rather than a stop.
     let out_of_polygon = if inside {
         closest - center
     } else {
@@ -370,8 +358,8 @@ fn sphere_polygon_r2(
     };
     let normal = -out_of_polygon.try_normalize().unwrap_or(edge_outward);
 
-    // Distance to travel to clear the surface: `dist` to reach the boundary
-    // from inside, or `dist` already covered from outside, plus the radius.
+    // Distance to clear the surface: `dist` to reach the boundary from inside,
+    // or `dist` already covered from outside, plus the radius.
     let penetration = if inside { radius + dist } else { radius - dist };
 
     Some(Contact {
@@ -382,7 +370,7 @@ fn sphere_polygon_r2(
     })
 }
 
-/// CCW vertices of a regular n-gon with circumradius `r`; first vertex on +X.
+/// CCW, first vertex on +X.
 pub fn regular_polygon_vertices(n: u32, r: f32) -> Vec<Vec2> {
     use std::f32::consts::TAU;
     (0..n)
@@ -393,8 +381,8 @@ pub fn regular_polygon_vertices(n: u32, r: f32) -> Vec<Vec2> {
         .collect()
 }
 
-/// Centroidal moment of inertia of a solid regular n-gon:
-/// `I = (m·r²/6)·(1 + 2·cos²(π/n))`. Limits to the disk `m·r²/2` as n->∞.
+/// `I = (m·r²/6)·(1 + 2·cos²(π/n))`, which limits to the disk `m·r²/2` as
+/// n -> ∞.
 pub fn regular_polygon_inertia(mass: f32, n: u32, r: f32) -> f32 {
     use std::f32::consts::PI;
     let c = (PI / n as f32).cos();
@@ -420,7 +408,6 @@ pub fn polygon_body(
     )
 }
 
-/// CCW corners of an axis-aligned rectangle centered at origin.
 fn rectangle_vertices(half_extents: Vec2) -> Vec<Vec2> {
     let (hx, hy) = (half_extents.x, half_extents.y);
     vec![
@@ -458,7 +445,7 @@ pub fn static_wall(center: Vec2, half_extents: Vec2) -> RigidBody<EuclideanR2> {
         Collider::Polygon2D {
             vertices: rectangle_vertices(half_extents),
         },
-        // Any finite value works; the solver gates angular response on
+        // Any finite value works: the solver gates angular response on
         // `inv_mass > 0`, so static walls never rotate.
         1.0,
         &EuclideanR2,
@@ -623,12 +610,11 @@ mod tests {
     }
 
     const SLAB_HALF: f32 = 0.05;
-    /// Larger than the slab's half thickness, so a disk inside overlaps both
-    /// faces at once and the wrong exit is always available.
+    // Larger than the slab's half thickness, so a disk inside overlaps both
+    // faces at once and the wrong exit is always available.
     const DISK_RADIUS: f32 = 0.1;
 
-    /// Disk on the x axis against a slab spanning `|x| ≤ SLAB_HALF`, tall
-    /// enough on y that the disk meets a face and never a corner.
+    // Tall enough on y that the disk meets a face and never a corner.
     fn slab_and_disk(center_x: f32) -> (RigidBody<EuclideanR2>, RigidBody<EuclideanR2>) {
         (
             sphere_body(Vec2::new(center_x, 0.0), Vec2::ZERO, DISK_RADIUS, 1.0),
@@ -915,9 +901,8 @@ mod tests {
 
     #[test]
     fn box_stack_settles_to_rest() {
-        // Capped at N=3: one contact per pair per frame can't
-        // resist tipping in a tall stack, and manifolds populate too slowly for
-        // fast-loading ones.
+        // Capped at N=3: one contact per pair per frame cannot resist tipping
+        // in a tall stack, and manifolds populate too slowly for fast loads.
         let mut world = World::new(EuclideanR2);
         register_default_narrowphase(&mut world.narrowphase);
 

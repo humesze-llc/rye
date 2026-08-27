@@ -1,8 +1,6 @@
-//! Space-generic rigid-body physics.
-//!
-//! The integration loop is written against [`loam_math::Space`] operations only: `exp`,
-//! `parallel_transport`, `distance`. It does not assume flat space. A new
-//! `impl PhysicsSpace for ...` plugs in any Space without modifying solver code.
+//! The integration loop is written against [`loam_math::Space`] operations
+//! only, so it does not assume flat space: `exp`, `parallel_transport`,
+//! `distance`.
 
 pub mod body;
 pub mod collider;

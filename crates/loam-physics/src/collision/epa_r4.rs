@@ -1,12 +1,9 @@
-//! EPA in R⁴: Expanding Polytope for 4D penetration depth.
-//!
 //! Every geometric threshold here is a dimensionless coefficient times the
 //! caller's `scale` raised to the homogeneity degree of the quantity it
-//! guards, so the resolved depth and normal are equivariant under a uniform
-//! scaling of both bodies. The contact point is not, and cannot be: a facet
-//! tiled by several coplanar tetra offers one witness per tile, and which tile
-//! terminates the expansion is not a similarity invariant. The scaled
-//! threshold set is private; `scale` is the whole of its public contract.
+//! guards, so depth and normal are equivariant under a uniform scaling of both
+//! bodies. The contact point is not, and cannot be: a facet tiled by several
+//! coplanar tetra offers one witness per tile, and which tile terminates the
+//! expansion is not a similarity invariant.
 
 use glam::Vec4;
 
@@ -16,15 +13,12 @@ use super::simplex_r4::project_origin_onto_affine_hull;
 const EPA_MAX_ITERATIONS: u32 = 96;
 const EPA_MAX_VERTICES: usize = 192;
 
-/// Support gap at which the expansion has reached the boundary, per unit of
-/// `scale`. Degree 1: the compared quantity is the distance between two planes
-/// with the same unit normal. Held absolute it buys a fixed number of world
-/// units of depth accuracy rather than a fixed number of digits, so a
-/// millimetre-scale body converges to noise and a kilometre-scale one stops
-/// several digits short of the boundary it was asked for.
+// Support gap at which the expansion has reached the boundary, per unit of
+// `scale`. Degree 1: the compared quantity is the distance between two planes
+// with the same unit normal. Held absolute it buys a fixed number of world
+// units of depth accuracy rather than a fixed number of digits.
 const EPA_TOLERANCE: f32 = 1e-3;
 
-/// Resolved 4D contact info; the 3D [`super::epa::ContactInfo`] with `Vec4` fields.
 #[derive(Clone, Copy, Debug)]
 pub struct ContactInfo4 {
     pub normal: Vec4,
@@ -59,8 +53,8 @@ impl Thresholds {
 struct Polytope4 {
     vertices: Vec<MinkowskiPoint4>,
     faces: Vec<Face4>,
-    /// Centroid of the seed 5-simplex, and the sole orientation reference for
-    /// every face: expansion only adds vertices, so it stays interior.
+    /// Centroid of the seed 5-simplex. Expansion only adds vertices, so it
+    /// stays interior and every face can orient against it.
     centroid: Vec4,
     thresholds: Thresholds,
 }
@@ -105,18 +99,12 @@ impl Polytope4 {
         }
     }
 
-    /// Distance-0 faces are the rule rather than the exception in 4D:
-    /// [`gjk_intersect_r4`][super::gjk_r4::gjk_intersect_r4] grows its
-    /// terminating sub-simplex to five vertices by adding supports on one side
-    /// of it, so whenever that sub-simplex has fewer than five vertices the
-    /// origin ends up on a proper face of the seed and every seed face through
-    /// it starts at distance 0. Those are the faces EPA has to expand across,
-    /// so they compete for the minimum on equal terms. Skipping them starts the
-    /// expansion on the far side of the difference body, where it converges to
-    /// a supporting face that is not the minimum: a normal that points through
-    /// the obstacle instead of out of it, at whatever depth that far facet
-    /// sits. Expanding across them terminates because [`FACE_COPLANAR_EPS`]
-    /// retires the coplanar tiles they belong to.
+    // Distance-0 faces are the rule in 4D: `gjk_intersect_r4` grows a
+    // sub-simplex of fewer than five vertices by adding supports on one side,
+    // leaving the origin on a proper face of the seed. They compete for the
+    // minimum on equal terms; skipping them converges on a far facet whose
+    // normal points through the obstacle. `FACE_COPLANAR_EPS` retires the
+    // coplanar tiles, which is what makes expansion across them terminate.
     fn closest_face(&self) -> Option<usize> {
         self.faces
             .iter()
@@ -163,63 +151,48 @@ impl Polytope4 {
     }
 }
 
-/// Band around a face plane, per unit of `scale`, in which a support point
-/// counts as lying on it, so that `expand` retires the face instead of keeping
-/// it.
-///
-/// A facet of a Minkowski difference of polytopes is generally not a simplex
-/// (the difference body of a 4-simplex has prism facets), so it is tiled by
-/// several coplanar tetrahedral faces and support points land exactly on their
-/// shared plane. Keeping those tiles while their neighbours are retired stitches
-/// the new vertex into a facet that is already covered: the surface stops being
-/// convex, later iterations chase interior faces, and EPA returns a normal that
-/// can point from B toward A. The plane residual of a 4-term dot product is a
-/// few ULPs of the operands (~4e-7 per unit of `scale`, and 1e-7 measurably
-/// misses coplanar tiles), while the gap that is the precondition for calling
-/// `expand` at all is `EPA_TOLERANCE`, two orders up.
-///
-/// Degree 1: the residual is a distance along a unit normal, so it grows
-/// linearly with the bodies, and held absolute it is the whole of the
-/// large-side failure. At circumradius 1e3 the pentatope resolves 216.7 deep
-/// against an exact 746.8 with `n_x = 0.667` against 0.913, and the 600-cell
-/// and 120-cell collapse to zero depth on a zero normal; scaling this one
-/// constant and leaving the other three absolute makes all three exact.
+// Band around a face plane, per unit of `scale`, in which a support point
+// counts as lying on it, so `expand` retires the face. A facet of a Minkowski
+// difference is generally not a simplex, so it is tiled by coplanar tetra and
+// support points land exactly on their shared plane; keeping one tile while
+// its neighbours retire makes the surface non-convex and EPA can return a
+// normal pointing from B toward A. The plane residual of a 4-term dot product
+// is a few ULPs of the operands (~4e-7 per unit of `scale`; 1e-7 measurably
+// misses coplanar tiles), against `EPA_TOLERANCE` two orders up.
+//
+// Degree 1: a distance along a unit normal. Held absolute, at circumradius 1e3
+// the pentatope resolves 216.7 against an exact 746.8, and the 600-cell and
+// 120-cell collapse to zero depth on a zero normal.
 const FACE_COPLANAR_EPS: f32 = 1e-5;
 
-/// Floor on the wedge of a face tetra's three edge vectors, per `scale`
-/// cubed, below which the tetra has no usable normal direction: the Hodge dual
-/// of three dependent edges normalizes to NaN, and NaN reaches the solver as a
-/// contact.
-///
-/// Degree 3: the wedge of three vectors is a 3-volume. Held absolute it is the
-/// second guard to fire on the small side, hidden behind
-/// [`SEED_DEGENERATE_VOLUME`]: scale that floor alone and the pentatope,
-/// tesseract, 24-cell and 600-cell still return `None` at circumradius 1e-3,
-/// on this one.
+// Floor on the wedge of a face tetra's three edge vectors, per `scale` cubed,
+// below which the Hodge dual of three dependent edges normalizes to NaN and
+// the NaN reaches the solver as a contact.
+//
+// Degree 3: the wedge of three vectors is a 3-volume. Held absolute it is the
+// second guard to fire on the small side, behind [`SEED_DEGENERATE_VOLUME`].
 const FACE_DEGENERATE_WEDGE: f32 = 1e-8;
 
-/// Floor on the seed 5-simplex's 4-volume, per `scale` to the fourth, below
-/// which the seed lies in a hyperplane and has no interior for `build_face` to
-/// orient against.
-///
-/// Degree 4: `det4` of four edge vectors is a 4-volume, so it loses four
-/// decades of headroom per decade of shrinkage. Held absolute this is the
-/// first guard to fire on the small side, and the reason all six polychora
-/// fixtures return `None` at circumradius 1e-3 and resolve at 1e-2.
+// Floor on the seed 5-simplex's 4-volume, per `scale` to the fourth, below
+// which the seed lies in a hyperplane and has no interior for `build_face` to
+// orient against.
+//
+// Degree 4: `det4` of four edge vectors is a 4-volume, so it loses four
+// decades of headroom per decade of shrinkage. Held absolute it is the first
+// guard to fire on the small side, and the reason all six polychora fixtures
+// return `None` at circumradius 1e-3 and resolve at 1e-2.
 const SEED_DEGENERATE_VOLUME: f32 = 1e-8;
 
-/// A triangle index triple; winding implicit in order.
 type Triangle = (usize, usize, usize);
 
-/// Winding is irrelevant here: matching is order-insensitive (see
-/// `add_or_remove_triangle`).
+// Winding is irrelevant: matching is order-insensitive.
 fn tet_triangles(tet: &[usize; 4]) -> [Triangle; 4] {
     let (a, b, c, d) = (tet[0], tet[1], tet[2], tet[3]);
     [(a, b, c), (a, b, d), (a, c, d), (b, c, d)]
 }
 
-/// Add a triangle to the horizon, or cancel it if its index-set is already
-/// present (a triangle shared by two removed tetra is interior).
+// A triangle shared by two removed tetra is interior, so a second occurrence
+// cancels the first.
 fn add_or_remove_triangle(horizon: &mut Vec<Triangle>, tri: Triangle) {
     let key = sort_triangle(tri);
     if let Some(pos) = horizon.iter().position(|t| sort_triangle(*t) == key) {
@@ -235,12 +208,11 @@ fn sort_triangle(t: Triangle) -> (usize, usize, usize) {
     (a[0], a[1], a[2])
 }
 
-/// Orientation comes from the seed centroid alone. The origin is the tempting
-/// second reference and is wrong: it is interior only while GJK's containment
-/// verdict holds exactly, and GJK accepts a simplex whose closest point is
-/// within its own tolerance of the origin, so on a near-tangency the origin can
-/// sit outside the seed. Orienting one face against it there inverts that face
-/// and EPA converges on a plane that is not the boundary at all.
+// Orientation comes from the seed centroid alone. The origin is interior only
+// while GJK's containment verdict holds exactly, and GJK accepts a simplex
+// whose closest point is within its own tolerance of the origin, so on a
+// near-tangency orienting against the origin inverts a face and EPA converges
+// on a plane that is not the boundary.
 fn build_face(
     verts: &[MinkowskiPoint4],
     a: usize,
@@ -282,9 +254,8 @@ fn build_face(
     })
 }
 
-/// Generalized 4D cross product: the vector perpendicular to `u`, `v`, `w`. The
-/// Hodge dual of `u ∧ v ∧ w`, mapping `e_123 -> −e_4, e_124 -> +e_3,
-/// e_134 -> −e_2, e_234 -> +e_1`. Components are four signed 3×3 determinants.
+// Hodge dual of `u ∧ v ∧ w`, mapping `e_123 -> −e_4, e_124 -> +e_3,
+// e_134 -> −e_2, e_234 -> +e_1`.
 fn hodge_dual_of_trivector_wedge(u: Vec4, v: Vec4, w: Vec4) -> Vec4 {
     // t_ijk = det of (u, v, w) on columns (i, j, k).
     let t_234 = det3(u.y, u.z, u.w, v.y, v.z, v.w, w.y, w.z, w.w);
@@ -311,15 +282,10 @@ fn det3(
     a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20)
 }
 
-/// Resolve penetration for overlapping 4D shapes given GJK's terminating 5-simplex.
-///
-/// `scale` is the characteristic length of the Minkowski difference; the
-/// caller's contract is to pass the sum of the two bodies' bounding radii,
-/// which every caller already computes for its broadphase pre-cull. Each of
-/// the four thresholds below is its constant times `scale` raised to that
-/// constant's degree, which is what makes the depth and normal equivariant
-/// under a uniform scaling of both bodies. A `scale` that does not track the
-/// geometry narrows or widens all four bands at once.
+/// `initial_simplex` is GJK's terminating 5-simplex. `scale` is the
+/// characteristic length of the Minkowski difference: the caller owes the sum
+/// of the two bounding radii, and a `scale` that does not track the geometry
+/// narrows or widens all four thresholds at once.
 pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
     a: &A,
     b: &B,
@@ -370,7 +336,7 @@ pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
     contact_from_face(&polytope, polytope.faces[face_idx])
 }
 
-/// 4×4 determinant of the matrix with rows `r0..r3` (Laplace expansion, first row).
+// Laplace expansion on the first row.
 fn det4(r0: Vec4, r1: Vec4, r2: Vec4, r3: Vec4) -> f32 {
     r0.x * det3(r1.y, r1.z, r1.w, r2.y, r2.z, r2.w, r3.y, r3.z, r3.w)
         - r0.y * det3(r1.x, r1.z, r1.w, r2.x, r2.z, r2.w, r3.x, r3.z, r3.w)
@@ -398,31 +364,15 @@ fn contact_from_face(polytope: &Polytope4, face: Face4) -> Option<ContactInfo4> 
     })
 }
 
-/// Barycentric weights of `closest` on all four vertices of the face tetra.
-///
-/// The face plane is the tetra's affine hull, so `closest` lies in it by
-/// construction and the affine solve reproduces it: `Σ wᵢ·vᵢ = closest`, which
-/// is what makes the reconstructed witnesses satisfy
-/// `point_a − point_b = normal·penetration`. Weights go negative when the
-/// projection leaves the tetra, which happens whenever a Minkowski-difference
-/// facet is tiled by several coplanar faces (see [`FACE_COPLANAR_EPS`]) and the
-/// projection lands on a neighbouring tile. Clamping to the nearest point of
-/// this tile instead, as `simplex_r4::closest_to_origin` does, drops vertices
-/// from the combination and breaks the identity.
-///
-/// A negative weight therefore makes `point_a` and `point_b` affine
-/// extrapolations: each leaves the convex hull of its own shape's support
-/// points, so neither witness is guaranteed to lie on its surface, and their
-/// midpoint can sit outside both bodies. That is deliberate. The contact point
-/// feeds a lever arm and a manifold merge radius, both of which want the
-/// combination that reproduces `closest`; a witness clamped back onto the hull
-/// would name a surface point whose difference is no longer the penetration
-/// vector.
-///
-/// The tetra centroid is the fallback for a singular Gram system. `build_face`
-/// floors the tetra's 3-volume, so reaching it takes a face anisotropic enough
-/// to lose a pivot in f32, where no decomposition of the plane point would be
-/// trustworthy.
+// Affine, not convex: `Σ wᵢ·vᵢ = closest` is what makes the witnesses satisfy
+// `point_a − point_b = normal·penetration`, and clamping to this tile as
+// `simplex_r4::closest_to_origin` does would drop vertices and break it.
+// Weights go negative when the projection lands on a neighbouring coplanar
+// tile (see `FACE_COPLANAR_EPS`), leaving both witnesses off their own hulls;
+// the contact point feeds a lever arm and a merge radius, which want the
+// combination that reproduces `closest`. The centroid fallback covers a
+// singular Gram system, reachable only for a face anisotropic enough to lose a
+// pivot in f32.
 fn face_barycentrics(points: &[Vec4; 4], closest: Vec4) -> [f32; 4] {
     let shifted = points.map(|p| p - closest);
     match project_origin_onto_affine_hull(&[0, 1, 2, 3], &shifted) {
@@ -519,9 +469,8 @@ mod tests {
     fn contact_from_face_realizes_the_plane_projection_outside_the_tetra() {
         use super::super::simplex_r4::closest_to_origin;
 
-        // Tetra in the hyperplane x = 1, so the plane projection is x̂; the
-        // affine coordinates below are not all non-negative, which puts x̂
-        // outside the tetra.
+        // Tetra in the hyperplane x = 1, so the plane projection is x̂. The
+        // affine coordinates below are not all non-negative: x̂ is outside it.
         let points = [
             Vec4::new(1.0, 1.0, 0.0, 0.0),
             Vec4::new(1.0, 0.0, 1.0, 0.0),
@@ -604,11 +553,9 @@ mod tests {
         })
     }
 
-    /// Base tetrahedron around the origin in `w = 0` plus an apex at height
-    /// `h`, giving `|det| = 8·h` against a volume floor of
-    /// `SEED_DEGENERATE_VOLUME·SPHERE_PAIR_SCALE⁴` = 1.6e-7: `h = 0` is the
-    /// flat seed, and every height sampled below clears the floor by more than
-    /// an order.
+    // Base tetrahedron around the origin in `w = 0` plus an apex at height
+    // `h`, so `|det| = 8·h` against a volume floor of
+    // `SEED_DEGENERATE_VOLUME·SPHERE_PAIR_SCALE⁴` = 1.6e-7.
     fn seed_of_height(h: f32) -> [MinkowskiPoint4; 5] {
         seed([
             Vec4::new(-1.0, -1.0, -1.0, 0.0),
@@ -721,15 +668,13 @@ mod tests {
     const WALL_HALF: f32 = 0.05;
     const WALL_SPAN: f32 = 2.0;
     const BALL_RADIUS: f32 = 0.1;
-    /// Distance from the wall's midplane at which the ball stops touching it,
-    /// and so the half-width of the interval the sweep below covers.
+    // Distance from the wall's midplane at which the ball stops touching it.
     const CAPTURE: f32 = WALL_HALF + BALL_RADIUS;
-    /// `epa_r4`'s contract is a bounding radius, so the wall contributes its
-    /// diagonal half-span and not its thickness: 3.46 for a slab 0.1 thick.
-    /// This is the anisotropic case, where the characteristic length overstates
-    /// the gaps the contact actually turns on by a factor of 35; the sweep
-    /// below is the evidence that the widened bands still swallow nothing,
-    /// worst depth error 2.5e-4 either way.
+    // `epa_r4`'s contract is a bounding radius, so the wall contributes its
+    // diagonal half-span and not its thickness: 3.46 for a slab 0.1 thick.
+    // That overstates the gaps the contact turns on by a factor of 35, and the
+    // sweep is the evidence that the widened bands swallow nothing, worst
+    // error 2.5e-4.
     fn wall_scale() -> f32 {
         BALL_RADIUS + Vec4::new(WALL_HALF, WALL_SPAN, WALL_SPAN, WALL_SPAN).length()
     }
@@ -787,19 +732,16 @@ mod tests {
         }
     }
 
-    // The polytope fixtures below all take `B = A + t`, so the Minkowski
-    // difference is `K − t` with `K = A ⊕ (−A)` the difference body. For an
-    // interior origin the depth is `min_j (h_K(u_j) − ⟨u_j, t⟩)` over K's
-    // facet normals `u_j`, and the minimizing `u_j` is the contact normal.
-    // Support functions add over Minkowski sums (Schneider 2014, *Convex
-    // Bodies: The Brunn-Minkowski Theory*, §1.7) and the normal fan of a sum
-    // is the common refinement of the summands' fans (Ziegler 1995, *Lectures
-    // on Polytopes*, §7.1), which is what gives each K below its facet list.
-    // Every fixture but the pentatope uses a centrally symmetric polytope, so
-    // there `−A = A`, `K = 2A`, and `h_K = 2·h_A` on the facet normals of A.
-    // Pinning both the depth and the normal is what makes these regressions on
-    // `FACE_COPLANAR_EPS`: drop it to 0 and the pentatope, 24-cell and
-    // 600-cell all resolve against a face the expansion should have retired.
+    // The fixtures below take `B = A + t`, so the Minkowski difference is
+    // `K − t` with `K = A ⊕ (−A)`, and for an interior origin the depth is
+    // `min_j (h_K(u_j) − ⟨u_j, t⟩)` over K's facet normals, the minimizer
+    // being the contact normal. Support functions add over Minkowski sums
+    // (Schneider 2014, *Convex Bodies: The Brunn-Minkowski Theory*, §1.7) and
+    // the normal fan of a sum is the common refinement of the summands' fans
+    // (Ziegler 1995, *Lectures on Polytopes*, §7.1), which gives each K its
+    // facet list. Every fixture but the pentatope is centrally symmetric, so
+    // there `K = 2A` and `h_K = 2·h_A`. Drop `FACE_COPLANAR_EPS` to 0 and the
+    // pentatope, 24-cell and 600-cell resolve against a retired face.
 
     #[test]
     fn pentatope_pentatope_contact_matches_difference_body_facet() {
@@ -983,9 +925,8 @@ mod tests {
         let phi = (1.0 + root5) * 0.5;
         let inradius600 = phi * phi / (2.0 * 2.0_f32.sqrt());
 
-        // Name, vertex generator, and the closed-form depth and normal
-        // x-component at circumradius 1 with `t = 0.3·x̂`, each derived in the
-        // single-scale fixture above.
+        // Closed-form depth and normal x-component at circumradius 1 with
+        // `t = 0.3·x̂`, each derived in the single-scale fixture above.
         type ScaleFixture = (&'static str, fn(f32) -> Vec<Vec4>, f32, f32);
         let fixtures: [ScaleFixture; 6] = [
             (
@@ -1029,9 +970,8 @@ mod tests {
                 let contact = epa_r4(&a, &b, simplex, scale)
                     .unwrap_or_else(|| panic!("{name} at scale {s} resolved to no contact"));
 
-                // The termination test is `EPA_TOLERANCE * scale`, so that is
-                // the bound the depth is entitled to and anything tighter
-                // would pin the fixture's luck.
+                // The termination test is `EPA_TOLERANCE * scale`, so
+                // anything tighter would pin the fixture's luck.
                 let want_depth = unit_depth * s;
                 assert!(
                     (contact.penetration - want_depth).abs() <= EPA_TOLERANCE * scale,

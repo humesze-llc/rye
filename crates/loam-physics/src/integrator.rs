@@ -4,48 +4,34 @@ use loam_math::{Bivector, IsometryGroup, Space};
 
 use crate::body::RigidBody;
 
-/// A [`Space`] equipped with rotation dynamics: angular velocity, inertia, and
-/// orientation integration.
-///
 /// [`IsometryGroup`] is a supertrait because a body's orientation is an
 /// isometry of the whole manifold ([`RigidBody::orientation`]), which restricts
 /// physics to the spaces that have one.
-///
 pub trait PhysicsSpace: Space + IsometryGroup {
-    /// Angular-velocity bivector (e.g. [`loam_math::Bivector2`],
-    /// [`loam_math::Bivector3`]).
     type AngVel: Bivector;
 
-    /// Inertia: scalar in 2D, 3×3 in 3D, 6×6 bivector map in 4D. Layout opaque.
+    /// Scalar in 2D, 3×3 in 3D, 6×6 bivector map in 4D. Layout opaque.
     type Inertia: Copy;
 
-    /// Integrate orientation by angular velocity over a timestep.
     fn integrate_orientation(&self, iso: Self::Iso, omega: Self::AngVel, dt: f32) -> Self::Iso;
 
-    /// Apply the inverse inertia to a torque-bivector.
     fn apply_inv_inertia(&self, inertia: Self::Inertia, torque: Self::AngVel) -> Self::AngVel;
 
-    /// Wedge product `a ∧ b` of two tangent vectors, as an angular-velocity
-    /// bivector.
     fn wedge(&self, a: Self::Vector, b: Self::Vector) -> Self::AngVel;
 
-    /// World-space velocity of `body` at world point `p`: linear plus the
-    /// angular contribution `ω × (p − body.position)`.
+    /// Linear plus the angular contribution `ω × (p − body.position)`.
     fn velocity_at_point(&self, body: &RigidBody<Self>, p: Self::Point) -> Self::Vector
     where
         Self: Sized;
 
-    /// Inverse effective mass for a unit-direction impulse at `contact_point`
-    /// between `a` and `b`. The PGS solver divides by this to turn a velocity
-    /// constraint into an impulse magnitude:
+    /// The PGS solver divides by this to turn a velocity constraint into an
+    /// impulse magnitude:
     ///
-    /// ```text
-    /// K = inv_m_a + inv_m_b
-    ///      + ((r_a ∧ n) · I_a⁻¹ · (r_a ∧ n))
-    ///      + ((r_b ∧ n) · I_b⁻¹ · (r_b ∧ n))
-    /// ```
+    ///   K = inv_m_a + inv_m_b
+    ///        + ((r_a ∧ n) · I_a⁻¹ · (r_a ∧ n))
+    ///        + ((r_b ∧ n) · I_b⁻¹ · (r_b ∧ n))
     ///
-    /// Returns 0 only when both bodies are static.
+    /// It is 0 only when both bodies are static.
     fn effective_mass_inv(
         &self,
         a: &RigidBody<Self>,
@@ -56,9 +42,8 @@ pub trait PhysicsSpace: Space + IsometryGroup {
     where
         Self: Sized;
 
-    /// Apply a linear+angular impulse of magnitude `magnitude` along `direction` at world point
-    /// `contact_point`. Sign convention: subtracts from A, adds to B (matches `Contact::normal`
-    /// pointing from A toward B as the *separating* direction).
+    /// Sign convention: subtracts from A, adds to B, matching `Contact::normal`
+    /// pointing from A toward B as the separating direction.
     fn apply_contact_impulse(
         &self,
         a: &mut RigidBody<Self>,
@@ -70,10 +55,9 @@ pub trait PhysicsSpace: Space + IsometryGroup {
         Self: Sized;
 }
 
-/// Space-generic integration step: advance position along the geodesic,
-/// parallel-transport velocity to the new tangent space, integrate orientation.
-/// Calls only [`loam_math::Space::exp`], [`loam_math::Space::parallel_transport`],
-/// and [`PhysicsSpace::integrate_orientation`].
+/// Calls only [`loam_math::Space::exp`],
+/// [`loam_math::Space::parallel_transport`] and
+/// [`PhysicsSpace::integrate_orientation`], so it stays space-generic.
 pub fn integrate_body<S>(space: &S, body: &mut RigidBody<S>, dt: f32)
 where
     S: PhysicsSpace,

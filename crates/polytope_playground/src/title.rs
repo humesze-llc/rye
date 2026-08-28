@@ -13,14 +13,15 @@ use glam::{Mat4, Vec3};
 use loam_app::{egui, Camera, CameraController, FrameCtx, OrbitController, RenderCtx, SetupCtx};
 use loam_egui::{Console, ConsoleUi};
 use loam_math::{EuclideanR3, Projection};
-use loam_render::sky_ground::{GROUND_DARK_GREY, GROUND_LIGHT_GREY};
 use loam_render::{
-    device::RenderDevice, DepthBuffer, DepthMode, FragmentShading, Ground, SkyGroundNode,
+    device::RenderDevice, DepthBuffer, DepthMode, FragmentShading, SkyGroundNode,
     SkyGroundUniforms, TriangleRasterNode, Viewport,
 };
 use loam_shape::{TriangleMesh, Visualizable};
 use loam_text::glyph::{layout_word, GlyphParams};
 use loam_time::{Director, Drive};
+
+use crate::environment::{register_ground_command, Environment};
 
 // Letters are indexed across the whole title, so the timeline addresses
 // `PLAYGROUND`'s `P` as `letter8`.
@@ -265,7 +266,8 @@ impl Transit {
 pub(crate) struct TitleScene {
     camera: Camera<EuclideanR3>,
     orbit: OrbitController<EuclideanR3>,
-    console: Console<()>,
+    console: Console<Environment>,
+    environment: Environment,
     triangles: TriangleRasterNode,
     sky_ground: SkyGroundNode,
     depth: Option<DepthBuffer>,
@@ -276,9 +278,15 @@ pub(crate) struct TitleScene {
 }
 
 impl TitleScene {
+    fn build_console() -> Console<Environment> {
+        let mut console = Console::<Environment>::new();
+        loam_app::shell::register_command::<Environment, crate::shell::Playground>(&mut console);
+        register_ground_command(&mut console, |env| env);
+        console
+    }
+
     pub(crate) fn new(ctx: &mut SetupCtx<'_>) -> Result<Self> {
-        let mut console = Console::<()>::new();
-        loam_app::shell::register_command::<(), crate::shell::Playground>(&mut console);
+        let console = Self::build_console();
 
         let letters = typeset(&title_font()?)?;
         let transit = Transit::new(Director::from_ron(TIMELINE_RON)?, letters.len())?;
@@ -292,6 +300,7 @@ impl TitleScene {
             camera,
             orbit,
             console,
+            environment: Environment::default(),
             triangles: TriangleRasterNode::new(
                 &ctx.rd.device,
                 ctx.rd.target_format(),
@@ -327,7 +336,8 @@ impl loam_app::shell::Scene for TitleScene {
         cmd: &loam_app::command::CommandLine,
         _ctx: &mut loam_app::command::CommandCtx<'_>,
     ) -> anyhow::Result<()> {
-        self.console.dispatch(&cmd.name, &cmd.arg_refs(), &mut ());
+        self.console
+            .dispatch(&cmd.name, &cmd.arg_refs(), &mut self.environment);
         Ok(())
     }
 
@@ -392,12 +402,7 @@ impl loam_app::shell::Scene for TitleScene {
             &SkyGroundUniforms::new(
                 view_proj,
                 Viewport::full([cfg.width, cfg.height]),
-                Ground {
-                    y: GROUND_Y,
-                    dark: GROUND_DARK_GREY,
-                    light: GROUND_LIGHT_GREY,
-                    visible: true,
-                },
+                self.environment.ground(GROUND_Y, true),
             ),
         );
         self.sky_ground
@@ -897,5 +902,13 @@ mod tests {
             assert_eq!(transit.director.frame(), frames - 1);
         }
         assert_eq!(section_at(&letters, &transit).vertices, landed.vertices);
+    }
+
+    #[test]
+    fn the_console_carries_the_live_ground_controls() {
+        assert!(TitleScene::build_console().has_command("ground"));
+        let mut env = Environment::default();
+        TitleScene::build_console().dispatch("ground", &["light", "0.4", "0.4", "0.4"], &mut env);
+        assert_eq!(env.light, [0.4, 0.4, 0.4]);
     }
 }

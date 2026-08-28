@@ -673,6 +673,8 @@ impl RotateScene {
             .with_args(&[&["on", "off"]]),
         );
 
+        environment::register_ground_command(&mut c, |demo| &mut demo.environment);
+
         c
     }
 }
@@ -700,6 +702,11 @@ mod tests {
     #[test]
     fn handles_arg_rejects_an_unknown_token() {
         assert!(handles_arg(Some("yes"), false).is_err());
+    }
+
+    #[test]
+    fn the_console_carries_the_live_ground_controls() {
+        assert!(RotateScene::build_console().has_command("ground"));
     }
 
     #[test]

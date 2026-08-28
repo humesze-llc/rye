@@ -34,6 +34,11 @@ pub const SKY_HORIZON: Color = Color {
 pub const GROUND_DARK_GREY: [f32; 3] = [0.18, 0.20, 0.24];
 pub const GROUND_LIGHT_GREY: [f32; 3] = [0.30, 0.32, 0.36];
 
+/// Sky blended into the ground per world unit of view distance. Half the sky
+/// is mixed in at `ln 2 / density`, so this is the number that decides how far
+/// out the checker stays legible.
+pub const DEFAULT_FOG_PER_UNIT: f32 = 0.02;
+
 /// The checkerboard plane under the sky. `y` is a parameter because a scene
 /// may centre its content on the origin, where a plane at `y = 0` would cut it
 /// in half.
@@ -42,6 +47,9 @@ pub struct Ground {
     pub y: f32,
     pub dark: [f32; 3],
     pub light: [f32; 3],
+    /// See [`DEFAULT_FOG_PER_UNIT`]. Drives both the sky blend and the
+    /// checker band-limit, which is why it is one number and not two.
+    pub fog_per_unit: f32,
     pub visible: bool,
 }
 
@@ -59,6 +67,11 @@ pub struct SkyGroundUniforms {
     pub ground_y: f32,
     pub ground_light: [f32; 3],
     pub show_ground: f32,
+    /// std140 keeps the trailing `f32` in a 16-byte slot only if the slot
+    /// starts on a 16-byte boundary, and the struct's `mat4x4` alignment
+    /// rounds its size up to one. These three floats are that slot's lead.
+    pub fog_pad: [f32; 3],
+    pub fog_per_unit: f32,
 }
 
 impl SkyGroundUniforms {
@@ -75,6 +88,8 @@ impl SkyGroundUniforms {
             ground_y: ground.y,
             ground_light: ground.light,
             show_ground: if ground.visible { 1.0 } else { 0.0 },
+            fog_pad: [0.0; 3],
+            fog_per_unit: ground.fog_per_unit,
         }
     }
 }
@@ -91,6 +106,8 @@ struct Uniforms {
     ground_y: f32,
     ground_light: vec3<f32>,
     show_ground: f32,
+    fog_pad: vec3<f32>,
+    fog_per_unit: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -99,8 +116,6 @@ struct Uniforms {
 // 1.0 to the last f32 bit and the pixel is sky whatever the intersection
 // returns. It is here so the division cannot produce an infinity.
 const HORIZON_EPS: f32 = 1.0e-6;
-
-const FOG_PER_UNIT: f32 = 0.05;
 
 // The hyperslice kernel's key light and ambient floor, so a marched body and
 // the ground under it take the same shading.
@@ -155,7 +170,7 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
     }
 
     let p_hit = near + rd * t;
-    let fog = 1.0 - exp(-t * FOG_PER_UNIT);
+    let fog = 1.0 - exp(-t * u.fog_per_unit);
     let base = ground_color(p_hit, u.ground_dark, u.ground_light, fog);
     // The plane's normal is +Y everywhere, so the Lambert term is one number
     // for the whole surface and only the sky blend varies across it.
@@ -404,6 +419,11 @@ mod tests {
                 "show_ground",
                 std::mem::offset_of!(SkyGroundUniforms, show_ground),
             ),
+            ("fog_pad", std::mem::offset_of!(SkyGroundUniforms, fog_pad)),
+            (
+                "fog_per_unit",
+                std::mem::offset_of!(SkyGroundUniforms, fog_per_unit),
+            ),
         ];
         assert_eq!(members.len(), rust_offsets.len());
         for (member, (name, offset)) in members.iter().zip(rust_offsets) {
@@ -453,6 +473,7 @@ mod tests {
                 y: ground_y,
                 dark: GROUND_DARK_GREY,
                 light: GROUND_LIGHT_GREY,
+                fog_per_unit: DEFAULT_FOG_PER_UNIT,
                 visible: true,
             },
         )

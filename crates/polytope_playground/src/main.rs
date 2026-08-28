@@ -16,9 +16,8 @@ use loam_render::{
     raymarch::{
         polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
     },
-    sky_ground::{GROUND_DARK_GREY, GROUND_LIGHT_GREY},
-    DepthBuffer, DepthMode, Ground, LineRasterNode, PointRasterNode, SkyGroundNode,
-    SkyGroundUniforms, TriangleRasterNode, Viewport,
+    DepthBuffer, DepthMode, LineRasterNode, PointRasterNode, SkyGroundNode, SkyGroundUniforms,
+    TriangleRasterNode, Viewport,
 };
 use loam_shape::polytope::{
     polytope_section_faces_append, polytope_section_perimeter_append, vertex_color_by_position,
@@ -46,6 +45,7 @@ mod composer;
 mod console;
 mod consts;
 mod director;
+mod environment;
 mod filmstrip;
 mod hero;
 mod hud;
@@ -325,6 +325,7 @@ impl Demo {
             cell_centers_cache: std::collections::HashMap::new(),
             surface_scale: 1.0,
             floor_enabled: true,
+            environment: environment::Environment::default(),
             section_faces,
             section_faces_translucent,
             section_faces_projected_scratch: loam_shape::TriangleMesh::<3>::default(),

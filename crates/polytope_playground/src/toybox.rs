@@ -3,7 +3,9 @@
 //! `w` is in it, so the impulse that arrests a landing hull also slides it off
 //! the slice. The scene answers that at the spawn, with a drop shallow enough
 //! and a pose flat enough to keep the landing inside [`SETTLED_W_BAND`], rather
-//! than by damping `w`: the `w` a body-body contact imparts is the point.
+//! than by damping `w`: the `w` a body-body contact imparts is the point. For
+//! the same reason [`ANGULAR_DAMPING`] has no linear counterpart: a linear
+//! damper is exactly what would erase that drift.
 
 use std::borrow::Cow;
 
@@ -18,12 +20,14 @@ use loam_physics::euclidean_r4::{
 };
 use loam_physics::{BodyId, Gravity, World};
 use loam_render::{
-    DepthBuffer, DepthMode, Ground, LineRasterNode, SkyGroundNode, SkyGroundUniforms,
-    TriangleRasterNode, Viewport,
+    DepthBuffer, DepthMode, LineRasterNode, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode,
+    Viewport,
 };
 use loam_shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
 use loam_shape::{LineMesh, TriangleMesh};
 
+use crate::consts::W_SCRUB_RATE;
+use crate::environment::{register_ground_command, Environment};
 use crate::physics::ndc_from_pixels;
 
 const TICK_HZ: u32 = 60;
@@ -43,9 +47,14 @@ const GRAVITY: f32 = -9.8;
 // the drawn floor cannot drift from the one the bodies land on.
 const FLOOR_Y: f32 = 0.0;
 
-// The slice every cross-section is cut at. A body's distance from it is what
-// [`section_alpha`] fades on.
+// Slice every cross-section is cut at when the scene boots. A body's distance
+// from the live slice is what [`section_alpha`] fades on.
 const W_SLICE: f32 = 0.0;
+
+// Half-range the slice scrubs over. A toy is `BODY_SIZE` across in `w`, so this
+// carries the slice about three body widths either side of the pile: far enough
+// to lose every cross-section, near enough that the way back is one held key.
+const W_SLICE_RANGE: f32 = 1.5;
 
 const BODY_MASS: f32 = 1.0;
 
@@ -113,6 +122,28 @@ const MAX_RELEASE_SPEED: f32 = 0.5 * TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL / SO
 const MAX_ANGULAR_SPEED: f32 =
     0.5 * TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL / (BODY_SIZE * SOLVER_DT);
 
+// Speed a release actually throws at. [`MAX_RELEASE_SPEED`] is 16.2 u/s, the
+// fastest the R⁴ narrowphase still resolves: a safety ceiling, not a design
+// speed, and a throw at it crosses the whole container in under half a second.
+// At 4 u/s a saturating flick carries a toy 2.5 body widths, 2.25 units, past
+// the release point, measured by
+// `the_release_speed_is_a_feel_speed_under_the_narrowphase_ceiling`. A pure
+// Coulomb slide (`loam_physics::response::FRICTION_COEFF` 0.35 against
+// gravity) stops in v²/(2·mu·g) = 2.3 units, which the tumbling hull matches. The ceiling still binds above this: the hold drive that
+// carries a body under the cursor and the spin a lever arm converts the throw
+// into are both clamped there.
+const RELEASE_SPEED: f32 = 4.0;
+
+const _: () = assert!(RELEASE_SPEED < MAX_RELEASE_SPEED);
+
+// Per-second exponential decay of a free-flight tumble, applied per solver
+// substep. A body knocked off the ground keeps no contact to brake its spin,
+// so without this it tumbles until something catches it; at 1.2 the spin is
+// down to a tenth in two seconds. LINEAR velocity is deliberately undamped:
+// the `w` a body-body contact imparts is positional drift, and a linear damper
+// is exactly what would suppress it.
+const ANGULAR_DAMPING: f32 = 1.2;
+
 // Rate, in 1/s, at which a held body closes the gap to the cursor's plane
 // point. One tick moves it `GRAB_STIFFNESS/TICK_HZ` of the way, so the body
 // arrives in about three ticks and cannot overshoot: the drive re-reads the
@@ -166,6 +197,22 @@ const REST_ANGULAR_SPEED: f32 = 0.3;
 // A toy that only ever landed carries no readout; anything past the band it
 // settles in got there by being touched.
 const W_LABEL_MIN: f32 = SETTLED_W_BAND;
+
+// Half-extent of the container, in `x` and in `z`. The outermost toy's hull
+// reaches `2 * SPAWN_SPACING + BODY_SIZE` = 3.25, and the boot camera frames
+// the whole floor rectangle (`the_boot_camera_frames_the_whole_arena`). Both
+// wall normals are pure `x` or pure `z`, so a wall's NORMAL impulse carries no
+// `w` any more than the floor's does.
+const ARENA_HALF_EXTENT: f32 = 3.6;
+
+// Contact restitution is the mean of the two bodies', so a wall at 0.4 against
+// a toy at 0.05 rebounds at 0.225: a hard throw comes back rather than
+// stopping dead against an invisible plane.
+const WALL_RESTITUTION: f32 = 0.4;
+
+const ARENA_OUTLINE_COLOR: [f32; 4] = [0.55, 0.60, 0.68, 1.0];
+
+const ARENA_OUTLINE_WIDTH_PX: f32 = 1.5;
 
 // Determinant magnitude below which the ray lies in the triangle's plane. It is
 // twice the triangle area times the cosine to the ray; a cap triangle at this
@@ -261,6 +308,9 @@ pub(crate) struct Toybox {
     world: World<EuclideanR4>,
     toys: Vec<ToyBody>,
     grab: Option<Grab>,
+    /// The `w` every cross-section is cut at. Scene state, not a constant: the
+    /// held arrow keys and the panel slider both move it.
+    slice: f32,
     tick: u64,
     local_vertices: Vec<Vec4>,
     section_scratch: SectionScratch,
@@ -274,6 +324,12 @@ impl Toybox {
         world.push_field(Box::new(Gravity::new(Vec4::new(0.0, GRAVITY, 0.0, 0.0))));
         let floor = world.push_body(halfspace4_body_r4(Vec4::Y, FLOOR_Y));
         world.bodies[floor].restitution = RESTITUTION;
+        for normal in [Vec4::X, -Vec4::X, Vec4::Z, -Vec4::Z] {
+            // `dot(p, n) >= offset` is the solid side, so a wall facing inward
+            // from `+ARENA_HALF_EXTENT` takes the negative offset.
+            let wall = world.push_body(halfspace4_body_r4(normal, -ARENA_HALF_EXTENT));
+            world.bodies[wall].restitution = WALL_RESTITUTION;
+        }
 
         // Mixing in an odd constant keeps seed 0 usable: xorshift64* has a
         // fixed point at zero.
@@ -330,6 +386,7 @@ impl Toybox {
             world,
             toys,
             grab: None,
+            slice: W_SLICE,
             tick: 0,
             local_vertices: Vec::new(),
             section_scratch: SectionScratch::default(),
@@ -337,23 +394,40 @@ impl Toybox {
         }
     }
 
-    pub(crate) fn held(&self) -> Option<usize> {
-        self.grab.as_ref().map(|grab| grab.toy)
+    pub(crate) fn slice(&self) -> f32 {
+        self.slice
+    }
+
+    pub(crate) fn set_slice(&mut self, slice: f32) {
+        self.slice = slice.clamp(-W_SLICE_RANGE, W_SLICE_RANGE);
+    }
+
+    /// One frame of the held Up/Down scrub. `dir` is `+1` up, `-1` down, and
+    /// `dt` the sim time the frame covers, so the scrub replays with the tick
+    /// stream rather than the wall clock.
+    pub(crate) fn scrub_slice(&mut self, dir: f32, dt: f32) {
+        self.set_slice(self.slice + dir * W_SCRUB_RATE * dt);
     }
 
     pub(crate) fn position(&self, toy: usize) -> Vec4 {
         self.world.bodies[self.toys[toy].body].position
     }
 
-    /// Offset from [`W_SLICE`], per toy, read from the live body.
+    /// Offset from the live slice, per toy, read from the live body.
     pub(crate) fn w_offsets(&self) -> impl Iterator<Item = (usize, f32)> + '_ {
+        let slice = self.slice;
         (self.toys.iter().enumerate())
-            .map(|(index, toy)| (index, self.world.bodies[toy.body].position.w - W_SLICE))
+            .map(move |(index, toy)| (index, self.world.bodies[toy.body].position.w - slice))
     }
 
     pub(crate) fn tick(&mut self) {
+        let decay = (-ANGULAR_DAMPING * SOLVER_DT).exp();
         for _ in 0..SUBSTEPS_PER_TICK {
             self.world.step(SOLVER_DT);
+            for toy in &self.toys {
+                let body = &mut self.world.bodies[toy.body];
+                body.angular_velocity = body.angular_velocity * decay;
+            }
         }
         self.latch_parked_bodies();
         self.tick += 1;
@@ -401,7 +475,10 @@ impl Toybox {
         // otherwise turn the lever arm under the grab.
         body.velocity = Vec4::ZERO;
         body.angular_velocity = Bivector4::ZERO;
-        let grabbed = Vec4::new(hit.x, hit.y, hit.z, W_SLICE);
+        // The hull is grabbed where the ray met it in R³ and at the body's own
+        // `w`: a body off the slice would otherwise be handled by a point
+        // outside it, and the lever arm would swing it as the drive pulled.
+        let grabbed = Vec4::new(hit.x, hit.y, hit.z, body.position.w);
         let lever_local = body
             .orientation
             .rotation
@@ -443,7 +520,7 @@ impl Toybox {
         let Some(grab) = self.grab.take() else {
             return;
         };
-        let velocity = clamp_length(grab.trail.velocity(), MAX_RELEASE_SPEED);
+        let velocity = clamp_length(grab.trail.velocity(), RELEASE_SPEED);
         self.wake(grab.toy);
         let body = &mut self.world.bodies[self.toys[grab.toy].body];
         // Cleared first so the drive velocity the hold left behind does not add
@@ -460,18 +537,26 @@ impl Toybox {
     /// Nearest toy whose drawn cross-section the ray enters, with the world
     /// point it enters at. The cross-section and not the bounding ball: the
     /// ball of a tesseract reaches well past the shape on screen.
+    ///
+    /// A body the slice cannot see draws nothing to aim at, and pushing one
+    /// off the slice is a gesture the scene offers. Those bodies alone fall
+    /// back to their bounding ball, and only when no cross-section was hit, so
+    /// a visible cap always wins.
     pub(crate) fn pick(&mut self, ray: &Ray) -> Option<(usize, Vec3)> {
         let mut nearest: Option<(usize, f32)> = None;
+        let mut invisible = [false; TOYS.len()];
         let mut cap = std::mem::take(&mut self.cap);
         let mut local = std::mem::take(&mut self.local_vertices);
-        for toy in 0..self.toys.len() {
-            append_cap(
+        for (toy, hidden) in invisible.iter_mut().enumerate() {
+            let extent = append_cap(
                 &self.world,
                 &self.toys[toy],
+                self.slice,
                 &mut local,
                 &mut self.section_scratch,
                 &mut cap,
             );
+            *hidden = extent <= 0.0;
             for triangle in &cap.indices {
                 let [a, b, c] = triangle.map(|i| Vec3::from_array(cap.vertices[i as usize]));
                 let Some(distance) = ray_triangle_distance(ray, a, b, c) else {
@@ -484,6 +569,20 @@ impl Toybox {
         }
         self.cap = cap;
         self.local_vertices = local;
+        if nearest.is_none() {
+            for (toy, hidden) in invisible.iter().enumerate() {
+                if !hidden {
+                    continue;
+                }
+                let centre = self.world.bodies[self.toys[toy].body].position.truncate();
+                let Some(distance) = ray_ball_distance(ray, centre, BODY_SIZE) else {
+                    continue;
+                };
+                if nearest.is_none_or(|(_, best)| distance < best) {
+                    nearest = Some((toy, distance));
+                }
+            }
+        }
         nearest.map(|(toy, distance)| (toy, ray.origin + ray.direction * distance))
     }
 
@@ -503,6 +602,7 @@ impl Toybox {
             let extent = append_cap(
                 &self.world,
                 toy,
+                self.slice,
                 &mut local,
                 &mut self.section_scratch,
                 &mut cap,
@@ -546,6 +646,7 @@ impl Toybox {
         let extent = append_cap(
             &self.world,
             &self.toys[toy],
+            self.slice,
             &mut local,
             &mut self.section_scratch,
             &mut cap,
@@ -719,6 +820,50 @@ fn ray_triangle_distance(ray: &Ray, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     (distance > 0.0).then_some(distance)
 }
 
+/// Nearest positive root of `|o + t·d − centre|² = radius²` for a unit `d`,
+/// which drops the quadratic's leading coefficient. `−b − √D` is the entry
+/// root and cancels only when `b > 0`, where the ray points away from the ball
+/// and the entry root is behind the eye anyway; the returned value is then the
+/// exit root, computed by the well-conditioned sum.
+fn ray_ball_distance(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
+    let to_centre = ray.origin - centre;
+    let b = to_centre.dot(ray.direction);
+    let discriminant = b * b - (to_centre.length_squared() - radius * radius);
+    if discriminant < 0.0 {
+        return None;
+    }
+    let root = discriminant.sqrt();
+    let exit = -b + root;
+    if exit <= 0.0 {
+        return None;
+    }
+    let entry = -b - root;
+    Some(if entry > 0.0 { entry } else { exit })
+}
+
+/// The four floor edges where the container's walls meet `y = FLOOR_Y`. The
+/// walls are half-spaces and so unbounded upward; this is the footprint, which
+/// is what a throw is aimed inside of.
+fn append_arena_outline(mesh: &mut LineMesh<3>) {
+    let e = ARENA_HALF_EXTENT;
+    let corners = [
+        Vec3::new(-e, FLOOR_Y, -e),
+        Vec3::new(e, FLOOR_Y, -e),
+        Vec3::new(e, FLOOR_Y, e),
+        Vec3::new(-e, FLOOR_Y, e),
+    ];
+    for (index, from) in corners.iter().enumerate() {
+        push_overlay_segment(
+            mesh,
+            *from,
+            corners[(index + 1) % corners.len()],
+            ARENA_OUTLINE_COLOR,
+            ARENA_OUTLINE_COLOR,
+            ARENA_OUTLINE_WIDTH_PX,
+        );
+    }
+}
+
 fn clear_mesh(mesh: &mut TriangleMesh<3>) {
     mesh.vertices.clear();
     mesh.colors.clear();
@@ -733,11 +878,12 @@ fn append_mesh(dst: &mut TriangleMesh<3>, src: &TriangleMesh<3>) {
         .extend(src.indices.iter().map(|t| t.map(|i| i + base)));
 }
 
-/// Rebuilds `cap` as one toy's cross-section at [`W_SLICE`], in world R³, and
+/// Rebuilds `cap` as one toy's cross-section at `slice`, in world R³, and
 /// returns the cap's half-width about its own centroid.
 fn append_cap(
     world: &World<EuclideanR4>,
     toy: &ToyBody,
+    slice: f32,
     local: &mut Vec<Vec4>,
     scratch: &mut SectionScratch,
     cap: &mut TriangleMesh<3>,
@@ -755,7 +901,7 @@ fn append_cap(
         topology.edges,
         topology.cells,
         local,
-        WPlane::new(W_SLICE),
+        WPlane::new(slice),
         [r, g, b, 1.0],
         scratch,
         cap,
@@ -969,13 +1115,47 @@ fn build_physics_overlay_mesh(
     }
 }
 
-fn register_physics_overlay_command(console: &mut Console<PhysicsOverlay>) {
+/// Everything the toybox console writes to. The overlay is one field of it so
+/// the `physics` verb keeps its own vocabulary while `ground` and `wlabels`
+/// reach the scene's other live settings.
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub(crate) struct ToyboxControls {
+    overlay: PhysicsOverlay,
+    /// Per-body `w` readout painted over each toy. Off by default: the fade
+    /// with cross-section size already says a body is leaving the slice.
+    w_labels: bool,
+    environment: Environment,
+}
+
+fn register_toybox_commands(console: &mut Console<ToyboxControls>) {
+    register_ground_command(console, |c| &mut c.environment);
     console.register(
-        loam_egui::subcommands::<PhysicsOverlay>(
+        loam_egui::cmd::<ToyboxControls, _>(
+            "wlabels",
+            "per-body w offset labels over each toy (on | off; bare flips)",
+            |args, controls, out| {
+                let next = match args.first().copied() {
+                    None => !controls.w_labels,
+                    Some("on") => true,
+                    Some("off") => false,
+                    Some(other) => {
+                        return Err(anyhow!("wlabels: unknown arg `{other}` (try on|off)"));
+                    }
+                };
+                controls.w_labels = next;
+                out.line(format!("wlabels: {}", if next { "on" } else { "off" }));
+                Ok(())
+            },
+        )
+        .with_args(&[&["on", "off"]]),
+    );
+    console.register(
+        loam_egui::subcommands::<ToyboxControls>(
             "physics",
             "solver debug overlay (bare flips all four layers)",
         )
-        .on_bare(|o| {
+        .on_bare(|c: &mut ToyboxControls| {
+            let o = &mut c.overlay;
             let on = !o.any_layer();
             o.contacts = on;
             o.normals = on;
@@ -986,7 +1166,8 @@ fn register_physics_overlay_command(console: &mut Console<PhysicsOverlay>) {
         .toggle(
             "contacts",
             "axis cross at each contact point (bare flips)",
-            |o, v| {
+            |c: &mut ToyboxControls, v| {
+                let o = &mut c.overlay;
                 o.contacts = v.unwrap_or(!o.contacts);
                 Ok(())
             },
@@ -994,7 +1175,8 @@ fn register_physics_overlay_command(console: &mut Console<PhysicsOverlay>) {
         .toggle(
             "normals",
             "contact normal, drawn dark-to-bright along the A-toward-B direction (bare flips)",
-            |o, v| {
+            |c: &mut ToyboxControls, v| {
+                let o = &mut c.overlay;
                 o.normals = v.unwrap_or(!o.normals);
                 Ok(())
             },
@@ -1002,7 +1184,8 @@ fn register_physics_overlay_command(console: &mut Console<PhysicsOverlay>) {
         .toggle(
             "impulses",
             "accumulated normal + tangent impulse bars (bare flips)",
-            |o, v| {
+            |c: &mut ToyboxControls, v| {
+                let o = &mut c.overlay;
                 o.impulses = v.unwrap_or(!o.impulses);
                 Ok(())
             },
@@ -1010,7 +1193,8 @@ fn register_physics_overlay_command(console: &mut Console<PhysicsOverlay>) {
         .toggle(
             "islands",
             "colour each island's bodies and coupling constraints (bare flips)",
-            |o, v| {
+            |c: &mut ToyboxControls, v| {
+                let o = &mut c.overlay;
                 o.islands = v.unwrap_or(!o.islands);
                 Ok(())
             },
@@ -1020,7 +1204,8 @@ fn register_physics_overlay_command(console: &mut Console<PhysicsOverlay>) {
             "world units of bar length per unit of accumulated impulse (default 0.04)",
             &[&[]],
             &[],
-            |o, args, out| {
+            |c: &mut ToyboxControls, args, out| {
+                let o = &mut c.overlay;
                 match args.first().copied() {
                     None => out.line(format!("physics impulse-scale: {:.4}", o.impulse_scale)),
                     Some(token) => {
@@ -1044,7 +1229,8 @@ fn register_physics_overlay_command(console: &mut Console<PhysicsOverlay>) {
             "overlay line thickness in pixels (default 2.0)",
             &[&[]],
             &[],
-            |o, args, out| {
+            |c: &mut ToyboxControls, args, out| {
+                let o = &mut c.overlay;
                 match args.first().copied() {
                     None => out.line(format!("physics width: {:.2} px", o.width_px)),
                     Some(token) => {
@@ -1066,15 +1252,25 @@ fn register_physics_overlay_command(console: &mut Console<PhysicsOverlay>) {
     );
 }
 
-const GRASS_DARK: [f32; 3] = [0.145, 0.205, 0.130];
-const GRASS_LIGHT: [f32; 3] = [0.170, 0.235, 0.150];
-
 // 24-bit depth cracks the thin, densely stacked caps of a tumbling 24-cell.
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-const BOOT_ORBIT_DISTANCE: f32 = 7.0;
+// Far enough that the whole arena floor is inside the frustum at 4:3 and
+// wider, which `the_boot_camera_frames_the_whole_arena` pins.
+const BOOT_ORBIT_DISTANCE: f32 = 9.0;
 const BOOT_ORBIT_PITCH: f32 = -0.16;
 const BOOT_TARGET_HEIGHT: f32 = 0.7;
+
+const CAMERA_FOV_DEG: f32 = 55.0;
+const CAMERA_NEAR: f32 = 0.05;
+const CAMERA_FAR: f32 = 200.0;
+
+fn boot_orbit() -> OrbitController<EuclideanR3> {
+    let mut orbit: OrbitController<EuclideanR3> = OrbitController::default();
+    orbit.set_orbit(BOOT_ORBIT_DISTANCE, BOOT_ORBIT_PITCH);
+    orbit.target.y = BOOT_TARGET_HEIGHT;
+    orbit
+}
 
 fn build_caps(
     device: &wgpu::Device,
@@ -1096,32 +1292,32 @@ pub(crate) struct ToyboxScene {
     seed: u64,
     camera: Camera<EuclideanR3>,
     orbit: OrbitController<EuclideanR3>,
-    console: Console<PhysicsOverlay>,
+    console: Console<ToyboxControls>,
     caps: TriangleRasterNode,
     faded_caps: TriangleRasterNode,
     sky_ground: SkyGroundNode,
     depth: Option<DepthBuffer>,
     opaque_mesh: TriangleMesh<3>,
     faded_mesh: TriangleMesh<3>,
-    overlay: PhysicsOverlay,
-    overlay_node: LineRasterNode,
-    overlay_mesh: LineMesh<3>,
+    controls: ToyboxControls,
+    line_node: LineRasterNode,
+    line_mesh: LineMesh<3>,
     left_was_down: bool,
+    slice_up_held: bool,
+    slice_down_held: bool,
     paused: bool,
 }
 
 impl ToyboxScene {
     pub(crate) fn new(ctx: &mut SetupCtx<'_>) -> Result<Self> {
-        let mut console = Console::<PhysicsOverlay>::new();
-        loam_app::shell::register_command::<PhysicsOverlay, crate::shell::Playground>(&mut console);
-        register_physics_overlay_command(&mut console);
+        let mut console = Console::<ToyboxControls>::new();
+        loam_app::shell::register_command::<ToyboxControls, crate::shell::Playground>(&mut console);
+        register_toybox_commands(&mut console);
 
         let mut camera = Camera::<EuclideanR3>::at_origin();
         camera.position = Vec3::new(0.0, 2.0, BOOT_ORBIT_DISTANCE);
         camera.near = 0.05;
-        let mut orbit: OrbitController<EuclideanR3> = OrbitController::default();
-        orbit.set_orbit(BOOT_ORBIT_DISTANCE, BOOT_ORBIT_PITCH);
-        orbit.target.y = BOOT_TARGET_HEIGHT;
+        let orbit = boot_orbit();
 
         Ok(Self {
             toybox: Toybox::new(DEFAULT_SEED),
@@ -1154,17 +1350,19 @@ impl ToyboxScene {
             depth: None,
             opaque_mesh: TriangleMesh::<3>::default(),
             faded_mesh: TriangleMesh::<3>::default(),
-            overlay: PhysicsOverlay::default(),
+            controls: ToyboxControls::default(),
             // No depth attachment: the overlay names where the solver put a
             // contact, which is behind the hull that owns it.
-            overlay_node: LineRasterNode::new(
+            line_node: LineRasterNode::new(
                 &ctx.rd.device,
                 ctx.rd.target_format(),
                 DepthMode::Off,
                 ctx.rd.sample_count(),
             ),
-            overlay_mesh: LineMesh::<3>::default(),
+            line_mesh: LineMesh::<3>::default(),
             left_was_down: false,
+            slice_up_held: false,
+            slice_down_held: false,
             paused: false,
         })
     }
@@ -1181,13 +1379,26 @@ impl ToyboxScene {
             .default_pos(egui::pos2(16.0, 48.0))
             .resizable(false)
             .show(ctx, |ui| {
-                ui.label("drag a shape to carry it; let go to throw it");
+                ui.label("left-drag a shape to carry it; let go to throw it");
                 ui.label("hold Shift while dragging to pull it through w");
+                ui.label("right-drag to orbit the camera");
+                ui.separator();
+                let mut slice = self.toybox.slice();
+                if ui
+                    .add(
+                        egui::Slider::new(&mut slice, -W_SLICE_RANGE..=W_SLICE_RANGE)
+                            .text("w slice (Up/Down)"),
+                    )
+                    .changed()
+                {
+                    self.toybox.set_slice(slice);
+                }
                 ui.separator();
                 for (index, w) in self.toybox.w_offsets() {
                     ui.monospace(format!("#{index}  w {w:+.3}"));
                 }
                 ui.separator();
+                ui.checkbox(&mut self.controls.w_labels, "w labels (wlabels)");
                 ui.checkbox(&mut self.paused, "pause (Space)");
                 if ui.button("respawn (R)").clicked() {
                     respawn = Some(self.seed);
@@ -1206,30 +1417,39 @@ impl ToyboxScene {
         }
     }
 
-    fn record_physics_overlay(&mut self, ctx: &mut RenderCtx<'_>, view_proj: Mat4) {
+    /// One line pass for the frame: the container footprint, then whichever
+    /// solver overlay layers are on. One node and one upload, because a second
+    /// `write_buffer` in a frame lands before the whole command buffer and
+    /// would feed both passes.
+    fn record_lines(&mut self, ctx: &mut RenderCtx<'_>, view_proj: Mat4) {
         let rd = &ctx.rd;
         let cfg = &rd.surface_bundle.config;
-        let mut mesh = std::mem::take(&mut self.overlay_mesh);
-        self.toybox.build_overlay_mesh(&self.overlay, &mut mesh);
-        self.overlay_node.set_camera(
+        let mut mesh = std::mem::take(&mut self.line_mesh);
+        self.toybox
+            .build_overlay_mesh(&self.controls.overlay, &mut mesh);
+        append_arena_outline(&mut mesh);
+        self.line_node.set_camera(
             &rd.queue,
             view_proj,
             Vec2::new(cfg.width as f32, cfg.height as f32),
         );
-        self.overlay_node.upload::<EuclideanR3, 3>(
+        self.line_node.upload::<EuclideanR3, 3>(
             &rd.device,
             &rd.queue,
             &mesh,
             &Projection::Identity,
             1,
         );
-        self.overlay_mesh = mesh;
-        self.overlay_node.record(ctx.encoder, ctx.view, None, None);
+        self.line_mesh = mesh;
+        self.line_node.record(ctx.encoder, ctx.view, None, None);
     }
 
     // A body off the slice draws a shrinking cap or none at all, so the offset
     // is the only thing left saying it is still there.
     fn w_readouts(&self, ctx: &egui::Context, frame: &FrameCtx<'_>) {
+        if !self.controls.w_labels {
+            return;
+        }
         let ppp = ctx.pixels_per_point();
         let cfg = &frame.rd.surface_bundle.config;
         let viewport = (
@@ -1268,7 +1488,7 @@ impl loam_app::shell::Scene for ToyboxScene {
         _ctx: &mut loam_app::command::CommandCtx<'_>,
     ) -> Result<()> {
         self.console
-            .dispatch(&cmd.name, &cmd.arg_refs(), &mut self.overlay);
+            .dispatch(&cmd.name, &cmd.arg_refs(), &mut self.controls);
         Ok(())
     }
 
@@ -1306,7 +1526,12 @@ impl loam_app::shell::Scene for ToyboxScene {
             self.toybox.hold(&ray, forward, axis, dt);
         }
 
-        let held = self.toybox.held().is_some();
+        let dir = (self.slice_up_held as i32 - self.slice_down_held as i32) as f32;
+        if dir != 0.0 {
+            self.toybox
+                .scrub_slice(dir, ctx.n_ticks as f32 / TICK_HZ as f32);
+        }
+
         if !self.paused {
             for _ in 0..ctx.n_ticks {
                 self.toybox.tick();
@@ -1314,9 +1539,12 @@ impl loam_app::shell::Scene for ToyboxScene {
         }
 
         if !ctx.ui_capture.pointer {
+            // `OrbitController` drives off the left button. The left button is
+            // the grab here, so the right one is handed to it under that name
+            // and neither path has to know about the other.
             let mut input = ctx.input;
-            input.left_mouse_down &= !held;
-            input.buttons.left.down &= !held;
+            input.left_mouse_down = input.buttons.right.down;
+            input.buttons.left = input.buttons.right;
             self.orbit
                 .advance(input, &mut self.camera, &EuclideanR3, ctx.dt);
         }
@@ -1339,13 +1567,15 @@ impl loam_app::shell::Scene for ToyboxScene {
     ) {
         use winit::event::ElementState;
         use winit::keyboard::KeyCode;
-        if ctx.ui_capture.keyboard || state != ElementState::Pressed {
-            return;
-        }
+        // A release always clears the held flag, even when the console took
+        // the key down: otherwise the slice scrubs on forever.
+        let pressed = state == ElementState::Pressed && !ctx.ui_capture.keyboard;
         match code {
-            KeyCode::Space => self.paused = !self.paused,
-            KeyCode::KeyR => self.respawn(self.seed),
-            KeyCode::KeyN => self.respawn(self.seed.wrapping_add(1)),
+            KeyCode::ArrowUp => self.slice_up_held = pressed,
+            KeyCode::ArrowDown => self.slice_down_held = pressed,
+            KeyCode::Space if pressed => self.paused = !self.paused,
+            KeyCode::KeyR if pressed => self.respawn(self.seed),
+            KeyCode::KeyN if pressed => self.respawn(self.seed.wrapping_add(1)),
             _ => {}
         }
     }
@@ -1366,7 +1596,8 @@ impl loam_app::shell::Scene for ToyboxScene {
         let view = self.camera.view();
         let aspect = cfg.width as f32 / cfg.height.max(1) as f32;
         let view_mat = Mat4::look_to_rh(view.position, view.forward, view.up);
-        let proj_mat = Mat4::perspective_rh(55.0_f32.to_radians(), aspect, 0.05, 200.0);
+        let proj_mat =
+            Mat4::perspective_rh(CAMERA_FOV_DEG.to_radians(), aspect, CAMERA_NEAR, CAMERA_FAR);
         let view_proj = proj_mat * view_mat;
 
         // This scene owns the frame's clear; both cap passes load.
@@ -1375,12 +1606,7 @@ impl loam_app::shell::Scene for ToyboxScene {
             &SkyGroundUniforms::new(
                 view_proj,
                 Viewport::full([cfg.width, cfg.height]),
-                Ground {
-                    y: FLOOR_Y,
-                    dark: GRASS_DARK,
-                    light: GRASS_LIGHT,
-                    visible: true,
-                },
+                self.controls.environment.ground(FLOOR_Y, true),
             ),
         );
         self.sky_ground
@@ -1396,9 +1622,7 @@ impl loam_app::shell::Scene for ToyboxScene {
             node.set_camera(&rd.queue, view_proj);
             node.record(ctx.encoder, ctx.view, Some(&depth.view), None);
         }
-        if self.overlay.any_layer() {
-            self.record_physics_overlay(ctx, view_proj);
-        }
+        self.record_lines(ctx, view_proj);
         Ok(())
     }
 
@@ -1459,6 +1683,382 @@ mod tests {
 
     fn peak_w(toybox: &Toybox) -> f32 {
         toybox.w_offsets().map(|(_, w)| w.abs()).fold(0.0, f32::max)
+    }
+
+    // Camera at the boot framing and a given aspect, built the way `record`
+    // builds it, so the framing pin cannot drift from the frame.
+    fn boot_view_proj(aspect: f32) -> Mat4 {
+        let mut camera = Camera::<EuclideanR3>::at_origin();
+        camera.aspect = aspect;
+        boot_orbit().advance(
+            loam_app::Input::default(),
+            &mut camera,
+            &EuclideanR3,
+            1.0 / 60.0,
+        );
+        let view = camera.view();
+        Mat4::perspective_rh(CAMERA_FOV_DEG.to_radians(), aspect, CAMERA_NEAR, CAMERA_FAR)
+            * Mat4::look_to_rh(view.position, view.forward, view.up)
+    }
+
+    fn hull_reach(toybox: &Toybox) -> (f32, f32) {
+        let (mut x, mut z) = (0.0_f32, 0.0_f32);
+        for body in toybox.world.bodies.iter() {
+            let loam_physics::Collider::ConvexPolytope4D { vertices } = &body.collider else {
+                continue;
+            };
+            for v in vertices {
+                let world = body.orientation.rotation.apply(*v) + body.position;
+                x = x.max(world.x.abs());
+                z = z.max(world.z.abs());
+            }
+        }
+        (x, z)
+    }
+
+    #[test]
+    fn held_arrows_and_the_panel_slider_move_the_slice_and_clamp_at_its_range() {
+        let mut toybox = scene();
+        assert_eq!(toybox.slice(), W_SLICE, "the scene boots off its own slice");
+
+        // One second of held Up at the scrub rate the rotate scene uses.
+        for _ in 0..TICK_HZ {
+            toybox.scrub_slice(1.0, 1.0 / TICK_HZ as f32);
+        }
+        assert!(
+            (toybox.slice() - W_SCRUB_RATE).abs() < 1e-4,
+            "a second of held Up moved the slice to {}",
+            toybox.slice()
+        );
+
+        for _ in 0..TICK_HZ * 10 {
+            toybox.scrub_slice(1.0, 1.0 / TICK_HZ as f32);
+        }
+        assert_eq!(
+            toybox.slice(),
+            W_SLICE_RANGE,
+            "the scrub ran past its range"
+        );
+        for _ in 0..TICK_HZ * 20 {
+            toybox.scrub_slice(-1.0, 1.0 / TICK_HZ as f32);
+        }
+        assert_eq!(toybox.slice(), -W_SLICE_RANGE);
+
+        // The panel slider writes through `set_slice`, which is the same clamp.
+        toybox.set_slice(100.0);
+        assert_eq!(toybox.slice(), W_SLICE_RANGE);
+        toybox.set_slice(-100.0);
+        assert_eq!(toybox.slice(), -W_SLICE_RANGE);
+        toybox.set_slice(0.25);
+        assert_eq!(toybox.slice(), 0.25);
+    }
+
+    #[test]
+    fn moving_the_slice_moves_which_cross_sections_are_drawn() {
+        let mut toybox = settled();
+        let (mut opaque, mut faded) = (TriangleMesh::default(), TriangleMesh::default());
+        toybox.build_frame_meshes(&mut opaque, &mut faded);
+        let at_home = opaque.vertices.len();
+        assert!(
+            at_home > 0,
+            "the settled pile drew nothing at its own slice"
+        );
+
+        toybox.set_slice(W_SLICE_RANGE);
+        toybox.build_frame_meshes(&mut opaque, &mut faded);
+        assert!(
+            opaque.vertices.is_empty() && faded.vertices.is_empty(),
+            "a slice {W_SLICE_RANGE} away from the pile still cut it"
+        );
+        for toy in 0..toybox.toys().len() {
+            assert_eq!(toybox.cap_stats(toy), (0.0, 0), "toy {toy} still has a cap");
+        }
+
+        toybox.set_slice(W_SLICE);
+        toybox.build_frame_meshes(&mut opaque, &mut faded);
+        assert_eq!(
+            opaque.vertices.len(),
+            at_home,
+            "the slice came home to a different pile"
+        );
+    }
+
+    #[test]
+    fn the_release_speed_is_a_feel_speed_under_the_narrowphase_ceiling() {
+        // A drag far faster than any hand: what comes out is the feel speed.
+        let mut toybox = settled();
+        assert!(grab_centre(&mut toybox, 0));
+        let mut cursor = toybox.position(0).truncate();
+        for _ in 0..12 {
+            cursor += Vec3::new(4.0, 0.0, 0.0);
+            drag_frame(&mut toybox, cursor, GrabAxis::Slice);
+        }
+        toybox.release();
+        let thrown = toybox.velocity(0).length();
+        assert!(
+            (thrown - RELEASE_SPEED).abs() < 1e-3,
+            "a saturating drag released at {thrown}, not the feel speed"
+        );
+
+        // Measured 2.5 body widths at RELEASE_SPEED; the band is the range
+        // that still reads as a flick inside a container 8 widths across.
+        let released = toybox.position(0);
+        toybox.run(240);
+        let travel = (toybox.position(0) - released).length() / (2.0 * BODY_SIZE);
+        assert!(
+            (1.0..6.0).contains(&travel),
+            "a saturating flick carried the toy {travel} body widths, which is \
+             neither a nudge nor a few widths"
+        );
+    }
+
+    #[test]
+    fn the_walls_hold_a_throw_at_the_narrowphase_ceiling_for_its_whole_flight() {
+        // The ceiling, not the feel speed: the walls have to hold the fastest
+        // thing the solver will carry, not the fastest thing a hand throws.
+        let reach = ARENA_HALF_EXTENT + 8.0 * PENETRATION_SLOP + BODY_SIZE;
+        for direction in [
+            Vec4::X,
+            -Vec4::X,
+            Vec4::Z,
+            -Vec4::Z,
+            Vec4::new(1.0, 0.4, 1.0, 0.0).normalize(),
+            Vec4::new(-1.0, 0.6, 0.7, 0.0).normalize(),
+        ] {
+            let mut toybox = settled();
+            let thrown = toybox.toys[0].body;
+            toybox.wake(0);
+            toybox.world.bodies[thrown].velocity = direction * MAX_RELEASE_SPEED;
+            for tick in 0..600 {
+                toybox.tick();
+                let (x, z) = hull_reach(&toybox);
+                assert!(
+                    x <= reach && z <= reach,
+                    "a throw along {direction} reached x {x}, z {z} at tick {tick}, \
+                     outside the container's {ARENA_HALF_EXTENT}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_boot_camera_frames_the_whole_arena() {
+        let e = ARENA_HALF_EXTENT;
+        // 4:3 is the narrowest aspect the framing has to hold; 16:9 is wider.
+        for aspect in [4.0 / 3.0, 16.0 / 9.0] {
+            let view_proj = boot_view_proj(aspect);
+            for corner in [
+                Vec3::new(-e, FLOOR_Y, -e),
+                Vec3::new(e, FLOOR_Y, -e),
+                Vec3::new(e, FLOOR_Y, e),
+                Vec3::new(-e, FLOOR_Y, e),
+            ] {
+                let clip = view_proj * corner.extend(1.0);
+                assert!(clip.w > 0.0, "corner {corner} is behind the boot camera");
+                let ndc = clip.truncate() / clip.w;
+                assert!(
+                    ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0 && (0.0..=1.0).contains(&ndc.z),
+                    "aspect {aspect}: arena corner {corner} lands at ndc {ndc}, \
+                     outside the boot frame"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_body_the_slice_cannot_see_is_still_pickable_through_its_bounding_ball() {
+        let mut toybox = settled();
+        let ray = ray_through(toybox.position(0).truncate());
+        assert_eq!(toybox.pick(&ray).map(|(toy, _)| toy), Some(0));
+
+        // Push toy 0 clean off the slice, so it draws nothing to aim at.
+        let id = toybox.toys[0].body;
+        toybox.world.bodies[id].position.w += 4.0 * BODY_SIZE;
+        assert_eq!(toybox.cap_stats(0), (0.0, 0), "the toy still has a cap");
+
+        let (picked, hit) = toybox
+            .pick(&ray)
+            .expect("the off-slice body is unreachable");
+        assert_eq!(picked, 0, "the fallback grabbed the wrong body");
+        assert!(
+            (hit - toybox.position(0).truncate()).length() <= BODY_SIZE + 1e-4,
+            "the fallback reported a hit {hit} away from the body's ball"
+        );
+        assert!(
+            toybox.press(&ray, FORWARD),
+            "the off-slice body cannot be grabbed"
+        );
+        assert_eq!(toybox.grab.as_ref().map(|g| g.toy), Some(0));
+    }
+
+    #[test]
+    fn the_bounding_ball_fallback_never_fires_for_a_body_the_slice_can_see() {
+        let mut toybox = settled();
+        let centre = toybox.position(0).truncate();
+        // Inside every toy's bounding ball and outside every cap: the fallback
+        // would answer here if a drawn cross-section did not veto it.
+        let mut inside_ball = None;
+        for step in 1..40 {
+            let radius = BODY_SIZE * step as f32 / 40.0;
+            let probe = centre + Vec3::new(radius, radius, 0.0);
+            if (probe - centre).length() < BODY_SIZE && toybox.pick(&ray_through(probe)).is_none() {
+                inside_ball = Some(probe);
+                break;
+            }
+        }
+        let probe = inside_ball.expect("no ray inside the ball missed every cap");
+        let ray = ray_through(probe);
+        assert!(
+            ray_ball_distance(&ray, centre, BODY_SIZE).is_some(),
+            "the probe ray misses the ball, so the veto pin is vacuous"
+        );
+        assert_eq!(toybox.pick(&ray), None);
+    }
+
+    #[test]
+    fn the_ball_pick_takes_the_near_hit_and_rejects_a_ball_behind_the_eye() {
+        let centre = Vec3::new(0.0, 0.0, -4.0);
+        let ray = Ray {
+            origin: Vec3::ZERO,
+            direction: -Vec3::Z,
+        };
+        let hit = ray_ball_distance(&ray, centre, 1.0).expect("a ray down the axis hits");
+        assert!(
+            (hit - 3.0).abs() < 1e-5,
+            "the ball entered at {hit}, not 3.0"
+        );
+
+        // Origin inside: the only positive root is the exit.
+        let inside = ray_ball_distance(&ray, Vec3::new(0.0, 0.0, -0.5), 1.0).expect("inside hits");
+        assert!(
+            (inside - 1.5).abs() < 1e-5,
+            "an inside ray left at {inside}"
+        );
+
+        assert_eq!(ray_ball_distance(&ray, Vec3::new(0.0, 0.0, 4.0), 1.0), None);
+        assert_eq!(
+            ray_ball_distance(&ray, Vec3::new(3.0, 0.0, -4.0), 1.0),
+            None
+        );
+    }
+
+    #[test]
+    fn angular_damping_decays_a_free_flight_spin_and_leaves_the_contact_w_drift() {
+        let mut toybox = settled();
+        let id = toybox.toys[0].body;
+        // Well clear of the floor, so nothing but the damper touches the spin.
+        toybox.world.bodies[id].position += Vec4::Y * 6.0;
+        toybox.wake(0);
+        toybox.world.bodies[id].angular_velocity = Bivector4::new(1.0, 0.0, 0.0, 0.0, 0.0, 0.6);
+        let launched = toybox.angular_velocity(0).magnitude();
+
+        let mut last = launched;
+        for _ in 0..TICK_HZ {
+            toybox.tick();
+            let now = toybox.angular_velocity(0).magnitude();
+            assert!(now <= last + 1e-6, "the spin grew in free flight");
+            last = now;
+        }
+        let expected = launched * (-ANGULAR_DAMPING).exp();
+        assert!(
+            (last - expected).abs() < 1e-3 * launched,
+            "a second of free flight left {last} of spin, not the {expected} the \
+             damping coefficient prescribes"
+        );
+        assert!(
+            last < 0.4 * launched,
+            "a knocked body still tumbles at {} of its launch spin after a second",
+            last / launched
+        );
+
+        // The same damping in place, a hull-against-hull throw still drives a
+        // neighbour past the band the floor alone keeps every toy inside.
+        let mut toybox = settled();
+        assert!(peak_w(&toybox) < SETTLED_W_BAND);
+        assert!(grab_centre(&mut toybox, 0));
+        let target = toybox.position(1).truncate();
+        let mut cursor = toybox.position(0).truncate();
+        let step = (target - cursor) / 12.0;
+        for _ in 0..12 {
+            cursor += step;
+            drag_frame(&mut toybox, cursor, GrabAxis::Slice);
+        }
+        toybox.release();
+        let mut worst = 0.0_f32;
+        for _ in 0..180 {
+            toybox.tick();
+            worst = worst.max(peak_w(&toybox));
+        }
+        assert!(
+            worst > SETTLED_W_BAND,
+            "angular damping suppressed the w drift a contact imparts (best {worst})"
+        );
+    }
+
+    #[test]
+    fn the_toybox_console_carries_the_w_label_and_ground_verbs_with_the_label_off() {
+        let mut console = Console::<ToyboxControls>::new();
+        register_toybox_commands(&mut console);
+        for verb in ["wlabels", "ground", "physics"] {
+            assert!(console.has_command(verb), "the console lost `{verb}`");
+        }
+
+        let mut controls = ToyboxControls::default();
+        assert!(!controls.w_labels, "the w readout ships on");
+        assert!(!controls.overlay.any_layer());
+        assert_eq!(controls.environment, Environment::default());
+
+        console.dispatch("wlabels", &[], &mut controls);
+        assert!(controls.w_labels, "a bare wlabels did not flip the label");
+        console.dispatch("wlabels", &["off"], &mut controls);
+        assert!(!controls.w_labels);
+        console.dispatch("wlabels", &["on"], &mut controls);
+        assert!(controls.w_labels);
+
+        console.dispatch("ground", &["fog", "0.09"], &mut controls);
+        assert_eq!(controls.environment.fog_per_unit, 0.09);
+        assert!(controls.w_labels, "the ground verb reached the wrong field");
+    }
+
+    #[test]
+    fn the_container_outline_traces_the_walls_the_solver_holds() {
+        let mut mesh = LineMesh::<3>::default();
+        append_arena_outline(&mut mesh);
+        assert_eq!(mesh.segments.len(), 4, "the footprint is a four-sided loop");
+        assert_eq!(mesh.colors.len(), 4);
+        assert_eq!(mesh.widths.len(), 4);
+        for &(from, to) in &mesh.segments {
+            for point in [Vec3::from_array(from), Vec3::from_array(to)] {
+                assert_eq!(point.y, FLOOR_Y);
+                assert!(
+                    (point.x.abs() - ARENA_HALF_EXTENT).abs() < 1e-6
+                        || (point.z.abs() - ARENA_HALF_EXTENT).abs() < 1e-6,
+                    "outline corner {point} is off the wall planes"
+                );
+            }
+        }
+        for pair in mesh.segments.windows(2) {
+            assert_eq!(pair[0].1, pair[1].0);
+        }
+        assert_eq!(mesh.segments[3].1, mesh.segments[0].0);
+    }
+
+    #[test]
+    fn every_wall_normal_is_free_of_w() {
+        let toybox = scene();
+        let mut walls = 0;
+        for body in toybox.world.bodies.iter() {
+            let loam_physics::Collider::HalfSpace4D { normal, .. } = body.collider else {
+                continue;
+            };
+            walls += 1;
+            assert_eq!(
+                normal.w, 0.0,
+                "a static plane's normal carries w, so its normal impulse would \
+                 push the pile off the slice"
+            );
+        }
+        assert_eq!(walls, 5, "the scene lost a wall or the floor");
     }
 
     #[test]
@@ -1935,7 +2535,7 @@ mod tests {
         };
         assert_eq!(toybox.pick(&sky), None);
         assert!(!toybox.press(&sky, FORWARD));
-        assert_eq!(toybox.held(), None);
+        assert!(toybox.grab.is_none());
         toybox.release();
         for toy in 0..toybox.toys().len() {
             assert_eq!(

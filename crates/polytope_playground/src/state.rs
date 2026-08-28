@@ -320,6 +320,7 @@ pub(crate) struct Demo {
     pub(crate) cell_centers_cache: HashMap<Polytope4, Vec<Vec4>>,
     pub(crate) surface_scale: f32,
     pub(crate) floor_enabled: bool,
+    pub(crate) environment: crate::environment::Environment,
     pub(crate) section_faces: loam_render::TriangleRasterNode,
     pub(crate) section_faces_translucent: loam_render::TriangleRasterNode,
     pub(crate) points_node: loam_render::PointRasterNode,

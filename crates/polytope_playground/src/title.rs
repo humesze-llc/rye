@@ -13,8 +13,10 @@ use glam::{Mat4, Vec3};
 use loam_app::{egui, Camera, CameraController, FrameCtx, OrbitController, RenderCtx, SetupCtx};
 use loam_egui::{Console, ConsoleUi};
 use loam_math::{EuclideanR3, Projection};
+use loam_render::sky_ground::{GROUND_DARK_GREY, GROUND_LIGHT_GREY};
 use loam_render::{
-    device::RenderDevice, DepthBuffer, DepthMode, FragmentShading, TriangleRasterNode,
+    device::RenderDevice, DepthBuffer, DepthMode, FragmentShading, Ground, SkyGroundNode,
+    SkyGroundUniforms, TriangleRasterNode, Viewport,
 };
 use loam_shape::{TriangleMesh, Visualizable};
 use loam_text::glyph::{layout_word, GlyphParams};
@@ -47,12 +49,9 @@ const SLICE_W: f32 = 0.0;
 
 const TITLE_COLOR: [f32; 4] = [0.90, 0.93, 1.00, 1.0];
 
-const BACKGROUND: wgpu::Color = wgpu::Color {
-    r: 0.020,
-    g: 0.022,
-    b: 0.032,
-    a: 1.0,
-};
+// `typeset` recentres the whole title on the origin, so the ground has to sit
+// below the letters' own lower bound rather than at y = 0.
+const GROUND_Y: f32 = -1.2;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -268,6 +267,7 @@ pub(crate) struct TitleScene {
     orbit: OrbitController<EuclideanR3>,
     console: Console<()>,
     triangles: TriangleRasterNode,
+    sky_ground: SkyGroundNode,
     depth: Option<DepthBuffer>,
     letters: Vec<Letter>,
     transit: Transit,
@@ -299,6 +299,12 @@ impl TitleScene {
                     format: DEPTH_FORMAT,
                 },
                 FragmentShading::FaceNormalLambert,
+                ctx.rd.sample_count(),
+            ),
+            sky_ground: SkyGroundNode::new(
+                &ctx.rd.device,
+                ctx.rd.target_format(),
+                DEPTH_FORMAT,
                 ctx.rd.sample_count(),
             ),
             depth: None,
@@ -364,23 +370,6 @@ impl loam_app::shell::Scene for TitleScene {
         let rd: &RenderDevice = ctx.rd;
         let cfg = &rd.surface_bundle.config;
 
-        // This scene owns the clear: nothing runs before it in the frame's
-        // encoder, and the raster node loads rather than clears.
-        let _ = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("title clear pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: ctx.view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(BACKGROUND),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
         DepthBuffer::ensure(
             &mut self.depth,
             &rd.device,
@@ -389,20 +378,30 @@ impl loam_app::shell::Scene for TitleScene {
             rd.sample_count(),
         );
         let depth = self.depth.as_ref().expect("ensure() guarantees Some");
-        let _ = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("title depth clear pass"),
-            color_attachments: &[],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &depth.view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
+
+        let view = self.camera.view();
+        let aspect = cfg.width as f32 / cfg.height.max(1) as f32;
+        let view_mat = Mat4::look_to_rh(view.position, view.forward, view.up);
+        let proj_mat = Mat4::perspective_rh(60.0_f32.to_radians(), aspect, 0.1, 100.0);
+        let view_proj = proj_mat * view_mat;
+
+        // This scene owns the clear: nothing runs before it in the frame's
+        // encoder, and the raster node loads rather than clears.
+        self.sky_ground.set_uniforms(
+            &rd.queue,
+            &SkyGroundUniforms::new(
+                view_proj,
+                Viewport::full([cfg.width, cfg.height]),
+                Ground {
+                    y: GROUND_Y,
+                    dark: GROUND_DARK_GREY,
+                    light: GROUND_LIGHT_GREY,
+                    visible: true,
+                },
+            ),
+        );
+        self.sky_ground
+            .record(ctx.encoder, ctx.view, &depth.view, None);
 
         build_section(
             &self.letters,
@@ -416,12 +415,7 @@ impl loam_app::shell::Scene for TitleScene {
             &self.section,
             &Projection::Identity,
         );
-
-        let view = self.camera.view();
-        let aspect = cfg.width as f32 / cfg.height.max(1) as f32;
-        let view_mat = Mat4::look_to_rh(view.position, view.forward, view.up);
-        let proj_mat = Mat4::perspective_rh(60.0_f32.to_radians(), aspect, 0.1, 100.0);
-        self.triangles.set_camera(&rd.queue, proj_mat * view_mat);
+        self.triangles.set_camera(&rd.queue, view_proj);
         self.triangles
             .record(ctx.encoder, ctx.view, Some(&depth.view), None);
         Ok(())
@@ -857,6 +851,21 @@ mod tests {
         assert!(
             letters[TITLE_LINES[0].len()].apex.y < letters[0].apex.y - 0.5 * EM_SIZE,
             "the second line is not clear of the first"
+        );
+    }
+
+    #[test]
+    fn the_ground_plane_clears_the_lowest_ink_in_the_title() {
+        let letters = typeset(&title_font().expect("bundled font")).expect("typeset");
+        let lowest = letters
+            .iter()
+            .filter_map(|letter| bounds(&letter.base))
+            .map(|(lo, _)| lo.y)
+            .reduce(f32::min)
+            .expect("ink");
+        assert!(
+            GROUND_Y < lowest,
+            "the ground at {GROUND_Y} would cut the title, whose ink reaches {lowest}"
         );
     }
 

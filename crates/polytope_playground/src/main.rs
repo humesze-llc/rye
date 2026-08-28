@@ -16,7 +16,9 @@ use loam_render::{
     raymarch::{
         polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
     },
-    DepthBuffer, DepthMode, LineRasterNode, PointRasterNode, TriangleRasterNode, Viewport,
+    sky_ground::{GROUND_DARK_GREY, GROUND_LIGHT_GREY},
+    DepthBuffer, DepthMode, Ground, LineRasterNode, PointRasterNode, SkyGroundNode,
+    SkyGroundUniforms, TriangleRasterNode, Viewport,
 };
 use loam_shape::polytope::{
     polytope_section_faces_append, polytope_section_perimeter_append, vertex_color_by_position,
@@ -25,6 +27,11 @@ use loam_shape::polytope::{
 
 // 24-bit depth cracks the 600-cell's densely-packed caps.
 const SECTION_FACES_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+// Read by the marched half-space and by the background's analytic ground. The
+// kernel discards where the leaf wins and the background paints there instead,
+// so the two planes have to be one plane or the swap shows a seam.
+const FLOOR_Y: f32 = 0.0;
 
 use loam_scene::{Scene4, SceneNode4};
 use loam_shape::LineMesh;
@@ -121,7 +128,7 @@ fn formula_popup_seat(ctx: &egui::Context) -> egui::Pos2 {
 // Floor visibility is gated at runtime via `u.params.x`: 0.0 makes the
 // halfspace SDF return 1e9 so the marcher never paints the checkerboard.
 fn shader_source() -> String {
-    let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, 0.0));
+    let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, FLOOR_Y));
     format!(
         "{kernel}\n{polytope}\n{scene}\n",
         kernel = HYPERSLICE_KERNEL_WGSL,
@@ -252,6 +259,12 @@ impl Demo {
             freecam,
             camera_mode: CameraMode::default(),
             node,
+            sky_ground: SkyGroundNode::new(
+                &ctx.rd.device,
+                ctx.rd.target_format(),
+                SECTION_FACES_DEPTH_FORMAT,
+                ctx.rd.sample_count(),
+            ),
             sdf_upload_pending: true,
             uploaded_rotors: Vec::new(),
             section_edges,

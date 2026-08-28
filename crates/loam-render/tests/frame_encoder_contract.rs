@@ -11,7 +11,7 @@
 //! cannot; same device-free technique as `raymarch_chain_smoke`.
 
 use loam_render::raymarch::Hyperslice4DNode;
-use loam_render::{LineRasterNode, PointRasterNode, TriangleRasterNode};
+use loam_render::{LineRasterNode, PointRasterNode, SkyGroundNode, TriangleRasterNode};
 
 // Caller's encoder, color view, optional depth view, optional viewport, no
 // return.
@@ -39,4 +39,18 @@ fn hyperslice_viewport_draw_records_into_the_callers_encoder() {
         loam_render::Viewport,
     );
     let _: RecordInViewport = Hyperslice4DNode::record_in_viewport;
+}
+
+// Same shape, but the depth view is not optional: this node owns the frame's
+// depth clear, so a caller cannot record it without one.
+#[test]
+fn the_background_draw_entry_point_records_into_the_callers_encoder() {
+    type RecordBackground = fn(
+        &SkyGroundNode,
+        &mut wgpu::CommandEncoder,
+        &wgpu::TextureView,
+        &wgpu::TextureView,
+        Option<&loam_render::Viewport>,
+    );
+    let _: RecordBackground = SkyGroundNode::record;
 }

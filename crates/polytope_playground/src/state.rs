@@ -10,7 +10,7 @@ use loam_shape::polytope::Polytope4;
 use crate::catalog::ShapeEntry;
 use crate::consts::{BASE_ROTATION_RATE, BODY_SIZE, BODY_X_SPACING, BODY_Y, T_SLIDER_INITIAL};
 use crate::director::Playback;
-use crate::physics::{BodyPose, PlaygroundPhysics, ThrowDrag};
+use crate::physics::{BodyPose, PlaygroundPhysics};
 use crate::spins::{is_directed, SlotSpins};
 
 pub(crate) use crate::projections::*;
@@ -286,8 +286,9 @@ impl RowFrame<'_> {
 }
 
 pub(crate) struct Demo {
+    // The row's pose and collider store, not a simulation: no path in this
+    // scene writes a body velocity, so `step` never leaves `at_rest`.
     pub(crate) physics: PlaygroundPhysics,
-    pub(crate) throw_drag: Option<ThrowDrag>,
     pub(crate) left_was_down: bool,
     pub(crate) gimbal: crate::hypergimbal::GimbalUi,
     pub(crate) gimbal_node: loam_render::LineRasterNode,
@@ -327,12 +328,6 @@ pub(crate) struct Demo {
     pub(crate) points_show_cell_centers: bool,
     pub(crate) points_size_px: f32,
     pub(crate) points_mesh_scratch: loam_shape::PointMesh<3>,
-    pub(crate) physics_overlay: crate::render::PhysicsOverlay,
-    /// Its own node rather than a second upload of [`Self::parent_wireframe`]:
-    /// a frame's queue writes all land before its single command buffer, so two
-    /// uploads of one node would feed both passes the second mesh.
-    pub(crate) physics_overlay_node: loam_render::LineRasterNode,
-    pub(crate) physics_overlay_mesh_scratch: loam_shape::LineMesh<3>,
     pub(crate) section_faces_depth: Option<loam_render::DepthBuffer>,
     pub(crate) section_world_vertices_scratch: Vec<glam::Vec4>,
     pub(crate) section_faces_mesh_scratch: loam_shape::TriangleMesh<3>,
@@ -629,9 +624,8 @@ impl Demo {
         self.cross_section = SectionLayer::CROSS_SECTION_DEFAULT;
         self.projected_cap = SectionLayer::PROJECTED_CAP_DEFAULT;
         self.draft.clear();
-        // Drop an aim in progress: its slot names a body the respawn below
-        // despawns, and releasing over the fresh row would throw a stranger.
-        self.throw_drag = None;
+        // Drop a handle drag in progress: its slot names a body the respawn
+        // below despawns.
         self.gimbal.drag = None;
         let slots = self.render_row().len();
         self.physics.respawn(slots, self.effective_body_size());

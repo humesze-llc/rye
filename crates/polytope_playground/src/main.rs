@@ -61,8 +61,52 @@ mod shell;
 mod spins;
 mod state;
 mod title;
+mod toybox;
 mod ui;
 mod wireframe_geom;
+
+// Thread-local so a probe never sees a concurrent test's allocations.
+// Const-initialised so reading it inside `alloc` cannot itself allocate.
+// At the crate root because `#[global_allocator]` is a per-binary singleton:
+// a second declaration in any module is an E0152 hard error, and more than one
+// module's tests measure against it.
+#[cfg(test)]
+pub(crate) mod alloc_probe {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static BYTES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub struct Counting;
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let _ = BYTES.try_with(|bytes| bytes.set(bytes.get() + layout.size()));
+            System.alloc(layout)
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            System.dealloc(ptr, layout)
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let _ = BYTES.try_with(|bytes| bytes.set(bytes.get() + new_size));
+            System.realloc(ptr, layout, new_size)
+        }
+    }
+
+    pub fn bytes_allocated_by(body: impl FnOnce()) -> usize {
+        let before = BYTES.with(Cell::get);
+        body();
+        BYTES.with(Cell::get) - before
+    }
+}
+
+#[cfg(test)]
+#[global_allocator]
+static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
 
 use active::combo_name;
 use catalog::{parse_row, SHAPE_CATALOG};
@@ -145,7 +189,6 @@ struct DemoNodes {
     parent_wireframe: LineRasterNode,
     gimbal: LineRasterNode,
     points: PointRasterNode,
-    physics_overlay: LineRasterNode,
     section_faces: TriangleRasterNode,
     section_faces_translucent: TriangleRasterNode,
 }
@@ -177,7 +220,6 @@ fn build_nodes(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32)
         // A ReadOnly test hid a vertex behind its own cap: drop-w projects it
         // to the cap's (x, y, z) at slightly farther depth.
         points: PointRasterNode::new(device, format, DepthMode::Off, samples),
-        physics_overlay: LineRasterNode::new(device, format, DepthMode::Off, samples),
         section_faces: TriangleRasterNode::new(
             device,
             format,
@@ -209,7 +251,6 @@ impl Demo {
             parent_wireframe,
             gimbal: gimbal_node,
             points: points_node,
-            physics_overlay: physics_overlay_node,
             section_faces,
             section_faces_translucent,
         } = build_nodes(
@@ -250,7 +291,6 @@ impl Demo {
 
         Ok(Self {
             physics,
-            throw_drag: None,
             left_was_down: false,
             gimbal: hypergimbal::GimbalUi::default(),
             gimbal_node,
@@ -295,9 +335,6 @@ impl Demo {
             points_show_cell_centers: true,
             points_size_px: 4.0,
             points_mesh_scratch: loam_shape::PointMesh::<3>::default(),
-            physics_overlay: render::PhysicsOverlay::default(),
-            physics_overlay_node,
-            physics_overlay_mesh_scratch: LineMesh::<3>::default(),
             section_faces_depth: None,
             section_world_vertices_scratch: Vec::new(),
             section_faces_mesh_scratch: loam_shape::TriangleMesh::<3>::default(),
@@ -364,13 +401,10 @@ impl Demo {
         };
 
         self.camera.aspect = viewport.0 as f32 / viewport.1.max(1) as f32;
-        // Reads `left_was_down` before `update_throw` refreshes it, which is
-        // why the gimbal runs ahead of that call.
-        let pointer_free = self.throw_enabled(ctx.ui_capture.pointer);
+        // The gimbal owns the left button whenever egui does not and the
+        // camera is not flying, which is what `left_was_down` tracks.
+        let pointer_free = !ctx.ui_capture.pointer && self.camera_mode == CameraMode::Orbit;
         let gimbaling = self.update_gimbal(pointer_free, &ctx.input, viewport);
-        // Before the physics step, so the frame a flick is released on also
-        // integrates it and `body_upload_needed` sees a moving world.
-        let aiming = self.update_throw(pointer_free && !gimbaling, &ctx.input, viewport);
 
         let dir = (self.slider_up_held as i32 - self.slider_down_held as i32) as f32;
         let host_owns_w = !self
@@ -439,7 +473,7 @@ impl Demo {
         match self.camera_mode {
             CameraMode::Orbit if !ctx.ui_capture.pointer => {
                 let mut input = ctx.input;
-                input.left_mouse_down &= !(aiming || gimbaling);
+                input.left_mouse_down &= !gimbaling;
                 self.orbit
                     .advance(input, &mut self.camera, &EuclideanR3, dt_secs);
             }
@@ -537,8 +571,6 @@ impl Demo {
         if self.view_mode == ViewMode::Filmstrip {
             self.render_filmstrip_cell_labels(ctx);
         }
-
-        self.render_throw_aim(ctx, frame);
 
         if self.show_controls {
             self.render_overlay(ctx);
@@ -1220,7 +1252,7 @@ mod script_arg_tests {
 
     #[test]
     fn the_space_separated_form_is_diagnosed_rather_than_ignored() {
-        let args = Args::from_argv(["--script", "console-scripts/impulse-bars.script"]);
+        let args = Args::from_argv(["--script", "some.script"]);
         let err = load_script(&args).expect_err("a bare --script is not a silent default");
         assert!(format!("{err:#}").contains("--script="), "{err:#}");
     }

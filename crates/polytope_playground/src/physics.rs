@@ -3,8 +3,6 @@
 //! about where a body is.
 
 use glam::{Vec2, Vec3, Vec4};
-use loam_app::Input;
-use loam_camera::Ray;
 use loam_math::{Bivector4, EuclideanR4, Rotor, Rotor4};
 use loam_physics::euclidean_r4::{
     ball4_inertia, register_default_narrowphase, regular_polytope4_inertia, sphere_body_r4,
@@ -14,7 +12,7 @@ use loam_render::raymarch::RaymarchShape;
 
 use crate::catalog::ShapeEntry;
 use crate::spins::SlotSpins;
-use crate::state::{body_position, CameraMode, Demo};
+use crate::state::body_position;
 
 // Must match the app's fixed sim tick rate.
 const PHYSICS_DT: f32 = 1.0 / 60.0;
@@ -22,77 +20,21 @@ const PHYSICS_DT: f32 = 1.0 / 60.0;
 // Density is unmodelled: a 5-cell hull masses the same as a 24-cell.
 const BODY_MASS: f32 = 1.0;
 
-// Largest per-step displacement the R⁴ step still resolves against a thin
-// static wall, as measured by the tunneling gate in `loam_physics::world`
-// (`RECORDED_R4`, scanned over 64 launch alignments). The bound is geometric
-// (`wall_half_thickness + body_radius` for the fixture that recorded it), so
-// no impulse magnitude or solver iteration count moves it: the only way to
-// stay inside it is to bound the speed a throw can leave a body at.
-const MAX_PER_STEP_DISPLACEMENT: f32 = 0.150;
-
-// Fraction of [`MAX_PER_STEP_DISPLACEMENT`] a throw is allowed to use. The
-// recorded bound is a scanned FLOOR at 0.0025 resolution, not a two-sided
-// pin, and it was measured against a 0.1-radius projectile rather than this
-// row's bodies; a throw sized exactly at it would have no margin for either.
-const TUNNELING_MARGIN: f32 = 0.9;
-
-// Enforced on the post-impulse velocity rather than on the impulse, so
-// repeated flicks at a body already in flight cannot sum past it.
-pub(crate) const MAX_THROW_SPEED: f32 = TUNNELING_MARGIN * MAX_PER_STEP_DISPLACEMENT / PHYSICS_DT;
-
-// Per-step displacement the R⁴ narrowphase still resolves BODY against BODY
-// at [`crate::consts::BODY_SIZE`]. The chamber holds no static geometry, so
-// this, not the wall figure above, is the band a spinning body's rim has to
-// stay inside. It is the 8-cell pair's number rather than the sphere pair's,
-// because a convex polychoron presents twice its own width along the launch
-// axis where a bounding ball presents twice the circumradius, and the tighter
-// of the two is what a ceiling is worth deriving against.
-//
-// `the_body_tunneling_band_is_one_the_narrowphase_resolves` scans every
-// collider the row can install, rather than the two the number was set from,
-// and still finds a contact at this displacement per step at all sixteen
-// launch alignments it samples.
-//
-// What it is NOT is a lower bound on the overlap window. Scanning centre
-// separation at 0.0025 puts the tightest same-collider window across ball and
-// hulls at the 8-cell's 1.395 at the unrotated pose, under this number, so a
-// step of exactly one band can in principle fall either side of an 8-cell
-// pair. What keeps [`MAX_ANGULAR_SPEED`] sound is that a body only ever
-// spends `TUNNELING_MARGIN` of the band, 1.2668, which clears that window and
-// clears the 1.335 the tightest mixed-collider pair in the same scan
-// presented. Tightening the band onto the measured window is the honest form
-// and costs angular ceiling, so it is a decision, not a repair.
-const BODY_TUNNELING_BAND: f32 = 1.4075;
-
-// Angular speed ceiling for a thrown body, derived against the same budget as
-// [`MAX_THROW_SPEED`] and in the same units. The fastest material point on a
-// body of radius `R` covers `(|v| + |ω|·R) · PHYSICS_DT` per step, and the
-// linear ceiling already spends `MAX_THROW_SPEED · PHYSICS_DT` of that, so
-// the rotation gets what is left of `TUNNELING_MARGIN · BODY_TUNNELING_BAND`:
-// 97.0 rad/s at `R = BODY_SIZE`. Without it, a full-scale flick landing at
-// the bounding sphere's rim turns its whole impulse into spin at a rate the
-// body's inertia sets and the clamp on linear speed cannot see; at a quarter
-// of `ball4_inertia` that is 138.9 rad/s, 1.62 of rim travel per step from
-// the rotation alone, outside the band.
-//
-// `R` is the authored [`crate::consts::BODY_SIZE`] and not the live
-// `effective_body_size`: `surface scale` multiplies the band and the rim
-// radius alike, so the rotation's share of the band is scale-invariant at
-// 80%, and the linear term is the only one whose share moves.
-const MAX_ANGULAR_SPEED: f32 = (TUNNELING_MARGIN * BODY_TUNNELING_BAND
-    - MAX_THROW_SPEED * PHYSICS_DT)
-    / (crate::consts::BODY_SIZE * PHYSICS_DT);
-
-// Roughly a quarter of a 1080p window's height, so a full-power throw is a
-// deliberate gesture and an idle click is nearly zero.
-const FULL_SCALE_DRAG_PIXELS: f32 = 240.0;
+// Fastest launch the R⁴ step resolves against a thin static wall: the recorded
+// `RECORDED_R4` bound from `loam_physics::world`'s tunneling gate, 0.150 per
+// step, spent at 90% because the record is a scanned floor at 0.0025
+// resolution rather than a two-sided pin. Nothing in this scene gives a body
+// speed since the throw gesture moved to the toybox, so this bounds the
+// fixtures below and nothing else.
+#[cfg(test)]
+pub(crate) const MAX_RESOLVED_SPEED: f32 = 0.9 * 0.150 / PHYSICS_DT;
 
 // Time constant of the velocity decay, in seconds. Zero-g and frictionless,
-// a thrown body would otherwise never re-enter the exact-zero fixpoint
+// a body given velocity would otherwise never re-enter the exact-zero fixpoint
 // [`PlaygroundPhysics::at_rest`] tests for, so the step's skip would never
-// re-engage and the body would leave the chamber for good. Travel from a
-// throw is bounded by `speed · TAU`, which at [`MAX_THROW_SPEED`] is 4.9
-// units: under the width of a full eight-slot row, so a flick stays in frame.
+// re-engage and the body would leave the chamber for good. Travel is bounded
+// by `speed · TAU`, which at [`MAX_RESOLVED_SPEED`] is 4.9 units: under the
+// width of a full eight-slot row, so nothing leaves the frame.
 const VELOCITY_DECAY_TAU: f32 = 0.6;
 
 // Speeds under which a decaying body is snapped to exact rest. Exponential
@@ -102,42 +44,10 @@ const VELOCITY_DECAY_TAU: f32 = 0.6;
 const REST_SPEED: f32 = 0.02;
 const REST_ANGULAR_SPEED: f32 = 0.02;
 
-// Window coordinates are y-down, so the vertical term negates `up`. Speed is
-// linear in drag length and saturates at FULL_SCALE_DRAG_PIXELS. The impulse
-// is `m · speed · direction` because
-// `loam_physics::RigidBody::apply_impulse` divides by the same mass.
-pub(crate) fn throw_impulse(drag_pixels: Vec2, right: Vec3, up: Vec3) -> Vec4 {
-    let Some(direction) = (right * drag_pixels.x - up * drag_pixels.y).try_normalize() else {
-        return Vec4::ZERO;
-    };
-    let speed = MAX_THROW_SPEED * (drag_pixels.length() / FULL_SCALE_DRAG_PIXELS).min(1.0);
-    (direction * (speed * BODY_MASS)).extend(0.0)
-}
-
 // y-up NDC: the inverse of what `loam_camera::Camera::ray_from_ndc` consumes.
 pub(crate) fn ndc_from_pixels(pixels: Vec2, viewport: (u32, u32)) -> Vec2 {
     let (width, height) = (viewport.0 as f32, viewport.1 as f32);
     Vec2::new(2.0 * pixels.x / width - 1.0, 1.0 - 2.0 * pixels.y / height)
-}
-
-// Ericson, *Real-Time Collision Detection* (2005), §5.3.2; `ray.direction` is
-// unit, which is what drops the quadratic's leading coefficient. A ray
-// starting inside returns the exit distance.
-fn ray_sphere_distance(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
-    let offset = ray.origin - centre;
-    let along = offset.dot(ray.direction);
-    let outside = offset.length_squared() - radius * radius;
-    // Pointing away from a sphere it is already outside of: no root can be
-    // positive, and the discriminant would not say so.
-    if outside > 0.0 && along > 0.0 {
-        return None;
-    }
-    let discriminant = along * along - outside;
-    if discriminant < 0.0 {
-        return None;
-    }
-    let near = -along - discriminant.sqrt();
-    Some(near.max(0.0))
 }
 
 // `Rotor4` multiplies left-first (`apply(a * b, v) == apply(b, apply(a, v))`),
@@ -211,7 +121,7 @@ impl PlaygroundPhysics {
 
     // The slot's UI spin is BAKED into the hull's vertex list, because
     // `world_vertices4_into` applies `body.orientation.rotation` alone. The
-    // spin's rim velocity stays unmodelled: 16% of MAX_THROW_SPEED by default.
+    // spin's rim velocity stays unmodelled: 16% of MAX_RESOLVED_SPEED by default.
     pub(crate) fn sync(&mut self, row: &[ShapeEntry], spins: &SlotSpins, size: f32) {
         if self.world.bodies.len() != row.len() {
             self.respawn(row.len(), size);
@@ -287,45 +197,6 @@ impl PlaygroundPhysics {
         }
     }
 
-    pub(crate) fn pick(&self, ray: &Ray, slots: usize, radius: f32) -> Option<usize> {
-        let mut nearest: Option<(usize, f32)> = None;
-        for slot in 0..slots {
-            let centre = self.pose(slot, slots, Rotor4::IDENTITY).position_r3();
-            let Some(distance) = ray_sphere_distance(ray, centre, radius) else {
-                continue;
-            };
-            if nearest.is_none_or(|(_, best)| distance < best) {
-                nearest = Some((slot, distance));
-            }
-        }
-        nearest.map(|(slot, _)| slot)
-    }
-
-    pub(crate) fn throw(&mut self, slot: usize, impulse: Vec4) {
-        if slot >= self.world.bodies.len() {
-            return;
-        }
-        self.world.bodies[slot].apply_impulse(impulse);
-        self.clamp_to_tunneling_budget(slot);
-    }
-
-    // Clamping `Bivector4::magnitude` is conservative for a double rotation:
-    // it is `sqrt(θ₁² + θ₂²)` while the fastest material point turns at
-    // `max(θ₁, θ₂)`, so an isoclinic spin is held to `1/sqrt(2)` of the rim
-    // speed a simple one gets. The alternative is the invariant decomposition
-    // per throw, which buys nothing a user could perceive.
-    fn clamp_to_tunneling_budget(&mut self, slot: usize) {
-        let body = &mut self.world.bodies[slot];
-        let speed = body.velocity.length();
-        if speed > MAX_THROW_SPEED {
-            body.velocity *= MAX_THROW_SPEED / speed;
-        }
-        let angular_speed = body.angular_velocity.magnitude();
-        if angular_speed > MAX_ANGULAR_SPEED {
-            body.angular_velocity = body.angular_velocity * (MAX_ANGULAR_SPEED / angular_speed);
-        }
-    }
-
     pub(crate) fn pose(&self, slot: usize, slots: usize, spin: Rotor4) -> BodyPose {
         assert_eq!(
             self.world.bodies.len(),
@@ -355,100 +226,10 @@ impl PlaygroundPhysics {
     }
 }
 
-// Drag is in window-relative physical pixels. Held across frames because the
-// release edge is the only frame that knows the gesture is finished.
-#[derive(Copy, Clone, Debug)]
-pub(crate) struct ThrowDrag {
-    pub(crate) slot: usize,
-    pub(crate) press_px: Vec2,
-    pub(crate) cursor_px: Vec2,
-}
-
-impl ThrowDrag {
-    pub(crate) fn drag_pixels(&self) -> Vec2 {
-        self.cursor_px - self.press_px
-    }
-
-    pub(crate) fn charge(&self) -> f32 {
-        (self.drag_pixels().length() / FULL_SCALE_DRAG_PIXELS).min(1.0)
-    }
-}
-
-impl Demo {
-    pub(crate) fn update_throw(
-        &mut self,
-        enabled: bool,
-        input: &Input,
-        viewport: (u32, u32),
-    ) -> bool {
-        let down = input.buttons.left.down;
-        let pressed = down && !self.left_was_down;
-        let released = !down && self.left_was_down;
-        self.left_was_down = down;
-
-        if !enabled {
-            self.throw_drag = None;
-            return false;
-        }
-
-        if pressed {
-            let press = input.buttons.left.press_pos.map(|press_px| {
-                let ray = self
-                    .camera
-                    .ray_from_ndc(ndc_from_pixels(press_px, viewport));
-                let slots = self.render_row().len();
-                (
-                    press_px,
-                    self.physics.pick(&ray, slots, self.effective_body_size()),
-                )
-            });
-            self.spins.select_picked(press.and_then(|(_, slot)| slot));
-            self.throw_drag = press.and_then(|(press_px, slot)| {
-                slot.map(|slot| ThrowDrag {
-                    slot,
-                    press_px,
-                    cursor_px: press_px,
-                })
-            });
-        } else if let (Some(drag), Some(cursor_px)) = (self.throw_drag.as_mut(), input.cursor_pos) {
-            drag.cursor_px = cursor_px;
-        }
-
-        if released {
-            if let Some(drag) = self.throw_drag.take() {
-                let view = self.camera.view();
-                let impulse = throw_impulse(drag.drag_pixels(), view.right, view.up);
-                self.physics.throw(drag.slot, impulse);
-            }
-        }
-        self.throw_drag.is_some()
-    }
-
-    pub(crate) fn throw_enabled(&self, pointer_capture: bool) -> bool {
-        !pointer_capture && self.camera_mode == CameraMode::Orbit
-    }
-
-    pub(crate) fn throw_slot(&mut self, slot: usize, drag_pixels: Vec2) -> anyhow::Result<String> {
-        let slots = self.render_row().len();
-        if slot >= slots {
-            anyhow::bail!("slot {slot} is outside the rendered row of {slots}");
-        }
-        let view = self.camera.view();
-        self.physics
-            .throw(slot, throw_impulse(drag_pixels, view.right, view.up));
-        let speed = self.physics.world.bodies[slot].velocity.length();
-        Ok(format!(
-            "throw: slot {slot} at {speed:.2} u/s ({:.4} per step, bound {MAX_PER_STEP_DISPLACEMENT})",
-            speed * PHYSICS_DT
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use loam_math::{Bivector, Plane4};
-    use loam_physics::RigidBody;
     use loam_shape::polytope::Polytope4;
 
     const RADIUS: f32 = crate::consts::BODY_SIZE;
@@ -561,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn impulse_drives_the_thrown_slot_and_only_that_slot() {
+    fn an_impulse_drives_its_own_slot_and_only_that_slot() {
         let slots = 3;
         let ticks = 30;
         let mut physics = PlaygroundPhysics::new(slots, RADIUS);
@@ -576,7 +357,7 @@ mod tests {
         let moved = physics.pose(1, slots, Rotor4::IDENTITY).position;
         assert!(
             (moved - expected).length() < 1e-5,
-            "thrown pose {moved} away from {expected}"
+            "struck pose {moved} away from {expected}"
         );
         for slot in [0, 2] {
             assert_eq!(
@@ -630,7 +411,7 @@ mod tests {
         assert_eq!(
             physics.pose(0, 3, Rotor4::IDENTITY).position,
             in_flight,
-            "same-count sync cancelled a throw"
+            "same-count sync cancelled an impulse"
         );
 
         physics.sync(
@@ -818,10 +599,7 @@ mod tests {
 
     fn peak_struck_spin(shape: RaymarchShape, spin: Rotor4) -> f32 {
         let (mut physics, ..) = synced_row(shape, 2, RADIUS, spin);
-        physics.throw(
-            0,
-            throw_impulse(Vec2::new(FULL_SCALE_DRAG_PIXELS, 0.0), RIGHT, UP),
-        );
+        physics.world.bodies[0].apply_impulse(flick(1.0, RIGHT));
         let mut peak = 0.0_f32;
         for _ in 0..120 {
             physics.step(1);
@@ -859,13 +637,10 @@ mod tests {
             let mut leaked = 0.0_f32;
             for spin in sweep_spins() {
                 let (mut physics, ..) = synced_row(shape, 2, RADIUS, spin);
-                physics.throw(
-                    0,
-                    throw_impulse(Vec2::new(FULL_SCALE_DRAG_PIXELS, 0.0), RIGHT, UP),
-                );
+                physics.world.bodies[0].apply_impulse(flick(1.0, RIGHT));
                 assert_eq!(
                     physics.world.bodies[0].velocity.w, 0.0,
-                    "the throw itself left the slice"
+                    "the impulse itself left the slice"
                 );
                 for _ in 0..120 {
                     physics.step(1);
@@ -880,10 +655,7 @@ mod tests {
         }
 
         let (mut physics, ..) = synced_row(RaymarchShape::ThreeSphere, 2, RADIUS, Rotor4::IDENTITY);
-        physics.throw(
-            0,
-            throw_impulse(Vec2::new(FULL_SCALE_DRAG_PIXELS, 0.0), RIGHT, UP),
-        );
+        physics.world.bodies[0].apply_impulse(flick(1.0, RIGHT));
         physics.step(120);
         assert_eq!(physics.world.bodies[1].position.w, 0.0);
     }
@@ -909,7 +681,7 @@ mod tests {
             for spin in sweep_spins() {
                 let width = contact_width(shape, spin);
                 let mut physics = facing_pair(shape, spin, 0.75 * width, 0.0);
-                physics.throw(1, throw_impulse(Vec2::new(15.0, 0.0), RIGHT, UP));
+                physics.world.bodies[1].apply_impulse(flick(0.0625, RIGHT));
                 assert!(!physics.at_rest(), "the fixture started in the fixpoint");
 
                 let mut touched = false;
@@ -978,7 +750,7 @@ mod tests {
         assert_ne!(
             body.orientation.rotation,
             Rotor4::IDENTITY,
-            "throw produced no rotation, so the pin below is vacuous"
+            "the impulse produced no rotation, so the pin below is vacuous"
         );
         assert_eq!(origin, body.position.truncate());
         assert_ne!(
@@ -1032,260 +804,28 @@ mod tests {
     const RIGHT: Vec3 = Vec3::X;
     const UP: Vec3 = Vec3::Y;
 
-    #[test]
-    fn throw_speed_never_exceeds_the_measured_tunneling_bound() {
-        let mut physics = PlaygroundPhysics::new(2, RADIUS);
-        for drag in [
-            Vec2::ZERO,
-            Vec2::new(30.0, 0.0),
-            Vec2::new(FULL_SCALE_DRAG_PIXELS, 0.0),
-            Vec2::new(0.0, -4000.0),
-            Vec2::new(9000.0, -9000.0),
-        ] {
-            for _ in 0..8 {
-                physics.throw(0, throw_impulse(drag, RIGHT, UP));
-                let displacement = physics.world.bodies[0].velocity.length() * PHYSICS_DT;
-                assert!(
-                    displacement <= MAX_PER_STEP_DISPLACEMENT,
-                    "drag {drag} left {displacement} of travel per step, past the \
-                     recorded {MAX_PER_STEP_DISPLACEMENT}"
-                );
-            }
-        }
-    }
-
-    fn rim_travel_per_step(body: &RigidBody<EuclideanR4>) -> f32 {
-        (body.velocity.length() + body.angular_velocity.magnitude() * RADIUS) * PHYSICS_DT
-    }
-
-    const LAUNCH_PHASES: u32 = 16;
-
-    fn contact_is_detected(collider: Collider, displacement: f32, phase: f32) -> bool {
-        const CLEARANCE: f32 = 2.0;
-        let inertia = ball4_inertia(BODY_MASS, RADIUS);
-        let mut world = World::new(EuclideanR4);
-        register_default_narrowphase(&mut world.narrowphase);
-        world.push_body(RigidBody::fixed(
-            Vec4::ZERO,
-            collider.clone(),
-            inertia,
-            &EuclideanR4,
-        ));
-        world.push_body(RigidBody::new(
-            Vec4::new(-(CLEARANCE + phase), 0.0, 0.0, 0.0),
-            Vec4::new(displacement / PHYSICS_DT, 0.0, 0.0, 0.0),
-            collider,
-            BODY_MASS,
-            inertia,
-            &EuclideanR4,
-        ));
-        let steps = ((2.0 * CLEARANCE + phase) / displacement).ceil() as usize + 1;
-        (0..steps).any(|_| {
-            world.step(PHYSICS_DT);
-            !world.manifolds.is_empty()
-        })
+    // Impulse carrying `fraction` of [`MAX_RESOLVED_SPEED`] along `direction`.
+    // `m · speed · direction`, because `apply_impulse` divides by the same mass.
+    fn flick(fraction: f32, direction: Vec3) -> Vec4 {
+        (direction * (fraction * MAX_RESOLVED_SPEED * BODY_MASS)).extend(0.0)
     }
 
     #[test]
-    fn the_body_tunneling_band_is_one_the_narrowphase_resolves() {
-        let mut cases = vec![(
-            "ball, any spin".to_string(),
-            Collider::sphere_at_origin(RADIUS),
-        )];
-        for (polytope, _) in HULL_SHAPES {
-            for (i, spin) in sweep_spins().into_iter().enumerate() {
-                let (physics, ..) = synced_row(RaymarchShape::Polytope(polytope), 1, RADIUS, spin);
-                cases.push((
-                    format!("{polytope:?} at sweep spin {i}"),
-                    physics.world.bodies[0].collider.clone(),
-                ));
-            }
-        }
-        for (pair, collider) in cases {
-            for phase in 0..LAUNCH_PHASES {
-                let offset = BODY_TUNNELING_BAND * phase as f32 / LAUNCH_PHASES as f32;
-                assert!(
-                    contact_is_detected(collider.clone(), BODY_TUNNELING_BAND, offset),
-                    "the {pair} pair missed each other at {BODY_TUNNELING_BAND} per step, \
-                     launch phase {phase} of {LAUNCH_PHASES}: the band is wider than the \
-                     reach MAX_ANGULAR_SPEED is derived against"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn the_throw_ceilings_together_spend_exactly_the_usable_band() {
-        let spent = (MAX_THROW_SPEED + MAX_ANGULAR_SPEED * RADIUS) * PHYSICS_DT;
-        let usable = TUNNELING_MARGIN * BODY_TUNNELING_BAND;
-        assert!(
-            (spent - usable).abs() < 1e-6,
-            "the two ceilings spend {spent} of the band per step, not the \
-             {usable} they are derived from"
-        );
-    }
-
-    #[test]
-    fn a_full_speed_off_centre_flick_stays_inside_the_body_tunneling_band() {
-        let layout = Vec4::from_array(body_position(0, 1));
-        let impulse = throw_impulse(Vec2::new(FULL_SCALE_DRAG_PIXELS, 0.0), RIGHT, UP);
-        let ball = ball4_inertia(BODY_MASS, RADIUS);
-        let usable = TUNNELING_MARGIN * BODY_TUNNELING_BAND;
-        let mut worst_unclamped = 0.0_f32;
-        for inertia in [ball, ball / 4.0, ball / 16.0, ball / 64.0] {
-            for offset in [Vec4::W, Vec4::Y, (Vec4::Y + Vec4::W).normalize()] {
-                let mut physics = PlaygroundPhysics::new(1, RADIUS);
-                physics.world.bodies[0].inertia = inertia;
-                physics.world.bodies[0].apply_impulse_at_point(
-                    &EuclideanR4,
-                    impulse,
-                    layout + offset * RADIUS,
-                );
-                worst_unclamped =
-                    worst_unclamped.max(rim_travel_per_step(&physics.world.bodies[0]));
-                physics.clamp_to_tunneling_budget(0);
-                let travel = rim_travel_per_step(&physics.world.bodies[0]);
-                assert!(
-                    travel <= usable + 1e-5,
-                    "a rim flick at inertia {inertia} on lever {offset} left {travel} \
-                     of rim travel per step, past the {usable} the band allows"
-                );
-            }
-        }
-        assert!(
-            worst_unclamped > BODY_TUNNELING_BAND,
-            "no case in the sweep outran the band unclamped ({worst_unclamped}), \
-             so the clamp above was never exercised"
-        );
-    }
-
-    #[test]
-    fn clamping_the_spin_preserves_its_plane() {
-        let mut physics = PlaygroundPhysics::new(1, RADIUS);
-        let spin = Bivector4::new(1.0, -2.0, 0.5, 3.0, -1.5, 0.25);
-        let over = spin * (10.0 * MAX_ANGULAR_SPEED / spin.magnitude());
-        physics.world.bodies[0].angular_velocity = over;
-        physics.throw(0, Vec4::ZERO);
-
-        let clamped = physics.world.bodies[0].angular_velocity;
-        assert!(
-            (clamped.magnitude() - MAX_ANGULAR_SPEED).abs() < 1e-3,
-            "clamped to {}, not the ceiling",
-            clamped.magnitude()
-        );
-        let expected = spin * (MAX_ANGULAR_SPEED / spin.magnitude());
-        assert!(
-            (clamped + expected * -1.0).magnitude() < 1e-3,
-            "the clamp turned the spin from {expected:?} to {clamped:?}"
-        );
-    }
-
-    #[test]
-    fn a_spin_inside_the_ceiling_is_untouched() {
-        let mut physics = PlaygroundPhysics::new(1, RADIUS);
-        let spin = Bivector4::new(0.0, 0.0, 0.5 * MAX_ANGULAR_SPEED, 0.0, 0.0, 0.0);
-        physics.world.bodies[0].angular_velocity = spin;
-        for _ in 0..8 {
-            physics.throw(0, Vec4::ZERO);
-        }
-        assert_eq!(physics.world.bodies[0].angular_velocity, spin);
-    }
-
-    #[test]
-    fn throw_speed_is_linear_in_drag_length_until_it_saturates() {
-        for fraction in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
-            let drag = Vec2::new(fraction * FULL_SCALE_DRAG_PIXELS, 0.0);
-            let speed = throw_impulse(drag, RIGHT, UP).length() / BODY_MASS;
-            assert!(
-                (speed - fraction * MAX_THROW_SPEED).abs() < 1e-4,
-                "drag at {fraction} of full scale gave {speed}, not \
-                 {} of the ceiling",
-                fraction
-            );
-        }
-        for over in [1.5_f32, 4.0, 40.0] {
-            let drag = Vec2::new(over * FULL_SCALE_DRAG_PIXELS, 0.0);
-            let speed = throw_impulse(drag, RIGHT, UP).length() / BODY_MASS;
-            assert!(
-                (speed - MAX_THROW_SPEED).abs() < 1e-4,
-                "drag at {over}x full scale gave {speed}, not the ceiling"
-            );
-        }
-    }
-
-    #[test]
-    fn throw_direction_is_the_drag_in_the_camera_plane_on_the_w_zero_slice() {
-        let cases = [
-            (Vec2::new(100.0, 0.0), RIGHT),
-            (Vec2::new(-100.0, 0.0), -RIGHT),
-            (Vec2::new(0.0, 100.0), -UP),
-            (Vec2::new(0.0, -100.0), UP),
-        ];
-        for (drag, expected) in cases {
-            let impulse = throw_impulse(drag, RIGHT, UP);
-            assert_eq!(impulse.w, 0.0, "drag {drag} threw off the slice");
-            let direction = impulse.truncate().normalize();
-            assert!(
-                (direction - expected).length() < 1e-5,
-                "drag {drag} threw toward {direction}, not {expected}"
-            );
-        }
-        assert_eq!(throw_impulse(Vec2::ZERO, RIGHT, UP), Vec4::ZERO);
-    }
-
-    #[test]
-    fn screen_ray_picks_the_nearest_body_it_enters_and_nothing_else() {
-        let slots = 3;
-        let physics = PlaygroundPhysics::new(slots, RADIUS);
-        let centre = |slot: usize| Vec4::from_array(body_position(slot, slots)).truncate();
-
-        for slot in 0..slots {
-            let ray = Ray {
-                origin: centre(slot) + Vec3::Z * 10.0,
-                direction: -Vec3::Z,
-            };
-            assert_eq!(physics.pick(&ray, slots, RADIUS), Some(slot));
-        }
-
-        let along_row = Ray {
-            origin: centre(0) - Vec3::X * 10.0,
-            direction: Vec3::X,
-        };
-        assert_eq!(physics.pick(&along_row, slots, RADIUS), Some(0));
-        let reversed = Ray {
-            origin: centre(2) + Vec3::X * 10.0,
-            direction: -Vec3::X,
-        };
-        assert_eq!(physics.pick(&reversed, slots, RADIUS), Some(2));
-
-        let sky = Ray {
-            origin: centre(1) + Vec3::Y * 6.0,
-            direction: -Vec3::Z,
-        };
-        assert_eq!(physics.pick(&sky, slots, RADIUS), None);
-        let behind = Ray {
-            origin: centre(1) + Vec3::Z * 10.0,
-            direction: Vec3::Z,
-        };
-        assert_eq!(physics.pick(&behind, slots, RADIUS), None);
-    }
-
-    #[test]
-    fn a_thrown_body_advances_the_world_and_returns_to_the_at_rest_fixpoint() {
+    fn an_impulse_advances_the_world_and_returns_it_to_the_at_rest_fixpoint() {
         let mut physics = PlaygroundPhysics::new(1, RADIUS);
         let layout = Vec4::from_array(body_position(0, 1));
-        physics.throw(0, throw_impulse(Vec2::new(400.0, 0.0), RIGHT, UP));
-        assert!(!physics.at_rest(), "a throw left the world at rest");
+        physics.world.bodies[0].apply_impulse(flick(1.0, RIGHT));
+        assert!(!physics.at_rest(), "an impulse left the world at rest");
 
         physics.step(6);
         let moved = physics.pose(0, 1, Rotor4::IDENTITY).position;
         assert!(
             (moved - layout).length() > 0.1,
-            "six ticks of a full-power throw moved the body only {}",
+            "six ticks of a full-power impulse moved the body only {}",
             (moved - layout).length()
         );
 
-        // 0.6 s time constant from MAX_THROW_SPEED down to REST_SPEED needs
+        // 0.6 s time constant from MAX_RESOLVED_SPEED down to REST_SPEED needs
         // ~3.7 s; ten seconds of ticks is comfortably past it.
         physics.step(600);
         assert!(physics.at_rest(), "the throw never decayed back to rest");
@@ -1299,40 +839,40 @@ mod tests {
     }
 
     #[test]
-    fn a_body_that_has_come_to_rest_is_throwable_again() {
+    fn a_body_that_has_come_to_rest_takes_a_second_impulse() {
         let mut physics = PlaygroundPhysics::new(1, RADIUS);
-        physics.throw(0, throw_impulse(Vec2::new(200.0, 0.0), RIGHT, UP));
+        physics.world.bodies[0].apply_impulse(flick(0.8, RIGHT));
         physics.step(600);
         assert!(physics.at_rest());
         let settled = physics.pose(0, 1, Rotor4::IDENTITY).position;
 
-        physics.throw(0, throw_impulse(Vec2::new(0.0, -200.0), RIGHT, UP));
-        assert!(!physics.at_rest(), "the second flick did not wake the row");
+        physics.world.bodies[0].apply_impulse(flick(0.8, UP));
+        assert!(
+            !physics.at_rest(),
+            "the second impulse did not wake the row"
+        );
         physics.step(6);
         let after = physics.pose(0, 1, Rotor4::IDENTITY).position;
         assert!(
             after.y - settled.y > 0.1,
-            "the second flick moved the body {} in y",
+            "the second impulse moved the body {} in y",
             after.y - settled.y
         );
     }
 
     #[test]
-    fn a_full_speed_throw_transfers_momentum_to_the_neighbour_it_hits() {
+    fn a_full_speed_impulse_transfers_momentum_to_the_neighbour_it_hits() {
         let slots = 2;
         let mut physics = PlaygroundPhysics::new(slots, RADIUS);
         let target_layout = Vec4::from_array(body_position(1, slots));
-        physics.throw(
-            0,
-            throw_impulse(Vec2::new(FULL_SCALE_DRAG_PIXELS, 0.0), RIGHT, UP),
-        );
+        physics.world.bodies[0].apply_impulse(flick(1.0, RIGHT));
         physics.step(12);
 
         let thrower = physics.world.bodies[0].velocity;
         let target = physics.world.bodies[1].velocity;
         assert!(
             target.x > 1.0,
-            "the neighbour was left at {target}: the throw passed through it"
+            "the neighbour was left at {target}: the impulse passed through it"
         );
         assert!(
             target.x > thrower.x,

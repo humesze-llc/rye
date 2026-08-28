@@ -1,10 +1,9 @@
+use loam_app::egui;
 use loam_app::shell::SceneRegistry;
-use loam_app::{egui, FrameCtx};
 use loam_egui::{
     media::{chevron_button, play_pause_button, rate_toggle, refresh_button},
     slider_with_edit,
 };
-use loam_math::{EuclideanR3, Rotor4};
 
 use crate::consts::{CONTROL_H, CONTROL_W, PLAY_PAUSE_W};
 use crate::state::{
@@ -407,12 +406,10 @@ impl Demo {
 
                 ui.heading("Mouse");
                 ui.label(
-                    "• Press on a shape: it becomes the selected body, the \
-                         one every rotation control writes. Drag from there to \
-                         aim a throw; the line shows the direction and the \
-                         percentage shows how hard; release to flick it. The \
-                         chamber is zero-g, so a thrown shape carries on until \
-                         it hits a neighbour and coasts to a stop.",
+                    "• This scene is a rotation study and has no grab: the \
+                         console verb `select <slot>` chooses the body every \
+                         rotation control writes, and the `toybox` scene is \
+                         where a shape is picked up and thrown.",
                 );
                 ui.label(
                     "• Drag a hypergimbal ring: rotate the selected body in \
@@ -459,53 +456,6 @@ impl Demo {
                 ));
             });
         });
-    }
-
-    // The number is the mapping's own `charge`, not a second estimate of it.
-    pub(crate) fn render_throw_aim(&self, ctx: &egui::Context, frame: &FrameCtx<'_>) {
-        let Some(drag) = self.throw_drag else {
-            return;
-        };
-        let slots = self.render_row().len();
-        if drag.slot >= slots {
-            return;
-        }
-        let ppp = ctx.pixels_per_point();
-        let cfg = &frame.rd.surface_bundle.config;
-        let viewport = (
-            (cfg.width as f32 / ppp).round() as u32,
-            (cfg.height as f32 / ppp).round() as u32,
-        );
-        let world = self
-            .physics
-            .pose(drag.slot, slots, Rotor4::IDENTITY)
-            .position_r3();
-        let Some(anchor) = loam_egui::world_to_screen(&self.camera, world, viewport, &EuclideanR3)
-        else {
-            return;
-        };
-
-        let charge = drag.charge();
-        let color = egui::Color32::from_rgb(
-            (90.0 + 165.0 * charge) as u8,
-            (210.0 - 100.0 * charge) as u8,
-            (170.0 - 130.0 * charge) as u8,
-        );
-        let stroke = egui::Stroke::new(2.0, color);
-        let tip = egui::pos2(drag.cursor_px.x / ppp, drag.cursor_px.y / ppp);
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("polytope-playground-throw-aim"),
-        ));
-        painter.circle_stroke(anchor, 10.0, stroke);
-        painter.line_segment([anchor, tip], stroke);
-        painter.text(
-            tip + egui::vec2(12.0, -18.0),
-            egui::Align2::LEFT_TOP,
-            format!("{:.0}% throw", charge * 100.0),
-            egui::FontId::monospace(12.0),
-            color,
-        );
     }
 
     pub(crate) fn render_overlay(&mut self, ctx: &egui::Context) {

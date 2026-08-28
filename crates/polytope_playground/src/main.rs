@@ -61,6 +61,7 @@ mod shell;
 mod spins;
 mod state;
 mod title;
+mod toybox;
 mod ui;
 mod wireframe_geom;
 
@@ -250,7 +251,6 @@ impl Demo {
 
         Ok(Self {
             physics,
-            throw_drag: None,
             left_was_down: false,
             gimbal: hypergimbal::GimbalUi::default(),
             gimbal_node,
@@ -364,13 +364,10 @@ impl Demo {
         };
 
         self.camera.aspect = viewport.0 as f32 / viewport.1.max(1) as f32;
-        // Reads `left_was_down` before `update_throw` refreshes it, which is
-        // why the gimbal runs ahead of that call.
-        let pointer_free = self.throw_enabled(ctx.ui_capture.pointer);
+        // The gimbal owns the left button whenever egui does not and the
+        // camera is not flying, which is what `left_was_down` tracks.
+        let pointer_free = !ctx.ui_capture.pointer && self.camera_mode == CameraMode::Orbit;
         let gimbaling = self.update_gimbal(pointer_free, &ctx.input, viewport);
-        // Before the physics step, so the frame a flick is released on also
-        // integrates it and `body_upload_needed` sees a moving world.
-        let aiming = self.update_throw(pointer_free && !gimbaling, &ctx.input, viewport);
 
         let dir = (self.slider_up_held as i32 - self.slider_down_held as i32) as f32;
         let host_owns_w = !self
@@ -439,7 +436,7 @@ impl Demo {
         match self.camera_mode {
             CameraMode::Orbit if !ctx.ui_capture.pointer => {
                 let mut input = ctx.input;
-                input.left_mouse_down &= !(aiming || gimbaling);
+                input.left_mouse_down &= !gimbaling;
                 self.orbit
                     .advance(input, &mut self.camera, &EuclideanR3, dt_secs);
             }
@@ -537,8 +534,6 @@ impl Demo {
         if self.view_mode == ViewMode::Filmstrip {
             self.render_filmstrip_cell_labels(ctx);
         }
-
-        self.render_throw_aim(ctx, frame);
 
         if self.show_controls {
             self.render_overlay(ctx);
@@ -1220,7 +1215,7 @@ mod script_arg_tests {
 
     #[test]
     fn the_space_separated_form_is_diagnosed_rather_than_ignored() {
-        let args = Args::from_argv(["--script", "console-scripts/impulse-bars.script"]);
+        let args = Args::from_argv(["--script", "some.script"]);
         let err = load_script(&args).expect_err("a bare --script is not a silent default");
         assert!(format!("{err:#}").contains("--script="), "{err:#}");
     }

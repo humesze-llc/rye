@@ -50,26 +50,6 @@ impl RotateScene {
                 Ok(())
             },
         ));
-        // Takes the drag in pixels rather than an impulse, so there is exactly
-        // one drag-to-impulse mapping in the demo.
-        c.register(loam_egui::cmd(
-            "throw",
-            "throw a body: `throw <slot> <drag_x_px> <drag_y_px>` through the mouse flick's own mapping",
-            |args, demo: &mut Demo, out| {
-                let [slot, dx, dy] = args else {
-                    anyhow::bail!("usage: throw <slot> <drag_x_px> <drag_y_px>");
-                };
-                let slot: usize = slot
-                    .parse()
-                    .map_err(|e| anyhow!("invalid slot `{slot}`: {e}"))?;
-                let drag = glam::Vec2::new(
-                    dx.parse().map_err(|e| anyhow!("invalid drag x `{dx}`: {e}"))?,
-                    dy.parse().map_err(|e| anyhow!("invalid drag y `{dy}`: {e}"))?,
-                );
-                out.line(demo.throw_slot(slot, drag)?);
-                Ok(())
-            },
-        ));
         c.register(loam_egui::cmd(
             "hud",
             "toggle the top-left loam-text state readout (w, t, rate, planes)",
@@ -802,27 +782,6 @@ impl RotateScene {
 mod tests {
     use super::*;
     use loam_app::shell::SceneRegistry;
-
-    #[test]
-    fn the_shipped_script_parses_and_every_line_names_a_registered_command() {
-        let script =
-            loam_app::script::Script::parse(include_str!("../console-scripts/impulse-bars.script"))
-                .expect("the shipped script parses");
-        assert!(!script.steps().is_empty(), "the example schedules nothing");
-        let console = RotateScene::build_console();
-        for step in script.steps() {
-            let name = step
-                .command
-                .split_whitespace()
-                .next()
-                .expect("parse rejects an empty command");
-            assert!(
-                console.has_command(name),
-                "`{name}` is not registered (line: `{}`)",
-                step.command
-            );
-        }
-    }
 
     #[test]
     fn the_console_registers_the_transform_handles_toggle() {

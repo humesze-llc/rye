@@ -10,7 +10,7 @@ use loam_shape::polytope::Polytope4;
 use crate::catalog::ShapeEntry;
 use crate::consts::{BASE_ROTATION_RATE, BODY_SIZE, BODY_X_SPACING, BODY_Y, T_SLIDER_INITIAL};
 use crate::director::Playback;
-use crate::physics::{BodyPose, PlaygroundPhysics, ThrowDrag};
+use crate::physics::{BodyPose, PlaygroundPhysics};
 use crate::spins::{is_directed, SlotSpins};
 
 pub(crate) use crate::projections::*;
@@ -287,7 +287,6 @@ impl RowFrame<'_> {
 
 pub(crate) struct Demo {
     pub(crate) physics: PlaygroundPhysics,
-    pub(crate) throw_drag: Option<ThrowDrag>,
     pub(crate) left_was_down: bool,
     pub(crate) gimbal: crate::hypergimbal::GimbalUi,
     pub(crate) gimbal_node: loam_render::LineRasterNode,
@@ -629,9 +628,8 @@ impl Demo {
         self.cross_section = SectionLayer::CROSS_SECTION_DEFAULT;
         self.projected_cap = SectionLayer::PROJECTED_CAP_DEFAULT;
         self.draft.clear();
-        // Drop an aim in progress: its slot names a body the respawn below
-        // despawns, and releasing over the fresh row would throw a stranger.
-        self.throw_drag = None;
+        // Drop a handle drag in progress: its slot names a body the respawn
+        // below despawns.
         self.gimbal.drag = None;
         let slots = self.render_row().len();
         self.physics.respawn(slots, self.effective_body_size());

@@ -25,6 +25,11 @@ impl SceneRegistry for Playground {
             build: |ctx| Ok(Box::new(crate::title::TitleScene::new(ctx)?)),
         },
         SceneEntry {
+            slug: "toybox",
+            label: "Toybox: grab and throw in R⁴",
+            build: |ctx| Ok(Box::new(crate::toybox::ToyboxScene::new(ctx)?)),
+        },
+        SceneEntry {
             slug: "hero",
             label: "Hero: LOAM in the rain",
             build: |ctx| Ok(Box::new(crate::hero::HeroScene::new(ctx)?)),

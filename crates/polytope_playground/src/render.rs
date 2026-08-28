@@ -937,10 +937,10 @@ pub(crate) struct PhysicsOverlay {
 }
 
 // Bar length per unit impulse. A head-on flick at
-// [`crate::physics::MAX_THROW_SPEED`] against an equal mass peaks at about 5.2
-// units of accumulated impulse in one contact, which this puts at rather more
-// than a third of a body radius. Measured, not derived: the solver is not
-// elastic, so the peak is well under the 8.1 of momentum the throw carries in.
+// [`crate::physics::MAX_RESOLVED_SPEED`] against an equal mass peaks at about
+// 5.2 units of accumulated impulse in one contact, which this puts at rather
+// more than a third of a body radius. Measured, not derived: the solver is not
+// elastic, so the peak is well under the 8.1 of momentum the flick carries in.
 const DEFAULT_IMPULSE_SCALE: f32 = 0.05;
 
 // Small enough that a full four-slot manifold reads as four marks, not a blob.
@@ -1108,7 +1108,7 @@ pub(crate) fn build_physics_overlay_mesh(
 mod tests {
     use super::*;
     use crate::catalog::ShapeEntry;
-    use crate::physics::{PlaygroundPhysics, MAX_THROW_SPEED};
+    use crate::physics::{PlaygroundPhysics, MAX_RESOLVED_SPEED};
     use crate::spins::SlotSpins;
     use crate::state::{body_position, RowFrame, SectionLayer};
     use loam_math::{EuclideanR4, Plane4, Projection};
@@ -2360,7 +2360,7 @@ mod tests {
         let mut physics = PlaygroundPhysics::new(2, BODY_SIZE);
         let from = Vec4::from_array(body_position(0, 2));
         let to = Vec4::from_array(body_position(1, 2));
-        physics.throw(0, (to - from).normalize() * MAX_THROW_SPEED);
+        physics.world.bodies[0].apply_impulse((to - from).normalize() * MAX_RESOLVED_SPEED);
 
         let mut peak = 0.0f32;
         for _ in 0..STEPS_TO_CROSS_THE_GAP {

@@ -97,10 +97,9 @@ impl Demo {
             .position
     }
 
-    // Returns `true` while a handle is held, which keeps the flick gesture and
-    // the orbit off the left button for the rest of the drag. Reads
-    // `left_was_down` before [`Demo::update_throw`] refreshes it, so this must
-    // stay ahead of that call.
+    // Returns `true` while a handle is held, which keeps the orbit off the left
+    // button for the rest of the drag. It owns `left_was_down`, so nothing else
+    // in the frame may read the press edge.
     pub(crate) fn update_gimbal(
         &mut self,
         enabled: bool,
@@ -388,11 +387,11 @@ mod tests {
     }
 
     #[test]
-    fn the_widget_follows_a_thrown_subject() {
+    fn the_widget_follows_a_moving_subject() {
         let slots = 3;
         let mut physics = PlaygroundPhysics::new(slots, BODY_SIZE);
         let parked = gimbal_center(&physics, 1, slots);
-        physics.throw(1, Vec4::new(0.0, 0.6, 0.0, 0.0));
+        physics.world.bodies[1].apply_impulse(Vec4::new(0.0, 0.6, 0.0, 0.0));
         physics.step(30);
         let moved = gimbal_center(&physics, 1, slots);
         assert!(

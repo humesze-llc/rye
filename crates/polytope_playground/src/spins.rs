@@ -159,11 +159,7 @@ impl SlotSpins {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consts::BODY_SIZE;
-    use crate::physics::PlaygroundPhysics;
-    use crate::state::body_position;
-    use glam::{Vec3, Vec4};
-    use loam_camera::Ray;
+    use glam::Vec4;
     use loam_math::{Plane4, Rotor};
 
     // Angle a rotor turns a probe vector through, as the chord half-angle
@@ -256,18 +252,12 @@ mod tests {
     }
 
     #[test]
-    fn a_press_aims_the_controls_at_the_body_it_picked_and_no_other() {
+    fn a_selection_aims_the_controls_at_that_body_and_no_other() {
         const SLOTS: usize = 4;
-        let physics = PlaygroundPhysics::new(SLOTS, BODY_SIZE);
         let mut spins = SlotSpins::new(SLOTS);
 
         for target in 0..SLOTS {
-            let centre = Vec4::from_array(body_position(target, SLOTS)).truncate();
-            let ray = Ray {
-                origin: centre + Vec3::Z * 10.0,
-                direction: -Vec3::Z,
-            };
-            spins.select_picked(physics.pick(&ray, SLOTS, BODY_SIZE));
+            spins.select_picked(Some(target));
             assert_eq!(spins.selected(), target);
 
             spins.selected_spin_mut().base_angles[Plane4::Zw as usize] = 0.5 + target as f32;
@@ -283,14 +273,14 @@ mod tests {
             }
         }
 
-        let sky = Ray {
-            origin: Vec3::Y * 40.0,
-            direction: Vec3::Y,
-        };
-        spins.select_picked(physics.pick(&sky, SLOTS, BODY_SIZE));
-        assert_eq!(spins.selected(), SLOTS - 1);
+        spins.select_picked(None);
+        assert_eq!(spins.selected(), SLOTS - 1, "a miss moved the selection");
         spins.select_picked(Some(SLOTS + 3));
-        assert_eq!(spins.selected(), SLOTS - 1);
+        assert_eq!(
+            spins.selected(),
+            SLOTS - 1,
+            "an out-of-row slot was selected"
+        );
     }
 
     #[test]

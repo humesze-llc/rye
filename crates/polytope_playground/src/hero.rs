@@ -13,7 +13,9 @@ use loam_physics::euclidean_r4::{
     halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
 };
 use loam_physics::{BodyId, Gravity, World};
-use loam_render::{DepthBuffer, DepthMode, TriangleRasterNode};
+use loam_render::{
+    DepthBuffer, DepthMode, Ground, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode, Viewport,
+};
 use loam_shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
 use loam_shape::{Shape, TriangleMesh, Visualizable};
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
@@ -175,7 +177,7 @@ impl HeroSequence {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
         world.push_field(Box::new(Gravity::new(Vec4::new(0.0, GRAVITY, 0.0, 0.0))));
-        let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+        let floor = world.push_body(halfspace4_body_r4(Vec4::Y, FLOOR_Y));
         world.bodies[floor].restitution = RESTITUTION;
 
         let letters: Vec<HeroLetter> = solids
@@ -472,10 +474,17 @@ fn assembly_timeline(letters: &[HeroLetter]) -> Timeline {
     }
 }
 
-const FLOOR_COLOR: [f32; 4] = [0.10, 0.11, 0.14, 1.0];
 const LETTER_COLOR: [f32; 4] = [0.92, 0.90, 0.86, 1.0];
 
-const FLOOR_HALF_EXTENT: f32 = 14.0;
+// Read by the physics half-space the letters land on and by the background's
+// analytic ground, so the drawn floor cannot drift from the one they hit.
+const FLOOR_Y: f32 = 0.0;
+
+// Low contrast on purpose: a high-contrast checker reads as a chessboard
+// rather than a lawn, and equal colours would drop the ground-plane depth cue
+// altogether.
+const GRASS_DARK: [f32; 3] = [0.145, 0.205, 0.130];
+const GRASS_LIGHT: [f32; 3] = [0.170, 0.235, 0.150];
 
 // The letters live in a slab about `w = 0`, so this is where their neighbours
 // have to be cut to share a scene with them.
@@ -488,13 +497,6 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const BOOT_ORBIT_DISTANCE: f32 = 7.5;
 const BOOT_ORBIT_PITCH: f32 = -0.12;
 const BOOT_EYE_HEIGHT: f32 = 1.4;
-
-const BACKGROUND: wgpu::Color = wgpu::Color {
-    r: 0.020,
-    g: 0.022,
-    b: 0.032,
-    a: 1.0,
-};
 
 // Hack Regular, the same face the HUD bakes its atlas from and for the same
 // reason: a system font would make the letters, and therefore the whole
@@ -511,17 +513,6 @@ fn drop_color(polytope: Polytope4) -> [f32; 3] {
         .unwrap_or([1.0, 1.0, 1.0])
 }
 
-fn push_floor(mesh: &mut TriangleMesh<3>) {
-    let base = mesh.vertices.len() as u32;
-    let e = FLOOR_HALF_EXTENT;
-    for corner in [[-e, 0.0, -e], [e, 0.0, -e], [e, 0.0, e], [-e, 0.0, e]] {
-        mesh.vertices.push(corner);
-        mesh.colors.push(FLOOR_COLOR);
-    }
-    mesh.indices.push([base, base + 1, base + 2]);
-    mesh.indices.push([base, base + 2, base + 3]);
-}
-
 // A drop is SLICED at [`W_SLICE`], so a tumble through a `w` plane visibly
 // changes its cross-section. A letter is PROJECTED: its solid is a product with
 // the glyph slab, so its true slice is the same cross-section at every `w` the
@@ -535,7 +526,6 @@ fn build_frame_mesh(
     mesh.vertices.clear();
     mesh.colors.clear();
     mesh.indices.clear();
-    push_floor(mesh);
     push_letters(sequence, mesh);
     push_drop_caps(sequence, local, scratch, mesh);
 }
@@ -597,6 +587,7 @@ pub(crate) struct HeroScene {
     orbit: OrbitController<EuclideanR3>,
     console: Console<()>,
     triangles: TriangleRasterNode,
+    sky_ground: SkyGroundNode,
     depth: Option<DepthBuffer>,
     mesh: TriangleMesh<3>,
     local_vertices: Vec<Vec4>,
@@ -628,6 +619,12 @@ impl HeroScene {
                     format: DEPTH_FORMAT,
                 },
                 loam_render::triangle_raster::FragmentShading::FaceNormalLambert,
+                ctx.rd.sample_count(),
+            ),
+            sky_ground: SkyGroundNode::new(
+                &ctx.rd.device,
+                ctx.rd.target_format(),
+                DEPTH_FORMAT,
                 ctx.rd.sample_count(),
             ),
             depth: None,
@@ -743,23 +740,6 @@ impl loam_app::shell::Scene for HeroScene {
         let rd = &ctx.rd;
         let cfg = &rd.surface_bundle.config;
 
-        // This scene owns the clear: nothing runs before it in the frame's
-        // encoder, and the raster node loads rather than clears.
-        let _ = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("hero clear pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: ctx.view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(BACKGROUND),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
         DepthBuffer::ensure(
             &mut self.depth,
             &rd.device,
@@ -768,20 +748,30 @@ impl loam_app::shell::Scene for HeroScene {
             rd.sample_count(),
         );
         let depth = self.depth.as_ref().expect("ensure() guarantees Some");
-        let _ = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("hero depth clear pass"),
-            color_attachments: &[],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &depth.view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
+
+        let view = self.camera.view();
+        let aspect = cfg.width as f32 / cfg.height.max(1) as f32;
+        let view_mat = Mat4::look_to_rh(view.position, view.forward, view.up);
+        let proj_mat = Mat4::perspective_rh(55.0_f32.to_radians(), aspect, 0.05, 200.0);
+        let view_proj = proj_mat * view_mat;
+
+        // This scene owns the clear: nothing runs before it in the frame's
+        // encoder, and the raster node loads rather than clears.
+        self.sky_ground.set_uniforms(
+            &rd.queue,
+            &SkyGroundUniforms::new(
+                view_proj,
+                Viewport::full([cfg.width, cfg.height]),
+                Ground {
+                    y: FLOOR_Y,
+                    dark: GRASS_DARK,
+                    light: GRASS_LIGHT,
+                    visible: true,
+                },
+            ),
+        );
+        self.sky_ground
+            .record(ctx.encoder, ctx.view, &depth.view, None);
 
         build_frame_mesh(
             &self.sequence,
@@ -795,12 +785,7 @@ impl loam_app::shell::Scene for HeroScene {
             &self.mesh,
             &Projection::Identity,
         );
-
-        let view = self.camera.view();
-        let aspect = cfg.width as f32 / cfg.height.max(1) as f32;
-        let view_mat = Mat4::look_to_rh(view.position, view.forward, view.up);
-        let proj_mat = Mat4::perspective_rh(55.0_f32.to_radians(), aspect, 0.05, 200.0);
-        self.triangles.set_camera(&rd.queue, proj_mat * view_mat);
+        self.triangles.set_camera(&rd.queue, view_proj);
         self.triangles
             .record(ctx.encoder, ctx.view, Some(&depth.view), None);
         Ok(())

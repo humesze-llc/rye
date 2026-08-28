@@ -4,6 +4,7 @@ use glam::{Vec3, Vec4};
 use loam_app::{freecam::Freecam, Camera, OrbitController};
 use loam_math::{Bivector, Bivector4, EuclideanR3, Plane4, Projection, Rotor, Rotor4};
 use loam_render::raymarch::{BodyUniform, Hyperslice4DNode};
+use loam_render::SkyGroundNode;
 use loam_shape::polytope::Polytope4;
 
 use crate::catalog::ShapeEntry;
@@ -295,6 +296,9 @@ pub(crate) struct Demo {
     pub(crate) freecam: Freecam,
     pub(crate) camera_mode: CameraMode,
     pub(crate) node: Hyperslice4DNode,
+    /// Owns the frame's colour and depth clear, so it is recorded first and
+    /// unconditionally; every later pass loads.
+    pub(crate) sky_ground: SkyGroundNode,
     pub(crate) sdf_upload_pending: bool,
     pub(crate) uploaded_rotors: Vec<Rotor4>,
     pub(crate) section_edges: loam_render::LineRasterNode,

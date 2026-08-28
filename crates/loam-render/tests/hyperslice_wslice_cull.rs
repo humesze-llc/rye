@@ -59,8 +59,9 @@ const SLICES_INSIDE_BOUNDING_BALLS: [f32; 4] = [0.0, 0.25, 0.5, 0.68];
 // them and bit-exactness is exactly what is at stake.
 const SLICES_PAST_BOUNDING_BALLS: [f32; 2] = [0.75, 1.2];
 
-// No body's bounding ball reaches it, so its frame is floor and sky. Reusing
-// the largest probe slice keeps the reference inside the priced set.
+// No body's bounding ball reaches it, so its frame is the clear alone: the
+// kernel discards on a miss and on the floor. Reusing the largest probe slice
+// keeps the reference inside the priced set.
 const EMPTY_REFERENCE_SLICE: f32 = 1.2;
 
 fn probe_slices() -> Vec<f32> {
@@ -192,6 +193,26 @@ fn render_slice(
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
         label: Some("wslice cull probe encoder"),
     });
+    // The kernel loads rather than clears and discards every pixel it does not
+    // shade, so without this the frame would carry the previous draw's pixels
+    // and the byte-identity comparison would price render order.
+    {
+        let _clear = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("wslice cull probe clear"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
+                    load: LoadOp::Clear(Color::BLACK),
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+    }
     node.record_in_viewport(&mut encoder, view, Viewport::full(SIZE));
     queue.submit(Some(encoder.finish()));
     device

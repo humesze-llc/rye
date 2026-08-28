@@ -166,8 +166,12 @@ impl Default for Hyperslice4DUniforms {
     }
 }
 
-/// The user's `Scene4` emit supplies `loam_scene_sdf`.
-pub const HYPERSLICE_KERNEL_WGSL: &str = r#"
+/// The user's `Scene4` emit supplies `loam_scene_sdf`. Prefixed with
+/// [`crate::sky_ground::SKY_GROUND_WGSL`], which owns `sky`; the kernel paints
+/// no background of its own and reads `sky` only for the body fog term.
+pub const HYPERSLICE_KERNEL_WGSL: &str = concat!(
+    include_str!("../sky_ground.wgsl"),
+    r#"
 const MAX_BODIES: u32 = 32u;
 
 const BODY_KIND_SPHERE: u32 = 0u;
@@ -507,19 +511,6 @@ fn estimate_normal(p: vec3<f32>, body_idx: u32) -> vec3<f32> {
     return normalize(vec3<f32>(dx, dy, dz));
 }
 
-fn sky(rd: vec3<f32>) -> vec3<f32> {
-    let t = (rd.y + 1.0) * 0.5;
-    return mix(vec3<f32>(0.04, 0.05, 0.10), vec3<f32>(0.10, 0.13, 0.22), t);
-}
-
-fn ground_color(p: vec3<f32>) -> vec3<f32> {
-    let g = floor(p.x) + floor(p.z);
-    let alt = abs(g - 2.0 * floor(g * 0.5));
-    let dark = vec3<f32>(0.18, 0.20, 0.24);
-    let light = vec3<f32>(0.30, 0.32, 0.36);
-    return mix(dark, light, alt);
-}
-
 @fragment
 fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     // `frag_pos.xy` is in framebuffer coordinates regardless of any
@@ -571,11 +562,22 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
         if (t > max_t) { break; }
     }
 
+    // The background pass under this one owns every pixel the march does not
+    // win: the sky on a miss, and its own analytic ground where the scene's
+    // HalfSpace4D leaf wins, which leaves that leaf in the marched union as a
+    // pure occluder of the bodies.
     if (!hit) {
-        return vec4<f32>(sky(rd), 1.0);
+        discard;
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
 
     let p_hit = ro + rd * t;
+    if (hit_idx >= MAX_BODIES) {
+        if (loam_scene_at(p_hit).kind == LOAM_PRIM_HALFSPACE4D) {
+            discard;
+            return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        }
+    }
     let n = estimate_normal(p_hit, hit_idx);
     let light_dir = normalize(vec3<f32>(0.5, 0.85, 0.3));
     let lambert = max(dot(n, light_dir), 0.0);
@@ -583,15 +585,14 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     var base = vec3<f32>(0.65, 0.65, 0.72);
     if (hit_idx < MAX_BODIES) {
         base = u.bodies[hit_idx].color;
-    } else if (loam_scene_at(p_hit).kind == LOAM_PRIM_HALFSPACE4D) {
-        base = ground_color(p_hit);
     }
     let lit = base * (ambient + lambert * 0.85);
     let fog = 1.0 - exp(-t * 0.05);
     let final_color = mix(lit, sky(rd), fog * 0.5);
     return vec4<f32>(final_color, 1.0);
 }
-"#;
+"#
+);
 
 const HYPERSLICE_UNIFORMS_SIZE: u64 = std::mem::size_of::<Hyperslice4DUniforms>() as u64;
 
@@ -663,6 +664,9 @@ pub struct Hyperslice4DNode {
     uniform_buf: Buffer,
     bind_group: BindGroup,
     bind_group_layout: BindGroupLayout,
+    /// Read by the two paths that own their attachment. Defaults to
+    /// [`crate::sky_ground::SKY_HORIZON`] because the kernel discards on a
+    /// miss, so this is what stands in for the sky there.
     clear_color: Color,
     strip_cells: Option<StripCellUniforms>,
 }
@@ -750,7 +754,7 @@ impl Hyperslice4DNode {
             uniform_buf,
             bind_group,
             bind_group_layout: bgl,
-            clear_color: Color::BLACK,
+            clear_color: crate::sky_ground::SKY_HORIZON,
             strip_cells: None,
         }
     }
@@ -795,8 +799,11 @@ impl Hyperslice4DNode {
 
 impl Hyperslice4DNode {
     /// Records into the caller's `encoder` and restricts the fragment shader to
-    /// a sub-region; the clear still covers the whole attachment. Does not
-    /// submit: the runner owns one encoder per frame.
+    /// a sub-region. Does not submit: the runner owns one encoder per frame.
+    ///
+    /// `LoadOp::Load`, unlike [`Self::execute_strip`]: the kernel discards
+    /// every pixel it does not shade, so a caller on this path must record
+    /// [`crate::SkyGroundNode`] (or another background) ahead of it.
     pub fn record_in_viewport(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -810,7 +817,7 @@ impl Hyperslice4DNode {
                 depth_slice: None,
                 resolve_target: None,
                 ops: Operations {
-                    load: LoadOp::Clear(self.clear_color),
+                    load: LoadOp::Load,
                     store: StoreOp::Store,
                 },
             })],
@@ -969,7 +976,7 @@ mod tests {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_SPHERE"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_POLYTOPE"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_INVALID"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("fn ground_color"));
+        assert!(HYPERSLICE_KERNEL_WGSL.starts_with(crate::sky_ground::SKY_GROUND_WGSL));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("body_polytope_sdf_4d"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("pentatope_sdf_local"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("tesseract_sdf_local"));
@@ -987,6 +994,13 @@ mod tests {
             HYPERSLICE_KERNEL_WGSL.contains("loam_scene_at(p_hit).kind == LOAM_PRIM_HALFSPACE4D")
         );
         assert!(!HYPERSLICE_KERNEL_WGSL.contains("abs(p_hit.y) < 0.01"));
+        assert_eq!(
+            HYPERSLICE_KERNEL_WGSL.matches("discard;").count(),
+            2,
+            "the kernel discards on a miss and on a halfspace hit, so the \
+             background pass draws the ground exactly once"
+        );
+        assert!(!HYPERSLICE_KERNEL_WGSL.contains("base = ground_color("));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("loam_scene_max_t(ro, rd)"));
     }
 

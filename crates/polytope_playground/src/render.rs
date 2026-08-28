@@ -77,6 +77,10 @@ impl Demo {
             result
         } else {
             {
+                let _scope = loam_time::frame_trace::scope("pp-background");
+                self.record_sky_ground(rd, encoder, view, viewport);
+            }
+            {
                 let _scope = loam_time::frame_trace::scope("pp-sdf");
                 {
                     let mut changed = false;
@@ -96,11 +100,9 @@ impl Demo {
                 }
                 self.node.record_in_viewport(encoder, view, viewport);
             }
-            // Order: SDF (color only) -> section_faces (writes depth in Raster)
-            // -> wireframe (tests, no write).
-            if shared_depth_is_read(self.surface_mode, self.wireframe_enabled) {
-                self.ensure_and_clear_shared_depth(rd, encoder);
-            }
+            // Order: background (clears color and depth, writes the ground's)
+            // -> SDF (color only) -> section_faces (writes depth in Raster) ->
+            // wireframe (tests, no write).
             if matches!(self.surface_mode, SurfaceMode::Raster) {
                 let _scope = loam_time::frame_trace::scope("pp-section-faces");
                 self.record_section_faces(rd, encoder, view);
@@ -125,10 +127,19 @@ impl Demo {
         }
     }
 
-    fn ensure_and_clear_shared_depth(
+    /// The frame's first pass. It clears both attachments and writes the
+    /// ground's depth, so the raymarch loads colour and every raster consumer
+    /// finds a cleared shared depth whether or not it reads one.
+    ///
+    /// `view_proj` is the raster nodes' own matrix: the ground's depth has to
+    /// be the number their vertex stage would produce for a point on the
+    /// plane, or the two disagree along the horizon.
+    fn record_sky_ground(
         &mut self,
         rd: &RenderDevice,
         encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        viewport: Viewport,
     ) {
         let cfg = &rd.surface_bundle.config;
         DepthBuffer::ensure(
@@ -142,20 +153,29 @@ impl Demo {
             .section_faces_depth
             .as_ref()
             .expect("ensure() guarantees Some");
-        let _ = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("shared depth clear pass"),
-            color_attachments: &[],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &depth.view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
+
+        let view_dir = self.camera.view();
+        let aspect = cfg.width as f32 / cfg.height as f32;
+        let view_mat = Mat4::look_to_rh(view_dir.position, view_dir.forward, view_dir.up);
+        let proj_mat = Mat4::perspective_rh(60.0_f32.to_radians(), aspect, 0.1, 100.0);
+        self.sky_ground.set_uniforms(
+            &rd.queue,
+            &SkyGroundUniforms::new(
+                proj_mat * view_mat,
+                viewport,
+                Ground {
+                    y: FLOOR_Y,
+                    dark: GROUND_DARK_GREY,
+                    light: GROUND_LIGHT_GREY,
+                    // The `floor` console verb gates the marched half-space
+                    // through `u.params.x`; the background has to follow it or
+                    // the checkerboard outlives the leaf that occludes for it.
+                    visible: self.floor_enabled,
+                },
+            ),
+        );
+        self.sky_ground
+            .record(encoder, view, &depth.view, Some(&viewport));
     }
 
     fn record_points(
@@ -448,10 +468,6 @@ pub(crate) fn append_triangle_mesh(
             .iter()
             .map(|&[i, j, k]| [i + base, j + base, k + base]),
     );
-}
-
-pub(crate) fn shared_depth_is_read(surface_mode: SurfaceMode, wireframe_enabled: bool) -> bool {
-    matches!(surface_mode, SurfaceMode::Raster) || wireframe_enabled
 }
 
 #[derive(Copy, Clone)]
@@ -1098,17 +1114,6 @@ mod tests {
     use loam_math::{EuclideanR4, Plane4, Projection};
     use loam_render::raymarch::RaymarchShape;
     use loam_shape::polytope::Polytope4;
-
-    #[test]
-    fn shared_depth_is_cleared_exactly_when_a_pass_reads_it() {
-        for wireframe_enabled in [false, true] {
-            assert!(shared_depth_is_read(SurfaceMode::Raster, wireframe_enabled));
-        }
-        for surface_mode in [SurfaceMode::Sdf, SurfaceMode::Off] {
-            assert!(shared_depth_is_read(surface_mode, true));
-            assert!(!shared_depth_is_read(surface_mode, false));
-        }
-    }
 
     #[test]
     fn section_layers_merge_exactly_when_they_share_a_node() {

@@ -326,12 +326,6 @@ pub(crate) struct Demo {
     pub(crate) points_show_cell_centers: bool,
     pub(crate) points_size_px: f32,
     pub(crate) points_mesh_scratch: loam_shape::PointMesh<3>,
-    pub(crate) physics_overlay: crate::render::PhysicsOverlay,
-    /// Its own node rather than a second upload of [`Self::parent_wireframe`]:
-    /// a frame's queue writes all land before its single command buffer, so two
-    /// uploads of one node would feed both passes the second mesh.
-    pub(crate) physics_overlay_node: loam_render::LineRasterNode,
-    pub(crate) physics_overlay_mesh_scratch: loam_shape::LineMesh<3>,
     pub(crate) section_faces_depth: Option<loam_render::DepthBuffer>,
     pub(crate) section_world_vertices_scratch: Vec<glam::Vec4>,
     pub(crate) section_faces_mesh_scratch: loam_shape::TriangleMesh<3>,

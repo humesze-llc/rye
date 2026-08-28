@@ -7,8 +7,8 @@
 
 use std::borrow::Cow;
 
-use anyhow::Result;
-use glam::{Mat4, Vec3, Vec4};
+use anyhow::{anyhow, Result};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 use loam_app::{egui, Camera, CameraController, FrameCtx, OrbitController, RenderCtx, SetupCtx};
 use loam_camera::Ray;
 use loam_egui::{Console, ConsoleUi};
@@ -18,10 +18,11 @@ use loam_physics::euclidean_r4::{
 };
 use loam_physics::{BodyId, Gravity, World};
 use loam_render::{
-    DepthBuffer, DepthMode, Ground, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode, Viewport,
+    DepthBuffer, DepthMode, Ground, LineRasterNode, SkyGroundNode, SkyGroundUniforms,
+    TriangleRasterNode, Viewport,
 };
 use loam_shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
-use loam_shape::TriangleMesh;
+use loam_shape::{LineMesh, TriangleMesh};
 
 use crate::physics::ndc_from_pixels;
 
@@ -515,6 +516,10 @@ impl Toybox {
         self.cap = cap;
         self.local_vertices = local;
     }
+
+    fn build_overlay_mesh(&self, overlay: &PhysicsOverlay, mesh: &mut LineMesh<3>) {
+        build_physics_overlay_mesh(&self.world, BODY_SIZE, overlay, mesh);
+    }
 }
 
 #[cfg(test)]
@@ -779,6 +784,288 @@ fn cap_extent(vertices: &[[f32; 3]]) -> f32 {
         .fold(0.0, f32::max)
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct PhysicsOverlay {
+    contacts: bool,
+    normals: bool,
+    impulses: bool,
+    islands: bool,
+    impulse_scale: f32,
+    width_px: f32,
+}
+
+// Bar length per unit impulse. The fastest throw the scene allows is
+// [`MAX_RELEASE_SPEED`], and head-on into a resting neighbour that peaks at
+// about 3.9 units of accumulated impulse in one contact, which this puts at
+// rather more than a third of a body radius. Measured, not derived: the solver
+// is not elastic and a hull manifold splits the blow over several points, so
+// the peak is far under the 16.2 of momentum the throw carries in.
+const DEFAULT_IMPULSE_SCALE: f32 = 0.04;
+
+// Small enough that a full four-point manifold reads as four marks, not a blob.
+const CONTACT_CROSS_FRACTION: f32 = 0.15;
+
+const NORMAL_LEN_FRACTION: f32 = 0.9;
+
+const ISLAND_CROSS_FRACTION: f32 = 1.0;
+
+const CONTACT_COLOR: [f32; 4] = [1.00, 0.95, 0.35, 1.0];
+const NORMAL_TAIL_COLOR: [f32; 4] = [0.06, 0.24, 0.42, 1.0];
+const NORMAL_TIP_COLOR: [f32; 4] = [0.40, 0.95, 1.00, 1.0];
+const NORMAL_IMPULSE_COLOR: [f32; 4] = [1.00, 0.30, 0.22, 1.0];
+const TANGENT_IMPULSE_COLOR: [f32; 4] = [0.70, 0.40, 1.00, 1.0];
+
+// Six hues: a scene with more than six simultaneous islands repeats a colour,
+// so the count is the ceiling on what this layer can claim.
+const ISLAND_PALETTE: [[f32; 4]; 6] = [
+    [0.35, 0.85, 0.45, 1.0],
+    [0.95, 0.55, 0.20, 1.0],
+    [0.45, 0.60, 1.00, 1.0],
+    [0.95, 0.40, 0.75, 1.0],
+    [0.90, 0.90, 0.35, 1.0],
+    [0.35, 0.90, 0.90, 1.0],
+];
+
+impl Default for PhysicsOverlay {
+    fn default() -> Self {
+        Self {
+            contacts: false,
+            normals: false,
+            impulses: false,
+            islands: false,
+            impulse_scale: DEFAULT_IMPULSE_SCALE,
+            width_px: 2.0,
+        }
+    }
+}
+
+impl PhysicsOverlay {
+    fn any_layer(self) -> bool {
+        self.contacts || self.normals || self.impulses || self.islands
+    }
+}
+
+fn push_overlay_segment(
+    mesh: &mut LineMesh<3>,
+    from: Vec3,
+    to: Vec3,
+    from_color: [f32; 4],
+    to_color: [f32; 4],
+    width: f32,
+) {
+    mesh.segments.push((from.to_array(), to.to_array()));
+    mesh.colors.push((from_color, to_color));
+    mesh.widths.push(width);
+}
+
+fn push_axis_cross(mesh: &mut LineMesh<3>, centre: Vec3, half: f32, color: [f32; 4], width: f32) {
+    for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+        push_overlay_segment(
+            mesh,
+            centre - axis * half,
+            centre + axis * half,
+            color,
+            color,
+            width,
+        );
+    }
+}
+
+fn build_physics_overlay_mesh(
+    world: &World<EuclideanR4>,
+    radius: f32,
+    overlay: &PhysicsOverlay,
+    mesh: &mut LineMesh<3>,
+) {
+    mesh.segments.clear();
+    mesh.colors.clear();
+    mesh.widths.clear();
+    if !overlay.any_layer() {
+        return;
+    }
+
+    let width = overlay.width_px;
+
+    if overlay.contacts || overlay.normals || overlay.impulses {
+        for manifold in world.manifolds.values() {
+            for cp in &manifold.points {
+                let point = cp.world_point.truncate();
+                let normal = cp.normal.truncate();
+                if overlay.contacts {
+                    push_axis_cross(
+                        mesh,
+                        point,
+                        CONTACT_CROSS_FRACTION * radius,
+                        CONTACT_COLOR,
+                        width,
+                    );
+                }
+                if overlay.normals {
+                    push_overlay_segment(
+                        mesh,
+                        point,
+                        point + normal * (NORMAL_LEN_FRACTION * radius),
+                        NORMAL_TAIL_COLOR,
+                        NORMAL_TIP_COLOR,
+                        width,
+                    );
+                }
+                if overlay.impulses {
+                    push_overlay_segment(
+                        mesh,
+                        point,
+                        point - normal * (cp.normal_impulse * overlay.impulse_scale),
+                        NORMAL_IMPULSE_COLOR,
+                        NORMAL_IMPULSE_COLOR,
+                        width,
+                    );
+                    // The two bars name opposite bodies and do not compose:
+                    // −tangent_dir is the impulse on B, not on A.
+                    push_overlay_segment(
+                        mesh,
+                        point,
+                        point
+                            - cp.tangent_dir.truncate()
+                                * (cp.tangent_impulse * overlay.impulse_scale),
+                        TANGENT_IMPULSE_COLOR,
+                        TANGENT_IMPULSE_COLOR,
+                        width,
+                    );
+                }
+            }
+        }
+    }
+
+    if overlay.islands {
+        for (ordinal, island) in world.islands().iter().enumerate() {
+            let color = ISLAND_PALETTE[ordinal % ISLAND_PALETTE.len()];
+            for &id in &island.bodies {
+                push_axis_cross(
+                    mesh,
+                    world.bodies[id].position.truncate(),
+                    ISLAND_CROSS_FRACTION * radius,
+                    color,
+                    width,
+                );
+            }
+            for &(a, b) in &island.constraints {
+                // A pair with a static side absorbs no impulse and merges
+                // nothing (`World::fill_islands`), so a bar from a landed toy
+                // to the floor body's origin would draw a coupling the solver
+                // does not have.
+                if world.bodies[a].inv_mass == 0.0 || world.bodies[b].inv_mass == 0.0 {
+                    continue;
+                }
+                push_overlay_segment(
+                    mesh,
+                    world.bodies[a].position.truncate(),
+                    world.bodies[b].position.truncate(),
+                    color,
+                    color,
+                    width,
+                );
+            }
+        }
+    }
+}
+
+fn register_physics_overlay_command(console: &mut Console<PhysicsOverlay>) {
+    console.register(
+        loam_egui::subcommands::<PhysicsOverlay>(
+            "physics",
+            "solver debug overlay (bare flips all four layers)",
+        )
+        .on_bare(|o| {
+            let on = !o.any_layer();
+            o.contacts = on;
+            o.normals = on;
+            o.impulses = on;
+            o.islands = on;
+            Ok(())
+        })
+        .toggle(
+            "contacts",
+            "axis cross at each contact point (bare flips)",
+            |o, v| {
+                o.contacts = v.unwrap_or(!o.contacts);
+                Ok(())
+            },
+        )
+        .toggle(
+            "normals",
+            "contact normal, drawn dark-to-bright along the A-toward-B direction (bare flips)",
+            |o, v| {
+                o.normals = v.unwrap_or(!o.normals);
+                Ok(())
+            },
+        )
+        .toggle(
+            "impulses",
+            "accumulated normal + tangent impulse bars (bare flips)",
+            |o, v| {
+                o.impulses = v.unwrap_or(!o.impulses);
+                Ok(())
+            },
+        )
+        .toggle(
+            "islands",
+            "colour each island's bodies and coupling constraints (bare flips)",
+            |o, v| {
+                o.islands = v.unwrap_or(!o.islands);
+                Ok(())
+            },
+        )
+        .custom(
+            "impulse-scale",
+            "world units of bar length per unit of accumulated impulse (default 0.04)",
+            &[&[]],
+            &[],
+            |o, args, out| {
+                match args.first().copied() {
+                    None => out.line(format!("physics impulse-scale: {:.4}", o.impulse_scale)),
+                    Some(token) => {
+                        let s: f32 = token
+                            .parse()
+                            .map_err(|e| anyhow!("invalid impulse scale `{token}`: {e}"))?;
+                        if !(s.is_finite() && s > 0.0 && s <= 100.0) {
+                            return Err(anyhow!(
+                                "impulse scale {s} out of range; expected a float in (0, 100]"
+                            ));
+                        }
+                        o.impulse_scale = s;
+                        out.line(format!("physics impulse-scale: set to {s:.4}"));
+                    }
+                }
+                Ok(())
+            },
+        )
+        .custom(
+            "width",
+            "overlay line thickness in pixels (default 2.0)",
+            &[&[]],
+            &[],
+            |o, args, out| {
+                match args.first().copied() {
+                    None => out.line(format!("physics width: {:.2} px", o.width_px)),
+                    Some(token) => {
+                        let w: f32 = token
+                            .parse()
+                            .map_err(|e| anyhow!("invalid width `{token}`: {e}"))?;
+                        if !(w > 0.0 && w <= 16.0) {
+                            return Err(anyhow!(
+                                "physics width {w} out of range; expected a float in (0, 16]"
+                            ));
+                        }
+                        o.width_px = w;
+                        out.line(format!("physics width: set to {w:.2} px"));
+                    }
+                }
+                Ok(())
+            },
+        ),
+    );
+}
+
 const GRASS_DARK: [f32; 3] = [0.145, 0.205, 0.130];
 const GRASS_LIGHT: [f32; 3] = [0.170, 0.235, 0.150];
 
@@ -809,21 +1096,25 @@ pub(crate) struct ToyboxScene {
     seed: u64,
     camera: Camera<EuclideanR3>,
     orbit: OrbitController<EuclideanR3>,
-    console: Console<()>,
+    console: Console<PhysicsOverlay>,
     caps: TriangleRasterNode,
     faded_caps: TriangleRasterNode,
     sky_ground: SkyGroundNode,
     depth: Option<DepthBuffer>,
     opaque_mesh: TriangleMesh<3>,
     faded_mesh: TriangleMesh<3>,
+    overlay: PhysicsOverlay,
+    overlay_node: LineRasterNode,
+    overlay_mesh: LineMesh<3>,
     left_was_down: bool,
     paused: bool,
 }
 
 impl ToyboxScene {
     pub(crate) fn new(ctx: &mut SetupCtx<'_>) -> Result<Self> {
-        let mut console = Console::<()>::new();
-        loam_app::shell::register_command::<(), crate::shell::Playground>(&mut console);
+        let mut console = Console::<PhysicsOverlay>::new();
+        loam_app::shell::register_command::<PhysicsOverlay, crate::shell::Playground>(&mut console);
+        register_physics_overlay_command(&mut console);
 
         let mut camera = Camera::<EuclideanR3>::at_origin();
         camera.position = Vec3::new(0.0, 2.0, BOOT_ORBIT_DISTANCE);
@@ -863,6 +1154,16 @@ impl ToyboxScene {
             depth: None,
             opaque_mesh: TriangleMesh::<3>::default(),
             faded_mesh: TriangleMesh::<3>::default(),
+            overlay: PhysicsOverlay::default(),
+            // No depth attachment: the overlay names where the solver put a
+            // contact, which is behind the hull that owns it.
+            overlay_node: LineRasterNode::new(
+                &ctx.rd.device,
+                ctx.rd.target_format(),
+                DepthMode::Off,
+                ctx.rd.sample_count(),
+            ),
+            overlay_mesh: LineMesh::<3>::default(),
             left_was_down: false,
             paused: false,
         })
@@ -905,6 +1206,27 @@ impl ToyboxScene {
         }
     }
 
+    fn record_physics_overlay(&mut self, ctx: &mut RenderCtx<'_>, view_proj: Mat4) {
+        let rd = &ctx.rd;
+        let cfg = &rd.surface_bundle.config;
+        let mut mesh = std::mem::take(&mut self.overlay_mesh);
+        self.toybox.build_overlay_mesh(&self.overlay, &mut mesh);
+        self.overlay_node.set_camera(
+            &rd.queue,
+            view_proj,
+            Vec2::new(cfg.width as f32, cfg.height as f32),
+        );
+        self.overlay_node.upload::<EuclideanR3, 3>(
+            &rd.device,
+            &rd.queue,
+            &mesh,
+            &Projection::Identity,
+            1,
+        );
+        self.overlay_mesh = mesh;
+        self.overlay_node.record(ctx.encoder, ctx.view, None, None);
+    }
+
     // A body off the slice draws a shrinking cap or none at all, so the offset
     // is the only thing left saying it is still there.
     fn w_readouts(&self, ctx: &egui::Context, frame: &FrameCtx<'_>) {
@@ -945,7 +1267,8 @@ impl loam_app::shell::Scene for ToyboxScene {
         cmd: &loam_app::command::CommandLine,
         _ctx: &mut loam_app::command::CommandCtx<'_>,
     ) -> Result<()> {
-        self.console.dispatch(&cmd.name, &cmd.arg_refs(), &mut ());
+        self.console
+            .dispatch(&cmd.name, &cmd.arg_refs(), &mut self.overlay);
         Ok(())
     }
 
@@ -1073,6 +1396,9 @@ impl loam_app::shell::Scene for ToyboxScene {
             node.set_camera(&rd.queue, view_proj);
             node.record(ctx.encoder, ctx.view, Some(&depth.view), None);
         }
+        if self.overlay.any_layer() {
+            self.record_physics_overlay(ctx, view_proj);
+        }
         Ok(())
     }
 
@@ -1084,11 +1410,17 @@ impl loam_app::shell::Scene for ToyboxScene {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::alloc_probe;
     use loam_math::Plane4;
+    use loam_physics::euclidean_r4::sphere_body_r4;
     use loam_physics::manifold::PENETRATION_SLOP;
 
     // The drop takes 12 ticks and the rest latch 30 more; the rest is margin.
     const SETTLE_TICKS: usize = 120;
+
+    // A throw at [`MAX_RELEASE_SPEED`] closes the [`SPAWN_SPACING`] gap in two
+    // ticks; the rest is the solver working the impulse up to its peak.
+    const FLICK_TICKS: usize = 10;
 
     const SEEDS: u64 = 24;
 
@@ -1704,6 +2036,452 @@ mod tests {
         assert!(
             (before.length() - after.length()).abs() < 1e-5,
             "the handle changed length under a rotation"
+        );
+    }
+
+    const TRANSLATE_TOL: f32 = 1e-5;
+
+    const FIXTURE_DT: f32 = 1.0 / 60.0;
+
+    // Past `PENETRATION_SLOP`, so the narrowphase reports rather than grazes.
+    const FIXTURE_OVERLAP: f32 = 0.2;
+
+    // Far past the sum of two bounding radii, so the broadphase cannot couple
+    // two pairs into one island.
+    const FIXTURE_GROUP_GAP: f32 = 20.0;
+
+    // Fast enough that the Coulomb clamp `|jt| <= mu*jn` binds on the first
+    // step, so the tangent accumulator is the cap rather than a rounding
+    // artefact.
+    const FIXTURE_SLIDE_SPEED: f32 = 3.0;
+
+    // Balls, not the scene's hulls, and no floor: one contact point per
+    // manifold is what makes the per-layer segment counts below exact.
+    fn overlapping_pairs(pairs: usize) -> World<EuclideanR4> {
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+        for pair in 0..pairs {
+            let base = Vec4::X * (FIXTURE_GROUP_GAP * pair as f32);
+            world.push_body(sphere_body_r4(base, Vec4::ZERO, BODY_SIZE, BODY_MASS));
+            world.push_body(sphere_body_r4(
+                base + Vec4::X * (2.0 * BODY_SIZE - FIXTURE_OVERLAP),
+                Vec4::ZERO,
+                BODY_SIZE,
+                BODY_MASS,
+            ));
+        }
+        world.step(FIXTURE_DT);
+        assert_eq!(
+            world.manifolds.len(),
+            pairs,
+            "the fixture layout did not produce one manifold per pair"
+        );
+        world
+    }
+
+    fn every_layer() -> PhysicsOverlay {
+        PhysicsOverlay {
+            contacts: true,
+            normals: true,
+            impulses: true,
+            islands: true,
+            ..PhysicsOverlay::default()
+        }
+    }
+
+    fn only(layer: fn(&mut PhysicsOverlay)) -> PhysicsOverlay {
+        let mut overlay = PhysicsOverlay::default();
+        layer(&mut overlay);
+        overlay
+    }
+
+    fn overlay_mesh(world: &World<EuclideanR4>, overlay: &PhysicsOverlay) -> LineMesh<3> {
+        let mut mesh = LineMesh::<3>::default();
+        build_physics_overlay_mesh(world, BODY_SIZE, overlay, &mut mesh);
+        assert_eq!(mesh.colors.len(), mesh.segments.len());
+        assert_eq!(mesh.widths.len(), mesh.segments.len());
+        mesh
+    }
+
+    fn contact_count(world: &World<EuclideanR4>) -> usize {
+        world.manifolds.values().map(|m| m.points.len()).sum()
+    }
+
+    #[test]
+    fn a_landing_fills_the_manifolds_the_overlay_draws_from() {
+        let toybox = settled();
+        assert!(
+            !toybox.world.manifolds.is_empty(),
+            "the pile settled with no manifold, so every layer would draw nothing"
+        );
+        let peak = (toybox.world.manifolds.values())
+            .flat_map(|m| m.points.iter())
+            .fold(0.0f32, |m, cp| m.max(cp.normal_impulse));
+        assert!(peak > 0.0, "a resting pile accumulated no normal impulse");
+
+        let mut mesh = LineMesh::<3>::default();
+        for (name, overlay) in [
+            ("contacts", only(|o| o.contacts = true)),
+            ("normals", only(|o| o.normals = true)),
+            ("impulses", only(|o| o.impulses = true)),
+            ("islands", only(|o| o.islands = true)),
+        ] {
+            toybox.build_overlay_mesh(&overlay, &mut mesh);
+            assert!(
+                !mesh.segments.is_empty(),
+                "the {name} layer drew nothing over a settled pile"
+            );
+        }
+    }
+
+    #[test]
+    fn the_islands_layer_draws_no_coupling_to_the_static_floor() {
+        let toybox = settled();
+        let islands = toybox.world.islands();
+        let floor_pairs: usize = (islands.iter())
+            .flat_map(|i| i.constraints.iter())
+            .filter(|&&(a, b)| {
+                toybox.world.bodies[a].inv_mass == 0.0 || toybox.world.bodies[b].inv_mass == 0.0
+            })
+            .count();
+        assert!(
+            floor_pairs > 0,
+            "no toy is resting on the floor, so the skip is vacuous"
+        );
+
+        let mut mesh = LineMesh::<3>::default();
+        toybox.build_overlay_mesh(&only(|o| o.islands = true), &mut mesh);
+        let crosses: usize = islands.iter().map(|i| 3 * i.bodies.len()).sum();
+        let couplings: usize = (islands.iter())
+            .flat_map(|i| i.constraints.iter())
+            .filter(|&&(a, b)| {
+                toybox.world.bodies[a].inv_mass != 0.0 && toybox.world.bodies[b].inv_mass != 0.0
+            })
+            .count();
+        assert_eq!(
+            mesh.segments.len(),
+            crosses + couplings,
+            "the islands layer drew a bar for a pair the solver couples nothing through"
+        );
+    }
+
+    #[test]
+    fn every_contact_emits_one_normal_along_the_stored_direction() {
+        let world = overlapping_pairs(2);
+        let mesh = overlay_mesh(&world, &only(|o| o.normals = true));
+
+        let contacts = contact_count(&world);
+        assert!(contacts > 0, "fixture produced no contacts");
+        assert_eq!(
+            mesh.segments.len(),
+            contacts,
+            "the normals layer emitted {} segments for {contacts} contacts",
+            mesh.segments.len()
+        );
+
+        let mut segments = mesh.segments.iter();
+        for (&(a, b), manifold) in world.manifolds.iter() {
+            let separation = (world.bodies[b].position - world.bodies[a].position).truncate();
+            for cp in &manifold.points {
+                let &(from, to) = segments.next().expect("one segment per contact");
+                let point = cp.world_point.truncate();
+                assert!(
+                    (Vec3::from_array(from) - point).length() < TRANSLATE_TOL,
+                    "normal starts at {from:?}, not at the contact point {point:?}"
+                );
+                let drawn = Vec3::from_array(to) - Vec3::from_array(from);
+                let expected = cp.normal.truncate() * (NORMAL_LEN_FRACTION * BODY_SIZE);
+                assert!(
+                    (drawn - expected).length() < TRANSLATE_TOL,
+                    "normal drawn as {drawn:?}, not {expected:?}"
+                );
+                assert!(
+                    drawn.dot(separation) > 0.0,
+                    "normal runs from A toward B; the layer would misreport a flipped normal"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn impulse_bar_length_tracks_the_accumulated_impulse() {
+        let world = overlapping_pairs(1);
+        let contacts = contact_count(&world);
+        let solved: f32 = (world.manifolds.values())
+            .flat_map(|m| m.points.iter())
+            .map(|cp| cp.normal_impulse)
+            .sum();
+        assert!(
+            solved > 0.0,
+            "fixture accumulated no normal impulse, so the length pin is vacuous"
+        );
+
+        let base = only(|o| o.impulses = true);
+        let mesh = overlay_mesh(&world, &base);
+        assert_eq!(
+            mesh.segments.len(),
+            2 * contacts,
+            "the impulses layer emits a normal and a tangent bar per contact"
+        );
+
+        let doubled = overlay_mesh(
+            &world,
+            &PhysicsOverlay {
+                impulse_scale: base.impulse_scale * 2.0,
+                ..base
+            },
+        );
+        for (i, (&(from, to), &(from2, to2))) in
+            mesh.segments.iter().zip(&doubled.segments).enumerate()
+        {
+            let short = Vec3::from_array(to) - Vec3::from_array(from);
+            let long = Vec3::from_array(to2) - Vec3::from_array(from2);
+            assert!(
+                (long - short * 2.0).length() < TRANSLATE_TOL,
+                "bar {i} did not scale with impulse_scale: {short:?} then {long:?}"
+            );
+        }
+
+        let points = world.manifolds.values().flat_map(|m| m.points.iter());
+        for (cp, chunk) in points.zip(mesh.segments.chunks_exact(2)) {
+            let bar = Vec3::from_array(chunk[0].1) - Vec3::from_array(chunk[0].0);
+            let expected = cp.normal.truncate() * (-cp.normal_impulse * base.impulse_scale);
+            assert!(
+                (bar - expected).length() < TRANSLATE_TOL,
+                "normal-impulse bar drawn as {bar:?}, not {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sliding_pair_draws_its_friction_bar_against_the_slide() {
+        let mut world = World::new(EuclideanR4);
+        register_default_narrowphase(&mut world.narrowphase);
+        world.push_body(sphere_body_r4(
+            Vec4::ZERO,
+            Vec4::Y * FIXTURE_SLIDE_SPEED,
+            BODY_SIZE,
+            BODY_MASS,
+        ));
+        world.push_body(sphere_body_r4(
+            Vec4::X * (2.0 * BODY_SIZE - FIXTURE_OVERLAP),
+            Vec4::ZERO,
+            BODY_SIZE,
+            BODY_MASS,
+        ));
+        world.step(FIXTURE_DT);
+
+        let overlay = only(|o| o.impulses = true);
+        let mesh = overlay_mesh(&world, &overlay);
+        let contacts = contact_count(&world);
+        assert_eq!(mesh.segments.len(), 2 * contacts);
+
+        let mut chunks = mesh.segments.chunks_exact(2);
+        let mut braked = 0;
+        for (&(a, b), manifold) in world.manifolds.iter() {
+            let lead = (world.bodies[a].velocity - world.bodies[b].velocity).truncate();
+            for cp in &manifold.points {
+                let chunk = chunks.next().expect("two bars per contact");
+                let bar = Vec3::from_array(chunk[1].1) - Vec3::from_array(chunk[1].0);
+                let expected = cp.tangent_impulse * overlay.impulse_scale;
+                assert!(
+                    (bar.length() - expected).abs() < TRANSLATE_TOL,
+                    "friction bar runs {} world units for a {} accumulator",
+                    bar.length(),
+                    cp.tangent_impulse
+                );
+                if cp.tangent_impulse > 0.0 {
+                    braked += 1;
+                    assert!(
+                        bar.dot(lead) > 0.0,
+                        "friction bar {bar:?} runs with the slide {lead:?} it should brake"
+                    );
+                }
+            }
+        }
+        assert!(
+            braked > 0,
+            "no contact accumulated friction, so the sign pin is vacuous"
+        );
+    }
+
+    #[test]
+    fn a_full_speed_flick_draws_its_bar_at_a_third_of_a_body_radius() {
+        let mut toybox = settled();
+        let (from, to) = (toybox.position(0), toybox.position(1));
+        let thrown = toybox.toys[0].body;
+        toybox.world.bodies[thrown].velocity = (to - from).normalize() * MAX_RELEASE_SPEED;
+
+        let mut peak = 0.0f32;
+        for _ in 0..FLICK_TICKS {
+            toybox.tick();
+            for manifold in toybox.world.manifolds.values() {
+                for cp in &manifold.points {
+                    peak = peak.max(cp.normal_impulse);
+                }
+            }
+        }
+
+        assert!(
+            (3.5..4.3).contains(&peak),
+            "peak normal impulse {peak}: the prose at DEFAULT_IMPULSE_SCALE is now stale, so recompute the bar length before touching this bound"
+        );
+        let bar = peak * DEFAULT_IMPULSE_SCALE;
+        assert!(
+            (0.30..0.42).contains(&(bar / BODY_SIZE)),
+            "bar runs {bar} world units, {} of a body radius",
+            bar / BODY_SIZE
+        );
+    }
+
+    #[test]
+    fn one_island_marks_its_bodies_in_one_colour() {
+        let world = overlapping_pairs(2);
+        let islands = world.islands();
+        assert_eq!(islands.len(), 2, "fixture did not split into two islands");
+
+        let mesh = overlay_mesh(&world, &only(|o| o.islands = true));
+        let expected: usize = islands
+            .iter()
+            .map(|i| 3 * i.bodies.len() + i.constraints.len())
+            .sum();
+        assert_eq!(mesh.segments.len(), expected);
+
+        let mut per_island: Vec<[u32; 4]> = Vec::new();
+        for island in &islands {
+            let mut colors = std::collections::BTreeSet::new();
+            for &id in &island.bodies {
+                let centre = world.bodies[id].position.truncate();
+                let mut arms = 0;
+                for (&(from, to), &(color, _)) in mesh.segments.iter().zip(&mesh.colors) {
+                    let mid = (Vec3::from_array(from) + Vec3::from_array(to)) * 0.5;
+                    if (mid - centre).length() < TRANSLATE_TOL
+                        && Vec3::from_array(from) != Vec3::from_array(to)
+                    {
+                        arms += 1;
+                        colors.insert(color.map(f32::to_bits));
+                    }
+                }
+                assert_eq!(arms, 3, "body {id:?} is not marked by a three-arm cross");
+            }
+            assert_eq!(
+                colors.len(),
+                1,
+                "island {:?} marked its bodies in {} colours",
+                island.id,
+                colors.len()
+            );
+            let color = *colors.iter().next().expect("one colour");
+            assert!(
+                !per_island.contains(&color),
+                "two islands share a colour, so the partition cannot be read off the overlay"
+            );
+            per_island.push(color);
+        }
+    }
+
+    #[test]
+    fn a_world_at_rest_draws_no_physics_overlay() {
+        let toybox = scene();
+        assert!(toybox.world.bodies.iter().all(|b| b.velocity == Vec4::ZERO));
+        assert!(toybox.world.manifolds.is_empty());
+        let mut mesh = LineMesh::<3>::default();
+        toybox.build_overlay_mesh(&every_layer(), &mut mesh);
+        assert!(
+            mesh.segments.is_empty(),
+            "a resting world emitted {} segments",
+            mesh.segments.len()
+        );
+    }
+
+    #[test]
+    fn each_overlay_layer_draws_only_its_own_geometry() {
+        let world = overlapping_pairs(2);
+        let contacts = contact_count(&world);
+
+        let layers: [(&str, PhysicsOverlay, usize); 4] = [
+            ("contacts", only(|o| o.contacts = true), 3 * contacts),
+            ("normals", only(|o| o.normals = true), contacts),
+            ("impulses", only(|o| o.impulses = true), 2 * contacts),
+            ("islands", only(|o| o.islands = true), {
+                let islands = world.islands();
+                islands
+                    .iter()
+                    .map(|i| 3 * i.bodies.len() + i.constraints.len())
+                    .sum()
+            }),
+        ];
+
+        let all = overlay_mesh(&world, &every_layer());
+        let mut total = 0;
+        for (name, overlay, expected) in layers {
+            let mesh = overlay_mesh(&world, &overlay);
+            assert_eq!(
+                mesh.segments.len(),
+                expected,
+                "the {name} layer alone emitted {} segments, expected {expected}",
+                mesh.segments.len()
+            );
+            for segment in &mesh.segments {
+                assert!(
+                    all.segments.contains(segment),
+                    "the {name} layer's {segment:?} is missing when every layer is on"
+                );
+            }
+            total += expected;
+        }
+        assert_eq!(
+            all.segments.len(),
+            total,
+            "the all-layers build is not exactly the four layers"
+        );
+    }
+
+    #[test]
+    fn a_hidden_physics_overlay_reaches_the_allocator_zero_times() {
+        let world = overlapping_pairs(2);
+        let mut mesh = LineMesh::<3>::default();
+
+        build_physics_overlay_mesh(&world, BODY_SIZE, &every_layer(), &mut mesh);
+        assert!(!mesh.segments.is_empty(), "the fixture emitted nothing");
+        let warm = mesh.segments.capacity();
+
+        let hidden = PhysicsOverlay::default();
+        assert!(!hidden.any_layer(), "the overlay ships with a layer on");
+        let bytes = alloc_probe::bytes_allocated_by(|| {
+            build_physics_overlay_mesh(&world, BODY_SIZE, &hidden, &mut mesh)
+        });
+        assert_eq!(
+            bytes, 0,
+            "a hidden overlay asked the allocator for {bytes} bytes"
+        );
+        assert!(mesh.segments.is_empty());
+        assert_eq!(
+            mesh.segments.capacity(),
+            warm,
+            "the hidden path dropped the buffer it will need again"
+        );
+    }
+
+    #[test]
+    fn the_contact_overlay_layers_reach_the_allocator_zero_times() {
+        let world = overlapping_pairs(2);
+        let overlay = PhysicsOverlay {
+            contacts: true,
+            normals: true,
+            impulses: true,
+            ..PhysicsOverlay::default()
+        };
+        let mut mesh = LineMesh::<3>::default();
+        build_physics_overlay_mesh(&world, BODY_SIZE, &overlay, &mut mesh);
+        assert!(!mesh.segments.is_empty(), "the fixture emitted nothing");
+
+        let warm = alloc_probe::bytes_allocated_by(|| {
+            build_physics_overlay_mesh(&world, BODY_SIZE, &overlay, &mut mesh)
+        });
+        assert_eq!(
+            warm, 0,
+            "a warm contact overlay asked the allocator for {warm} bytes"
         );
     }
 }

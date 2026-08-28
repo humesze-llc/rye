@@ -10,11 +10,6 @@ impl SceneRegistry for Playground {
             build: |ctx| Ok(Box::new(crate::RotateScene::new(ctx)?)),
         },
         SceneEntry {
-            slug: "s3",
-            label: "Polychora on S³",
-            build: |ctx| Ok(Box::new(crate::s3::S3Scene::new(ctx)?)),
-        },
-        SceneEntry {
             slug: "sdf",
             label: "SDF editor",
             build: |ctx| Ok(Box::new(crate::sdf::SdfScene::new(ctx)?)),

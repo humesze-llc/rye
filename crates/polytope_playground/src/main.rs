@@ -53,7 +53,6 @@ mod hypergimbal;
 mod physics;
 mod projections;
 mod render;
-mod s3;
 mod sdf;
 mod sections;
 mod shapes;

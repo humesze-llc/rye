@@ -1501,7 +1501,7 @@ impl Default for ToyboxControls {
                 ..WireframeControls::default()
             },
             w_labels: false,
-            environment: Environment::grass(),
+            environment: Environment::default(),
         }
     }
 }
@@ -2798,11 +2798,7 @@ mod tests {
         let mut controls = ToyboxControls::default();
         assert!(!controls.w_labels, "the w readout ships on");
         assert!(!controls.overlay.any_layer());
-        assert_eq!(
-            controls.environment,
-            Environment::grass(),
-            "the yard reverted to the studio grey"
-        );
+        assert_eq!(controls.environment, Environment::default());
 
         console.dispatch("wlabels", &[], &mut controls);
         assert!(controls.w_labels, "a bare wlabels did not flip the label");

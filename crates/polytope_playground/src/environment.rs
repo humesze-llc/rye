@@ -5,10 +5,7 @@
 
 use anyhow::{anyhow, Result};
 use loam_egui::Console;
-use loam_render::sky_ground::{
-    DEFAULT_FOG_PER_UNIT, GROUND_DARK_GRASS, GROUND_DARK_GREY, GROUND_LIGHT_GRASS,
-    GROUND_LIGHT_GREY,
-};
+use loam_render::sky_ground::{DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY};
 use loam_render::Ground;
 
 // A density above this blends the checker into the sky inside one body length,
@@ -34,17 +31,6 @@ impl Default for Environment {
 }
 
 impl Environment {
-    /// Lawn rather than the studio grey the rotation studies want. For the
-    /// scenes that are a PLACE (the hero's field, the toybox's yard) rather
-    /// than a measurement.
-    pub(crate) fn grass() -> Self {
-        Self {
-            dark: GROUND_DARK_GRASS,
-            light: GROUND_LIGHT_GRASS,
-            ..Self::default()
-        }
-    }
-
     pub(crate) fn ground(&self, y: f32, visible: bool) -> Ground {
         Ground {
             y,

@@ -49,7 +49,24 @@ const LETTER_STAGGER_TICKS: u32 = 12;
 
 const LETTER_SLIDE_TICKS: u32 = 36;
 
-const ENTRY_SPAN: f32 = 3.2;
+// How far out in `w` a letter starts. Eight times the glyph slab's half
+// thickness, so a letter spends most of its approach with no cross-section in
+// the slice at all and arrives by entering the slice rather than by sliding
+// across it.
+const W_ENTRY_SPAN: f32 = 0.6;
+
+// `GlyphParams::default().slab` is `(-0.075, 0.075)`: the letter solid is the
+// glyph swept through that interval in `w`, so its section at the slice is the
+// whole glyph while the slice is inside the interval and EMPTY outside it.
+const GLYPH_SLAB_HALF: f32 = 0.075;
+
+// Width of the materialisation ramp outside the slab. This is a director-owned
+// entrance effect and NOT a cross-section: a prism has the same section at
+// every `w` it covers, so a letter physically cannot shrink as it approaches,
+// and four letters arriving on the slab's hard edge would all pop. The ramp
+// buys the approach something to read while the letter is still outside its
+// own slab. It is over by the time the letter is released to physics.
+const W_MATERIALISE_SPAN: f32 = 0.30;
 
 // Height of the lowest hull vertex above the floor at release, in em. The fall
 // is short by design: `glyph-letter-bodies` sampled drop clearance from 0.01 to
@@ -182,12 +199,13 @@ impl HeroSequence {
         let floor = world.push_body(halfspace4_body_r4(Vec4::Y, FLOOR_Y));
         world.bodies[floor].restitution = RESTITUTION;
 
-        let letters: Vec<HeroLetter> = solids
+        let mut letters: Vec<HeroLetter> = solids
             .iter()
             .filter(|solid| !solid.is_blank())
             .enumerate()
             .map(|(index, solid)| letter_from(solid, index))
             .collect::<Result<_>>()?;
+        centre_word_on_origin(&mut letters);
 
         let director = Director::new(assembly_timeline(&letters))?;
 
@@ -241,6 +259,21 @@ impl HeroSequence {
         } else {
             Phase::Rain
         }
+    }
+
+    /// Centre of the assembled word's bounding box, which is what the orbit
+    /// target is set to: the controller aims the camera at its target, so the
+    /// point named here is the point that lands at the centre of the frame.
+    pub(crate) fn word_centre(&self) -> Vec3 {
+        let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+        for letter in &self.letters {
+            for v in &letter.hull {
+                let world = letter.mark.truncate() + v.truncate();
+                lo = lo.min(world);
+                hi = hi.max(world);
+            }
+        }
+        0.5 * (lo + hi)
     }
 
     pub(crate) fn letters(&self) -> &[HeroLetter] {
@@ -433,10 +466,46 @@ fn letter_from(solid: &GlyphSolid, index: usize) -> Result<HeroLetter> {
         mesh,
         hull: vertices,
         mark,
-        entry: mark + Vec4::new(side * ENTRY_SPAN, 0.0, 0.0, 0.0),
+        entry: mark + Vec4::new(0.0, 0.0, 0.0, side * W_ENTRY_SPAN),
         track: format!("letter{index}"),
         body: None,
     })
+}
+
+/// Opacity for a letter whose centre sits `w_from_slice` from the slice.
+/// Exactly 1 inside the slab, where the section is the whole glyph, and 0 once
+/// the letter is further out than the ramp. See [`W_MATERIALISE_SPAN`] for why
+/// the middle is a ramp and not a step.
+fn letter_entry_alpha(w_from_slice: f32) -> f32 {
+    let past_slab = w_from_slice.abs() - GLYPH_SLAB_HALF;
+    if past_slab <= 0.0 {
+        return 1.0;
+    }
+    let t = (1.0 - past_slab / W_MATERIALISE_SPAN).clamp(0.0, 1.0);
+    // Smoothstep, so the letter does not arrive with a visible kink in its
+    // fade at either end of the ramp.
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Shifts every mark so the assembled word straddles the origin in `x`. The
+/// layout pen starts at `x = 0` and advances right, so an unshifted word sits
+/// entirely to one side of the orbit target and reads off-centre in frame.
+fn centre_word_on_origin(letters: &mut [HeroLetter]) {
+    // The INK, not the marks: a mark is its glyph's own centre, and the
+    // letters differ in width, so the midpoint of the marks is not the
+    // midpoint of what is drawn.
+    let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+    for letter in letters.iter() {
+        for v in &letter.hull {
+            lo = lo.min(letter.mark.x + v.x);
+            hi = hi.max(letter.mark.x + v.x);
+        }
+    }
+    let shift = -0.5 * (lo + hi);
+    for letter in letters {
+        letter.mark.x += shift;
+        letter.entry.x += shift;
+    }
 }
 
 fn word_span(letters: &[HeroLetter]) -> (f32, f32) {
@@ -530,7 +599,9 @@ fn drop_color(polytope: Polytope4) -> [f32; 3] {
 // A drop is SLICED at [`W_SLICE`], so a tumble through a `w` plane visibly
 // changes its cross-section. A letter is PROJECTED: its solid is a product with
 // the glyph slab, so its true slice is the same cross-section at every `w` the
-// slab covers, and slicing it would cost a re-extraction per frame.
+// slab covers, and slicing it would cost a re-extraction per frame for a
+// section that never changes shape. What DOES change is whether the letter has
+// a section at all, which is what [`letter_entry_alpha`] reads.
 fn build_frame_mesh(
     sequence: &HeroSequence,
     local: &mut Vec<Vec4>,
@@ -547,13 +618,22 @@ fn build_frame_mesh(
 fn push_letters(sequence: &HeroSequence, mesh: &mut TriangleMesh<3>) {
     for (index, letter) in sequence.letters().iter().enumerate() {
         let pose = sequence.letter_pose(index);
+        let alpha = letter_entry_alpha(pose.position.w - W_SLICE);
+        // Nothing of this letter reaches the slice yet, so it contributes no
+        // geometry rather than transparent geometry the depth pass still has
+        // to sort.
+        if alpha <= 0.0 {
+            continue;
+        }
+        let mut color = LETTER_COLOR;
+        color[3] = alpha;
         let base = mesh.vertices.len() as u32;
         let translate = pose.position_r3();
         for v in &letter.mesh.vertices {
             let posed = pose.rotor.apply(Vec4::new(v[0], v[1], v[2], 0.0));
             mesh.vertices
                 .push((posed.truncate() + translate).to_array());
-            mesh.colors.push(LETTER_COLOR);
+            mesh.colors.push(color);
         }
         mesh.indices
             .extend((letter.mesh.indices.iter()).map(|t| [t[0] + base, t[1] + base, t[2] + base]));
@@ -622,13 +702,14 @@ impl HeroScene {
     pub(crate) fn new(ctx: &mut SetupCtx<'_>) -> Result<Self> {
         let console = Self::build_console();
 
+        let sequence = HeroSequence::new(hero_font_bytes(), DEFAULT_SEED)?;
         let mut camera = Camera::<EuclideanR3>::at_origin();
         camera.position = Vec3::new(0.0, BOOT_EYE_HEIGHT, BOOT_ORBIT_DISTANCE);
-        let mut orbit: OrbitController<EuclideanR3> = OrbitController::default();
+        let mut orbit: OrbitController<EuclideanR3> = OrbitController::around(sequence.word_centre());
         orbit.set_orbit(BOOT_ORBIT_DISTANCE, BOOT_ORBIT_PITCH);
 
         Ok(Self {
-            sequence: HeroSequence::new(hero_font_bytes(), DEFAULT_SEED)?,
+            sequence,
             seed: DEFAULT_SEED,
             camera,
             orbit,
@@ -825,10 +906,13 @@ mod tests {
     const REST_SPREAD: f32 = 0.02;
 
     // Displacement, in em, that counts as a letter having been knocked aside
-    // rather than nudged. Measured at this seed by
+    // rather than nudged. The test it gates asks whether the rain moved ANY
+    // letter past it, which is the scene's claim; it does not ask that of
+    // every letter, and at this seed it could not. Measured by
     // `the_quoted_figures_are_the_ones_the_scene_produces`: the rain moves `L`
-    // 1.801, `O` 1.298, `A` 0.775 and `M` 0.620 em, so the criterion has 2.5x
-    // of margin on the least-moved letter; the threshold is not the
+    // 1.808, `O` 0.611, `A` 0.813 and `M` 0.184 em, so the criterion clears on
+    // `L` by 7x while `M` is only nudged. The scene is chaotic, so these are a
+    // record of one seed and not a property; the threshold is not the
     // measurement.
     const SCATTER_THRESHOLD: f32 = 0.25;
 
@@ -1003,7 +1087,7 @@ mod tests {
             .zip(&scattered)
             .map(|(b, a)| b.distance(*a))
             .collect();
-        for (got, want) in measured.iter().zip([1.801f32, 1.298, 0.775, 0.620]) {
+        for (got, want) in measured.iter().zip([1.808f32, 0.611, 0.813, 0.184]) {
             assert!(
                 (got - want).abs() < 5e-3,
                 "SCATTER_THRESHOLD's doc quotes {want} em; the scene produces {got}"
@@ -1113,15 +1197,103 @@ mod tests {
     }
 
     #[test]
+    fn the_assembled_word_is_centred_on_what_the_camera_aims_at() {
+        let scene = HeroSequence::new(hero_font_bytes(), DEFAULT_SEED).expect("scene");
+        let centre = scene.word_centre();
+        // The orbit controller aims the camera at its target, so a target on
+        // the word's bounding-box centre IS the word centred in frame. The
+        // regression this catches is the layout pen: it starts at x = 0 and
+        // advances right, so an unshifted word sits wholly to one side.
+        assert!(
+            centre.x.abs() < 1e-5,
+            "the word centres at x {}, so it hangs off one side of frame",
+            centre.x
+        );
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for letter in scene.letters() {
+            for v in &letter.hull {
+                lo = lo.min(letter.mark.x + v.x);
+                hi = hi.max(letter.mark.x + v.x);
+            }
+        }
+        assert!(
+            (lo + hi).abs() < 1e-5,
+            "the word spans [{lo}, {hi}] em, which is not symmetric about the aim"
+        );
+        assert!(
+            centre.y > 0.0 && centre.y < 1.0,
+            "the word centres at y {}, outside a one-em letter's own height",
+            centre.y
+        );
+    }
+
+    #[test]
+    fn a_letter_outside_its_slab_puts_no_geometry_in_the_slice() {
+        assert_eq!(letter_entry_alpha(0.0), 1.0);
+        assert_eq!(
+            letter_entry_alpha(GLYPH_SLAB_HALF),
+            1.0,
+            "the slab edge is still inside the slab"
+        );
+        assert_eq!(
+            letter_entry_alpha(W_ENTRY_SPAN),
+            0.0,
+            "a letter at its entry offset is drawn, so it slides in rather              than entering the slice"
+        );
+        assert_eq!(letter_entry_alpha(-W_ENTRY_SPAN), 0.0, "the ramp is not even");
+        // Monotone across the ramp, so the entrance never brightens as the
+        // letter retreats.
+        let mut previous = 1.0;
+        for step in 0..=40 {
+            let d = GLYPH_SLAB_HALF + W_MATERIALISE_SPAN * step as f32 / 40.0;
+            let alpha = letter_entry_alpha(d);
+            assert!(alpha <= previous + 1e-6, "alpha rose at {d} from the slice");
+            previous = alpha;
+        }
+    }
+
+    #[test]
+    fn every_letter_starts_invisible_and_is_solid_by_the_time_it_is_released() {
+        let mut scene = scene();
+        for (index, letter) in scene.letters().iter().enumerate() {
+            assert_eq!(
+                letter_entry_alpha(letter.entry.w - W_SLICE),
+                0.0,
+                "{:?} is already in the slice at its entry pose",
+                label(index)
+            );
+        }
+        scene.run_to(ASSEMBLE_TICKS);
+        for index in 0..scene.letters().len() {
+            let alpha = letter_entry_alpha(scene.letter_pose(index).position.w - W_SLICE);
+            assert_eq!(
+                alpha, 1.0,
+                "{:?} is still fading when physics takes it over",
+                label(index)
+            );
+        }
+    }
+
+    #[test]
     fn the_assembly_slides_every_letter_onto_its_mark_before_the_release() {
         let mut scene = scene();
         let entries = letter_positions(&scene);
         for (index, letter) in scene.letters().iter().enumerate() {
             assert_eq!(entries[index], letter.entry);
+            // The whole point of the entrance: a letter arrives by crossing
+            // into the slice, not by sliding across it. A 3D translation here
+            // is the regression this pins.
+            let offset = letter.entry + letter.mark * -1.0;
             assert!(
-                (letter.entry.x - letter.mark.x).abs() > 1.0,
-                "{:?} starts on top of its mark",
+                offset.w.abs() > GLYPH_SLAB_HALF,
+                "{:?} starts inside its own slab, so it never enters the slice",
                 label(index)
+            );
+            assert!(
+                offset.truncate().length() < 1e-6,
+                "{:?} enters by a 3D translation of {:?}",
+                label(index),
+                offset.truncate()
             );
         }
         scene.run_to(LETTER_STAGGER_TICKS);

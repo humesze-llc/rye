@@ -7,7 +7,7 @@
 // which `SKY_HORIZON` (the filmstrip's clear) is derived; keep in sync.
 fn sky(rd: vec3<f32>) -> vec3<f32> {
     let t = (rd.y + 1.0) * 0.5;
-    return mix(vec3<f32>(0.04, 0.05, 0.10), vec3<f32>(0.10, 0.13, 0.22), t);
+    return mix(vec3<f32>(0.42, 0.55, 0.72), vec3<f32>(0.20, 0.34, 0.62), t);
 }
 
 // `checker_fade` collapses the two colours toward their mean. Driven by the

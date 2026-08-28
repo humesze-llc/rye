@@ -18,8 +18,12 @@ pub const SKY_GROUND_WGSL: &str = include_str!("sky_ground.wgsl");
 
 // Mirrors `sky`'s two endpoints in sky_ground.wgsl; pinned by
 // `sky_horizon_is_the_shader_gradient_at_the_horizon`.
-const SKY_BELOW: [f64; 3] = [0.04, 0.05, 0.10];
-const SKY_ABOVE: [f64; 3] = [0.10, 0.13, 0.22];
+// Daylight, not dusk. The previous pair sat at 0.05 and 0.13 luminance, a
+// near-black blue that read as gloom and dragged the whole scene with it: the
+// ground is fog-blended toward the sky, so a dark sky darkens the ground too.
+// Pale at the horizon and deeper overhead is the ordinary daytime gradient.
+const SKY_BELOW: [f64; 3] = [0.42, 0.55, 0.72];
+const SKY_ABOVE: [f64; 3] = [0.20, 0.34, 0.62];
 
 /// `sky` evaluated at `rd.y = 0`. Linear, as every [`Color`] clear is, so a
 /// pass clearing to it meets a pass shading `sky` without a seam.

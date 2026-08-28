@@ -348,6 +348,11 @@ impl<S: PhysicsSpace> World<S> {
             self.visit_log.update_manifolds.push(key);
             let (i, j) = self.dense_pair(key);
             let (a, b) = split_two_mut(self.bodies.dense_mut(), i, j);
+            // Before the narrowphase, so a fresh contact merges against a slot
+            // that already holds this step's geometry.
+            if let Some(manifold) = self.manifolds.get_mut(&key) {
+                manifold.refresh(&self.space, a, b);
+            }
             let Some(contact) = self.narrowphase.test(a, b, &self.space) else {
                 continue;
             };
@@ -357,7 +362,7 @@ impl<S: PhysicsSpace> World<S> {
                 .manifolds
                 .entry(key)
                 .or_insert_with(|| Manifold::new(key.0, key.1, restitution));
-            manifold.add_or_update(contact);
+            manifold.add_or_update(&self.space, a, b, contact);
         }
 
         // Sorted rather than hashed so the eviction membership test runs out

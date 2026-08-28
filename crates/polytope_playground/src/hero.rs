@@ -827,8 +827,9 @@ mod tests {
     // Displacement, in em, that counts as a letter having been knocked aside
     // rather than nudged. Measured at this seed by
     // `the_quoted_figures_are_the_ones_the_scene_produces`: the rain moves `L`
-    // 0.770, `O` 0.940, `A` 1.384 and `M` 1.751 em, so the criterion has 3x of
-    // margin on the least-moved letter; the threshold is not the measurement.
+    // 1.801, `O` 1.298, `A` 0.775 and `M` 0.620 em, so the criterion has 2.5x
+    // of margin on the least-moved letter; the threshold is not the
+    // measurement.
     const SCATTER_THRESHOLD: f32 = 0.25;
 
     // A tunneling bound, not a contact bound: the resting overlap the solver
@@ -1002,7 +1003,7 @@ mod tests {
             .zip(&scattered)
             .map(|(b, a)| b.distance(*a))
             .collect();
-        for (got, want) in measured.iter().zip([0.770f32, 0.940, 1.384, 1.751]) {
+        for (got, want) in measured.iter().zip([1.801f32, 1.298, 0.775, 0.620]) {
             assert!(
                 (got - want).abs() < 5e-3,
                 "SCATTER_THRESHOLD's doc quotes {want} em; the scene produces {got}"

@@ -32,7 +32,7 @@ pub fn fnv1a64(words: &[u32]) -> u64 {
 ///
 /// The scenario is chaotic, so a mismatch is re-recordable only when
 /// [`assert_scenario_stays_physical`] still passes.
-pub const GOLDEN_TRAJECTORY_HASH: u64 = 0xfcfa_9165_cc85_e57b;
+pub const GOLDEN_TRAJECTORY_HASH: u64 = 0xbc70_273d_6c03_b6da;
 
 pub struct ScenarioRun {
     /// Every step, every body, linear and angular state as raw f32 bits.

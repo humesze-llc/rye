@@ -515,8 +515,12 @@ impl Toybox {
                 let body = &mut self.world.bodies[toy.body];
                 body.angular_velocity = body.angular_velocity * decay;
             }
+            // Per sub-step, not per tick: a sleeping body is static, so a blow
+            // that lands on one is absorbed by an infinite mass. Waking inside
+            // the tick leaves the sub-steps that follow to hand the struck toy
+            // the rest of the blow.
+            self.wake_on_contact();
         }
-        self.wake_on_contact();
         self.latch_parked_bodies();
         self.tick += 1;
     }
@@ -1157,14 +1161,15 @@ struct PhysicsOverlay {
 }
 
 // Bar length per unit impulse. Measured, not derived: a hard flick,
-// [`MAX_CARRY_SPEED`] head-on into a resting neighbour, peaks at 1.00 units of
-// accumulated impulse in one contact, which this scale draws at 0.34 of a body
+// [`MAX_CARRY_SPEED`] head-on into a resting neighbour, peaks at 3.69 units of
+// accumulated impulse in one contact, which this scale draws at 0.33 of a body
 // radius. The calibration deliberately uses a hard flick rather than
 // [`MAX_RELEASE_SPEED`], which is a tunneling ceiling an order of magnitude
-// above anything a cursor produces. The peak is far under the momentum the
-// throw carries in because the solver is not elastic and a hull manifold
-// splits the blow over several points.
-const DEFAULT_IMPULSE_SCALE: f32 = 0.15;
+// above anything a cursor produces. The peak is under the momentum the throw
+// carries in because the solver is not elastic; it is not divided further,
+// because a manifold point that the blow has already rocked the hull off is
+// pruned rather than left to carry part of the load.
+const DEFAULT_IMPULSE_SCALE: f32 = 0.04;
 
 // Small enough that a full four-point manifold reads as four marks, not a blob.
 const CONTACT_CROSS_FRACTION: f32 = 0.15;
@@ -2305,11 +2310,14 @@ mod tests {
         toybox.wake(0);
         let thrown = toybox.toys[0].body;
         toybox.world.bodies[thrown].velocity = (to - from).normalize() * MAX_CARRY_SPEED;
-        toybox.run(60);
-        assert!(
-            !toybox.toys[1].asleep,
-            "the struck toy stayed asleep, so it is still static"
-        );
+        // Watched over the window rather than read at the end of it: a struck
+        // toy settles and latches again well inside 60 ticks.
+        let mut woke = false;
+        for _ in 0..60 {
+            toybox.tick();
+            woke |= !toybox.toys[1].asleep;
+        }
+        assert!(woke, "the struck toy never woke, so it is still static");
         assert!(
             (toybox.position(1) - start).length() > 0.01,
             "the struck toy never moved"
@@ -3487,7 +3495,7 @@ mod tests {
         }
 
         assert!(
-            (0.8..1.2).contains(&peak),
+            (3.4..4.0).contains(&peak),
             "peak normal impulse {peak}: the prose at DEFAULT_IMPULSE_SCALE is now stale, so recompute the bar length before touching this bound"
         );
         let bar = peak * DEFAULT_IMPULSE_SCALE;

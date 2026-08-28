@@ -793,6 +793,129 @@ mod tests {
         );
     }
 
+    // The playground's toy: a 24-cell of this circumradius, dropped at the
+    // rate its sub-steps run, under the angular drag a free tumble gets there.
+    const CORNER_DROP_DT: f32 = 1.0 / 240.0;
+    const CORNER_DROP_CIRCUMRADIUS: f32 = 0.45;
+    const CORNER_DROP_GRAVITY: f32 = -9.8;
+    // Per-second exponential decay on the spin. It is what makes the pin
+    // sharp: a resting spin under drag can only hold its magnitude if the
+    // contact solve is putting back exactly what the drag takes out.
+    const CORNER_DROP_DRAG: f32 = 1.2;
+
+    struct CornerDrop {
+        world: World<EuclideanR4>,
+        body: crate::body::BodyId,
+        decay: f32,
+    }
+
+    impl CornerDrop {
+        // Tipped well off any cell, so the hull must rock over onto one.
+        fn new() -> Self {
+            let mut world = World::new(EuclideanR4);
+            register_default_narrowphase(&mut world.narrowphase);
+            world.push_field(Box::new(Gravity::new(Vec4::new(
+                0.0,
+                CORNER_DROP_GRAVITY,
+                0.0,
+                0.0,
+            ))));
+            let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+            world.bodies[floor].restitution = 0.05;
+            let body = world.push_body(polytope_body_r4(
+                Vec4::new(0.0, 1.6, 0.0, 0.0),
+                Vec4::ZERO,
+                cell24_vertices(CORNER_DROP_CIRCUMRADIUS),
+                1.0,
+            ));
+            world.bodies[body].restitution = 0.05;
+            world.bodies[body].orientation.rotation = Bivector4::new(0.0, 0.0, 0.0, 0.6, 0.4, 0.0)
+                .exp()
+                .normalize();
+            world.bodies[body].inertia =
+                regular_polytope4_inertia(Polytope4::Cell24, 1.0, CORNER_DROP_CIRCUMRADIUS)
+                    .expect("closed form");
+            Self {
+                world,
+                body,
+                decay: (-CORNER_DROP_DRAG * CORNER_DROP_DT).exp(),
+            }
+        }
+
+        fn step(&mut self) {
+            self.world.step(CORNER_DROP_DT);
+            let decay = self.decay;
+            let body = &mut self.world.bodies[self.body];
+            body.angular_velocity = body.angular_velocity * decay;
+        }
+
+        fn height(&self) -> f32 {
+            self.world.bodies[self.body].position.y
+        }
+
+        fn angular_speed(&self) -> f32 {
+            self.world.bodies[self.body].angular_velocity.magnitude()
+        }
+
+        fn energy(&self) -> f32 {
+            let body = &self.world.bodies[self.body];
+            0.5 * body.velocity.length_squared()
+                + 0.5 * body.inertia * body.angular_velocity.magnitude().powi(2)
+                - CORNER_DROP_GRAVITY * body.position.y
+        }
+    }
+
+    #[test]
+    fn a_hull_dropped_on_a_corner_settles_without_climbing_its_own_contacts() {
+        const LANDING_STEPS: usize = 400;
+        const RESTING_STEPS: usize = 800;
+        // A tenth of the tolerated penetration: below the resting contact's
+        // own Baumgarte limit cycle, far under the 0.068 a stale manifold
+        // climbed.
+        const CLIMB_TOLERANCE: f32 = 5e-4;
+
+        let mut drop = CornerDrop::new();
+        let start_energy = drop.energy();
+        let mut landing_spin = 0.0_f32;
+        for _ in 0..LANDING_STEPS {
+            drop.step();
+            landing_spin = landing_spin.max(drop.angular_speed());
+        }
+        assert!(
+            landing_spin > 1.0,
+            "the hull never rocked over, so a settle proves nothing: peak |ω| \
+             was {landing_spin} rad/s"
+        );
+
+        let resting_height = drop.height();
+        let mut peak_height = resting_height;
+        for _ in 0..RESTING_STEPS {
+            drop.step();
+            peak_height = peak_height.max(drop.height());
+        }
+
+        assert!(
+            peak_height - resting_height < CLIMB_TOLERANCE,
+            "a resting hull climbed {} against gravity over {RESTING_STEPS} \
+             steps",
+            peak_height - resting_height,
+        );
+        // Three seconds of drag takes any spin the contact is not feeding to
+        // 3 % of its value.
+        assert!(
+            drop.angular_speed() < 0.02,
+            "a resting hull held {} rad/s against a {CORNER_DROP_DRAG}/s \
+             damper, so the contact solve is re-injecting it",
+            drop.angular_speed(),
+        );
+        assert!(
+            drop.energy() < start_energy,
+            "the drop ended with {} of energy against the {start_energy} it \
+             started with",
+            drop.energy(),
+        );
+    }
+
     #[test]
     fn falling_sphere_accelerates_in_r4() {
         let mut world = World::new(EuclideanR4);

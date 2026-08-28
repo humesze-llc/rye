@@ -159,15 +159,10 @@ impl Demo {
             &SkyGroundUniforms::new(
                 proj_mat * view_mat,
                 viewport,
-                Ground {
-                    y: FLOOR_Y,
-                    dark: GROUND_DARK_GREY,
-                    light: GROUND_LIGHT_GREY,
-                    // The `floor` console verb gates the marched half-space
-                    // through `u.params.x`; the background has to follow it or
-                    // the checkerboard outlives the leaf that occludes for it.
-                    visible: self.floor_enabled,
-                },
+                // The `floor` console verb gates the marched half-space
+                // through `u.params.x`; the background has to follow it or the
+                // checkerboard outlives the leaf that occludes for it.
+                self.environment.ground(FLOOR_Y, self.floor_enabled),
             ),
         );
         self.sky_ground

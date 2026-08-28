@@ -14,12 +14,14 @@ use loam_physics::euclidean_r4::{
 };
 use loam_physics::{BodyId, Gravity, World};
 use loam_render::{
-    DepthBuffer, DepthMode, Ground, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode, Viewport,
+    DepthBuffer, DepthMode, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode, Viewport,
 };
 use loam_shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
 use loam_shape::{Shape, TriangleMesh, Visualizable};
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 use loam_time::director::{BodyTrack, Director, Drive, Ease, Timeline, Track};
+
+use crate::environment::{register_ground_command, Environment};
 
 const WORD: &str = "LOAM";
 
@@ -480,12 +482,6 @@ const LETTER_COLOR: [f32; 4] = [0.92, 0.90, 0.86, 1.0];
 // analytic ground, so the drawn floor cannot drift from the one they hit.
 const FLOOR_Y: f32 = 0.0;
 
-// Low contrast on purpose: a high-contrast checker reads as a chessboard
-// rather than a lawn, and equal colours would drop the ground-plane depth cue
-// altogether.
-const GRASS_DARK: [f32; 3] = [0.145, 0.205, 0.130];
-const GRASS_LIGHT: [f32; 3] = [0.170, 0.235, 0.150];
-
 // The letters live in a slab about `w = 0`, so this is where their neighbours
 // have to be cut to share a scene with them.
 const W_SLICE: f32 = 0.0;
@@ -603,7 +599,8 @@ pub(crate) struct HeroScene {
     seed: u64,
     camera: Camera<EuclideanR3>,
     orbit: OrbitController<EuclideanR3>,
-    console: Console<()>,
+    console: Console<Environment>,
+    environment: Environment,
     triangles: TriangleRasterNode,
     sky_ground: SkyGroundNode,
     depth: Option<DepthBuffer>,
@@ -615,9 +612,15 @@ pub(crate) struct HeroScene {
 }
 
 impl HeroScene {
+    fn build_console() -> Console<Environment> {
+        let mut console = Console::<Environment>::new();
+        loam_app::shell::register_command::<Environment, crate::shell::Playground>(&mut console);
+        register_ground_command(&mut console, |env| env);
+        console
+    }
+
     pub(crate) fn new(ctx: &mut SetupCtx<'_>) -> Result<Self> {
-        let mut console = Console::<()>::new();
-        loam_app::shell::register_command::<(), crate::shell::Playground>(&mut console);
+        let console = Self::build_console();
 
         let mut camera = Camera::<EuclideanR3>::at_origin();
         camera.position = Vec3::new(0.0, BOOT_EYE_HEIGHT, BOOT_ORBIT_DISTANCE);
@@ -630,6 +633,7 @@ impl HeroScene {
             camera,
             orbit,
             console,
+            environment: Environment::default(),
             triangles: build_triangles(
                 &ctx.rd.device,
                 ctx.rd.target_format(),
@@ -702,7 +706,8 @@ impl loam_app::shell::Scene for HeroScene {
         cmd: &loam_app::command::CommandLine,
         _ctx: &mut loam_app::command::CommandCtx<'_>,
     ) -> Result<()> {
-        self.console.dispatch(&cmd.name, &cmd.arg_refs(), &mut ());
+        self.console
+            .dispatch(&cmd.name, &cmd.arg_refs(), &mut self.environment);
         Ok(())
     }
 
@@ -775,12 +780,7 @@ impl loam_app::shell::Scene for HeroScene {
             &SkyGroundUniforms::new(
                 view_proj,
                 Viewport::full([cfg.width, cfg.height]),
-                Ground {
-                    y: FLOOR_Y,
-                    dark: GRASS_DARK,
-                    light: GRASS_LIGHT,
-                    visible: true,
-                },
+                self.environment.ground(FLOOR_Y, true),
             ),
         );
         self.sky_ground
@@ -1255,5 +1255,13 @@ mod tests {
         for h in &heights {
             assert!((h - RELEASE_CLEARANCE).abs() < 1.0e-5, "released at {h}");
         }
+    }
+
+    #[test]
+    fn the_console_carries_the_live_ground_controls() {
+        assert!(HeroScene::build_console().has_command("ground"));
+        let mut env = Environment::default();
+        HeroScene::build_console().dispatch("ground", &["fog", "0.04"], &mut env);
+        assert_eq!(env.fog_per_unit, 0.04);
     }
 }

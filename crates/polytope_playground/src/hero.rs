@@ -633,7 +633,7 @@ impl HeroScene {
             camera,
             orbit,
             console,
-            environment: Environment::default(),
+            environment: Environment::grass(),
             triangles: build_triangles(
                 &ctx.rd.device,
                 ctx.rd.target_format(),

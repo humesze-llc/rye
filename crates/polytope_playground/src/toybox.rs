@@ -156,6 +156,11 @@ const STEP_TRAVEL_BUDGET: f32 = TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL;
 // putting a hard flick near the ceiling rather than ten times past it.
 const RELEASE_GAIN: f32 = 0.3;
 
+/// Fraction of a release's torque that survives. [`MAX_ANGULAR_SPEED`] is a
+/// tunneling ceiling derived from the sub-step travel budget, so it cannot be
+/// lowered for feel; this is the feel knob that sits under it.
+const RELEASE_SPIN_GAIN: f32 = 0.25;
+
 // Fastest the hold drive carries a body under the cursor. Separate from the
 // release ceiling: a throw may leave at any speed the narrowphase resolves,
 // but a carried body chasing a jumped cursor should not cross the container in
@@ -469,7 +474,18 @@ impl Toybox {
     }
 
     pub(crate) fn set_slice(&mut self, slice: f32) {
-        self.slice = slice.clamp(-W_SLICE_RANGE, W_SLICE_RANGE);
+        let reach = self.slice_reach();
+        self.slice = slice.clamp(-reach, reach);
+    }
+
+    /// How far the slice can be scrubbed. At least the spawn range, and always
+    /// past the deepest toy: a hull that rolls out beyond a fixed range would
+    /// otherwise be unreachable, with no way to bring the slice to it.
+    pub(crate) fn slice_reach(&self) -> f32 {
+        let deepest = (self.toys.iter())
+            .map(|toy| self.world.bodies[toy.body].position.w.abs())
+            .fold(0.0f32, f32::max);
+        (deepest + BODY_SIZE).max(W_SLICE_RANGE)
     }
 
     /// One frame of the held Up/Down scrub. `dir` is `+1` up, `-1` down, and
@@ -502,9 +518,8 @@ impl Toybox {
     /// What the panel's w ruler paints: each toy's signed distance from the
     /// slice, in the toy's own colour, dimmed once it has gone to sleep.
     pub(crate) fn slice_marks(&self) -> impl Iterator<Item = SliceMark> + '_ {
-        let slice = self.slice;
         self.toys.iter().map(move |toy| SliceMark {
-            offset: self.world.bodies[toy.body].position.w - slice,
+            w: self.world.bodies[toy.body].position.w,
             color: toy.color,
             asleep: toy.asleep,
         })
@@ -691,7 +706,18 @@ impl Toybox {
         // to the throw: the impulse below is the whole release.
         body.velocity = Vec4::ZERO;
         let point = body.position + body.orientation.rotation.apply(grab.lever_local);
+        // An off-centre catch should still tumble, because the tumble is the
+        // cue that the catch WAS off-centre, but the lever arm of a fast flick
+        // turns that into a whipcrack. Scaling the angular half of the impulse
+        // leaves the throw itself untouched, which is the half the cursor speed
+        // is actually asking for.
+        let spin_before = body.angular_velocity;
         body.apply_impulse_at_point(&EuclideanR4, velocity * body.mass, point);
+        // A lerp back toward the spin the body already had, which is the
+        // fraction-of-the-torque above written with the operators `Bivector4`
+        // actually has.
+        body.angular_velocity = body.angular_velocity * RELEASE_SPIN_GAIN
+            + spin_before * (1.0 - RELEASE_SPIN_GAIN);
         let angular = body.angular_velocity.magnitude();
         if angular > MAX_ANGULAR_SPEED {
             body.angular_velocity = body.angular_velocity * (MAX_ANGULAR_SPEED / angular);
@@ -960,7 +986,7 @@ fn clamp_length(v: Vec4, ceiling: f32) -> Vec4 {
 /// Point where the ray meets the plane at `depth` along `forward`. `None` when
 /// the ray runs parallel to that plane.
 pub(crate) struct SliceMark {
-    pub(crate) offset: f32,
+    pub(crate) w: f32,
     pub(crate) color: [f32; 3],
     pub(crate) asleep: bool,
 }
@@ -971,29 +997,39 @@ const IN_SLICE_HALF_WIDTH: f32 = BODY_SIZE;
 
 const RULER_HEIGHT: f32 = 34.0;
 
-/// Where every toy sits in `w` relative to the slice, which is the one thing
-/// about this scene a 3D view cannot show. Ticks are the toys, the bright line
-/// is the slice, and the shaded band is the reach where a toy still has a
-/// cross-section to grab.
-fn draw_slice_ruler(ui: &mut egui::Ui, marks: impl Iterator<Item = SliceMark>) {
+/// The scene's `w` axis: ticks are the toys at their own `w`, the bright line
+/// is the slice, and the shaded band is the reach either side of it where a
+/// toy still has a cross-section to grab. Click or drag anywhere in it to move
+/// the slice there. Returns the `w` the drag asked for, unclamped; the caller
+/// owns the clamp because it owns the reach.
+///
+/// `reach` sets the span rather than a constant, so a toy that rolls deep in
+/// `w` stays on the axis and stays reachable instead of pinning to the edge.
+fn draw_slice_ruler(
+    ui: &mut egui::Ui,
+    slice: f32,
+    reach: f32,
+    marks: impl Iterator<Item = SliceMark>,
+) -> Option<f32> {
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, RULER_HEIGHT), egui::Sense::hover());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, RULER_HEIGHT), egui::Sense::click_and_drag());
     let painter = ui.painter();
     painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(20, 22, 28));
 
-    let x_for = |offset: f32| {
-        let t = (offset / W_SLICE_RANGE).clamp(-1.0, 1.0) * 0.5 + 0.5;
+    let x_for = |w: f32| {
+        let t = (w / reach).clamp(-1.0, 1.0) * 0.5 + 0.5;
         rect.left() + t * rect.width()
     };
     painter.rect_filled(
         egui::Rect::from_x_y_ranges(
-            x_for(-IN_SLICE_HALF_WIDTH)..=x_for(IN_SLICE_HALF_WIDTH),
+            x_for(slice - IN_SLICE_HALF_WIDTH)..=x_for(slice + IN_SLICE_HALF_WIDTH),
             rect.y_range(),
         ),
         0.0,
         egui::Color32::from_rgb(32, 38, 50),
     );
-    let centre = x_for(0.0);
+    let centre = x_for(slice);
     painter.line_segment(
         [
             egui::pos2(centre, rect.top()),
@@ -1005,7 +1041,7 @@ fn draw_slice_ruler(ui: &mut egui::Ui, marks: impl Iterator<Item = SliceMark>) {
     for mark in marks {
         let dim = if mark.asleep { 0.45 } else { 1.0 };
         let channel = |c: f32| (c * dim * 255.0).clamp(0.0, 255.0) as u8;
-        let x = x_for(mark.offset);
+        let x = x_for(mark.w);
         painter.line_segment(
             [
                 egui::pos2(x, rect.top() + 4.0),
@@ -1021,6 +1057,17 @@ fn draw_slice_ruler(ui: &mut egui::Ui, marks: impl Iterator<Item = SliceMark>) {
             ),
         );
     }
+
+    let pointer = response.interact_pointer_pos()?;
+    Some(slice_for_ruler_x(pointer.x, rect.left(), rect.width(), reach))
+}
+
+/// Inverse of the ruler's own `x_for`. Split out because the panel cannot be
+/// driven headlessly, and a scrubber that maps a click to the wrong `w` is the
+/// defect worth pinning.
+fn slice_for_ruler_x(x: f32, left: f32, width: f32, reach: f32) -> f32 {
+    let t = ((x - left) / width.max(f32::MIN_POSITIVE)).clamp(0.0, 1.0);
+    (t * 2.0 - 1.0) * reach
 }
 
 pub(crate) fn plane_point(ray: &Ray, forward: Vec3, depth: f32) -> Option<Vec3> {
@@ -1454,7 +1501,7 @@ impl Default for ToyboxControls {
                 ..WireframeControls::default()
             },
             w_labels: false,
-            environment: Environment::default(),
+            environment: Environment::grass(),
         }
     }
 }
@@ -1715,6 +1762,7 @@ impl ToyboxScene {
             .resizable(false)
             .show(ctx, |ui| {
                 let mut slice = self.toybox.slice();
+                let reach = self.toybox.slice_reach();
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("w slice").strong());
                     ui.label(
@@ -1725,19 +1773,24 @@ impl ToyboxScene {
                     let reachable = self
                         .toybox
                         .slice_marks()
-                        .filter(|m| m.offset.abs() < IN_SLICE_HALF_WIDTH)
+                        .filter(|m| (m.w - slice).abs() < IN_SLICE_HALF_WIDTH)
                         .count();
                     ui.label(
                         egui::RichText::new(format!("{reachable}/{} in reach", TOYS.len()))
                             .weak(),
                     );
                 });
-                draw_slice_ruler(ui, self.toybox.slice_marks());
+                if let Some(dragged) =
+                    draw_slice_ruler(ui, slice, reach, self.toybox.slice_marks())
+                {
+                    self.toybox.set_slice(dragged);
+                    slice = self.toybox.slice();
+                }
                 if ui
                     .add(
-                        egui::Slider::new(&mut slice, -W_SLICE_RANGE..=W_SLICE_RANGE)
+                        egui::Slider::new(&mut slice, -reach..=reach)
                             .show_value(false)
-                            .text("Up / Down"),
+                            .text("drag the bar, or Up / Down"),
                     )
                     .changed()
                 {
@@ -2745,7 +2798,11 @@ mod tests {
         let mut controls = ToyboxControls::default();
         assert!(!controls.w_labels, "the w readout ships on");
         assert!(!controls.overlay.any_layer());
-        assert_eq!(controls.environment, Environment::default());
+        assert_eq!(
+            controls.environment,
+            Environment::grass(),
+            "the yard reverted to the studio grey"
+        );
 
         console.dispatch("wlabels", &[], &mut controls);
         assert!(controls.w_labels, "a bare wlabels did not flip the label");
@@ -3045,11 +3102,12 @@ mod tests {
         // grabbed. An impulse through the centre of mass has no lever arm and
         // would leave the spin exactly where it was.
         let lever = rotation.apply(lever_local);
-        let expected = Bivector4::wedge(lever, toybox.velocity(0) * BODY_MASS) * (1.0 / inertia);
+        let expected = Bivector4::wedge(lever, toybox.velocity(0) * BODY_MASS)
+            * (RELEASE_SPIN_GAIN / inertia);
         let got = after + before * -1.0;
         assert!(
             (got + expected * -1.0).magnitude() < 1e-3 * expected.magnitude().max(1.0),
-            "the release torqued by {got:?}, not the grabbed point's {expected:?}"
+            "the release torqued by {got:?}, not RELEASE_SPIN_GAIN of the grabbed              point's {expected:?}"
         );
     }
 
@@ -3353,6 +3411,59 @@ mod tests {
                 .expect("every toy shape has a derived moment");
             assert_eq!(body.inertia, exact, "toy {index} kept the bounding ball");
         }
+    }
+
+    #[test]
+    fn the_slice_can_always_be_scrubbed_out_to_the_deepest_toy() {
+        let mut toybox = settled();
+        assert_eq!(
+            toybox.slice_reach(),
+            W_SLICE_RANGE,
+            "a settled pile should not widen the reach past the spawn range"
+        );
+
+        // Deeper in w than the fixed range, which is where a toy used to
+        // become unreachable: the slice clamped short of it, so its
+        // cross-section could never be brought back into view.
+        let rolled = W_SLICE_RANGE * 3.0;
+        let id = toybox.toys[0].body;
+        toybox.world.bodies[id].position.w = rolled;
+
+        toybox.set_slice(rolled);
+        assert!(
+            (toybox.slice() - rolled).abs() < IN_SLICE_HALF_WIDTH,
+            "the slice clamped at {} and could not reach a toy at {rolled}",
+            toybox.slice()
+        );
+        assert!(
+            toybox
+                .slice_marks()
+                .any(|m| (m.w - toybox.slice()).abs() < IN_SLICE_HALF_WIDTH),
+            "the scrub arrived where no toy was"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_ruler_lands_on_the_w_it_points_at() {
+        const LEFT: f32 = 40.0;
+        const WIDTH: f32 = 200.0;
+        let reach = 4.5;
+        for (x, want) in [
+            (LEFT, -reach),
+            (LEFT + WIDTH * 0.5, 0.0),
+            (LEFT + WIDTH, reach),
+            (LEFT + WIDTH * 0.75, reach * 0.5),
+        ] {
+            let got = slice_for_ruler_x(x, LEFT, WIDTH, reach);
+            assert!(
+                (got - want).abs() < 1e-4,
+                "a click at {x} read as w {got}, not {want}"
+            );
+        }
+        // Off either end, so a drag that leaves the bar pins rather than
+        // running the slice away to somewhere with no toys in it.
+        assert_eq!(slice_for_ruler_x(LEFT - 500.0, LEFT, WIDTH, reach), -reach);
+        assert_eq!(slice_for_ruler_x(LEFT + 500.0, LEFT, WIDTH, reach), reach);
     }
 
     #[test]

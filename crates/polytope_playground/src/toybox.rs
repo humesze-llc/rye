@@ -2190,6 +2190,45 @@ mod tests {
     /// speeds, contact count and the deepest penetration, plus whether the rest
     /// latch is holding it. This is how a settling complaint gets read.
     #[test]
+    #[ignore = "diagnostic: drops a toy on a corner and traces whether it tips flat"]
+    fn corner_drop_trace() {
+        let mut toybox = Toybox::new(DEFAULT_SEED);
+        // Tip it well off any face so it MUST rotate to settle.
+        let body = toybox.toys[0].body;
+        toybox.world.bodies[body].orientation.rotation =
+            (Bivector4::new(0.0, 0.0, 0.0, 0.6, 0.4, 0.0))
+                .exp()
+                .normalize();
+        toybox.world.bodies[body].position.y = 1.6;
+        toybox.wake(0);
+        println!(
+            "{:>4} {:>8} {:>9} {:>9} {:>8} {:>6}",
+            "tick", "y", "|w|", "turn_deg", "d_pose", "sleep"
+        );
+        let mut prev = toybox.world.bodies[body].orientation.rotation;
+        for tick in 0..300 {
+            toybox.tick();
+            let b = &toybox.world.bodies[body];
+            let rel = b.orientation.rotation * prev.inverse();
+            let turn = 2.0 * rel.s.abs().clamp(0.0, 1.0).acos().to_degrees();
+            if tick % 15 == 0 || toybox.toys[0].asleep {
+                println!(
+                    "{tick:>4} {:>8.4} {:>9.4} {:>9.4} {:>8.5} {:>6}",
+                    b.position.y,
+                    b.angular_velocity.magnitude(),
+                    turn,
+                    (b.position - toybox.toys[0].rest_anchor).length(),
+                    toybox.toys[0].asleep
+                );
+            }
+            prev = b.orientation.rotation;
+            if toybox.toys[0].asleep && tick > 200 {
+                break;
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "diagnostic: prints a settling trace"]
     fn settle_trace() {
         let mut toybox = Toybox::new(DEFAULT_SEED);

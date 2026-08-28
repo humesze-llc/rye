@@ -353,10 +353,63 @@ mod tests {
         assert_eq!(SKY_HORIZON.b, 0.5 * (SKY_BELOW[2] + SKY_ABOVE[2]));
     }
 
+    // The Rust struct and the WGSL `Uniforms` block are two hand-written
+    // declarations of one buffer layout. Compare them member by member: a
+    // field added, dropped or reordered on one side alone moves an offset
+    // here, which a size assertion against a literal cannot see.
     #[test]
     fn uniforms_size_matches_wgsl() {
-        assert_eq!(std::mem::size_of::<SkyGroundUniforms>(), 176);
+        let module = naga::front::wgsl::parse_str(SKY_GROUND_NODE_WGSL).expect("parse");
+        let ty = module
+            .types
+            .iter()
+            .map(|(_, t)| t)
+            .find(|t| t.name.as_deref() == Some("Uniforms"))
+            .expect("the node's WGSL declares `Uniforms`");
+        let naga::TypeInner::Struct { members, span } = &ty.inner else {
+            panic!("`Uniforms` is not a struct");
+        };
+        assert_eq!(*span as usize, std::mem::size_of::<SkyGroundUniforms>());
         assert_eq!(std::mem::align_of::<SkyGroundUniforms>(), 4);
+        let rust_offsets = [
+            (
+                "view_proj",
+                std::mem::offset_of!(SkyGroundUniforms, view_proj),
+            ),
+            (
+                "inv_view_proj",
+                std::mem::offset_of!(SkyGroundUniforms, inv_view_proj),
+            ),
+            (
+                "viewport_origin",
+                std::mem::offset_of!(SkyGroundUniforms, viewport_origin),
+            ),
+            (
+                "resolution",
+                std::mem::offset_of!(SkyGroundUniforms, resolution),
+            ),
+            (
+                "ground_dark",
+                std::mem::offset_of!(SkyGroundUniforms, ground_dark),
+            ),
+            (
+                "ground_y",
+                std::mem::offset_of!(SkyGroundUniforms, ground_y),
+            ),
+            (
+                "ground_light",
+                std::mem::offset_of!(SkyGroundUniforms, ground_light),
+            ),
+            (
+                "show_ground",
+                std::mem::offset_of!(SkyGroundUniforms, show_ground),
+            ),
+        ];
+        assert_eq!(members.len(), rust_offsets.len());
+        for (member, (name, offset)) in members.iter().zip(rust_offsets) {
+            assert_eq!(member.name.as_deref(), Some(name));
+            assert_eq!(member.offset as usize, offset, "offset of {name}");
+        }
     }
 
     // Rust twin of `fs_main`'s ground path: unproject the pixel centre, meet
@@ -406,10 +459,12 @@ mod tests {
     }
 
     // Take a point known to be on the plane, project it the way the raster
-    // vertex stage does, and demand the background's own unprojection at that
-    // pixel recover the same point and the same depth. Catches a flipped
-    // framebuffer y, a near/far swap in the unprojection, and a sign flip in
-    // the plane intersection, each of which survives a self-consistent shader.
+    // vertex stage does, and demand `ground_hit` at that pixel recover the
+    // same point and the same depth. This pins the algorithm, not its WGSL
+    // transcription: a flipped framebuffer y, a near/far swap or an
+    // intersection sign flip is caught here only if it is also made in the
+    // twin above. The shader's own copy is pinned on a device by
+    // `ground_occludes_raster_content_behind_the_plane_gpu_probe`.
     #[test]
     fn background_depth_matches_the_raster_projection() {
         for (eye, ground_y) in [

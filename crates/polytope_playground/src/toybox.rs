@@ -41,11 +41,14 @@ const TICK_DT: f32 = 1.0 / TICK_HZ as f32;
 const BASE_SUBSTEPS: usize = 4;
 
 // The sub-step count a tick may rise to when something is moving fast. The
-// resolvable travel per step is fixed, so the speed a body may carry without
-// tunneling is linear in this: `MAX_RELEASE_SPEED` below is 4.05 u/s per
-// sub-step. Sixty-four buys 259 u/s, which is far past what a cursor produces,
-// and five bodies make the extra steps cheap on the ticks that need them.
-const MAX_SUBSTEPS: usize = 64;
+// resolvable travel per step is fixed, so the speed a body may carry is linear
+// in this, at 4.05 u/s per sub-step. Sixteen buys 64.8 u/s, which crosses the
+// 7.2-unit container in about seven frames: fast enough to read as a hard
+// throw, slow enough that the bounce is a thing you SEE. Sixty-four was tried
+// and is a mistake at any body count: 259 u/s crosses the arena in 1.7 frames,
+// so the toy is simply gone, and a deep first contact leaves it drawn outside
+// the wall while Baumgarte recovers.
+const MAX_SUBSTEPS: usize = 16;
 
 // Fixed, never derived from wall time. A resting tick runs at
 // `TICK_DT / BASE_SUBSTEPS`; a tick carrying a fast body divides further.
@@ -142,11 +145,19 @@ const STEP_TRAVEL_BUDGET: f32 = TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL;
 // harder than a medium one. The walls are what make an unclamped throw safe to
 // offer, since a hard throw now bounces rather than leaving.
 
+// World units of throw per world unit per second of cursor. A cursor covers a
+// lot of world at grab depth: a brisk 1 unit per frame is already 60 u/s, and a
+// flick is four times that, so throwing at the hand's own speed sends every
+// toy into a wall faster than the eye follows. The gain keeps the throw
+// PROPORTIONAL to the hand, which is what a flick has to feel like, while
+// putting a hard flick near the ceiling rather than ten times past it.
+const RELEASE_GAIN: f32 = 0.3;
+
 // Fastest the hold drive carries a body under the cursor. Separate from the
 // release ceiling: a throw may leave at any speed the narrowphase resolves,
 // but a carried body chasing a jumped cursor should not cross the container in
 // a tick.
-const MAX_CARRY_SPEED: f32 = 30.0;
+const MAX_CARRY_SPEED: f32 = 20.0;
 
 // Most the grab may change a held body's velocity per tick. Finite so a
 // contact impulse can win: the drive used to assign velocity outright, which
@@ -567,7 +578,7 @@ impl Toybox {
         let Some(grab) = self.grab.take() else {
             return;
         };
-        let velocity = clamp_length(grab.trail.velocity(), MAX_RELEASE_SPEED);
+        let velocity = clamp_length(grab.trail.velocity() * RELEASE_GAIN, MAX_RELEASE_SPEED);
         self.wake(grab.toy);
         let body = &mut self.world.bodies[self.toys[grab.toy].body];
         // Cleared first so the drive velocity the hold left behind does not add
@@ -1003,14 +1014,14 @@ struct PhysicsOverlay {
 }
 
 // Bar length per unit impulse. Measured, not derived: a hard flick,
-// [`MAX_CARRY_SPEED`] head-on into a resting neighbour, peaks at 5.48 units of
+// [`MAX_CARRY_SPEED`] head-on into a resting neighbour, peaks at 3.61 units of
 // accumulated impulse in one contact, which this scale draws at 0.34 of a body
 // radius. The calibration deliberately uses a hard flick rather than
 // [`MAX_RELEASE_SPEED`], which is a tunneling ceiling an order of magnitude
 // above anything a cursor produces. The peak is far under the momentum the
 // throw carries in because the solver is not elastic and a hull manifold
 // splits the blow over several points.
-const DEFAULT_IMPULSE_SCALE: f32 = 0.028;
+const DEFAULT_IMPULSE_SCALE: f32 = 0.042;
 
 // Small enough that a full four-point manifold reads as four marks, not a blob.
 const CONTACT_CROSS_FRACTION: f32 = 0.15;
@@ -1921,6 +1932,19 @@ mod tests {
     }
 
     #[test]
+    fn a_throw_is_slow_enough_to_watch_cross_the_container() {
+        // The regression this guards: at a 259 u/s ceiling a toy crossed the
+        // 7.2-unit arena in 1.7 frames, so it read as having gone through the
+        // wall rather than bounced off it. A throw has to survive several
+        // rendered frames inside the box to be a throw at all.
+        let frames = ARENA_HALF_EXTENT * 2.0 / MAX_RELEASE_SPEED * TICK_HZ as f32;
+        assert!(
+            frames >= 4.0,
+            "the fastest throw crosses the container in {frames} frames, which is              too fast to see"
+        );
+    }
+
+    #[test]
     fn a_faster_drag_throws_harder_all_the_way_to_the_ceiling() {
         // The property a flat cap destroyed: every flick above it landed on one
         // speed, so a fast mouse threw no harder than a medium one.
@@ -1956,7 +1980,11 @@ mod tests {
     fn the_walls_hold_a_throw_at_the_narrowphase_ceiling_for_its_whole_flight() {
         // The ceiling, not the feel speed: the walls have to hold the fastest
         // thing the solver will carry, not the fastest thing a hand throws.
-        let reach = ARENA_HALF_EXTENT + 8.0 * PENETRATION_SLOP + BODY_SIZE;
+        // A hull vertex may sit a slop depth inside a wall while the solver
+        // pushes it out. It may not sit a BODY past one: the old bound added
+        // BODY_SIZE and so accepted a toy fully through the plane, which is
+        // exactly the tunneling it was meant to catch.
+        let reach = ARENA_HALF_EXTENT + 8.0 * PENETRATION_SLOP;
         for direction in [
             Vec4::X,
             -Vec4::X,
@@ -2397,8 +2425,10 @@ mod tests {
         };
         let flicked = throw(0);
         let stalled = throw(12);
+        // 0.05 u/frame is 3 u/s of cursor, so RELEASE_GAIN puts the throw
+        // near 0.9 u/s. The bound is on the gain-scaled speed, not a raw one.
         assert!(
-            flicked.x > 2.0,
+            flicked.x > 0.5 * 3.0 * RELEASE_GAIN,
             "a 3 u/s drag released in motion threw at {flicked}"
         );
         assert!(
@@ -3064,7 +3094,7 @@ mod tests {
         }
 
         assert!(
-            (5.0..6.0).contains(&peak),
+            (3.2..4.1).contains(&peak),
             "peak normal impulse {peak}: the prose at DEFAULT_IMPULSE_SCALE is now stale, so recompute the bar length before touching this bound"
         );
         let bar = peak * DEFAULT_IMPULSE_SCALE;

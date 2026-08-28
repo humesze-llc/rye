@@ -2,7 +2,6 @@ use std::fmt::Write as _;
 
 use anyhow::Result;
 use loam_app::{egui, RenderCtx};
-use loam_render::device::RenderDevice;
 use loam_text::TextRenderer;
 
 use crate::state::Demo;
@@ -140,14 +139,21 @@ pub(crate) struct TextHud {
 }
 
 impl TextHud {
-    pub(crate) fn new(rd: &RenderDevice) -> Result<Self> {
+    // Takes the device parts rather than the `RenderDevice`, so a rebuild's
+    // cost is measurable from a device with no surface behind it.
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        samples: u32,
+    ) -> Result<Self> {
         let text = TextRenderer::new(
-            &rd.device,
-            &rd.queue,
-            rd.target_format(),
+            device,
+            queue,
+            format,
             hud_font_bytes(),
             HUD_BAKE_PX,
-            rd.sample_count(),
+            samples,
         )?;
         Ok(Self {
             text,

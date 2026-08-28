@@ -15,7 +15,7 @@ impl RotateScene {
         loam_app::shell::register_command::<Demo, shell::Playground>(&mut c);
         c.register(loam_egui::cmd(
             "reset",
-            "full reset (R)",
+            "reset slice, rate, active set, orientation and time in place",
             |_args, demo: &mut Demo, _out| {
                 demo.reset();
                 Ok(())

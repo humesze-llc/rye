@@ -5,8 +5,8 @@ use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::sync::{Mutex, PoisonError};
 
-use anyhow::{anyhow, Result};
-use loam_egui::{cmd, Console};
+use anyhow::{anyhow, bail, Result};
+use loam_egui::{cmd, Console, ConsoleWriter};
 use loam_render::device::RenderDevice;
 
 use crate::args::Args;
@@ -41,6 +41,11 @@ pub trait Scene {
     /// Must not submit; see `RenderCtx`.
     fn record(&mut self, ctx: &mut RenderCtx<'_>) -> Result<()>;
     fn title(&self, fps: f32) -> Cow<'static, str>;
+    /// `Some(reason)` makes an unforced restart ask before it drops this
+    /// instance; the reason names the scene's own way of saving the work.
+    fn unsaved_work(&self) -> Option<Cow<'static, str>> {
+        None
+    }
 }
 
 pub struct SceneEntry {
@@ -57,12 +62,21 @@ pub trait SceneRegistry: 'static {
     const SCENES: &'static [SceneEntry];
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Request {
+    Switch(usize),
+    /// Forced skips the confirmation a scene with unsaved work raises.
+    Restart {
+        forced: bool,
+    },
+}
+
 // A console command's context is the scene's own state, so it cannot see
 // `SceneShell`; the shell publishes `active` and drains `pending` around the
 // scene's `ui`.
 struct Switcher {
     active: usize,
-    pending: Option<usize>,
+    pending: Option<Request>,
 }
 
 static SWITCHER: Mutex<Switcher> = Mutex::new(Switcher {
@@ -91,8 +105,58 @@ fn request_scene(scenes: &[SceneEntry], slug: &str) -> Result<()> {
             .join("|");
         anyhow!("unknown scene `{slug}` (try {known})")
     })?;
-    with_switcher(|s| s.pending = Some(index));
+    with_switcher(|s| s.pending = Some(Request::Switch(index)));
     Ok(())
+}
+
+// A scene builder re-reads `Args::current()`, so a rebuilt scene re-arms
+// `--script` from its first line and the run never reaches its exit.
+fn request_restart(boot_args: &Args, forced: bool) -> Result<()> {
+    if boot_args.get("script").is_some() {
+        bail!(
+            "restart is refused in a scripted run: the rebuilt scene re-reads the \
+             script argument and would replay it from the first line, so the run \
+             would never exit"
+        );
+    }
+    with_switcher(|s| s.pending = Some(Request::Restart { forced }));
+    Ok(())
+}
+
+// Split from the closure so the refusal is reachable without an argv.
+fn run_restart(args: &[&str], boot_args: &Args, out: &mut ConsoleWriter) -> Result<()> {
+    let forced = match args.first().copied() {
+        None => false,
+        Some("force") => true,
+        Some(other) => bail!("restart: unknown arg `{other}` (try force)"),
+    };
+    request_restart(boot_args, forced)?;
+    out.line(if forced {
+        "restart: rebuilding the active scene"
+    } else {
+        "restart: rebuilding the active scene unless it reports unsaved work"
+    });
+    Ok(())
+}
+
+// The shell owns R for every registered scene, so the capture gate belongs
+// here; the scenes keep their own gates for their own keys.
+fn claims_restart(
+    code: winit::keyboard::KeyCode,
+    state: winit::event::ElementState,
+    ui_captures_keyboard: bool,
+) -> bool {
+    code == winit::keyboard::KeyCode::KeyR
+        && state == winit::event::ElementState::Pressed
+        && !ui_captures_keyboard
+}
+
+// The key and the menu item have no console, so a refusal reaches the scene's
+// scrollback through the log pump instead.
+fn queue_restart(forced: bool) {
+    if let Err(err) = request_restart(&Args::current(), forced) {
+        tracing::warn!("{err:#}");
+    }
 }
 
 pub fn register_command<Ctx: 'static, R: SceneRegistry>(console: &mut Console<Ctx>) {
@@ -126,6 +190,26 @@ pub fn register_command<Ctx: 'static, R: SceneRegistry>(console: &mut Console<Ct
              which leaves this command as the only in-app switcher.\n\
              \n\
              Bare `scene` lists every registered slug and marks the active one.",
+        ),
+    );
+    console.register(
+        cmd::<Ctx, _>(
+            "restart",
+            "rebuild the active scene at its boot state; `restart force` skips the confirmation",
+            |args, _ctx: &mut Ctx, out| run_restart(args, &Args::current(), out),
+        )
+        .with_args(&[&["force"]])
+        .with_long_help(
+            "Calls the active scene's registry builder again and swaps the result in,\n\
+             so the scene comes back exactly as it boots. R does the same. The\n\
+             rebuild costs the scene's shader compile and drops its console\n\
+             scrollback.\n\
+             \n\
+             A scene holding unsaved work asks first; `restart force` rebuilds\n\
+             without asking.\n\
+             \n\
+             Refused under `--script=` / `?script=`: the rebuilt scene re-reads that\n\
+             argument and would replay the script from its first line.",
         ),
     );
 }
@@ -168,6 +252,21 @@ fn activate(
     next
 }
 
+// Build first, swap after. Clearing the slot and then failing would leave
+// `active_scene`'s `expect` as the next frame's panic, so the two instances
+// overlap for the length of this call.
+fn rebuild(
+    slots: &mut SceneSlots,
+    active: usize,
+    slug: &str,
+    build: impl FnOnce() -> Result<Box<dyn Scene>>,
+) {
+    match build() {
+        Ok(scene) => slots[active] = Some(scene),
+        Err(err) => tracing::error!("scene '{slug}' failed to rebuild: {err:#}"),
+    }
+}
+
 pub struct SceneShell<R: SceneRegistry> {
     scenes: SceneSlots,
     /// Not the runner's db: the runner's `&mut ShaderDb` dies with `App::setup`,
@@ -181,6 +280,9 @@ pub struct SceneShell<R: SceneRegistry> {
     sim_threads: usize,
     capture_panel: crate::capture::CapturePanel,
     perf: crate::trace::PerfOverlay,
+    /// The reason the active scene gave for asking before a restart; `Some`
+    /// while the confirmation is on screen.
+    confirm: Option<Cow<'static, str>>,
     /// `R` is reachable only through its associated const.
     registry: PhantomData<fn() -> R>,
 }
@@ -199,9 +301,10 @@ impl<R: SceneRegistry> SceneShell<R> {
             scenes,
             shader_db,
             active,
+            confirm,
             ..
         } = self;
-        *active = drain_pending(scenes, *active, R::SCENES, |next| {
+        let drained = drain_pending(scenes, *active, R::SCENES, |next| {
             let mut setup = SetupCtx {
                 rd,
                 shader_db,
@@ -211,7 +314,52 @@ impl<R: SceneRegistry> SceneShell<R> {
             };
             (R::SCENES[next].build)(&mut setup)
         });
+        match drained {
+            Drain::Nothing => {}
+            Drain::Applied(now) => {
+                *active = now;
+                *confirm = None;
+            }
+            Drain::Ask(reason) => *confirm = Some(reason),
+        }
     }
+
+    // Painted before the drain, so an answer applies in the frame it is given.
+    fn show_restart_confirm(&mut self, ctx: &egui::Context) {
+        let Some(reason) = self.confirm.clone() else {
+            return;
+        };
+        let mut answer: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("shell-restart-confirm")).show(ctx, |ui| {
+            ui.heading("Restart this scene?");
+            ui.label(reason.as_ref());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Restart").clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        match answer {
+            None => {}
+            Some(true) => {
+                with_switcher(|s| s.pending = Some(Request::Restart { forced: true }));
+                self.confirm = None;
+            }
+            Some(false) => self.confirm = None,
+        }
+    }
+}
+
+// What the frame's request came to.
+enum Drain {
+    Nothing,
+    Applied(usize),
+    /// The active scene declared unsaved work against an unforced restart.
+    Ask(Cow<'static, str>),
 }
 
 fn drain_pending(
@@ -219,13 +367,30 @@ fn drain_pending(
     active: usize,
     scenes: &[SceneEntry],
     build: impl FnOnce(usize) -> Result<Box<dyn Scene>>,
-) -> usize {
-    let Some(next) = with_switcher(|s| s.pending.take()) else {
-        return active;
+) -> Drain {
+    let Some(request) = with_switcher(|s| s.pending.take()) else {
+        return Drain::Nothing;
     };
-    let now = activate(slots, active, next, scenes[next].slug, || build(next));
-    with_switcher(|s| s.active = now);
-    now
+    match request {
+        Request::Switch(next) => {
+            let now = activate(slots, active, next, scenes[next].slug, || build(next));
+            with_switcher(|s| s.active = now);
+            Drain::Applied(now)
+        }
+        Request::Restart { forced } => {
+            let unsaved = slots[active]
+                .as_deref()
+                .expect(ACTIVE_IS_BUILT) // ok: activate builds before it sets active
+                .unsaved_work();
+            match unsaved {
+                Some(reason) if !forced => Drain::Ask(reason),
+                _ => {
+                    rebuild(slots, active, scenes[active].slug, || build(active));
+                    Drain::Applied(active)
+                }
+            }
+        }
+    }
 }
 
 // (boot scene index, embed). Unknown slugs fall back to scene 0.
@@ -264,6 +429,7 @@ impl<R: SceneRegistry> App for SceneShell<R> {
             sim_threads: ctx.sim_threads,
             capture_panel: crate::capture::CapturePanel::new(),
             perf: crate::trace::PerfOverlay::new(),
+            confirm: None,
             registry: PhantomData,
         })
     }
@@ -303,9 +469,14 @@ impl<R: SceneRegistry> App for SceneShell<R> {
                                 // Queued, not applied: a first activation
                                 // constructs the scene, which needs the `&mut
                                 // self` this closure has borrowed away.
-                                with_switcher(|s| s.pending = Some(i));
+                                with_switcher(|s| s.pending = Some(Request::Switch(i)));
                                 ui.close_kind(egui::UiKind::Menu);
                             }
+                        }
+                        ui.separator();
+                        if ui.button("Restart scene (R)").clicked() {
+                            queue_restart(false);
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     });
                     scene.menus(ui);
@@ -315,6 +486,7 @@ impl<R: SceneRegistry> App for SceneShell<R> {
         self.active_scene().ui(ctx, frame);
         self.capture_panel.show(ctx);
         self.perf.show(ctx);
+        self.show_restart_confirm(ctx);
         // Drained after the scene's `ui` returns: the `scene` command runs inside
         // it, holding the borrow a switch would invalidate. Menu-bar clicks queue
         // through the same slot.
@@ -327,6 +499,10 @@ impl<R: SceneRegistry> App for SceneShell<R> {
         state: winit::event::ElementState,
         ctx: &mut FrameCtx<'_>,
     ) {
+        if claims_restart(code, state, ctx.ui_capture.keyboard) {
+            queue_restart(false);
+            return;
+        }
         self.active_scene().on_key(code, state, ctx);
     }
 
@@ -357,6 +533,7 @@ mod tests {
         /// Written from outside and read back through `title`: a cached
         /// activation must return the object holding this cell, not a new one.
         state: Rc<Cell<u32>>,
+        unsaved: Option<Cow<'static, str>>,
     }
 
     impl Scene for HyperbolicScene {
@@ -383,6 +560,10 @@ mod tests {
         fn title(&self, _fps: f32) -> Cow<'static, str> {
             format!("hyperbolic {}", self.state.get()).into()
         }
+
+        fn unsaved_work(&self) -> Option<Cow<'static, str>> {
+            self.unsaved.clone()
+        }
     }
 
     #[test]
@@ -395,6 +576,7 @@ mod tests {
                     space: HyperbolicH3,
                     owner: ctx.shader_db.new_owner(),
                     state: Rc::default(),
+                    unsaved: None,
                 }))
             },
         };
@@ -487,7 +669,28 @@ mod tests {
             space: HyperbolicH3,
             owner: ShaderDb::ROOT_OWNER,
             state,
+            unsaved: None,
         })
+    }
+
+    const UNSAVED: &str = "the stub holds work no builder can reproduce";
+
+    fn dirty_stub_scene() -> Box<dyn Scene> {
+        Box::new(HyperbolicScene {
+            space: HyperbolicH3,
+            owner: ShaderDb::ROOT_OWNER,
+            state: Rc::default(),
+            unsaved: Some(Cow::Borrowed(UNSAVED)),
+        })
+    }
+
+    #[track_caller]
+    fn applied(drain: Drain, active: usize) -> usize {
+        match drain {
+            Drain::Nothing => active,
+            Drain::Applied(now) => now,
+            Drain::Ask(reason) => panic!("unexpected confirmation: {reason}"),
+        }
     }
 
     // `SWITCHER` is process-global and cargo runs tests on parallel threads, so
@@ -557,7 +760,10 @@ mod tests {
             assert!(request_scene(REGISTRY, "nope").is_err());
             assert!(with_switcher(|s| s.pending).is_none());
             assert!(request_scene(REGISTRY, REGISTRY[1].slug).is_ok());
-            assert_eq!(with_switcher(|s| s.pending.take()), Some(1));
+            assert_eq!(
+                with_switcher(|s| s.pending.take()),
+                Some(Request::Switch(1))
+            );
         });
     }
 
@@ -585,10 +791,13 @@ mod tests {
             let builds = Cell::new(0);
             let mut active = 0;
             let drain = |slots: &mut SceneSlots, active: usize| {
-                drain_pending(slots, active, REGISTRY, |_| {
-                    builds.set(builds.get() + 1);
-                    Ok(stub_scene())
-                })
+                applied(
+                    drain_pending(slots, active, REGISTRY, |_| {
+                        builds.set(builds.get() + 1);
+                        Ok(stub_scene())
+                    }),
+                    active,
+                )
             };
 
             crate::command::run_on_console(&mut console, "scene second", &mut ());
@@ -614,9 +823,12 @@ mod tests {
             register_command::<(), Fixture>(&mut console);
 
             crate::command::run_on_console(&mut console, "scene nope", &mut ());
-            let active = drain_pending(&mut slots, 0, REGISTRY, |_| {
-                unreachable!("an unknown slug must not reach a builder")
-            });
+            let active = applied(
+                drain_pending(&mut slots, 0, REGISTRY, |_| {
+                    unreachable!("an unknown slug must not reach a builder")
+                }),
+                0,
+            );
             assert_eq!(active, 0);
             assert_eq!(marked_slug(&mut console), "first");
         });
@@ -631,22 +843,25 @@ mod tests {
             let second_state: Rc<Cell<u32>> = Rc::default();
             let mut active = 0;
             let drain = |slots: &mut SceneSlots, active: usize| {
-                drain_pending(slots, active, REGISTRY, |_| {
-                    builds.set(builds.get() + 1);
-                    Ok(stateful_stub_scene(Rc::clone(&second_state)))
-                })
+                applied(
+                    drain_pending(slots, active, REGISTRY, |_| {
+                        builds.set(builds.get() + 1);
+                        Ok(stateful_stub_scene(Rc::clone(&second_state)))
+                    }),
+                    active,
+                )
             };
 
-            with_switcher(|s| s.pending = Some(1));
+            with_switcher(|s| s.pending = Some(Request::Switch(1)));
             active = drain(&mut slots, active);
             assert_eq!(builds.get(), 1, "first activation builds");
             second_state.set(7);
 
-            with_switcher(|s| s.pending = Some(0));
+            with_switcher(|s| s.pending = Some(Request::Switch(0)));
             active = drain(&mut slots, active);
             assert_eq!(active, 0);
 
-            with_switcher(|s| s.pending = Some(1));
+            with_switcher(|s| s.pending = Some(Request::Switch(1)));
             active = drain(&mut slots, active);
             assert_eq!(active, 1);
             assert_eq!(builds.get(), 1, "the second visit must hit the cache");
@@ -667,7 +882,10 @@ mod tests {
             register_command::<(), Fixture>(&mut console);
 
             crate::command::run_on_console(&mut console, "scene third", &mut ());
-            let active = drain_pending(&mut slots, 0, REGISTRY, |_| Err(anyhow!("no device")));
+            let active = applied(
+                drain_pending(&mut slots, 0, REGISTRY, |_| Err(anyhow!("no device"))),
+                0,
+            );
             assert_eq!(active, 0);
             assert_eq!(marked_slug(&mut console), "first");
         });
@@ -678,5 +896,168 @@ mod tests {
         let mut console = Console::<u32>::new();
         register_command::<u32, Fixture>(&mut console);
         assert!(console.has_command("scene"));
+        assert!(
+            console.has_command("restart"),
+            "restart rides the same registration, so every scene's console has it"
+        );
+    }
+
+    #[test]
+    fn the_shell_claims_r_on_press_and_only_while_the_ui_is_not_typing() {
+        use winit::event::ElementState;
+        use winit::keyboard::KeyCode;
+        assert!(claims_restart(KeyCode::KeyR, ElementState::Pressed, false));
+        assert!(
+            !claims_restart(KeyCode::KeyR, ElementState::Pressed, true),
+            "typing `restart` into a console would fire the hotkey mid-word"
+        );
+        assert!(
+            !claims_restart(KeyCode::KeyR, ElementState::Released, false),
+            "a release would restart a second time on key-up"
+        );
+        assert!(!claims_restart(KeyCode::KeyT, ElementState::Pressed, false));
+    }
+
+    #[test]
+    fn a_restart_replaces_the_cached_instance_with_a_freshly_built_one() {
+        with_exclusive_switcher(|| {
+            let state: Rc<Cell<u32>> = Rc::default();
+            let mut slots = build_boot_only(REGISTRY.len(), 0, || {
+                Ok(stateful_stub_scene(Rc::clone(&state)))
+            })
+            .expect("boot build");
+            state.set(7);
+            let builds = Cell::new(0);
+
+            with_switcher(|s| s.pending = Some(Request::Restart { forced: false }));
+            let active = applied(
+                drain_pending(&mut slots, 0, REGISTRY, |_| {
+                    builds.set(builds.get() + 1);
+                    Ok(stub_scene())
+                }),
+                0,
+            );
+
+            assert_eq!(active, 0, "a restart stays on the scene it rebuilt");
+            assert_eq!(builds.get(), 1, "the builder is the boot path");
+            assert_eq!(
+                slots[0].as_deref().expect("built").title(0.0),
+                "hyperbolic 0",
+                "the state written while the scene ran has to be gone"
+            );
+        });
+    }
+
+    #[test]
+    fn a_failed_rebuild_keeps_the_instance_that_was_running() {
+        with_exclusive_switcher(|| {
+            let state: Rc<Cell<u32>> = Rc::default();
+            let mut slots = build_boot_only(REGISTRY.len(), 0, || {
+                Ok(stateful_stub_scene(Rc::clone(&state)))
+            })
+            .expect("boot build");
+            state.set(7);
+
+            with_switcher(|s| s.pending = Some(Request::Restart { forced: false }));
+            let active = applied(
+                drain_pending(&mut slots, 0, REGISTRY, |_| Err(anyhow!("no device"))),
+                0,
+            );
+
+            assert_eq!(active, 0);
+            assert_eq!(
+                slots[0].as_deref().expect("built").title(0.0),
+                "hyperbolic 7",
+                "a cleared slot would leave the next frame's unwrap to panic"
+            );
+        });
+    }
+
+    #[test]
+    fn a_scene_with_unsaved_work_is_not_rebuilt_until_the_request_is_forced() {
+        with_exclusive_switcher(|| {
+            let mut slots =
+                build_boot_only(REGISTRY.len(), 0, || Ok(dirty_stub_scene())).expect("boot build");
+            let builds = Cell::new(0);
+            let drain = |slots: &mut SceneSlots| {
+                drain_pending(slots, 0, REGISTRY, |_| {
+                    builds.set(builds.get() + 1);
+                    Ok(stub_scene())
+                })
+            };
+
+            with_switcher(|s| s.pending = Some(Request::Restart { forced: false }));
+            let asked = drain(&mut slots);
+            assert!(
+                matches!(&asked, Drain::Ask(reason) if reason == UNSAVED),
+                "the scene's own reason has to reach the confirmation"
+            );
+            assert_eq!(builds.get(), 0);
+
+            with_switcher(|s| s.pending = Some(Request::Restart { forced: true }));
+            let forced = drain(&mut slots);
+            assert!(matches!(forced, Drain::Applied(0)));
+            assert_eq!(builds.get(), 1);
+        });
+    }
+
+    #[test]
+    fn the_restart_verb_queues_through_the_same_slot_as_a_switch() {
+        with_exclusive_switcher(|| {
+            let mut slots =
+                build_boot_only(REGISTRY.len(), 0, || Ok(stub_scene())).expect("boot build");
+            let mut console = Console::<()>::new();
+            register_command::<(), Fixture>(&mut console);
+            let builds = Cell::new(0);
+
+            crate::command::run_on_console(&mut console, "restart", &mut ());
+            let active = applied(
+                drain_pending(&mut slots, 0, REGISTRY, |_| {
+                    builds.set(builds.get() + 1);
+                    Ok(stub_scene())
+                }),
+                0,
+            );
+
+            assert_eq!(active, 0);
+            assert_eq!(builds.get(), 1, "the verb reaches the shell's rebuild");
+        });
+    }
+
+    #[test]
+    fn a_restart_in_a_scripted_run_is_refused_rather_than_queued() {
+        with_exclusive_switcher(|| {
+            let scripted = Args::from_pairs([("script", "console-scripts/x.script")]);
+            let mut out = ConsoleWriter::new();
+            for line in [&[][..], &["force"][..]] {
+                let err = run_restart(line, &scripted, &mut out)
+                    .expect_err("a scripted run must refuse a restart");
+                assert!(format!("{err:#}").contains("scripted run"), "{err:#}");
+                assert!(
+                    with_switcher(|s| s.pending).is_none(),
+                    "a refused restart must leave the slot empty, or the script \
+                     replays from its first line and the run never exits"
+                );
+            }
+            run_restart(&[], &Args::default(), &mut out).expect("an unscripted run restarts");
+            assert_eq!(
+                with_switcher(|s| s.pending.take()),
+                Some(Request::Restart { forced: false })
+            );
+        });
+    }
+
+    #[test]
+    fn the_restart_verb_rejects_an_argument_it_does_not_define() {
+        with_exclusive_switcher(|| {
+            let mut out = ConsoleWriter::new();
+            assert!(run_restart(&["now"], &Args::default(), &mut out).is_err());
+            assert!(with_switcher(|s| s.pending).is_none());
+            run_restart(&["force"], &Args::default(), &mut out).expect("force is the one arg");
+            assert_eq!(
+                with_switcher(|s| s.pending.take()),
+                Some(Request::Restart { forced: true })
+            );
+        });
     }
 }

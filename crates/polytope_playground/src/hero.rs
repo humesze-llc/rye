@@ -102,7 +102,7 @@ const RAIN_TUMBLE: f32 = 6.0;
 
 const RESTITUTION: f32 = 0.0;
 
-const DEFAULT_SEED: u64 = 0x10a3_5eed;
+pub(crate) const DEFAULT_SEED: u64 = 0x10a3_5eed;
 
 const RAIN_SHAPES: [Polytope4; 4] = [
     Polytope4::Cell24,
@@ -503,6 +503,24 @@ pub(crate) fn hero_font_bytes() -> &'static [u8] {
     epaint_default_fonts::HACK_REGULAR
 }
 
+// The scene's whole GPU footprint, in one call so a rebuild's cost is
+// measurable from a device with no surface behind it.
+pub(crate) fn build_triangles(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    samples: u32,
+) -> TriangleRasterNode {
+    TriangleRasterNode::new(
+        device,
+        format,
+        DepthMode::ReadWrite {
+            format: DEPTH_FORMAT,
+        },
+        loam_render::triangle_raster::FragmentShading::FaceNormalLambert,
+        samples,
+    )
+}
+
 fn drop_color(polytope: Polytope4) -> [f32; 3] {
     crate::catalog::SHAPE_CATALOG
         .iter()
@@ -621,13 +639,9 @@ impl HeroScene {
             camera,
             orbit,
             console,
-            triangles: TriangleRasterNode::new(
+            triangles: build_triangles(
                 &ctx.rd.device,
                 ctx.rd.target_format(),
-                DepthMode::ReadWrite {
-                    format: DEPTH_FORMAT,
-                },
-                loam_render::triangle_raster::FragmentShading::FaceNormalLambert,
                 ctx.rd.sample_count(),
             ),
             depth: None,
@@ -667,7 +681,7 @@ impl HeroScene {
                 ));
                 ui.checkbox(&mut self.paused, "pause (Space)");
                 ui.checkbox(&mut self.hold_at_end, "hold on the last frame");
-                if ui.button("replay (R)").clicked() {
+                if ui.button("replay this seed").clicked() {
                     replay = Some(self.seed);
                 }
                 if ui.button("next seed (N)").clicked() {
@@ -733,7 +747,6 @@ impl loam_app::shell::Scene for HeroScene {
         }
         match code {
             KeyCode::Space => self.paused = !self.paused,
-            KeyCode::KeyR => self.replay(self.seed),
             KeyCode::KeyN => self.replay(self.seed.wrapping_add(1)),
             _ => {}
         }

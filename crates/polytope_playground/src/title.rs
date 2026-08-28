@@ -250,6 +250,9 @@ impl Transit {
         self.sample();
     }
 
+    // Only the tests drive the playhead backwards; the scene restarts by
+    // rebuilding.
+    #[cfg(test)]
     fn seek(&mut self, frame: u32) {
         self.director.seek(frame);
         self.sample();
@@ -352,13 +355,8 @@ impl loam_app::shell::Scene for TitleScene {
         if ctx.ui_capture.keyboard || state != ElementState::Pressed {
             return;
         }
-        match code {
-            KeyCode::Space => self.playing = !self.playing,
-            KeyCode::KeyR => {
-                self.transit.seek(0);
-                self.playing = true;
-            }
-            _ => {}
+        if code == KeyCode::Space {
+            self.playing = !self.playing;
         }
     }
 
@@ -430,7 +428,7 @@ impl loam_app::shell::Scene for TitleScene {
     }
 
     fn title(&self, _fps: f32) -> Cow<'static, str> {
-        Cow::Borrowed("polytope playground - title (space: pause, R: replay)")
+        Cow::Borrowed("polytope playground - title (space: pause, R: restart)")
     }
 }
 

@@ -127,10 +127,7 @@ impl Demo {
                 self.rebuild_bodies();
                 ui.close_kind(egui::UiKind::Menu);
             }
-            if ui
-                .add(egui::Button::new("Reset all").shortcut_text("R"))
-                .clicked()
-            {
+            if ui.button("Reset all").clicked() {
                 self.reset();
                 ui.close_kind(egui::UiKind::Menu);
             }
@@ -404,7 +401,7 @@ impl Demo {
                 ui.label("• Up / Down arrows: scrub w with the keyboard.");
                 ui.label("• 1..6: toggle a plane in the selected body's Active set.");
                 ui.label("• H: expand / collapse the controls panel.");
-                ui.label("• R: full reset.");
+                ui.label("• R: restart the scene at its boot state.");
                 ui.label("• Esc: exit.");
                 ui.add_space(8.0);
 
@@ -650,7 +647,7 @@ impl Demo {
             rate_toggle(ui, ctrl_size, &mut self.rate_scale, 2.0, false, true);
             rate_toggle(ui, ctrl_size, &mut self.rate_scale, 4.0, true, true);
             if refresh_button(ui, ctrl_size)
-                .on_hover_text("Reset slice, rate, active set, orientation, time (R)")
+                .on_hover_text("Reset slice, rate, active set, orientation, time")
                 .clicked()
             {
                 self.reset();

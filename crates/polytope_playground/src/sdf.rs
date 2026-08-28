@@ -130,6 +130,16 @@ impl Editor {
         self.scene = scene;
         self.generation += 1;
     }
+
+    // Generation 0 is the tree the builder produced, so a rebuild costs
+    // nothing; anything past it exists only here until it is exported.
+    fn unsaved_work(&self) -> Option<Cow<'static, str>> {
+        (self.generation != 0).then_some(Cow::Borrowed(
+            "This scene's SDF tree has edits that live nowhere else. \
+             `sdf export` prints it to the console; `sdf save <path.ron>` \
+             writes it to a file. Restarting drops it.",
+        ))
+    }
 }
 
 fn register_commands(console: &mut Console<Editor>) {
@@ -548,18 +558,14 @@ impl loam_app::shell::Scene for SdfScene {
 
     fn on_key(
         &mut self,
-        code: winit::keyboard::KeyCode,
-        state: winit::event::ElementState,
-        ctx: &mut FrameCtx<'_>,
+        _code: winit::keyboard::KeyCode,
+        _state: winit::event::ElementState,
+        _ctx: &mut FrameCtx<'_>,
     ) {
-        use winit::event::ElementState;
-        use winit::keyboard::KeyCode;
-        if ctx.ui_capture.keyboard || state != ElementState::Pressed {
-            return;
-        }
-        if code == KeyCode::KeyR {
-            self.orbit.set_orbit(BOOT_ORBIT_DISTANCE, BOOT_ORBIT_PITCH);
-        }
+    }
+
+    fn unsaved_work(&self) -> Option<Cow<'static, str>> {
+        self.editor.unsaved_work()
     }
 
     fn record(&mut self, ctx: &mut RenderCtx<'_>) -> Result<()> {
@@ -664,6 +670,47 @@ mod tests {
             validate_wgsl(&assemble(&scene))
                 .unwrap_or_else(|e| panic!("after {:?}: {e}", edit.to_args()));
         }
+    }
+
+    #[test]
+    fn the_editor_reports_unsaved_work_exactly_once_an_edit_has_landed() {
+        let mut editor = Editor {
+            scene: boot_scene(),
+            generation: 0,
+        };
+        assert!(
+            editor.unsaved_work().is_none(),
+            "the boot tree is what a rebuild would produce"
+        );
+
+        let no_op = SceneEdit::Set {
+            path: path("root.0.0.0"),
+            param: Param::Radius,
+            value: EditValue::Scalar(0.45),
+        };
+        assert!(!editor.apply(&no_op).expect("applies"), "same radius");
+        assert!(
+            editor.unsaved_work().is_none(),
+            "an edit that changed nothing is not work to lose"
+        );
+
+        let landed = SceneEdit::Set {
+            path: path("root.0.0.0"),
+            param: Param::Radius,
+            value: EditValue::Scalar(0.31),
+        };
+        assert!(editor.apply(&landed).expect("applies"));
+        assert!(editor.unsaved_work().is_some());
+
+        let mut loaded = Editor {
+            scene: boot_scene(),
+            generation: 0,
+        };
+        loaded.replace(boot_scene());
+        assert!(
+            loaded.unsaved_work().is_some(),
+            "`sdf load` puts a tree in the editor that no builder reproduces"
+        );
     }
 
     #[test]

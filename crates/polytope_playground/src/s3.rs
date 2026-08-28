@@ -285,11 +285,6 @@ impl loam_app::shell::Scene for S3Scene {
         match code {
             KeyCode::Space => self.spin = !self.spin,
             KeyCode::KeyC => self.curved = !self.curved,
-            KeyCode::KeyR => {
-                self.angle = 0.0;
-                self.rate = DEFAULT_RATE;
-                self.orbit.set_orbit(BOOT_ORBIT_DISTANCE, BOOT_ORBIT_PITCH);
-            }
             _ => {}
         }
     }

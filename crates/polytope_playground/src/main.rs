@@ -31,6 +31,8 @@ use loam_shape::LineMesh;
 use winit::window::WindowAttributes;
 
 mod active;
+#[cfg(test)]
+mod build_cost;
 mod catalog;
 mod color;
 mod composer;
@@ -128,22 +130,84 @@ fn shader_source() -> String {
     )
 }
 
+// Every GPU object `Demo::new` mints, in one call so a rebuild's cost is
+// measurable from a device with no surface behind it.
+struct DemoNodes {
+    marcher: Hyperslice4DNode,
+    section_edges: LineRasterNode,
+    parent_wireframe: LineRasterNode,
+    gimbal: LineRasterNode,
+    points: PointRasterNode,
+    physics_overlay: LineRasterNode,
+    section_faces: TriangleRasterNode,
+    section_faces_translucent: TriangleRasterNode,
+}
+
+fn build_nodes(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32) -> DemoNodes {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("polytope_playground shader"),
+        source: wgpu::ShaderSource::Wgsl(shader_source().into()),
+    });
+    DemoNodes {
+        marcher: Hyperslice4DNode::new(device, format, &module, samples),
+        section_edges: LineRasterNode::new(
+            device,
+            format,
+            DepthMode::ReadOnly {
+                format: SECTION_FACES_DEPTH_FORMAT,
+            },
+            samples,
+        ),
+        parent_wireframe: LineRasterNode::new(
+            device,
+            format,
+            DepthMode::ReadOnly {
+                format: SECTION_FACES_DEPTH_FORMAT,
+            },
+            samples,
+        ),
+        gimbal: LineRasterNode::new(device, format, DepthMode::Off, samples),
+        // A ReadOnly test hid a vertex behind its own cap: drop-w projects it
+        // to the cap's (x, y, z) at slightly farther depth.
+        points: PointRasterNode::new(device, format, DepthMode::Off, samples),
+        physics_overlay: LineRasterNode::new(device, format, DepthMode::Off, samples),
+        section_faces: TriangleRasterNode::new(
+            device,
+            format,
+            DepthMode::ReadWrite {
+                format: SECTION_FACES_DEPTH_FORMAT,
+            },
+            loam_render::FragmentShading::FaceNormalLambert,
+            samples,
+        ),
+        section_faces_translucent: TriangleRasterNode::new(
+            device,
+            format,
+            DepthMode::ReadOnly {
+                format: SECTION_FACES_DEPTH_FORMAT,
+            },
+            loam_render::FragmentShading::FaceNormalLambert,
+            samples,
+        ),
+    }
+}
+
 impl Demo {
     pub(crate) fn new(ctx: &mut SetupCtx<'_>) -> Result<Self> {
         let row = parse_row(&Args::current())?;
 
-        let shader_source = shader_source();
-        let module = ctx
-            .rd
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("polytope_playground shader"),
-                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-            });
-        let mut node = Hyperslice4DNode::new(
+        let DemoNodes {
+            marcher: mut node,
+            section_edges,
+            parent_wireframe,
+            gimbal: gimbal_node,
+            points: points_node,
+            physics_overlay: physics_overlay_node,
+            section_faces,
+            section_faces_translucent,
+        } = build_nodes(
             &ctx.rd.device,
             ctx.rd.target_format(),
-            &module,
             ctx.rd.sample_count(),
         );
 
@@ -166,65 +230,6 @@ impl Demo {
             })
             .collect();
         node.set_bodies(&bodies);
-
-        let section_edges = LineRasterNode::new(
-            &ctx.rd.device,
-            ctx.rd.target_format(),
-            DepthMode::ReadOnly {
-                format: SECTION_FACES_DEPTH_FORMAT,
-            },
-            ctx.rd.sample_count(),
-        );
-        let parent_wireframe = LineRasterNode::new(
-            &ctx.rd.device,
-            ctx.rd.target_format(),
-            DepthMode::ReadOnly {
-                format: SECTION_FACES_DEPTH_FORMAT,
-            },
-            ctx.rd.sample_count(),
-        );
-
-        let gimbal_node = LineRasterNode::new(
-            &ctx.rd.device,
-            ctx.rd.target_format(),
-            DepthMode::Off,
-            ctx.rd.sample_count(),
-        );
-
-        // A ReadOnly test hid a vertex behind its own cap: drop-w projects it
-        // to the cap's (x, y, z) at slightly farther depth.
-        let points_node = PointRasterNode::new(
-            &ctx.rd.device,
-            ctx.rd.target_format(),
-            DepthMode::Off,
-            ctx.rd.sample_count(),
-        );
-
-        let physics_overlay_node = LineRasterNode::new(
-            &ctx.rd.device,
-            ctx.rd.target_format(),
-            DepthMode::Off,
-            ctx.rd.sample_count(),
-        );
-
-        let section_faces = TriangleRasterNode::new(
-            &ctx.rd.device,
-            ctx.rd.target_format(),
-            DepthMode::ReadWrite {
-                format: SECTION_FACES_DEPTH_FORMAT,
-            },
-            loam_render::FragmentShading::FaceNormalLambert,
-            ctx.rd.sample_count(),
-        );
-        let section_faces_translucent = TriangleRasterNode::new(
-            &ctx.rd.device,
-            ctx.rd.target_format(),
-            DepthMode::ReadOnly {
-                format: SECTION_FACES_DEPTH_FORMAT,
-            },
-            loam_render::FragmentShading::FaceNormalLambert,
-            ctx.rd.sample_count(),
-        );
 
         let mut camera = Camera::<EuclideanR3>::at_origin();
         camera.position = Vec3::new(0.0, 3.0, 9.0);
@@ -639,7 +644,6 @@ impl Demo {
             KeyCode::ArrowDown => self.slider_down_held = pressed,
             KeyCode::ArrowLeft => self.slider_left_held = pressed,
             KeyCode::ArrowRight => self.slider_right_held = pressed,
-            KeyCode::KeyR if pressed => self.reset(),
             KeyCode::KeyH if pressed => self.show_controls = !self.show_controls,
             KeyCode::KeyT if pressed => {
                 self.rotate = !self.rotate;
@@ -732,7 +736,12 @@ impl RotateScene {
             demo: Demo::new(ctx)?,
             shader_owner: ctx.shader_db.new_owner(),
             console: Self::build_console(),
-            text_hud: hud::TextHud::new(ctx.rd)?,
+            text_hud: hud::TextHud::new(
+                &ctx.rd.device,
+                &ctx.rd.queue,
+                ctx.rd.target_format(),
+                ctx.rd.sample_count(),
+            )?,
             hud_seat: hud::HudSeat::default(),
             script: load_script(&Args::current())?,
         })

@@ -181,6 +181,20 @@ const ANGULAR_DAMPING: f32 = 1.2;
 // error every tick rather than integrating a force.
 const GRAB_STIFFNESS: f32 = 20.0;
 
+// Slack added to a visible cross-section's own half-width when the triangle
+// pass has already missed. A ray grazing the silhouette is nearly parallel to
+// the triangles it should hit, so without this a thin section is grabbable in
+// the middle and dead at its edges. A tenth of a body radius is enough to
+// close that rim without letting a click far off a toy find one.
+const PICK_TOLERANCE: f32 = 0.1 * BODY_SIZE;
+
+// Distance in `w` at which a wireframe vertex reaches its dimmest. A toy spans
+// BODY_SIZE either side of its centre, so fading over that range puts the whole
+// hull between the two shades rather than saturating one of them.
+const WIREFRAME_W_FADE: f32 = BODY_SIZE;
+const WIREFRAME_MIN_SHADE: f32 = 0.25;
+const WIREFRAME_WIDTH: f32 = 1.5;
+
 // Samples of the grab target kept for the release estimate.
 const GRAB_TRAIL: usize = 8;
 
@@ -488,7 +502,17 @@ impl Toybox {
     }
 
     fn latch_parked_bodies(&mut self) {
-        for toy in &mut self.toys {
+        // A held body is never parked. The drive moves it slowly enough to look
+        // at rest, and the latch would then snap it back to its anchor while the
+        // hand was still carrying it.
+        let held = self.grab.as_ref().map(|g| g.toy);
+        for (index, toy) in self.toys.iter_mut().enumerate() {
+            if held == Some(index) {
+                toy.rest_ticks = 0;
+                toy.rest_anchor = self.world.bodies[toy.body].position;
+                toy.rest_rotor = self.world.bodies[toy.body].orientation.rotation;
+                continue;
+            }
             let body = &mut self.world.bodies[toy.body];
             let travelled = (body.position - toy.rest_anchor).length();
             let moving = body.velocity.length() > REST_SPEED
@@ -603,6 +627,7 @@ impl Toybox {
     pub(crate) fn pick(&mut self, ray: &Ray) -> Option<(usize, Vec3)> {
         let mut nearest: Option<(usize, f32)> = None;
         let mut invisible = [false; TOYS.len()];
+        let mut extents = [0.0f32; TOYS.len()];
         let mut cap = std::mem::take(&mut self.cap);
         let mut local = std::mem::take(&mut self.local_vertices);
         for (toy, hidden) in invisible.iter_mut().enumerate() {
@@ -615,6 +640,7 @@ impl Toybox {
                 &mut cap,
             );
             *hidden = extent <= 0.0;
+            extents[toy] = extent;
             for triangle in &cap.indices {
                 let [a, b, c] = triangle.map(|i| Vec3::from_array(cap.vertices[i as usize]));
                 let Some(distance) = ray_triangle_distance(ray, a, b, c) else {
@@ -628,12 +654,20 @@ impl Toybox {
         self.cap = cap;
         self.local_vertices = local;
         if nearest.is_none() {
+            // Two misses land here. A body the slice cannot see has no cap at
+            // all. A body it CAN see still refuses a ray that grazes its
+            // silhouette, because such a ray is nearly parallel to the
+            // triangles there and `ray_triangle_distance` rejects it as
+            // parallel: the symptom is a cross-section pickable in the middle
+            // and dead at the edges. One ball catches both.
             for (toy, hidden) in invisible.iter().enumerate() {
-                if !hidden {
-                    continue;
-                }
+                let radius = if *hidden {
+                    BODY_SIZE
+                } else {
+                    extents[toy] + PICK_TOLERANCE
+                };
                 let centre = self.world.bodies[self.toys[toy].body].position.truncate();
-                let Some(distance) = ray_ball_distance(ray, centre, BODY_SIZE) else {
+                let Some(distance) = ray_ball_distance(ray, centre, radius) else {
                     continue;
                 };
                 if nearest.is_none_or(|(_, best)| distance < best) {
@@ -917,6 +951,44 @@ fn ray_ball_distance(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
 /// The four floor edges where the container's walls meet `y = FLOOR_Y`. The
 /// walls are half-spaces and so unbounded upward; this is the footprint, which
 /// is what a throw is aimed inside of.
+/// Every edge of every toy's posed 4D hull, projected to R³ by dropping `w`.
+///
+/// The slice shows one cross-section; this shows the whole polytope behind it,
+/// which is what distinguishes a body genuinely turning in a `w` plane from one
+/// merely sliding. A vertex's distance from the slice sets its brightness, so
+/// the parts of the hull nearest the cut read strongest.
+fn append_toy_wireframe(
+    world: &World<EuclideanR4>,
+    toys: &[ToyBody],
+    slice: f32,
+    mesh: &mut LineMesh<3>,
+) {
+    for toy in toys {
+        let body = &world.bodies[toy.body];
+        let topology = toy.polytope.topology();
+        let posed: Vec<Vec4> = (topology.vertices.iter())
+            .map(|v| BODY_SIZE * body.orientation.rotation.apply(*v) + body.position)
+            .collect();
+        let [r, g, b] = toy.color;
+        let shade = |p: Vec4| {
+            let near = 1.0 - ((p.w - slice).abs() / WIREFRAME_W_FADE).clamp(0.0, 1.0);
+            let lit = WIREFRAME_MIN_SHADE + (1.0 - WIREFRAME_MIN_SHADE) * near;
+            [r * lit, g * lit, b * lit, 1.0]
+        };
+        for edge in topology.edges {
+            let (from, to) = (posed[edge[0] as usize], posed[edge[1] as usize]);
+            push_overlay_segment(
+                mesh,
+                from.truncate(),
+                to.truncate(),
+                shade(from),
+                shade(to),
+                WIREFRAME_WIDTH,
+            );
+        }
+    }
+}
+
 fn append_arena_outline(mesh: &mut LineMesh<3>) {
     let e = ARENA_HALF_EXTENT;
     let corners = [
@@ -1196,6 +1268,9 @@ fn build_physics_overlay_mesh(
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub(crate) struct ToyboxControls {
     overlay: PhysicsOverlay,
+    /// Whole-hull wireframe behind the cross-sections. Off by default; it is a
+    /// diagnostic for reading 4D rotation, not the scene's normal look.
+    wireframe: bool,
     /// Per-body `w` readout painted over each toy. Off by default: the fade
     /// with cross-section size already says a body is leaving the slice.
     w_labels: bool,
@@ -1223,6 +1298,29 @@ fn register_toybox_commands(console: &mut Console<ToyboxControls>) {
             },
         )
         .with_args(&[&["on", "off"]]),
+    );
+    console.register(
+        loam_egui::cmd::<ToyboxControls, _>(
+            "wireframe",
+            "whole-hull 4D wireframe behind the cross-sections (on | off; bare flips)",
+            |args, controls, out| {
+                let next = match args.first().copied() {
+                    None => !controls.wireframe,
+                    Some("on") => true,
+                    Some("off") => false,
+                    Some(other) => {
+                        return Err(anyhow!("wireframe: unknown arg `{other}` (try on|off)"));
+                    }
+                };
+                controls.wireframe = next;
+                out.line(format!("wireframe: {}", if next { "on" } else { "off" }));
+                Ok(())
+            },
+        )
+        .with_args(&[&["on", "off"]])
+        .with_long_help(
+            "Draws every edge of every toy's posed 4D hull, projected by dropping w,              with each vertex shaded by how far it sits from the current slice. The              cross-section alone cannot distinguish a body turning in a w plane from              one sliding; the whole hull can.",
+        ),
     );
     console.register(
         loam_egui::subcommands::<ToyboxControls>(
@@ -1502,6 +1600,14 @@ impl ToyboxScene {
         let mut mesh = std::mem::take(&mut self.line_mesh);
         self.toybox
             .build_overlay_mesh(&self.controls.overlay, &mut mesh);
+        if self.controls.wireframe {
+            append_toy_wireframe(
+                &self.toybox.world,
+                &self.toybox.toys,
+                self.toybox.slice(),
+                &mut mesh,
+            );
+        }
         append_arena_outline(&mut mesh);
         self.line_node.set_camera(
             &rd.queue,
@@ -1932,6 +2038,61 @@ mod tests {
     }
 
     #[test]
+    fn a_slowly_carried_body_is_never_snapped_back_by_the_rest_latch() {
+        // The defect: the latch ran over every toy with no exemption for the
+        // one being held. A drag gentle enough to look at rest parked the body
+        // and teleported it back to its anchor while the hand was still
+        // carrying it, which reads as the grab randomly letting go.
+        let mut toybox = settled();
+        assert!(grab_centre(&mut toybox, 0));
+        let start = toybox.position(0);
+        let mut cursor = start.truncate();
+        // Well under REST_SPEED and REST_TRAVEL per tick, held far longer than
+        // REST_WINDOW, which is exactly the case that used to park.
+        for _ in 0..(REST_WINDOW as usize * 3) {
+            cursor += Vec3::new(0.004, 0.0, 0.0);
+            drag_frame(&mut toybox, cursor, GrabAxis::Slice);
+        }
+        let carried = toybox.position(0) - start;
+        assert!(
+            carried.truncate().length() > 0.05,
+            "a held body moved {carried} while being carried, so the latch              pulled it back to its anchor"
+        );
+    }
+
+    #[test]
+    fn the_wireframe_draws_every_edge_of_every_hull_and_ships_off() {
+        assert!(
+            !ToyboxControls::default().wireframe,
+            "the wireframe is a diagnostic and must not be on at boot"
+        );
+        let toybox = settled();
+        let mut mesh = LineMesh::<3>::default();
+        append_toy_wireframe(&toybox.world, &toybox.toys, toybox.slice(), &mut mesh);
+        let expected: usize = TOYS.iter().map(|t| t.topology().edges.len()).sum();
+        assert_eq!(mesh.segments.len(), expected);
+    }
+
+    #[test]
+    fn the_wireframe_shade_follows_a_vertex_distance_from_the_slice() {
+        // The property that makes it a 4D readout rather than decoration: a
+        // rotation in a w plane moves vertices through the slice, and the
+        // shading is what makes that visible.
+        let mut toybox = settled();
+        let mut near = LineMesh::<3>::default();
+        append_toy_wireframe(&toybox.world, &toybox.toys, toybox.slice(), &mut near);
+        toybox.set_slice(W_SLICE_RANGE);
+        let mut far = LineMesh::<3>::default();
+        append_toy_wireframe(&toybox.world, &toybox.toys, toybox.slice(), &mut far);
+        let brightness =
+            |m: &LineMesh<3>| -> f32 { m.colors.iter().map(|(a, _)| a[0] + a[1] + a[2]).sum() };
+        assert!(
+            brightness(&far) < brightness(&near),
+            "moving the slice off the pile did not dim the wireframe, so the              shade is not reading w at all"
+        );
+    }
+
+    #[test]
     fn a_throw_is_slow_enough_to_watch_cross_the_container() {
         // The regression this guards: at a 259 u/s ceiling a toy crossed the
         // 7.2-unit arena in 1.7 frames, so it read as having gone through the
@@ -2060,27 +2221,31 @@ mod tests {
     }
 
     #[test]
-    fn the_bounding_ball_fallback_never_fires_for_a_body_the_slice_can_see() {
+    fn the_rim_tolerance_catches_a_ray_that_grazes_the_section_edge() {
+        // The defect this fixes: a ray at the silhouette is nearly parallel to
+        // the triangles it should hit, so Moller-Trumbore rejects it as
+        // parallel and the section reads as grabbable in the middle and dead
+        // at its edges.
         let mut toybox = settled();
         let centre = toybox.position(0).truncate();
-        // Inside every toy's bounding ball and outside every cap: the fallback
-        // would answer here if a drawn cross-section did not veto it.
-        let mut inside_ball = None;
-        for step in 1..40 {
-            let radius = BODY_SIZE * step as f32 / 40.0;
-            let probe = centre + Vec3::new(radius, radius, 0.0);
-            if (probe - centre).length() < BODY_SIZE && toybox.pick(&ray_through(probe)).is_none() {
-                inside_ball = Some(probe);
+        let mut grazing = None;
+        for step in 1..400 {
+            let out = 3.0 * BODY_SIZE * step as f32 / 400.0;
+            let probe = centre + Vec3::new(out, 0.0, 0.0);
+            if toybox.pick(&ray_through(probe)).is_none() {
+                grazing = Some(out);
                 break;
             }
         }
-        let probe = inside_ball.expect("no ray inside the ball missed every cap");
-        let ray = ray_through(probe);
+        let edge = grazing.expect("the pick never stopped, so it has no bound at all");
+        // Far enough out that the rim is real, and near enough that the
+        // fallback has not become a bounding-ball grab: a cube's circumradius
+        // is BODY_SIZE*sqrt(3), so the section plus its rim lives under twice
+        // a body radius.
         assert!(
-            ray_ball_distance(&ray, centre, BODY_SIZE).is_some(),
-            "the probe ray misses the ball, so the veto pin is vacuous"
+            edge > PICK_TOLERANCE && edge < 2.0 * BODY_SIZE,
+            "the pick died {edge} from the centre, outside the section-plus-rim band"
         );
-        assert_eq!(toybox.pick(&ray), None);
     }
 
     #[test]
@@ -2652,7 +2817,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pick_reads_the_cross_section_and_not_the_bounding_ball() {
+    fn a_pick_reaches_no_further_than_the_section_plus_its_tolerance() {
         let mut toybox = settled();
         let centre = toybox.position(0).truncate();
         assert!(
@@ -2660,22 +2825,19 @@ mod tests {
             "a ray at the centre missed the body"
         );
 
-        // Inside the bounding ball and outside every cap: the ball test this
-        // replaces would have returned a hit here.
-        let mut off_hull = None;
-        for step in 1..40 {
-            let radius = BODY_SIZE * step as f32 / 40.0;
-            let probe = centre + Vec3::new(radius, radius, 0.0);
-            if (probe - centre).length() < BODY_SIZE && toybox.pick(&ray_through(probe)).is_none() {
-                off_hull = Some(probe);
-                break;
-            }
-        }
-        let probe = off_hull.expect(
-            "no ray inside the bounding ball missed the cap, so the pin has nothing to catch",
+        // The pick is the cross-section plus a rim, NOT the bounding ball. A
+        // ray inside the ball but well outside the section still misses, which
+        // is what keeps a click near one toy from grabbing its neighbour.
+        let far = centre + Vec3::new(BODY_SIZE * 0.95, BODY_SIZE * 0.95, 0.0);
+        assert!(
+            (far - centre).length() < BODY_SIZE * 1.5,
+            "the probe left the ball, so the pin is vacuous"
         );
-        assert!((probe - centre).length() < BODY_SIZE);
-        assert_eq!(toybox.pick(&ray_through(probe)), None);
+        assert_eq!(
+            toybox.pick(&ray_through(far)),
+            None,
+            "a ray far outside the section still grabbed, so the fallback is              behaving like a bounding-ball pick"
+        );
     }
 
     #[test]

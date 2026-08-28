@@ -127,10 +127,7 @@ impl Demo {
                 self.rebuild_bodies();
                 ui.close_kind(egui::UiKind::Menu);
             }
-            if ui
-                .add(egui::Button::new("Reset all").shortcut_text("R"))
-                .clicked()
-            {
+            if ui.button("Reset all").clicked() {
                 self.reset();
                 ui.close_kind(egui::UiKind::Menu);
             }

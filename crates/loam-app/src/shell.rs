@@ -151,8 +151,9 @@ fn claims_restart(
         && !ui_captures_keyboard
 }
 
-// The key and the menu item have no console, so a refusal reaches the scene's
-// scrollback through the log pump instead.
+// The key and the menu item have no console to write to, so a refusal goes to
+// tracing: stderr always, and the scene's scrollback only once `log on` has
+// turned the mirror on.
 fn queue_restart(forced: bool) {
     if let Err(err) = request_restart(&Args::current(), forced) {
         tracing::warn!("{err:#}");

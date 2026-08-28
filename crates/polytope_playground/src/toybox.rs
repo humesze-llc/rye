@@ -490,6 +490,26 @@ impl Toybox {
             .map(move |(index, toy)| (index, self.world.bodies[toy.body].position.w - slice))
     }
 
+    /// Where the drag is actually holding the body, in R³. Drawn because a
+    /// small or off-slice cross-section gives no other clue which point of the
+    /// hull the cursor caught, and an off-centre catch is what makes it tumble.
+    pub(crate) fn grab_handle(&self) -> Option<Vec3> {
+        let grab = self.grab.as_ref()?;
+        let body = &self.world.bodies[self.toys[grab.toy].body];
+        Some((body.position + body.orientation.rotation.apply(grab.lever_local)).truncate())
+    }
+
+    /// What the panel's w ruler paints: each toy's signed distance from the
+    /// slice, in the toy's own colour, dimmed once it has gone to sleep.
+    pub(crate) fn slice_marks(&self) -> impl Iterator<Item = SliceMark> + '_ {
+        let slice = self.slice;
+        self.toys.iter().map(move |toy| SliceMark {
+            offset: self.world.bodies[toy.body].position.w - slice,
+            color: toy.color,
+            asleep: toy.asleep,
+        })
+    }
+
     /// Sub-steps this tick needs so the fastest material point still moves less
     /// than [`STEP_TRAVEL_BUDGET`] per step. Derived from body state alone, so a
     /// seeded replay divides its ticks identically.
@@ -939,6 +959,70 @@ fn clamp_length(v: Vec4, ceiling: f32) -> Vec4 {
 
 /// Point where the ray meets the plane at `depth` along `forward`. `None` when
 /// the ray runs parallel to that plane.
+pub(crate) struct SliceMark {
+    pub(crate) offset: f32,
+    pub(crate) color: [f32; 3],
+    pub(crate) asleep: bool,
+}
+
+// Half-width of the band the ruler shades: a toy inside it has a cross-section
+// in the current slice, because a hull's w half-extent is `BODY_SIZE`.
+const IN_SLICE_HALF_WIDTH: f32 = BODY_SIZE;
+
+const RULER_HEIGHT: f32 = 34.0;
+
+/// Where every toy sits in `w` relative to the slice, which is the one thing
+/// about this scene a 3D view cannot show. Ticks are the toys, the bright line
+/// is the slice, and the shaded band is the reach where a toy still has a
+/// cross-section to grab.
+fn draw_slice_ruler(ui: &mut egui::Ui, marks: impl Iterator<Item = SliceMark>) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, RULER_HEIGHT), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(20, 22, 28));
+
+    let x_for = |offset: f32| {
+        let t = (offset / W_SLICE_RANGE).clamp(-1.0, 1.0) * 0.5 + 0.5;
+        rect.left() + t * rect.width()
+    };
+    painter.rect_filled(
+        egui::Rect::from_x_y_ranges(
+            x_for(-IN_SLICE_HALF_WIDTH)..=x_for(IN_SLICE_HALF_WIDTH),
+            rect.y_range(),
+        ),
+        0.0,
+        egui::Color32::from_rgb(32, 38, 50),
+    );
+    let centre = x_for(0.0);
+    painter.line_segment(
+        [
+            egui::pos2(centre, rect.top()),
+            egui::pos2(centre, rect.bottom()),
+        ],
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(150, 170, 200)),
+    );
+
+    for mark in marks {
+        let dim = if mark.asleep { 0.45 } else { 1.0 };
+        let channel = |c: f32| (c * dim * 255.0).clamp(0.0, 255.0) as u8;
+        let x = x_for(mark.offset);
+        painter.line_segment(
+            [
+                egui::pos2(x, rect.top() + 4.0),
+                egui::pos2(x, rect.bottom() - 4.0),
+            ],
+            egui::Stroke::new(
+                3.0,
+                egui::Color32::from_rgb(
+                    channel(mark.color[0]),
+                    channel(mark.color[1]),
+                    channel(mark.color[2]),
+                ),
+            ),
+        );
+    }
+}
+
 pub(crate) fn plane_point(ray: &Ray, forward: Vec3, depth: f32) -> Option<Vec3> {
     let along = ray.direction.dot(forward);
     if along.abs() < PLANE_MIN_COS {
@@ -1175,6 +1259,12 @@ const DEFAULT_IMPULSE_SCALE: f32 = 0.04;
 
 // Small enough that a full four-point manifold reads as four marks, not a blob.
 const CONTACT_CROSS_FRACTION: f32 = 0.15;
+
+// Twice the contact cross, so the one marker the cursor owns reads above the
+// solver's, and drawn in the cursor's own colour rather than any toy's.
+const GRAB_HANDLE_FRACTION: f32 = 0.30;
+const GRAB_HANDLE_WIDTH: f32 = 2.5;
+const GRAB_HANDLE_COLOR: [f32; 4] = [1.0, 0.95, 0.55, 1.0];
 
 const NORMAL_LEN_FRACTION: f32 = 0.9;
 
@@ -1624,38 +1714,65 @@ impl ToyboxScene {
             .default_pos(egui::pos2(16.0, 48.0))
             .resizable(false)
             .show(ctx, |ui| {
-                ui.label("left-drag a shape to carry it; let go to throw it");
-                ui.label("hold Shift while dragging to pull it through w");
-                ui.label("right-drag to orbit the camera");
-                ui.separator();
                 let mut slice = self.toybox.slice();
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("w slice").strong());
+                    ui.label(
+                        egui::RichText::new(format!("{slice:+.2}"))
+                            .monospace()
+                            .strong(),
+                    );
+                    let reachable = self
+                        .toybox
+                        .slice_marks()
+                        .filter(|m| m.offset.abs() < IN_SLICE_HALF_WIDTH)
+                        .count();
+                    ui.label(
+                        egui::RichText::new(format!("{reachable}/{} in reach", TOYS.len()))
+                            .weak(),
+                    );
+                });
+                draw_slice_ruler(ui, self.toybox.slice_marks());
                 if ui
                     .add(
                         egui::Slider::new(&mut slice, -W_SLICE_RANGE..=W_SLICE_RANGE)
-                            .text("w slice (Up/Down)"),
+                            .show_value(false)
+                            .text("Up / Down"),
                     )
                     .changed()
                 {
                     self.toybox.set_slice(slice);
                 }
+
                 ui.separator();
-                for (index, w) in self.toybox.w_offsets() {
-                    ui.monospace(format!("#{index}  w {w:+.3}"));
-                }
-                ui.separator();
-                ui.checkbox(&mut self.controls.w_labels, "w labels (wlabels)");
-                ui.checkbox(&mut self.paused, "pause (Space)");
-                if ui.button("respawn (R)").clicked() {
-                    respawn = Some(self.seed);
-                }
-                if ui.button("next seed (N)").clicked() {
-                    respawn = Some(self.seed.wrapping_add(1));
-                }
-                ui.label(
-                    egui::RichText::new(format!("seed {:#x}", self.seed))
-                        .small()
-                        .weak(),
-                );
+                ui.horizontal(|ui| {
+                    if ui.button("respawn (R)").clicked() {
+                        respawn = Some(self.seed);
+                    }
+                    if ui.button("next seed (N)").clicked() {
+                        respawn = Some(self.seed.wrapping_add(1));
+                    }
+                    ui.checkbox(&mut self.paused, "pause (Space)");
+                });
+
+                ui.collapsing("controls", |ui| {
+                    ui.label("left-drag a shape to carry it; let go to throw it");
+                    ui.label("hold Shift while dragging to pull it through w");
+                    ui.label("right-drag to orbit the camera");
+                    ui.separator();
+                    ui.checkbox(&mut self.controls.w_labels, "w labels (wlabels)");
+                    ui.checkbox(&mut self.controls.wireframe.enabled, "wireframe");
+                    ui.label(
+                        egui::RichText::new("` for the console: physics, ground, wireframe")
+                            .small()
+                            .weak(),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("seed {:#x}", self.seed))
+                            .small()
+                            .weak(),
+                    );
+                });
             });
         if let Some(seed) = respawn {
             self.respawn(seed);
@@ -1682,6 +1799,15 @@ impl ToyboxScene {
             );
         }
         append_arena_outline(&mut mesh);
+        if let Some(handle) = self.toybox.grab_handle() {
+            push_axis_cross(
+                &mut mesh,
+                handle,
+                GRAB_HANDLE_FRACTION * BODY_SIZE,
+                GRAB_HANDLE_COLOR,
+                GRAB_HANDLE_WIDTH,
+            );
+        }
         self.line_node.set_camera(
             &rd.queue,
             view_proj,
@@ -3227,6 +3353,31 @@ mod tests {
                 .expect("every toy shape has a derived moment");
             assert_eq!(body.inertia, exact, "toy {index} kept the bounding ball");
         }
+    }
+
+    #[test]
+    fn the_drawn_handle_rides_the_caught_point_rather_than_the_body_centre() {
+        let mut toybox = settled();
+        assert!(toybox.grab_handle().is_none(), "a handle drew with nothing held");
+        let centre = toybox.position(0).truncate();
+        assert!(toybox.press(&ray_through(centre + Vec3::new(0.0, 0.2, 0.0)), FORWARD));
+
+        let held = toybox.grab_handle().expect("held");
+        assert!(
+            (held - toybox.position(0).truncate()).length() > 0.05,
+            "the handle drew at the centre of mass, which is exactly the             off-centre catch the marker exists to show"
+        );
+
+        let id = toybox.toys[0].body;
+        toybox.world.bodies[id].orientation.rotation =
+            (Plane4::Xy.unit_bivector() * 0.9).exp().normalize();
+        assert!(
+            (toybox.grab_handle().expect("still held") - held).length() > 0.05,
+            "the handle stayed put while the hull turned under it"
+        );
+
+        toybox.release();
+        assert!(toybox.grab_handle().is_none(), "the handle outlived the grab");
     }
 
     #[test]

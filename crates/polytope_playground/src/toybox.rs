@@ -794,12 +794,12 @@ struct PhysicsOverlay {
     width_px: f32,
 }
 
-// Bar length per unit impulse. The fastest throw the scene allows is
-// [`MAX_RELEASE_SPEED`], and head-on into a resting neighbour that peaks at
-// about 3.9 units of accumulated impulse in one contact, which this puts at
-// rather more than a third of a body radius. Measured, not derived: the solver
-// is not elastic and a hull manifold splits the blow over several points, so
-// the peak is far under the 16.2 of momentum the throw carries in.
+// Bar length per unit impulse. Measured, not derived: the fastest throw the
+// scene allows, [`MAX_RELEASE_SPEED`] head-on into a resting neighbour, peaks
+// at 3.87 units of accumulated impulse in one contact, which this scale draws
+// at 0.34 of a body radius. The peak is far under the momentum the throw
+// carries in because the solver is not elastic and a hull manifold splits the
+// blow over several points.
 const DEFAULT_IMPULSE_SCALE: f32 = 0.04;
 
 // Small enough that a full four-point manifold reads as four marks, not a blob.
@@ -1418,8 +1418,9 @@ mod tests {
     // The drop takes 12 ticks and the rest latch 30 more; the rest is margin.
     const SETTLE_TICKS: usize = 120;
 
-    // A throw at [`MAX_RELEASE_SPEED`] closes the [`SPAWN_SPACING`] gap in two
-    // ticks; the rest is the solver working the impulse up to its peak.
+    // A throw at [`MAX_RELEASE_SPEED`] closes the gap between two
+    // [`SPAWN_SPACING`] neighbours' bounding spheres in two ticks; the rest is
+    // the solver working the impulse up to its peak.
     const FLICK_TICKS: usize = 10;
 
     const SEEDS: u64 = 24;

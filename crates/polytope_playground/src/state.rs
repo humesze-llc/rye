@@ -286,6 +286,8 @@ impl RowFrame<'_> {
 }
 
 pub(crate) struct Demo {
+    // The row's pose and collider store, not a simulation: no path in this
+    // scene writes a body velocity, so `step` never leaves `at_rest`.
     pub(crate) physics: PlaygroundPhysics,
     pub(crate) left_was_down: bool,
     pub(crate) gimbal: crate::hypergimbal::GimbalUi,

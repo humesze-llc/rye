@@ -1361,7 +1361,7 @@ impl loam_app::shell::Scene for ToyboxScene {
             (cfg.width, cfg.height),
             rd.sample_count(),
         );
-        let depth = self.depth.as_ref().expect("ensure() guarantees Some");
+        let depth = self.depth.as_ref().expect("ensure() guarantees Some"); // ok: DepthBuffer::ensure fills the slot on the line above
 
         let view = self.camera.view();
         let aspect = cfg.width as f32 / cfg.height.max(1) as f32;

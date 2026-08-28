@@ -201,6 +201,11 @@ const WIREFRAME_WIDTH: f32 = 1.5;
 // rotation through `w` read as depth rather than as a sliding shadow.
 const WIREFRAME_PROJECTION: WireframeProjection = WireframeProjection::WPinhole;
 
+// Accumulated normal impulse in a contact that counts as a knock rather than
+// the resting weight a pile puts on the toy under it. Sized above what gravity
+// holds a settled body with and below the lightest deliberate nudge.
+const WAKE_IMPULSE: f32 = 0.05;
+
 // Samples of the grab target kept for the release estimate.
 const GRAB_TRAIL: usize = 8;
 
@@ -289,6 +294,12 @@ pub(crate) struct ToyBody {
     rest_anchor: Vec4,
     rest_rotor: Rotor4,
     rest_ticks: u32,
+    /// `inv_mass` while awake. Sleeping sets the body's to zero, which is the
+    /// only way to stop it moving: zeroing velocity alone leaves gravity to
+    /// re-sink it every substep and Baumgarte to push it back out by slightly
+    /// more, so a "settled" toy creeps and turns forever.
+    awake_inv_mass: f32,
+    asleep: bool,
 }
 
 // Ring of recent grab targets. Fixed size and no allocation: the estimate runs
@@ -435,6 +446,8 @@ impl Toybox {
                 rest_anchor: world.bodies[id].position,
                 rest_rotor: world.bodies[id].orientation.rotation,
                 rest_ticks: 0,
+                awake_inv_mass: world.bodies[id].inv_mass,
+                asleep: false,
             });
         }
 
@@ -503,6 +516,7 @@ impl Toybox {
                 body.angular_velocity = body.angular_velocity * decay;
             }
         }
+        self.wake_on_contact();
         self.latch_parked_bodies();
         self.tick += 1;
     }
@@ -531,19 +545,56 @@ impl Toybox {
             }
             toy.rest_ticks += 1;
             if toy.rest_ticks >= REST_WINDOW {
-                body.position = toy.rest_anchor;
-                body.orientation.rotation = toy.rest_rotor;
+                // Velocity only. Restoring the POSE here used to teleport a
+                // settled body back to a stale anchor: a trace showed it moving
+                // 0.0086 and turning 0.43 degrees on the tick it parked, with
+                // its velocity already exactly zero, which is the "mysterious
+                // force" a settled toy appeared to be under. It also froze a
+                // body that was still slowly tipping onto a face, so shapes
+                // that landed at an angle stayed at that angle.
                 body.velocity = Vec4::ZERO;
                 body.angular_velocity = Bivector4::ZERO;
+                body.inv_mass = 0.0;
+                toy.asleep = true;
             }
         }
     }
 
     fn wake(&mut self, toy: usize) {
-        let body = &self.world.bodies[self.toys[toy].body];
-        self.toys[toy].rest_anchor = body.position;
-        self.toys[toy].rest_rotor = body.orientation.rotation;
-        self.toys[toy].rest_ticks = 0;
+        let awake_inv_mass = self.toys[toy].awake_inv_mass;
+        let body = &mut self.world.bodies[self.toys[toy].body];
+        body.inv_mass = awake_inv_mass;
+        let (position, rotation) = (body.position, body.orientation.rotation);
+        let toy = &mut self.toys[toy];
+        toy.asleep = false;
+        toy.rest_anchor = position;
+        toy.rest_rotor = rotation;
+        toy.rest_ticks = 0;
+    }
+
+    /// Wakes a sleeping toy that a moving body has run into. A sleeping toy is
+    /// static to the solver, so without this a thrown toy would bounce off a
+    /// pile that never reacted.
+    fn wake_on_contact(&mut self) {
+        let mut hit = [false; TOYS.len()];
+        for manifold in self.world.manifolds.values() {
+            let deepest = (manifold.points.iter())
+                .map(|p| p.normal_impulse)
+                .fold(0.0f32, f32::max);
+            if deepest <= WAKE_IMPULSE {
+                continue;
+            }
+            for (index, toy) in self.toys.iter().enumerate() {
+                if manifold.body_a == toy.body || manifold.body_b == toy.body {
+                    hit[index] = true;
+                }
+            }
+        }
+        for (index, woken) in hit.iter().enumerate() {
+            if *woken && self.toys[index].asleep {
+                self.wake(index);
+            }
+        }
     }
 
     /// Grabs the nearest body whose drawn cross-section the ray enters.
@@ -1106,14 +1157,14 @@ struct PhysicsOverlay {
 }
 
 // Bar length per unit impulse. Measured, not derived: a hard flick,
-// [`MAX_CARRY_SPEED`] head-on into a resting neighbour, peaks at 3.61 units of
+// [`MAX_CARRY_SPEED`] head-on into a resting neighbour, peaks at 1.00 units of
 // accumulated impulse in one contact, which this scale draws at 0.34 of a body
 // radius. The calibration deliberately uses a hard flick rather than
 // [`MAX_RELEASE_SPEED`], which is a tunneling ceiling an order of magnitude
 // above anything a cursor produces. The peak is far under the momentum the
 // throw carries in because the solver is not elastic and a hull manifold
 // splits the blow over several points.
-const DEFAULT_IMPULSE_SCALE: f32 = 0.042;
+const DEFAULT_IMPULSE_SCALE: f32 = 0.15;
 
 // Small enough that a full four-point manifold reads as four marks, not a blob.
 const CONTACT_CROSS_FRACTION: f32 = 0.15;
@@ -1858,6 +1909,19 @@ mod tests {
         Toybox::new(DEFAULT_SEED)
     }
 
+    /// A settled pile with every toy woken again. Contact tests need this:
+    /// a genuinely settled pile SLEEPS, and a sleeping toy is static to the
+    /// solver, so it forms no manifolds at all. That is the point of sleeping,
+    /// and it is why these tests have to say which state they mean.
+    fn settled_awake() -> Toybox {
+        let mut toybox = settled();
+        for toy in 0..TOYS.len() {
+            toybox.wake(toy);
+        }
+        toybox.tick();
+        toybox
+    }
+
     fn settled() -> Toybox {
         let mut toybox = scene();
         toybox.run(SETTLE_TICKS);
@@ -2118,6 +2182,98 @@ mod tests {
         assert!(
             brightness(&far) < brightness(&near),
             "moving the slice off the pile did not dim the wireframe, so the              shade is not reading w at all"
+        );
+    }
+
+    /// Diagnostic, not a gate. `cargo test -p polytope_playground settle_trace
+    /// -- --ignored --nocapture` prints one row per tick for one toy: pose,
+    /// speeds, contact count and the deepest penetration, plus whether the rest
+    /// latch is holding it. This is how a settling complaint gets read.
+    #[test]
+    #[ignore = "diagnostic: prints a settling trace"]
+    fn settle_trace() {
+        let mut toybox = Toybox::new(DEFAULT_SEED);
+        let toy = 0;
+        println!(
+            "{:>4} {:>8} {:>8} {:>8} {:>9} {:>9} {:>7} {:>6}",
+            "tick", "y", "|v|", "|w|", "tilt", "d_pose", "cts", "latch"
+        );
+        let mut last = toybox.world.bodies[toybox.toys[toy].body].position;
+        for tick in 0..420 {
+            toybox.tick();
+            let body = &toybox.world.bodies[toybox.toys[toy].body];
+            let pose = body.position;
+            // Angle between the body's own +y and world +y: zero when a cell
+            // lies flat on the floor.
+            let up = body.orientation.rotation.apply(Vec4::Y);
+            let tilt = up.y.clamp(-1.0, 1.0).acos().to_degrees();
+            let contacts: usize = toybox
+                .world
+                .manifolds
+                .values()
+                .filter(|m| m.points.iter().len() > 0)
+                .map(|m| m.points.len())
+                .sum();
+            let latched = toybox.toys[toy].rest_ticks >= REST_WINDOW;
+            if tick % 10 == 0 || latched {
+                println!(
+                    "{tick:>4} {:>8.4} {:>8.4} {:>8.4} {:>9.3} {:>9.5} {contacts:>7} {:>6}",
+                    pose.y,
+                    body.velocity.length(),
+                    body.angular_velocity.magnitude(),
+                    tilt,
+                    (pose - last).length(),
+                    latched
+                );
+            }
+            last = pose;
+        }
+    }
+
+    #[test]
+    fn a_settled_toy_stops_dead_instead_of_creeping() {
+        // The regression, found by reading settle_trace: with the latch only
+        // zeroing velocity, gravity re-sank a resting body every substep and
+        // Baumgarte pushed it back out by slightly more, so a "settled" toy
+        // climbed and turned forever at 0.00002 per tick. Sleeping makes it
+        // static instead, which is the only state nothing moves.
+        let mut toybox = settled();
+        let body = toybox.toys[0].body;
+        let (pose, rotor) = {
+            let b = &toybox.world.bodies[body];
+            (b.position, b.orientation.rotation)
+        };
+        toybox.run(600);
+        let b = &toybox.world.bodies[body];
+        assert_eq!(b.position, pose, "a settled toy drifted over 600 ticks");
+        assert_eq!(
+            b.orientation.rotation, rotor,
+            "a settled toy turned at rest"
+        );
+    }
+
+    #[test]
+    fn a_sleeping_toy_wakes_when_something_runs_into_it() {
+        // Sleeping makes a body static to the solver, so without a wake path a
+        // thrown toy would bounce off a pile that never reacted.
+        let mut toybox = settled();
+        assert!(
+            toybox.toys[1].asleep,
+            "the pile never slept, so this pin is vacuous"
+        );
+        let start = toybox.position(1);
+        let (from, to) = (toybox.position(0), toybox.position(1));
+        toybox.wake(0);
+        let thrown = toybox.toys[0].body;
+        toybox.world.bodies[thrown].velocity = (to - from).normalize() * MAX_CARRY_SPEED;
+        toybox.run(60);
+        assert!(
+            !toybox.toys[1].asleep,
+            "the struck toy stayed asleep, so it is still static"
+        );
+        assert!(
+            (toybox.position(1) - start).length() > 0.01,
+            "the struck toy never moved"
         );
     }
 
@@ -3071,7 +3227,7 @@ mod tests {
 
     #[test]
     fn a_landing_fills_the_manifolds_the_overlay_draws_from() {
-        let toybox = settled();
+        let toybox = settled_awake();
         assert!(
             !toybox.world.manifolds.is_empty(),
             "the pile settled with no manifold, so every layer would draw nothing"
@@ -3098,7 +3254,7 @@ mod tests {
 
     #[test]
     fn the_islands_layer_draws_no_coupling_to_the_static_floor() {
-        let toybox = settled();
+        let toybox = settled_awake();
         let islands = toybox.world.islands();
         let floor_pairs: usize = (islands.iter())
             .flat_map(|i| i.constraints.iter())
@@ -3269,13 +3425,20 @@ mod tests {
 
     #[test]
     fn a_full_speed_flick_draws_its_bar_at_a_third_of_a_body_radius() {
-        let mut toybox = settled();
+        let mut toybox = settled_awake();
         let (from, to) = (toybox.position(0), toybox.position(1));
         let thrown = toybox.toys[0].body;
+        toybox.wake(0);
         toybox.world.bodies[thrown].velocity = (to - from).normalize() * MAX_CARRY_SPEED;
 
         let mut peak = 0.0f32;
         for _ in 0..FLICK_TICKS {
+            // Held awake for the measurement: otherwise this reads the sleep
+            // schedule rather than the blow, since a neighbour that parks
+            // before impact is static and answers with a different impulse.
+            for toy in 0..TOYS.len() {
+                toybox.wake(toy);
+            }
             toybox.tick();
             for manifold in toybox.world.manifolds.values() {
                 for cp in &manifold.points {
@@ -3285,7 +3448,7 @@ mod tests {
         }
 
         assert!(
-            (3.2..4.1).contains(&peak),
+            (0.8..1.2).contains(&peak),
             "peak normal impulse {peak}: the prose at DEFAULT_IMPULSE_SCALE is now stale, so recompute the bar length before touching this bound"
         );
         let bar = peak * DEFAULT_IMPULSE_SCALE;

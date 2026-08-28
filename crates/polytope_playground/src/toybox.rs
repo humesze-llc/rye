@@ -29,6 +29,8 @@ use loam_shape::{LineMesh, TriangleMesh};
 use crate::consts::W_SCRUB_RATE;
 use crate::environment::{register_ground_command, Environment};
 use crate::physics::ndc_from_pixels;
+use crate::projections::WireframeProjection;
+use crate::wireframe_geom::{push_projected_chord, stereographic_view_radius};
 
 const TICK_HZ: u32 = 60;
 
@@ -194,6 +196,10 @@ const PICK_TOLERANCE: f32 = 0.1 * BODY_SIZE;
 const WIREFRAME_W_FADE: f32 = BODY_SIZE;
 const WIREFRAME_MIN_SHADE: f32 = 0.25;
 const WIREFRAME_WIDTH: f32 = 1.5;
+
+// The rotate scene's default: a 4D pinhole at w = 2, which is what makes a
+// rotation through `w` read as depth rather than as a sliding shadow.
+const WIREFRAME_PROJECTION: WireframeProjection = WireframeProjection::WPinhole;
 
 // Samples of the grab target kept for the release estimate.
 const GRAB_TRAIL: usize = 8;
@@ -951,39 +957,53 @@ fn ray_ball_distance(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
 /// The four floor edges where the container's walls meet `y = FLOOR_Y`. The
 /// walls are half-spaces and so unbounded upward; this is the footprint, which
 /// is what a throw is aimed inside of.
-/// Every edge of every toy's posed 4D hull, projected to R³ by dropping `w`.
+/// Every edge of every toy's posed 4D hull, drawn through the same projection
+/// and clipping the rotate scene uses.
 ///
-/// The slice shows one cross-section; this shows the whole polytope behind it,
-/// which is what distinguishes a body genuinely turning in a `w` plane from one
-/// merely sliding. A vertex's distance from the slice sets its brightness, so
-/// the parts of the hull nearest the cut read strongest.
+/// The geometry is [`crate::wireframe_geom::push_projected_chord`], not a local
+/// copy: it tessellates each edge so a chord that bows under the projection is
+/// drawn bowed, and clips it against the projection's own view radius. A
+/// hand-rolled drop-`w` shadow was tried first and is the wrong instrument for
+/// the question this answers, because an orthographic shadow turns a rotation
+/// in a `w` plane into vertices sliding inside a fixed silhouette. Under a
+/// w-pinhole the same motion reads as the hull turning through the fourth
+/// dimension, which is the thing worth seeing.
 fn append_toy_wireframe(
     world: &World<EuclideanR4>,
     toys: &[ToyBody],
     slice: f32,
     mesh: &mut LineMesh<3>,
 ) {
+    let projection = WIREFRAME_PROJECTION.to_projection();
     for toy in toys {
         let body = &world.bodies[toy.body];
         let topology = toy.polytope.topology();
+        let view_radius = stereographic_view_radius(toy.polytope, BOOT_ORBIT_DISTANCE);
+        let body_pos_r3 = body.position.truncate();
+        // Body-local, because the projection is about the body's own w extent;
+        // its world w offset is what the shading reads instead.
         let posed: Vec<Vec4> = (topology.vertices.iter())
-            .map(|v| BODY_SIZE * body.orientation.rotation.apply(*v) + body.position)
+            .map(|v| BODY_SIZE * body.orientation.rotation.apply(*v))
             .collect();
         let [r, g, b] = toy.color;
-        let shade = |p: Vec4| {
-            let near = 1.0 - ((p.w - slice).abs() / WIREFRAME_W_FADE).clamp(0.0, 1.0);
+        let shade = |local: Vec4| {
+            let from_slice = (local.w + body.position.w - slice).abs();
+            let near = 1.0 - (from_slice / WIREFRAME_W_FADE).clamp(0.0, 1.0);
             let lit = WIREFRAME_MIN_SHADE + (1.0 - WIREFRAME_MIN_SHADE) * near;
             [r * lit, g * lit, b * lit, 1.0]
         };
         for edge in topology.edges {
-            let (from, to) = (posed[edge[0] as usize], posed[edge[1] as usize]);
-            push_overlay_segment(
+            let (a, b4) = (posed[edge[0] as usize], posed[edge[1] as usize]);
+            push_projected_chord(
                 mesh,
-                from.truncate(),
-                to.truncate(),
-                shade(from),
-                shade(to),
+                a,
+                b4,
+                shade(a),
+                shade(b4),
                 WIREFRAME_WIDTH,
+                &projection,
+                body_pos_r3,
+                view_radius,
             );
         }
     }
@@ -2069,8 +2089,17 @@ mod tests {
         let toybox = settled();
         let mut mesh = LineMesh::<3>::default();
         append_toy_wireframe(&toybox.world, &toybox.toys, toybox.slice(), &mut mesh);
-        let expected: usize = TOYS.iter().map(|t| t.topology().edges.len()).sum();
-        assert_eq!(mesh.segments.len(), expected);
+        // More segments than edges is the signature of the SHARED geometry:
+        // `push_projected_chord` tessellates each edge so a chord that bows
+        // under the projection is drawn bowed. A local straight-chord copy
+        // would produce exactly one segment per edge, which is what this
+        // scene shipped before it reused rotate's path.
+        let edges: usize = TOYS.iter().map(|t| t.topology().edges.len()).sum();
+        assert!(
+            mesh.segments.len() > edges,
+            "{} segments for {edges} edges: the wireframe is drawing straight              chords, so it is not going through the shared projection",
+            mesh.segments.len()
+        );
     }
 
     #[test]

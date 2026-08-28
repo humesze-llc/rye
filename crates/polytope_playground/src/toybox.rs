@@ -32,14 +32,24 @@ use crate::physics::ndc_from_pixels;
 
 const TICK_HZ: u32 = 60;
 
+const TICK_DT: f32 = 1.0 / TICK_HZ as f32;
+
 // A hull settling on a half-space needs 240 Hz, not 120: `polytope_halfspace_r4`
 // reports one deepest vertex per step where the resting manifold holds four, so
 // halving the rate halves the constraints the solver has by the time a body
 // rocks over. Four sub-steps reach that rate without moving the host clock.
-const SUBSTEPS_PER_TICK: usize = 4;
+const BASE_SUBSTEPS: usize = 4;
 
-// Fixed, never derived from wall time.
-const SOLVER_DT: f32 = 1.0 / (TICK_HZ as f32 * SUBSTEPS_PER_TICK as f32);
+// The sub-step count a tick may rise to when something is moving fast. The
+// resolvable travel per step is fixed, so the speed a body may carry without
+// tunneling is linear in this: `MAX_RELEASE_SPEED` below is 4.05 u/s per
+// sub-step. Sixty-four buys 259 u/s, which is far past what a cursor produces,
+// and five bodies make the extra steps cheap on the ticks that need them.
+const MAX_SUBSTEPS: usize = 64;
+
+// Fixed, never derived from wall time. A resting tick runs at
+// `TICK_DT / BASE_SUBSTEPS`; a tick carrying a fast body divides further.
+const MIN_SOLVER_DT: f32 = TICK_DT / MAX_SUBSTEPS as f32;
 
 const GRAVITY: f32 = -9.8;
 
@@ -117,24 +127,34 @@ const TRAVEL_MARGIN: f32 = 0.9;
 // `(|v| + |ω|·R)·SOLVER_DT` per step. The linear and angular ceilings split the
 // usable budget evenly, so together they spend exactly
 // `TRAVEL_MARGIN · RESOLVABLE_STEP_TRAVEL`.
-const MAX_RELEASE_SPEED: f32 = 0.5 * TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL / SOLVER_DT;
+const MAX_RELEASE_SPEED: f32 = 0.5 * TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL / MIN_SOLVER_DT;
 
 const MAX_ANGULAR_SPEED: f32 =
-    0.5 * TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL / (BODY_SIZE * SOLVER_DT);
+    0.5 * TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL / (BODY_SIZE * MIN_SOLVER_DT);
 
-// Speed a release actually throws at. [`MAX_RELEASE_SPEED`] is 16.2 u/s, the
-// fastest the R⁴ narrowphase still resolves: a safety ceiling, not a design
-// speed, and a throw at it crosses the whole container in under half a second.
-// At 4 u/s a saturating flick carries a toy 2.5 body widths, 2.25 units, past
-// the release point, measured by
-// `the_release_speed_is_a_feel_speed_under_the_narrowphase_ceiling`. A pure
-// Coulomb slide (`loam_physics::response::FRICTION_COEFF` 0.35 against
-// gravity) stops in v²/(2·mu·g) = 2.3 units, which the tumbling hull matches. The ceiling still binds above this: the hold drive that
-// carries a body under the cursor and the spin a lever arm converts the throw
-// into are both clamped there.
-const RELEASE_SPEED: f32 = 4.0;
+// Travel one sub-step may cover before the narrowphase stops resolving it.
+// `substeps_for` divides a tick until the fastest material point fits.
+const STEP_TRAVEL_BUDGET: f32 = TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL;
 
-const _: () = assert!(RELEASE_SPEED < MAX_RELEASE_SPEED);
+// A release throws at the cursor's own speed, clamped only by
+// [`MAX_RELEASE_SPEED`]. An earlier flat cap made every flick above it land on
+// one speed, which flattened the whole top of the range: a fast mouse threw no
+// harder than a medium one. The walls are what make an unclamped throw safe to
+// offer, since a hard throw now bounces rather than leaving.
+
+// Fastest the hold drive carries a body under the cursor. Separate from the
+// release ceiling: a throw may leave at any speed the narrowphase resolves,
+// but a carried body chasing a jumped cursor should not cross the container in
+// a tick.
+const MAX_CARRY_SPEED: f32 = 30.0;
+
+// Most the grab may change a held body's velocity per tick. Finite so a
+// contact impulse can win: the drive used to assign velocity outright, which
+// discarded whatever the solver had just done to push the body out of a wall
+// and drove it straight back in for as long as the cursor stayed there.
+const MAX_GRAB_ACCEL: f32 = 400.0;
+
+const _: () = assert!(MAX_CARRY_SPEED < MAX_RELEASE_SPEED);
 
 // Per-second exponential decay of a free-flight tumble, applied per solver
 // substep. A body knocked off the ground keeps no contact to brake its spin,
@@ -297,8 +317,13 @@ struct Grab {
     /// Offset from the centre of mass to the grabbed point, in the body frame,
     /// so a body that turns while held keeps the same handle.
     lever_local: Vec4,
-    /// Where the drive is pulling the body.
+    /// Where the drive is pulling the body, clamped into the container every
+    /// frame so it can never run away past a wall.
     target: Vec4,
+    /// The same motion without the clamp. Only its DERIVATIVE is read, by the
+    /// release: a flick toward a wall pins `target` and would otherwise throw
+    /// nothing, because the trail would see a target that had stopped moving.
+    intent: Vec4,
     /// Last cursor point on the grab plane; the target advances by its delta.
     plane_point: Vec3,
     trail: GrabTrail,
@@ -420,10 +445,28 @@ impl Toybox {
             .map(move |(index, toy)| (index, self.world.bodies[toy.body].position.w - slice))
     }
 
+    /// Sub-steps this tick needs so the fastest material point still moves less
+    /// than [`STEP_TRAVEL_BUDGET`] per step. Derived from body state alone, so a
+    /// seeded replay divides its ticks identically.
+    fn substeps_for_current_speed(&self) -> usize {
+        let fastest = self
+            .toys
+            .iter()
+            .map(|toy| {
+                let body = &self.world.bodies[toy.body];
+                body.velocity.length() + body.angular_velocity.magnitude() * BODY_SIZE
+            })
+            .fold(0.0f32, f32::max);
+        let needed = (fastest * TICK_DT / STEP_TRAVEL_BUDGET).ceil();
+        (needed as usize).clamp(BASE_SUBSTEPS, MAX_SUBSTEPS)
+    }
+
     pub(crate) fn tick(&mut self) {
-        let decay = (-ANGULAR_DAMPING * SOLVER_DT).exp();
-        for _ in 0..SUBSTEPS_PER_TICK {
-            self.world.step(SOLVER_DT);
+        let substeps = self.substeps_for_current_speed();
+        let dt = TICK_DT / substeps as f32;
+        let decay = (-ANGULAR_DAMPING * dt).exp();
+        for _ in 0..substeps {
+            self.world.step(dt);
             for toy in &self.toys {
                 let body = &mut self.world.bodies[toy.body];
                 body.angular_velocity = body.angular_velocity * decay;
@@ -490,6 +533,7 @@ impl Toybox {
             depth,
             lever_local,
             target: body.position,
+            intent: body.position,
             plane_point: hit,
             trail: GrabTrail::seeded(body.position),
         });
@@ -503,15 +547,18 @@ impl Toybox {
             return;
         };
         if let Some(point) = plane_point(ray, forward, grab.depth) {
-            grab.target = advance_target(grab.target, point - grab.plane_point, axis);
+            let delta = point - grab.plane_point;
+            grab.target = clamp_target_to_arena(advance_target(grab.target, delta, axis));
+            grab.intent = advance_target(grab.intent, delta, axis);
             grab.plane_point = point;
         }
-        grab.trail.push(grab.target, dt);
+        grab.trail.push(grab.intent, dt);
         let body = &mut self.world.bodies[self.toys[grab.toy].body];
-        body.velocity = clamp_length(
+        let desired = clamp_length(
             (grab.target - body.position) * GRAB_STIFFNESS,
-            MAX_RELEASE_SPEED,
+            MAX_CARRY_SPEED,
         );
+        body.velocity += clamp_length(desired - body.velocity, MAX_GRAB_ACCEL * TICK_DT);
     }
 
     /// Throws the held body along its recent target velocity, through the point
@@ -520,7 +567,7 @@ impl Toybox {
         let Some(grab) = self.grab.take() else {
             return;
         };
-        let velocity = clamp_length(grab.trail.velocity(), RELEASE_SPEED);
+        let velocity = clamp_length(grab.trail.velocity(), MAX_RELEASE_SPEED);
         self.wake(grab.toy);
         let body = &mut self.world.bodies[self.toys[grab.toy].body];
         // Cleared first so the drive velocity the hold left behind does not add
@@ -664,8 +711,9 @@ impl Toybox {
     }
 
     fn fastest_step_travel(&self) -> f32 {
+        let dt = TICK_DT / self.substeps_for_current_speed() as f32;
         (self.world.bodies.iter())
-            .map(|b| (b.velocity.length() + b.angular_velocity.magnitude() * BODY_SIZE) * SOLVER_DT)
+            .map(|b| (b.velocity.length() + b.angular_velocity.magnitude() * BODY_SIZE) * dt)
             .fold(0.0, f32::max)
     }
 
@@ -757,6 +805,20 @@ fn toy_color(polytope: Polytope4) -> [f32; 3] {
         .find(|entry| entry.shape.polytope4() == Some(polytope))
         .map(|entry| entry.body_color)
         .unwrap_or(TOY_COLOR_FALLBACK)
+}
+
+// Keeps a grab target inside the container, inset by the body's circumradius,
+// so a held body is never ASKED to occupy a wall or the floor. `w` is left
+// free: it is the axis the modifier exists to drive, and no static geometry
+// bounds it.
+fn clamp_target_to_arena(target: Vec4) -> Vec4 {
+    let reach = ARENA_HALF_EXTENT - BODY_SIZE;
+    Vec4::new(
+        target.x.clamp(-reach, reach),
+        target.y.max(FLOOR_Y + BODY_SIZE),
+        target.z.clamp(-reach, reach),
+        target.w,
+    )
 }
 
 fn clamp_length(v: Vec4, ceiling: f32) -> Vec4 {
@@ -940,13 +1002,15 @@ struct PhysicsOverlay {
     width_px: f32,
 }
 
-// Bar length per unit impulse. Measured, not derived: the fastest throw the
-// scene allows, [`MAX_RELEASE_SPEED`] head-on into a resting neighbour, peaks
-// at 3.87 units of accumulated impulse in one contact, which this scale draws
-// at 0.34 of a body radius. The peak is far under the momentum the throw
-// carries in because the solver is not elastic and a hull manifold splits the
-// blow over several points.
-const DEFAULT_IMPULSE_SCALE: f32 = 0.04;
+// Bar length per unit impulse. Measured, not derived: a hard flick,
+// [`MAX_CARRY_SPEED`] head-on into a resting neighbour, peaks at 5.48 units of
+// accumulated impulse in one contact, which this scale draws at 0.34 of a body
+// radius. The calibration deliberately uses a hard flick rather than
+// [`MAX_RELEASE_SPEED`], which is a tunneling ceiling an order of magnitude
+// above anything a cursor produces. The peak is far under the momentum the
+// throw carries in because the solver is not elastic and a hull manifold
+// splits the blow over several points.
+const DEFAULT_IMPULSE_SCALE: f32 = 0.028;
 
 // Small enough that a full four-point manifold reads as four marks, not a blob.
 const CONTACT_CROSS_FRACTION: f32 = 0.15;
@@ -1784,34 +1848,110 @@ mod tests {
     }
 
     #[test]
-    fn the_release_speed_is_a_feel_speed_under_the_narrowphase_ceiling() {
-        // A drag far faster than any hand: what comes out is the feel speed.
+    fn a_tick_takes_only_the_substeps_its_fastest_body_needs() {
+        let mut toybox = settled();
+        assert_eq!(
+            toybox.substeps_for_current_speed(),
+            BASE_SUBSTEPS,
+            "a settled pile should cost the settling rate and nothing more"
+        );
+
+        let thrown = toybox.toys[0].body;
+        toybox.world.bodies[thrown].velocity = Vec4::new(MAX_RELEASE_SPEED, 0.0, 0.0, 0.0);
+        let fast = toybox.substeps_for_current_speed();
+        assert!(
+            fast > BASE_SUBSTEPS && fast <= MAX_SUBSTEPS,
+            "a body at the ceiling asked for {fast} substeps"
+        );
+        assert!(
+            toybox.fastest_step_travel() <= STEP_TRAVEL_BUDGET,
+            "the chosen substep count still lets a step outrun the narrowphase"
+        );
+    }
+
+    #[test]
+    fn the_substep_count_comes_from_body_state_and_not_the_clock() {
+        // Determinism: two runs of the same seed must divide their ticks the
+        // same way, or a replay is not a replay.
+        fn counts(seed: u64) -> Vec<usize> {
+            let mut toybox = Toybox::new(seed);
+            (0..120)
+                .map(|_| {
+                    let n = toybox.substeps_for_current_speed();
+                    toybox.tick();
+                    n
+                })
+                .collect()
+        }
+        assert_eq!(counts(DEFAULT_SEED), counts(DEFAULT_SEED));
+    }
+
+    #[test]
+    fn a_held_body_is_never_driven_into_a_wall_or_the_floor() {
+        let reach = ARENA_HALF_EXTENT - BODY_SIZE;
+        for corner in [
+            Vec4::new(99.0, -99.0, 99.0, 0.0),
+            Vec4::new(-99.0, -5.0, -99.0, 2.0),
+        ] {
+            let held = clamp_target_to_arena(corner);
+            assert!(held.x.abs() <= reach + 1e-6 && held.z.abs() <= reach + 1e-6);
+            assert!(held.y >= FLOOR_Y + BODY_SIZE - 1e-6);
+            assert_eq!(held.w, corner.w, "the clamp must leave w alone");
+        }
+    }
+
+    #[test]
+    fn a_flick_into_a_wall_still_throws() {
+        // The clamp bounds where the body is DRIVEN. If it also bounded what the
+        // release reads, a flick toward a wall would pin the target and throw
+        // nothing, which is the bug the intent accumulator exists to prevent.
         let mut toybox = settled();
         assert!(grab_centre(&mut toybox, 0));
         let mut cursor = toybox.position(0).truncate();
         for _ in 0..12 {
-            cursor += Vec3::new(4.0, 0.0, 0.0);
+            cursor += Vec3::new(3.0, 0.0, 0.0);
             drag_frame(&mut toybox, cursor, GrabAxis::Slice);
         }
         toybox.release();
-        let thrown = toybox.velocity(0).length();
         assert!(
-            (thrown - RELEASE_SPEED).abs() < 1e-3,
-            "a saturating drag released at {thrown}, not the feel speed"
-        );
-
-        // Measured 2.5 body widths at RELEASE_SPEED; the band is the range
-        // that still reads as a flick inside a container 8 widths across.
-        let released = toybox.position(0);
-        toybox.run(240);
-        let travel = (toybox.position(0) - released).length() / (2.0 * BODY_SIZE);
-        assert!(
-            (1.0..6.0).contains(&travel),
-            "a saturating flick carried the toy {travel} body widths, which is \
-             neither a nudge nor a few widths"
+            toybox.velocity(0).length() > 1.0,
+            "a hard flick past the wall threw {}",
+            toybox.velocity(0).length()
         );
     }
 
+    #[test]
+    fn a_faster_drag_throws_harder_all_the_way_to_the_ceiling() {
+        // The property a flat cap destroyed: every flick above it landed on one
+        // speed, so a fast mouse threw no harder than a medium one.
+        fn thrown_at(units_per_frame: f32) -> f32 {
+            let mut toybox = settled();
+            assert!(grab_centre(&mut toybox, 0));
+            let mut cursor = toybox.position(0).truncate();
+            for _ in 0..12 {
+                cursor += Vec3::new(units_per_frame, 0.0, 0.0);
+                drag_frame(&mut toybox, cursor, GrabAxis::Slice);
+            }
+            toybox.release();
+            toybox.velocity(0).length()
+        }
+
+        let gentle = thrown_at(0.05);
+        let medium = thrown_at(0.5);
+        let hard = thrown_at(4.0);
+        assert!(
+            gentle < medium && medium < hard,
+            "throws did not order with cursor speed: {gentle}, {medium}, {hard}"
+        );
+        assert!(
+            hard > 4.0 * medium,
+            "a ten-times-faster drag threw only {hard} against {medium}, so the              top of the range is still flattened"
+        );
+        assert!(
+            hard <= MAX_RELEASE_SPEED,
+            "a throw at {hard} passed the narrowphase ceiling {MAX_RELEASE_SPEED}"
+        );
+    }
     #[test]
     fn the_walls_hold_a_throw_at_the_narrowphase_ceiling_for_its_whole_flight() {
         // The ceiling, not the feel speed: the walls have to hold the fastest
@@ -2593,7 +2733,7 @@ mod tests {
 
     #[test]
     fn the_two_release_ceilings_spend_exactly_the_usable_step() {
-        let spent = (MAX_RELEASE_SPEED + MAX_ANGULAR_SPEED * BODY_SIZE) * SOLVER_DT;
+        let spent = (MAX_RELEASE_SPEED + MAX_ANGULAR_SPEED * BODY_SIZE) * MIN_SOLVER_DT;
         let usable = TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL;
         assert!(
             (spent - usable).abs() < 1e-6,
@@ -2911,7 +3051,7 @@ mod tests {
         let mut toybox = settled();
         let (from, to) = (toybox.position(0), toybox.position(1));
         let thrown = toybox.toys[0].body;
-        toybox.world.bodies[thrown].velocity = (to - from).normalize() * MAX_RELEASE_SPEED;
+        toybox.world.bodies[thrown].velocity = (to - from).normalize() * MAX_CARRY_SPEED;
 
         let mut peak = 0.0f32;
         for _ in 0..FLICK_TICKS {
@@ -2924,7 +3064,7 @@ mod tests {
         }
 
         assert!(
-            (3.5..4.3).contains(&peak),
+            (5.0..6.0).contains(&peak),
             "peak normal impulse {peak}: the prose at DEFAULT_IMPULSE_SCALE is now stale, so recompute the bar length before touching this bound"
         );
         let bar = peak * DEFAULT_IMPULSE_SCALE;

@@ -62,6 +62,7 @@ mod state;
 mod title;
 mod toybox;
 mod ui;
+mod verbs;
 mod wireframe_geom;
 
 // Thread-local so a probe never sees a concurrent test's allocations.
@@ -124,8 +125,9 @@ use loam_time::Director;
 use physics::PlaygroundPhysics;
 use state::{
     set_if_changed, CameraMode, Demo, RotationMode, RowFrame, SurfaceMode, ViewMode,
-    WireframeColorMode, WireframeProjection,
+    WireframeColorMode,
 };
+use verbs::WireframeControls;
 use wireframe_geom::*;
 
 // 1 at the cell's w-midpoint (widest cap), 0 outside its w-range, linear in
@@ -308,18 +310,15 @@ impl Demo {
             uploaded_rotors: Vec::new(),
             section_edges,
             parent_wireframe,
-            wireframe_enabled: false,
+            wireframe: WireframeControls::default(),
             wireframe_nearest_active: true,
             cross_section: state::SectionLayer::CROSS_SECTION_DEFAULT,
             projected_cap: state::SectionLayer::PROJECTED_CAP_DEFAULT,
             wireframe_color_mode: WireframeColorMode::default(),
-            wireframe_projection: WireframeProjection::default(),
             schlegel_params: None,
             stereographic_pole: state::STEREOGRAPHIC_DEFAULT_POLE,
             wireframe_hyperslice: false,
             wireframe_hyperslice_thickness: consts::HYPERSLICE_DEFAULT_THICKNESS,
-            wireframe_width_px: 1.8,
-            wireframe_alpha: 1.0,
             unique_edge_palette_cache: std::collections::HashMap::new(),
             cell_centers_cache: std::collections::HashMap::new(),
             surface_scale: 1.0,
@@ -586,7 +585,7 @@ impl Demo {
         if !self.mode_annotation_open.open {
             return;
         }
-        let Some(annotation) = state::mode_annotation(self.wireframe_projection) else {
+        let Some(annotation) = state::mode_annotation(self.wireframe.projection) else {
             return;
         };
 

@@ -247,6 +247,13 @@ impl WireframeProjection {
         WireframeProjection::Hyperslice,
     ];
 
+    /// Parallel to [`Self::ALL`], which
+    /// `every_token_parses_to_the_variant_it_sits_beside` pins. Tab
+    /// completion and the parse error both read it, so neither can drift
+    /// from [`Self::from_token`].
+    pub(crate) const TOKENS: [&'static str; 4] =
+        ["shadow", "w-pinhole", "stereographic", "hyperslice"];
+
     pub(crate) fn label(self) -> &'static str {
         match self {
             WireframeProjection::Shadow => "Shadow",
@@ -284,4 +291,23 @@ impl WireframeProjection {
 
 pub(crate) fn hyperslice_cull_active(toggle: bool, projection: WireframeProjection) -> bool {
     toggle || matches!(projection, WireframeProjection::Hyperslice)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_token_parses_to_the_variant_it_sits_beside() {
+        for (token, projection) in WireframeProjection::TOKENS
+            .iter()
+            .zip(WireframeProjection::ALL)
+        {
+            assert_eq!(
+                WireframeProjection::from_token(token),
+                Some(projection),
+                "`{token}` completes to a slot it does not parse into"
+            );
+        }
+    }
 }

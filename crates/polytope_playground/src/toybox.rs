@@ -28,6 +28,7 @@ use loam_shape::{LineMesh, TriangleMesh};
 
 use crate::consts::W_SCRUB_RATE;
 use crate::environment::{register_ground_command, Environment};
+use crate::verbs::WireframeControls;
 use crate::physics::ndc_from_pixels;
 use crate::projections::WireframeProjection;
 use crate::wireframe_geom::{push_projected_chord, stereographic_view_radius};
@@ -195,10 +196,10 @@ const PICK_TOLERANCE: f32 = 0.1 * BODY_SIZE;
 // hull between the two shades rather than saturating one of them.
 const WIREFRAME_W_FADE: f32 = BODY_SIZE;
 const WIREFRAME_MIN_SHADE: f32 = 0.25;
-const WIREFRAME_WIDTH: f32 = 1.5;
 
-// The rotate scene's default: a 4D pinhole at w = 2, which is what makes a
-// rotation through `w` read as depth rather than as a sliding shadow.
+// A 4D pinhole at w = 2 rather than the shared `Shadow` default, which is what
+// makes a rotation through `w` read as depth rather than as a sliding shadow.
+// `wireframe perspective` overrides it.
 const WIREFRAME_PROJECTION: WireframeProjection = WireframeProjection::WPinhole;
 
 // Accumulated normal impulse in a contact that counts as a knock rather than
@@ -1027,9 +1028,10 @@ fn append_toy_wireframe(
     world: &World<EuclideanR4>,
     toys: &[ToyBody],
     slice: f32,
+    controls: &WireframeControls,
     mesh: &mut LineMesh<3>,
 ) {
-    let projection = WIREFRAME_PROJECTION.to_projection();
+    let projection = controls.projection.to_projection();
     for toy in toys {
         let body = &world.bodies[toy.body];
         let topology = toy.polytope.topology();
@@ -1045,7 +1047,7 @@ fn append_toy_wireframe(
             let from_slice = (local.w + body.position.w - slice).abs();
             let near = 1.0 - (from_slice / WIREFRAME_W_FADE).clamp(0.0, 1.0);
             let lit = WIREFRAME_MIN_SHADE + (1.0 - WIREFRAME_MIN_SHADE) * near;
-            [r * lit, g * lit, b * lit, 1.0]
+            [r * lit, g * lit, b * lit, controls.alpha]
         };
         for edge in topology.edges {
             let (a, b4) = (posed[edge[0] as usize], posed[edge[1] as usize]);
@@ -1055,7 +1057,7 @@ fn append_toy_wireframe(
                 b4,
                 shade(a),
                 shade(b4),
-                WIREFRAME_WIDTH,
+                controls.width_px,
                 &projection,
                 body_pos_r3,
                 view_radius,
@@ -1341,19 +1343,33 @@ fn build_physics_overlay_mesh(
 /// Everything the toybox console writes to. The overlay is one field of it so
 /// the `physics` verb keeps its own vocabulary while `ground` and `wlabels`
 /// reach the scene's other live settings.
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub(crate) struct ToyboxControls {
     overlay: PhysicsOverlay,
     /// Whole-hull wireframe behind the cross-sections. Off by default; it is a
     /// diagnostic for reading 4D rotation, not the scene's normal look.
-    wireframe: bool,
+    wireframe: WireframeControls,
     /// Per-body `w` readout painted over each toy. Off by default: the fade
     /// with cross-section size already says a body is leaving the slice.
     w_labels: bool,
     environment: Environment,
 }
 
-fn register_toybox_commands(console: &mut Console<ToyboxControls>) {
+impl Default for ToyboxControls {
+    fn default() -> Self {
+        Self {
+            overlay: PhysicsOverlay::default(),
+            wireframe: WireframeControls {
+                projection: WIREFRAME_PROJECTION,
+                ..WireframeControls::default()
+            },
+            w_labels: false,
+            environment: Environment::default(),
+        }
+    }
+}
+
+pub(crate) fn register_toybox_commands(console: &mut Console<ToyboxControls>) {
     register_ground_command(console, |c| &mut c.environment);
     console.register(
         loam_egui::cmd::<ToyboxControls, _>(
@@ -1376,27 +1392,7 @@ fn register_toybox_commands(console: &mut Console<ToyboxControls>) {
         .with_args(&[&["on", "off"]]),
     );
     console.register(
-        loam_egui::cmd::<ToyboxControls, _>(
-            "wireframe",
-            "whole-hull 4D wireframe behind the cross-sections (on | off; bare flips)",
-            |args, controls, out| {
-                let next = match args.first().copied() {
-                    None => !controls.wireframe,
-                    Some("on") => true,
-                    Some("off") => false,
-                    Some(other) => {
-                        return Err(anyhow!("wireframe: unknown arg `{other}` (try on|off)"));
-                    }
-                };
-                controls.wireframe = next;
-                out.line(format!("wireframe: {}", if next { "on" } else { "off" }));
-                Ok(())
-            },
-        )
-        .with_args(&[&["on", "off"]])
-        .with_long_help(
-            "Draws every edge of every toy's posed 4D hull, projected by dropping w,              with each vertex shaded by how far it sits from the current slice. The              cross-section alone cannot distinguish a body turning in a w plane from              one sliding; the whole hull can.",
-        ),
+        crate::verbs::wireframe_subcommands::<ToyboxControls>(|c| &mut c.wireframe),
     );
     console.register(
         loam_egui::subcommands::<ToyboxControls>(
@@ -1676,11 +1672,12 @@ impl ToyboxScene {
         let mut mesh = std::mem::take(&mut self.line_mesh);
         self.toybox
             .build_overlay_mesh(&self.controls.overlay, &mut mesh);
-        if self.controls.wireframe {
+        if self.controls.wireframe.enabled {
             append_toy_wireframe(
                 &self.toybox.world,
                 &self.toybox.toys,
                 self.toybox.slice(),
+                &self.controls.wireframe,
                 &mut mesh,
             );
         }
@@ -2152,12 +2149,18 @@ mod tests {
     #[test]
     fn the_wireframe_draws_every_edge_of_every_hull_and_ships_off() {
         assert!(
-            !ToyboxControls::default().wireframe,
+            !ToyboxControls::default().wireframe.enabled,
             "the wireframe is a diagnostic and must not be on at boot"
         );
         let toybox = settled();
         let mut mesh = LineMesh::<3>::default();
-        append_toy_wireframe(&toybox.world, &toybox.toys, toybox.slice(), &mut mesh);
+        append_toy_wireframe(
+            &toybox.world,
+            &toybox.toys,
+            toybox.slice(),
+            &ToyboxControls::default().wireframe,
+            &mut mesh,
+        );
         // More segments than edges is the signature of the SHARED geometry:
         // `push_projected_chord` tessellates each edge so a chord that bows
         // under the projection is drawn bowed. A local straight-chord copy
@@ -2172,16 +2175,61 @@ mod tests {
     }
 
     #[test]
+    fn the_draw_reads_the_console_controls_rather_than_a_scene_constant() {
+        let toybox = settled();
+        let draw = |controls: &WireframeControls| {
+            let mut mesh = LineMesh::<3>::default();
+            append_toy_wireframe(&toybox.world, &toybox.toys, toybox.slice(), controls, &mut mesh);
+            mesh
+        };
+        let shipped = ToyboxControls::default().wireframe;
+        let widened = draw(&WireframeControls {
+            width_px: shipped.width_px * 2.0,
+            ..shipped
+        });
+        let faded = draw(&WireframeControls {
+            alpha: 0.5,
+            ..shipped
+        });
+        let reprojected = draw(&WireframeControls {
+            projection: WireframeProjection::Shadow,
+            ..shipped
+        });
+        let base = draw(&shipped);
+        assert_ne!(widened.widths, base.widths, "`wireframe width` is inert");
+        assert!(
+            faded.colors.iter().all(|(a, b)| a[3] == 0.5 && b[3] == 0.5),
+            "`wireframe alpha` is inert"
+        );
+        assert_ne!(
+            reprojected.segments, base.segments,
+            "`wireframe perspective` is inert"
+        );
+    }
+
+    #[test]
     fn the_wireframe_shade_follows_a_vertex_distance_from_the_slice() {
         // The property that makes it a 4D readout rather than decoration: a
         // rotation in a w plane moves vertices through the slice, and the
         // shading is what makes that visible.
         let mut toybox = settled();
         let mut near = LineMesh::<3>::default();
-        append_toy_wireframe(&toybox.world, &toybox.toys, toybox.slice(), &mut near);
+        append_toy_wireframe(
+            &toybox.world,
+            &toybox.toys,
+            toybox.slice(),
+            &ToyboxControls::default().wireframe,
+            &mut near,
+        );
         toybox.set_slice(W_SLICE_RANGE);
         let mut far = LineMesh::<3>::default();
-        append_toy_wireframe(&toybox.world, &toybox.toys, toybox.slice(), &mut far);
+        append_toy_wireframe(
+            &toybox.world,
+            &toybox.toys,
+            toybox.slice(),
+            &ToyboxControls::default().wireframe,
+            &mut far,
+        );
         let brightness =
             |m: &LineMesh<3>| -> f32 { m.colors.iter().map(|(a, _)| a[0] + a[1] + a[2]).sum() };
         assert!(

@@ -79,84 +79,7 @@ impl RotateScene {
             },
         ));
         c.register(
-            loam_egui::subcommands::<Demo>("wireframe", "wireframe + cross-section overlay")
-                .on_bare(|d| {
-                    d.wireframe_enabled = !d.wireframe_enabled;
-                    Ok(())
-                })
-                .toggle(
-                    "nearest-active",
-                    "per-edge alpha gradient by cell-crossing strength (bare flips)",
-                    |d, v| {
-                        d.wireframe_nearest_active = v.unwrap_or(!d.wireframe_nearest_active);
-                        Ok(())
-                    },
-                )
-                .custom(
-                    "width",
-                    "parent-wireframe edge thickness in pixels (default 1.8)",
-                    &[&[]],
-                    &[],
-                    |d, args, out| {
-                        match args.first().copied() {
-                            None => {
-                                out.line(format!(
-                                    "wireframe width: {:.2} px",
-                                    d.wireframe_width_px
-                                ));
-                            }
-                            Some(s) => match s.parse::<f32>() {
-                                Ok(w) if w > 0.0 && w <= 16.0 => {
-                                    d.wireframe_width_px = w;
-                                    out.line(format!(
-                                        "wireframe width: set to {w:.2} px"
-                                    ));
-                                }
-                                _ => {
-                                    out.line(format!(
-                                        "wireframe width: invalid `{s}` (need a float in (0, 16])"
-                                    ));
-                                }
-                            },
-                        }
-                        Ok(())
-                    },
-                )
-                .custom(
-                    "alpha",
-                    "uniform edge alpha when nearest-active is off (default 1.0)",
-                    &[&[]],
-                    &[],
-                    |d, args, out| {
-                        match args.first().copied() {
-                            None => {
-                                out.line(format!(
-                                    "wireframe alpha: {:.3} ({})",
-                                    d.wireframe_alpha,
-                                    if d.wireframe_nearest_active {
-                                        "overridden by nearest-active gradient; toggle off to apply"
-                                    } else {
-                                        "active"
-                                    }
-                                ));
-                            }
-                            Some(s) => match s.parse::<f32>() {
-                                Ok(a) if a > 0.0 && a <= 1.0 => {
-                                    d.wireframe_alpha = a;
-                                    out.line(format!(
-                                        "wireframe alpha: set to {a:.3}"
-                                    ));
-                                }
-                                _ => {
-                                    out.line(format!(
-                                        "wireframe alpha: invalid `{s}` (need a float in (0, 1])"
-                                    ));
-                                }
-                            },
-                        }
-                        Ok(())
-                    },
-                )
+            crate::verbs::wireframe_subcommands::<Demo>(|d| &mut d.wireframe)
                 .choice(
                     "color",
                     "parent-edge color mode (bare cycles): vertex-gradient|unique-edge|w-depth|active",
@@ -180,37 +103,11 @@ impl RotateScene {
                         Ok(())
                     },
                 )
-                .custom(
-                    "perspective",
-                    "wireframe 4D->R³ projection (bare cycles): shadow | w-pinhole | stereographic | hyperslice",
-                    &[&["shadow", "w-pinhole", "stereographic", "hyperslice"]],
-                    &[],
-                    |d, args, out| {
-                        let next = match args.first().copied() {
-                            None => {
-                                let all = WireframeProjection::ALL;
-                                let i = all
-                                    .iter()
-                                    .position(|p| p.same_variant(d.wireframe_projection))
-                                    .unwrap_or(0);
-                                all[(i + 1) % all.len()]
-                            }
-                            Some(token) => WireframeProjection::from_token(token).ok_or_else(|| {
-                                anyhow!(
-                                    "unknown projection `{token}` (try shadow|w-pinhole|stereographic|hyperslice)"
-                                )
-                            })?,
-                        };
-                        d.wireframe_projection = next;
-                        state::apply_projection_selection_defaults(
-                            d.wireframe_projection,
-                            &mut d.wireframe_enabled,
-                        );
-                        d.resolve_schlegel_cache();
-                        out.line(format!(
-                            "wireframe perspective: {}",
-                            d.wireframe_projection.label().to_lowercase()
-                        ));
+                .toggle(
+                    "nearest-active",
+                    "per-edge alpha gradient by cell-crossing strength (bare flips)",
+                    |d, v| {
+                        d.wireframe_nearest_active = v.unwrap_or(!d.wireframe_nearest_active);
                         Ok(())
                     },
                 )

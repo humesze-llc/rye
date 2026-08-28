@@ -256,6 +256,7 @@ pub struct SubcommandSet<Ctx> {
     subs: BTreeMap<&'static str, SubcommandEntry<Ctx>>,
     name_cache: std::cell::OnceCell<Vec<&'static str>>,
     bare: Option<BareHandler<Ctx>>,
+    long_help: Option<&'static str>,
 }
 
 impl<Ctx: 'static> SubcommandSet<Ctx> {
@@ -332,6 +333,13 @@ impl<Ctx: 'static> SubcommandSet<Ctx> {
         self
     }
 
+    /// Replaces the one-line `help` as the preamble the subcommand table is
+    /// printed under. The table is appended either way.
+    pub fn with_long_help(mut self, long: &'static str) -> Self {
+        self.long_help = Some(long);
+        self
+    }
+
     /// Typing just the command name runs `handler` instead of a usage error.
     pub fn on_bare<F>(mut self, handler: F) -> Self
     where
@@ -354,6 +362,7 @@ pub fn subcommands<Ctx: 'static>(name: &'static str, help: &'static str) -> Subc
         subs: BTreeMap::new(),
         name_cache: std::cell::OnceCell::new(),
         bare: None,
+        long_help: None,
     }
 }
 
@@ -366,8 +375,9 @@ impl<Ctx: 'static> Command<Ctx> for SubcommandSet<Ctx> {
     }
 
     fn long_help(&self) -> String {
-        let mut out = String::with_capacity(128 + self.subs.len() * 64);
-        out.push_str(self.help);
+        let preamble = self.long_help.unwrap_or(self.help);
+        let mut out = String::with_capacity(128 + preamble.len() + self.subs.len() * 64);
+        out.push_str(preamble);
         if !self.subs.is_empty() {
             out.push_str("\nsubcommands:");
             for (name, entry) in &self.subs {

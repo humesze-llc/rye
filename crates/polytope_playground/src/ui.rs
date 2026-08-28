@@ -1,3 +1,4 @@
+use crate::verbs::WireframeControls;
 use loam_app::egui;
 use loam_app::shell::SceneRegistry;
 use loam_egui::{
@@ -148,7 +149,7 @@ impl Demo {
         // Schlegel re-resolve can run AFTER the destructure-borrow's lifetime
         // ends; they need `&mut self`, unavailable inside the closure.
         let prev_surface = self.surface_mode;
-        let prev_projection = self.wireframe_projection;
+        let prev_projection = self.wireframe.projection;
         // Before the destructure (which exclusively borrows `self.row`).
         let sdf_disabled = self.sdf_blocked_by_heavy_polychora();
         let schlegel_cell_count = self.schlegel_subject().map(|p| p.cell_count() as u32);
@@ -159,10 +160,9 @@ impl Demo {
             surface_mode,
             cross_section,
             projected_cap,
-            wireframe_enabled,
+            wireframe,
             wireframe_nearest_active,
             wireframe_color_mode,
-            wireframe_projection,
             wireframe_hyperslice,
             wireframe_hyperslice_thickness,
             points_enabled,
@@ -171,6 +171,11 @@ impl Demo {
             points_size_px,
             ..
         } = self;
+        let WireframeControls {
+            enabled: wireframe_enabled,
+            projection: wireframe_projection,
+            ..
+        } = wireframe;
         loam_egui::floating_panel(
             ctx,
             "polytope-playground-render",
@@ -301,7 +306,7 @@ impl Demo {
             self.rebuild_bodies();
         }
         // Deferred here because the Schlegel re-resolve needs `&mut self`.
-        if self.wireframe_projection != prev_projection {
+        if self.wireframe.projection != prev_projection {
             self.resolve_schlegel_cache();
         }
     }

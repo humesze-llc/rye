@@ -107,7 +107,7 @@ impl Demo {
                 let _scope = loam_time::frame_trace::scope("pp-section-faces");
                 self.record_section_faces(rd, encoder, view);
             }
-            if self.wireframe_enabled {
+            if self.wireframe.enabled {
                 let _scope = loam_time::frame_trace::scope("pp-wireframe");
                 self.record_wireframe_overlay(rd, encoder, view);
             }
@@ -321,10 +321,10 @@ impl Demo {
         let cfg = &rd.surface_bundle.config;
         let style = WireframeStyle {
             color_mode: self.wireframe_color_mode,
-            alpha: self.wireframe_alpha,
-            width_px: self.wireframe_width_px,
+            alpha: self.wireframe.alpha,
+            width_px: self.wireframe.width_px,
             nearest_active: self.wireframe_nearest_active,
-            space_blend: state::default_edge_blend(self.wireframe_projection),
+            space_blend: state::default_edge_blend(self.wireframe.projection),
             hyperslice: self
                 .hyperslice_cull_active()
                 .then_some(self.wireframe_hyperslice_thickness),

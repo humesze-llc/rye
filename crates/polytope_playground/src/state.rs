@@ -5,6 +5,7 @@ use loam_app::{freecam::Freecam, Camera, OrbitController};
 use loam_math::{Bivector, Bivector4, EuclideanR3, Plane4, Projection, Rotor, Rotor4};
 use loam_render::raymarch::{BodyUniform, Hyperslice4DNode};
 use loam_render::SkyGroundNode;
+use crate::verbs::WireframeControls;
 use loam_shape::polytope::Polytope4;
 
 use crate::catalog::ShapeEntry;
@@ -304,18 +305,15 @@ pub(crate) struct Demo {
     pub(crate) uploaded_rotors: Vec<Rotor4>,
     pub(crate) section_edges: loam_render::LineRasterNode,
     pub(crate) parent_wireframe: loam_render::LineRasterNode,
-    pub(crate) wireframe_enabled: bool,
+    pub(crate) wireframe: WireframeControls,
     pub(crate) wireframe_nearest_active: bool,
     pub(crate) cross_section: SectionLayer,
     pub(crate) projected_cap: SectionLayer,
     pub(crate) wireframe_color_mode: WireframeColorMode,
-    pub(crate) wireframe_projection: WireframeProjection,
     pub(crate) schlegel_params: Option<SchlegelParams>,
     pub(crate) stereographic_pole: glam::Vec4,
     pub(crate) wireframe_hyperslice: bool,
     pub(crate) wireframe_hyperslice_thickness: f32,
-    pub(crate) wireframe_width_px: f32,
-    pub(crate) wireframe_alpha: f32,
     pub(crate) unique_edge_palette_cache: HashMap<Polytope4, Vec<[f32; 4]>>,
     pub(crate) cell_centers_cache: HashMap<Polytope4, Vec<Vec4>>,
     pub(crate) surface_scale: f32,
@@ -510,13 +508,13 @@ impl Demo {
     // `LazyLock`-backed [`Polytope4::face_planes`] fit.
     pub(crate) fn resolve_schlegel_cache(&mut self) {
         let (projection, cache) =
-            synced_schlegel_projection(self.wireframe_projection, self.schlegel_subject());
-        self.wireframe_projection = projection;
+            synced_schlegel_projection(self.wireframe.projection, self.schlegel_subject());
+        self.wireframe.projection = projection;
         self.schlegel_params = cache;
     }
 
     pub(crate) fn resolved_wireframe_projection(&self) -> Projection<4> {
-        match self.wireframe_projection {
+        match self.wireframe.projection {
             WireframeProjection::Schlegel { .. } => {
                 match (self.schlegel_params, self.schlegel_slot()) {
                     (Some(p), Some(slot)) => {
@@ -542,7 +540,7 @@ impl Demo {
     }
 
     pub(crate) fn hyperslice_cull_active(&self) -> bool {
-        hyperslice_cull_active(self.wireframe_hyperslice, self.wireframe_projection)
+        hyperslice_cull_active(self.wireframe_hyperslice, self.wireframe.projection)
     }
 
     pub(crate) fn toggle_selected_plane(&mut self, plane_idx: usize) {

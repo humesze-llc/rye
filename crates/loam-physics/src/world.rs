@@ -121,6 +121,8 @@ struct RadialInterval {
     dense: u32,
     id: BodyId,
     dynamic: bool,
+    group: u32,
+    mask: u32,
 }
 
 // Narrowphases pose local geometry as `rotation · v + position`, and a
@@ -558,6 +560,8 @@ impl<S: PhysicsSpace> World<S> {
                 dense: dense as u32,
                 id: bodies.id_at(dense),
                 dynamic: body.inv_mass != 0.0,
+                group: body.collision_group,
+                mask: body.collision_mask,
             });
         }
         // Unstable sort: the stable one allocates a scratch buffer, and the
@@ -572,6 +576,11 @@ impl<S: PhysicsSpace> World<S> {
             for &open in active.iter() {
                 let other = intervals[open as usize];
                 if !entry.dynamic && !other.dynamic {
+                    continue;
+                }
+                // Both directions, so a pair is only ever filtered by
+                // agreement. Cheaper than the distance below, hence first.
+                if entry.group & other.mask == 0 || other.group & entry.mask == 0 {
                     continue;
                 }
                 let gap = space.distance(
@@ -942,6 +951,33 @@ mod tests {
                  {GOLDEN_TRAJECTORY_HASH:#018x}"
             );
         }
+    }
+
+    #[test]
+    fn a_group_outside_the_others_mask_never_reaches_the_narrowphase() {
+        let mut world = World::new(EuclideanR3);
+        register_default_narrowphase(&mut world.narrowphase);
+        // Overlapping, so only the mask can keep them apart.
+        let a = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 1.0, 1.0));
+        let b = world.push_body(sphere_body_r3(Vec3::new(0.5, 0.0, 0.0), Vec3::ZERO, 1.0, 1.0));
+        assert_eq!(world.broadphase().len(), 1, "the pair does not overlap to begin with");
+
+        world.bodies[a].collision_group = 0b01;
+        world.bodies[a].collision_mask = 0b01;
+        world.bodies[b].collision_group = 0b10;
+        world.bodies[b].collision_mask = 0b10;
+        assert!(world.broadphase().is_empty(), "a filtered pair still reached the narrowphase");
+
+        // One-sided: `b` would accept `a`, but `a` still refuses `b`, and the
+        // filter is symmetric so the pair stays out.
+        world.bodies[b].collision_mask = 0b11;
+        assert!(
+            world.broadphase().is_empty(),
+            "a one-sided mask edit produced a pair that collides in one direction"
+        );
+
+        world.bodies[a].collision_mask = 0b11;
+        assert_eq!(world.broadphase().len(), 1, "agreement did not restore the pair");
     }
 
     #[test]

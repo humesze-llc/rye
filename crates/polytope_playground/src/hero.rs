@@ -12,6 +12,7 @@ use loam_math::{Bivector4, EuclideanR3, EuclideanR4, Projection, Rotor, Rotor4, 
 use loam_physics::euclidean_r4::{
     halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
 };
+use loam_physics::body::MASK_ALL;
 use loam_physics::{BodyId, Gravity, World};
 use loam_render::{
     DepthBuffer, DepthMode, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode, Viewport,
@@ -43,6 +44,18 @@ const SOLVER_DT: f32 = 1.0 / (TICK_HZ as f32 * SUBSTEPS_PER_TICK as f32);
 
 const GRAVITY: f32 = -9.8;
 
+const PILE_PGS_ITERS: usize = 20;
+
+// Collision groups. A drop still falling passes through the other drops still
+// falling: mid-air collisions turn the rain into a scatter of ricochets before
+// it ever reaches the word, and the thing worth watching is what the rain does
+// TO the letters. It collides with everything the moment it touches anything,
+// so a landed pile still stacks.
+const GROUP_SCENERY: u32 = 1 << 0;
+const GROUP_FALLING: u32 = 1 << 1;
+const GROUP_LANDED: u32 = 1 << 2;
+const MASK_FALLING: u32 = GROUP_SCENERY | GROUP_LANDED;
+
 const ASSEMBLE_TICKS: u32 = 90;
 
 // The last letter must still finish inside [`ASSEMBLE_TICKS`], which
@@ -69,9 +82,21 @@ const SETTLE_TICKS: u32 = 120;
 
 const RAIN_START_TICK: u32 = ASSEMBLE_TICKS + SETTLE_TICKS;
 
-pub(crate) const SEQUENCE_TICKS: u32 = RAIN_START_TICK + 360;
+// The sim runs until here and is then FROZEN for the `w` sweep. Sweeping while
+// the pile is still rolling reads as two unrelated motions at once; frozen, the
+// only thing moving is the slice, which is the point of the sweep.
+const PHYSICS_TICKS: u32 = 360;
+const PHYSICS_PAUSE_TICK: u32 = RAIN_START_TICK + PHYSICS_TICKS;
 
-const RAIN_COUNT: usize = 14;
+// One full sweep out to `SLICE_SWEEP_RANGE` and back.
+const SWEEP_TICKS: u32 = 300;
+
+pub(crate) const SEQUENCE_TICKS: u32 = PHYSICS_PAUSE_TICK + SWEEP_TICKS;
+
+// A cap on the drops the scene will hold, not a target: the rain spawns until
+// the sim freezes, and this is the allocation and the point past which a
+// spawn is skipped rather than a schedule.
+const RAIN_CAP: usize = 64;
 
 const RAIN_INTERVAL_TICKS: u32 = 7;
 const RAIN_INTERVAL_JITTER: u32 = 4;
@@ -85,7 +110,14 @@ const RAIN_SIZE: f32 = 0.30;
 
 const LETTER_MASS: f32 = 1.0;
 
-const RAIN_MASS: f32 = 1.5;
+// A drop is 0.30 em across against a letter's ~0.75 em of height and a full em
+// of width, so it outweighing a letter at 1.5 was always backwards; it only
+// stopped mattering when there were fourteen of them. The rain runs until the
+// freeze now, and 48 drops at the old mass drove a body 0.10 em under the
+// floor, past the 0.075 tunnelling bound. Lighter rain and more solver sweeps
+// together hold it; 0.75 is the heaviest that does, and heavier rain is what
+// makes the letters scatter, so it is worth having.
+const RAIN_MASS: f32 = 0.75;
 
 // The lower bound clears the tops of the letters, so nothing is ever spawned
 // inside one.
@@ -125,6 +157,8 @@ pub(crate) enum Phase {
     Assemble,
     Fall,
     Rain,
+    /// The sim is frozen and only the slice moves.
+    Sweep,
 }
 
 pub(crate) struct HeroLetter {
@@ -184,6 +218,10 @@ impl HeroSequence {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
         world.push_field(Box::new(Gravity::new(Vec4::new(0.0, GRAVITY, 0.0, 0.0))));
+        // A pile this deep needs more sweeps than the default 8: the load path
+        // from the top of the rain down to the floor is many contacts long,
+        // and PGS propagates one contact per iteration.
+        world.pgs_iters = PILE_PGS_ITERS;
         let floor = world.push_body(halfspace4_body_r4(Vec4::Y, FLOOR_Y));
         world.bodies[floor].restitution = RESTITUTION;
 
@@ -205,7 +243,7 @@ impl HeroSequence {
             world,
             director,
             letters,
-            drops: Vec::with_capacity(RAIN_COUNT),
+            drops: Vec::with_capacity(RAIN_CAP),
             // xorshift64* has a fixed point at zero, so a zero seed would
             // produce a constant stream rather than a degenerate one nobody
             // notices. Mixing in an odd constant keeps seed 0 usable.
@@ -218,13 +256,14 @@ impl HeroSequence {
     pub(crate) fn tick(&mut self) {
         if self.tick < ASSEMBLE_TICKS {
             self.director.advance();
-        } else {
+        } else if self.tick < PHYSICS_PAUSE_TICK {
             if self.tick >= self.next_spawn_tick {
                 self.spawn_drop();
             }
             for _ in 0..SUBSTEPS_PER_TICK {
                 self.world.step(SOLVER_DT);
                 self.hold_letters_in_the_slice();
+                self.land_touched_drops();
             }
         }
         self.tick += 1;
@@ -255,6 +294,26 @@ impl HeroSequence {
     /// The three planes are closed under the Lie bracket, so a rotor whose
     /// generator stays in them stays in SO(3) and this is a projection rather
     /// than a fight with the integrator.
+    /// Promotes a drop out of [`GROUP_FALLING`] the first step it touches
+    /// anything, so it stops being transparent to the rest of the rain. Read
+    /// off the manifolds rather than a height, because "has landed" is exactly
+    /// "has a contact" and a height would have to guess at the pile.
+    fn land_touched_drops(&mut self) {
+        for index in 0..self.drops.len() {
+            let id = self.drops[index].body;
+            if self.world.bodies[id].collision_group != GROUP_FALLING {
+                continue;
+            }
+            let touched = (self.world.manifolds.iter())
+                .any(|(key, manifold)| (key.0 == id || key.1 == id) && !manifold.points.is_empty());
+            if touched {
+                let body = &mut self.world.bodies[id];
+                body.collision_group = GROUP_LANDED;
+                body.collision_mask = MASK_ALL;
+            }
+        }
+    }
+
     fn hold_letters_in_the_slice(&mut self) {
         for letter in &self.letters {
             let Some(body) = letter.body else { continue };
@@ -278,27 +337,28 @@ impl HeroSequence {
             Phase::Assemble
         } else if self.tick < RAIN_START_TICK {
             Phase::Fall
-        } else {
+        } else if self.tick < PHYSICS_PAUSE_TICK {
             Phase::Rain
+        } else {
+            Phase::Sweep
         }
+    }
+
+    /// Where the scene is sliced this tick. Pinned at [`W_SLICE`] for as long
+    /// as the sim runs, then swept once everything has frozen: a slice moving
+    /// under a pile that is still rolling reads as two unrelated motions, and
+    /// the sweep is worth watching precisely because nothing else moves.
+    pub(crate) fn slice(&self) -> f32 {
+        let Some(since) = self.tick.checked_sub(PHYSICS_PAUSE_TICK) else {
+            return W_SLICE;
+        };
+        let phase = std::f32::consts::TAU * since as f32 / SWEEP_TICKS as f32;
+        W_SLICE + SLICE_SWEEP_RANGE * phase.sin()
     }
 
     /// Centre of the assembled word's bounding box, which is what the orbit
     /// target is set to: the controller aims the camera at its target, so the
     /// point named here is the point that lands at the centre of the frame.
-    /// Where the scene is sliced this tick. Rests at [`W_SLICE`] and sweeps
-    /// once the letters have been knocked off it.
-    pub(crate) fn slice(&self) -> f32 {
-        let pushed = (self.letters.iter())
-            .filter_map(|letter| letter.body)
-            .map(|body| (self.world.bodies[body].position.w - W_SLICE).abs())
-            .fold(0.0f32, f32::max);
-        let struck = (pushed - SLICE_SCRUB_DEADBAND).max(0.0);
-        let amplitude = (SLICE_SCRUB_GAIN * struck).min(SLICE_SCRUB_MAX);
-        let phase = std::f32::consts::TAU * self.tick as f32 / SLICE_SCRUB_PERIOD_TICKS;
-        W_SLICE + amplitude * phase.sin()
-    }
-
     pub(crate) fn word_centre(&self) -> Vec3 {
         let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
         for letter in &self.letters {
@@ -360,7 +420,7 @@ impl HeroSequence {
     }
 
     fn spawn_drop(&mut self) {
-        if self.drops.len() >= RAIN_COUNT {
+        if self.drops.len() >= RAIN_CAP {
             return;
         }
         let index = self.drops.len();
@@ -398,6 +458,8 @@ impl HeroSequence {
         let body = &mut self.world.bodies[id];
         body.restitution = RESTITUTION;
         body.angular_velocity = tumble;
+        body.collision_group = GROUP_FALLING;
+        body.collision_mask = MASK_FALLING;
         // The exact uniform-solid moment, not `polytope_body_r4`'s bounding
         // ball: every one of these symmetry groups acts irreducibly on R⁴, so
         // the scalar inertia slot is exact rather than an approximation.
@@ -668,33 +730,20 @@ const FLOOR_Y: f32 = 0.0;
 // rest here, so at rest each one cuts its own letterform.
 const W_SLICE: f32 = 0.0;
 
-// Once the rain has knocked the letters along `w` the slice sweeps rather than
-// sitting still, so their sections morph instead of holding one letterform.
-// Amplitude tracks how far the word has actually been pushed off the resting
-// slice, so an undisturbed word does not drift and a badly hit one sweeps
-// furthest: the scrub is a consequence of the impact, not an idle animation.
-const SLICE_SCRUB_PERIOD_TICKS: f32 = 300.0;
-const SLICE_SCRUB_GAIN: f32 = 2.0;
-
-// Beyond this the sections spend their time between letterforms rather than
-// on one, which reads as mush.
-const SLICE_SCRUB_MAX: f32 = 1.5 * W_PER_LETTERFORM;
-
-// Displacement below this is the landing, not a hit. A contact's tangent space
-// in R⁴ contains `w`, so friction against the floor slides a letter there; with
-// the letters' `w`-plane spin held out, that friction goes into translation
-// instead and the word reaches 0.040 em off the slice by the time the rain
-// starts, measured across the whole settle. Sized at 1.5x that. A real hit
-// pushes several times further, so nothing is lost by ignoring this band, and
-// without it the word would sweep from the moment it landed, which is the
-// opposite of a scrub that answers an impact.
-const SLICE_SCRUB_DEADBAND: f32 = 0.06;
+// How far the slice travels once the sim has frozen. A letterform every
+// `W_PER_LETTERFORM`, so a sweep of the whole word carries every letter
+// through every other letterform and back to its own.
+const SLICE_SWEEP_RANGE: f32 = 4.0 * W_PER_LETTERFORM;
 
 // 32-bit float: the caps of a tumbling 24-cell are thin and densely stacked,
 // and 24-bit depth cracks them.
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-const BOOT_ORBIT_DISTANCE: f32 = 7.5;
+// The word is 3.488 em wide and the frame is `d * tan(30 deg) * 16/9` half-wide
+// at the 60 degree vertical field of view, so at 7.5 it filled 23% of the frame
+// and read as a small thing in a large room. At 5.0 it fills 34%, which is as
+// close as the rain's 2.6 to 3.6 em spawn height allows without cropping it.
+const BOOT_ORBIT_DISTANCE: f32 = 5.0;
 const BOOT_ORBIT_PITCH: f32 = -0.12;
 const BOOT_EYE_HEIGHT: f32 = 1.4;
 
@@ -931,7 +980,7 @@ impl HeroScene {
                     self.sequence.phase()
                 ));
                 ui.label(format!(
-                    "{} of {RAIN_COUNT} polychora fallen",
+                    "{} of {RAIN_CAP} polychora fallen",
                     self.sequence.drops().len()
                 ));
                 ui.checkbox(&mut self.paused, "pause (Space)");
@@ -1079,12 +1128,12 @@ mod tests {
     const REST_SPREAD: f32 = 0.02;
 
     // Displacement, in em, that counts as a letter having been knocked aside
-    // rather than nudged. Measured by
-    // `the_quoted_figures_are_the_ones_the_scene_produces`: the rain moves `L`
-    // 0.796, `O` 0.775, `A` 0.364 and `M` 0.607 em, so the criterion has 1.5x
-    // of margin on the least-moved letter. The scene is chaotic, so these are
-    // a record of one seed and not a property; the threshold is not the
-    // measurement.
+    // rather than nudged. The test it gates asks whether the rain moved ANY
+    // letter past it, which is the scene's claim, and not that of every
+    // letter. Measured by `the_quoted_figures_are_the_ones_the_scene_produces`:
+    // the rain moves `L` 0.468, `O` 0.753, `A` 0.554 and `M` 0.444 em, so it
+    // clears on the best by 3.0x. The scene is chaotic, so these are a record
+    // of one seed and not a property; the threshold is not the measurement.
     const SCATTER_THRESHOLD: f32 = 0.25;
 
     // A tunneling bound, not a contact bound: the resting overlap the solver
@@ -1162,9 +1211,12 @@ mod tests {
             letters_a, letters_b,
             "the seed reached the letters' landing"
         );
-        assert_eq!(drops_a.len(), drops_b.len());
+        // Counts differ by seed now: the rain spawns on a jittered interval
+        // until the freeze rather than to a fixed total, so the seed reaches
+        // how many fell as well as where.
         assert!(
-            drops_a.iter().zip(&drops_b).any(|(a, b)| a != b),
+            drops_a.len() != drops_b.len()
+                || drops_a.iter().zip(&drops_b).any(|(a, b)| a != b),
             "two seeds rained identically, so the seed is decoration"
         );
     }
@@ -1260,15 +1312,15 @@ mod tests {
             .zip(&scattered)
             .map(|(b, a)| b.distance(*a))
             .collect();
-        for (got, want) in measured.iter().zip([0.796f32, 0.775, 0.364, 0.607]) {
+        for (got, want) in measured.iter().zip([0.468f32, 0.753, 0.554, 0.444]) {
             assert!(
                 (got - want).abs() < 5e-3,
                 "SCATTER_THRESHOLD's doc quotes {want} em; the scene produces {got}"
             );
         }
         assert_eq!(
-            last_spawn, 308,
-            "SEQUENCE_TICKS' doc quotes the last spawn at tick 308"
+            last_spawn, 561,
+            "SEQUENCE_TICKS' doc quotes the last spawn at tick 561"
         );
     }
 
@@ -1278,7 +1330,11 @@ mod tests {
         scene.run_to(RAIN_START_TICK);
         let settled = letter_positions(&scene);
         scene.run_to(SEQUENCE_TICKS);
-        assert_eq!(scene.drops().len(), RAIN_COUNT, "the rain did not all fall");
+        assert!(
+            scene.drops().len() > 20,
+            "only {} drops spawned before the freeze",
+            scene.drops().len()
+        );
 
         let scattered = letter_positions(&scene);
         let worst = settled
@@ -1322,7 +1378,7 @@ mod tests {
     fn every_raining_shape_collides_as_its_own_hull_rather_than_a_bounding_ball() {
         let mut scene = scene();
         scene.run_to(SEQUENCE_TICKS);
-        assert_eq!(scene.drops().len(), RAIN_COUNT);
+        assert!(scene.drops().len() > 20);
         for (index, drop) in scene.drops().iter().enumerate() {
             let body = &scene.world.bodies[drop.body];
             let Shape::ConvexPolytope4D { vertices } = &body.collider else {
@@ -1426,35 +1482,67 @@ mod tests {
     }
 
     #[test]
-    fn an_undisturbed_word_holds_its_slice_and_a_struck_one_sweeps() {
+    fn the_slice_holds_while_the_sim_runs_and_sweeps_once_it_freezes() {
         let mut scene = scene();
-        // Strictly before the first drop spawns: the word has landed and is
-        // settled, and nothing has hit it yet.
-        for tick in (ASSEMBLE_TICKS + SETTLE_TICKS / 2)..RAIN_START_TICK {
+        for tick in 0..PHYSICS_PAUSE_TICK {
             scene.run_to(tick);
             assert!(
-                (scene.slice() - W_SLICE).abs() < 1e-4,
-                "the slice drifted to {} at tick {tick}, before anything had                  hit the word",
+                (scene.slice() - W_SLICE).abs() < 1e-6,
+                "the slice moved to {} at tick {tick}, while the pile was still                  rolling",
                 scene.slice()
             );
         }
 
-        scene.run_to(SEQUENCE_TICKS);
-        let mut swept = 0.0f32;
-        for tick in 0..SLICE_SCRUB_PERIOD_TICKS as u32 {
-            scene.run_to(SEQUENCE_TICKS + tick);
-            swept = swept.max((scene.slice() - W_SLICE).abs());
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for tick in PHYSICS_PAUSE_TICK..SEQUENCE_TICKS {
+            scene.run_to(tick);
+            lo = lo.min(scene.slice());
+            hi = hi.max(scene.slice());
         }
-        // The rain leaves the letters off the resting slice, so the sweep has
-        // to be doing something; an idle animation would have moved before the
-        // rain too, which the first half of this test rules out.
+        // A full sweep either side, which is what carries every letter through
+        // every other letterform.
         assert!(
-            swept > 0.01,
-            "the slice never swept after the rain, so a knocked letter sits on              one letterform"
+            hi > 0.9 * SLICE_SWEEP_RANGE && lo < -0.9 * SLICE_SWEEP_RANGE,
+            "the sweep only reached [{lo}, {hi}] of +/-{SLICE_SWEEP_RANGE}"
         );
+    }
+
+    #[test]
+    fn nothing_moves_once_the_sim_is_frozen_except_the_slice() {
+        let mut scene = scene();
+        scene.run_to(PHYSICS_PAUSE_TICK);
+        let poses: Vec<Vec4> = (0..scene.drops().len())
+            .map(|i| scene.drop_pose(i).position)
+            .collect();
+        let letters: Vec<Vec4> = (0..scene.letters().len())
+            .map(|i| scene.letter_pose(i).position)
+            .collect();
+
+        // Checked on the way through rather than at the end: `run_to` only
+        // goes forwards, and a whole sweep lands back on the resting slice by
+        // construction, so the end is exactly where the sweep is invisible.
+        let mut swept = 0.0f32;
+        for tick in PHYSICS_PAUSE_TICK..SEQUENCE_TICKS {
+            scene.run_to(tick);
+            swept = swept.max((scene.slice() - W_SLICE).abs());
+            for (i, was) in poses.iter().enumerate() {
+                assert_eq!(
+                    scene.drop_pose(i).position,
+                    *was,
+                    "drop {i} moved at tick {tick}, after the freeze"
+                );
+            }
+            for (i, was) in letters.iter().enumerate() {
+                assert_eq!(
+                    scene.letter_pose(i).position,
+                    *was,
+                    "letter {i} moved at tick {tick}, after the freeze"
+                );
+            }
+        }
         assert!(
-            swept <= SLICE_SCRUB_MAX + 1e-4,
-            "the slice swept {swept}, past its own cap"
+            swept > 0.9 * SLICE_SWEEP_RANGE,
+            "the slice froze along with everything else, reaching only {swept}"
         );
     }
 
@@ -1528,6 +1616,43 @@ mod tests {
             let spin = scene.world.bodies[body].angular_velocity;
             assert_eq!((spin.xw, spin.yw, spin.zw), (0.0, 0.0, 0.0));
         }
+    }
+
+    #[test]
+    fn the_rain_falls_through_itself_and_stacks_only_once_it_has_landed() {
+        let mut scene = scene();
+        scene.run_to(RAIN_START_TICK + 20);
+        let falling: Vec<BodyId> = (scene.drops().iter())
+            .map(|d| d.body)
+            .filter(|id| scene.world.bodies[*id].collision_group == GROUP_FALLING)
+            .collect();
+        assert!(!falling.is_empty(), "nothing was in the air 20 ticks into the rain");
+
+        // No manifold ever holds two bodies that are both still falling.
+        for tick in RAIN_START_TICK..PHYSICS_PAUSE_TICK {
+            scene.run_to(tick);
+            for (key, manifold) in &scene.world.manifolds {
+                if manifold.points.is_empty() {
+                    continue;
+                }
+                let air = |id: BodyId| scene.world.bodies[id].collision_group == GROUP_FALLING;
+                assert!(
+                    !(air(key.0) && air(key.1)),
+                    "two airborne drops met at tick {tick}"
+                );
+            }
+        }
+
+        // And landing is not a one-way trip into never colliding: by the
+        // freeze most of the rain has joined the pile.
+        let landed = (scene.drops().iter())
+            .filter(|d| scene.world.bodies[d.body].collision_group == GROUP_LANDED)
+            .count();
+        assert!(
+            landed * 2 > scene.drops().len(),
+            "only {landed} of {} drops ever touched anything",
+            scene.drops().len()
+        );
     }
 
     #[test]

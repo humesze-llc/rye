@@ -21,7 +21,22 @@ pub struct RigidBody<S: PhysicsSpace> {
 
     /// 0 is perfectly inelastic, 1 perfectly elastic.
     pub restitution: f32,
+
+    /// Which set this body belongs to, and which sets it will collide with. A
+    /// pair reaches the narrowphase only if EACH body's group is in the
+    /// other's mask, so a one-sided edit cannot produce a pair that collides
+    /// in one direction. Defaults to [`GROUP_DEFAULT`] and [`MASK_ALL`], which
+    /// is every body colliding with every other and costs one `&` per
+    /// broadphase candidate.
+    pub collision_group: u32,
+    pub collision_mask: u32,
 }
+
+/// The group every body is spawned into.
+pub const GROUP_DEFAULT: u32 = 1;
+
+/// Collides with every group.
+pub const MASK_ALL: u32 = u32::MAX;
 
 impl<S: PhysicsSpace> RigidBody<S> {
     pub fn new(
@@ -43,6 +58,8 @@ impl<S: PhysicsSpace> RigidBody<S> {
         );
         let inv_mass = if mass > 0.0 { 1.0 / mass } else { 0.0 };
         Self {
+            collision_group: GROUP_DEFAULT,
+            collision_mask: MASK_ALL,
             position,
             velocity,
             orientation: space.iso_identity(),
@@ -60,6 +77,8 @@ impl<S: PhysicsSpace> RigidBody<S> {
         S::Vector: Default,
     {
         Self {
+            collision_group: GROUP_DEFAULT,
+            collision_mask: MASK_ALL,
             position,
             velocity: S::Vector::default(),
             orientation: space.iso_identity(),

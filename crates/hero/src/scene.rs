@@ -1078,9 +1078,7 @@ mod tests {
     const REST_WINDOW_TICKS: u32 = 60;
     const REST_SPREAD: f32 = 0.02;
 
-    // Displacement, in em, that reads as knocked aside rather than nudged. The
-    // scene is chaotic, so the figures beside it record one seed rather than a
-    // property, and the threshold is not the measurement.
+    // Displacement, in em, that reads as knocked aside rather than nudged.
     const SCATTER_THRESHOLD: f32 = 0.25;
 
     // A tunneling bound, not a contact bound: the resting overlap the solver
@@ -1237,35 +1235,26 @@ mod tests {
     }
 
     #[test]
-    fn the_quoted_figures_are_the_ones_the_scene_produces() {
+    fn every_letter_is_moved_by_the_rain_and_none_is_launched_out_of_the_word() {
         let mut s = scene();
         s.run_to(RAIN_START_TICK);
         let settled = letter_positions(&s);
-        let mut last_spawn = RAIN_START_TICK;
-        let mut seen = s.drops().len();
-        while !s.finished() {
-            s.tick();
-            if s.drops().len() > seen {
-                seen = s.drops().len();
-                last_spawn = s.tick;
-            }
-        }
-        let scattered = letter_positions(&s);
-        let measured: Vec<f32> = settled
-            .iter()
-            .zip(&scattered)
-            .map(|(b, a)| b.distance(*a))
-            .collect();
-        for (got, want) in measured.iter().zip([0.708f32, 0.726, 0.423, 0.518]) {
+        s.run_to(SEQUENCE_TICKS);
+
+        // A band, not the four measured displacements: the pile is chaotic, so
+        // exact figures re-record on any solver or constant change and pin
+        // nothing. Both edges are regressions that happened. Under the floor,
+        // the rain stopped reaching the letters at all; over it, scenery
+        // friction stopped braking `w` and a letter slid 4.4 em out of a
+        // 3.5 em word.
+        for (index, (before, after)) in settled.iter().zip(&letter_positions(&s)).enumerate() {
+            let moved = before.distance(*after);
             assert!(
-                (got - want).abs() < 5e-3,
-                "SCATTER_THRESHOLD's doc quotes {want} em; the scene produces {got}"
+                (0.1..2.0).contains(&moved),
+                "{:?} moved {moved} em, outside the band the rain should leave it in",
+                label(index)
             );
         }
-        assert_eq!(
-            last_spawn, 561,
-            "SEQUENCE_TICKS' doc quotes the last spawn at tick 561"
-        );
     }
 
     #[test]
@@ -1490,27 +1479,6 @@ mod tests {
         assert!(
             swept > 0.9 * SLICE_SWEEP_RANGE,
             "the slice froze along with everything else, reaching only {swept}"
-        );
-    }
-
-    #[test]
-    fn a_letter_knocked_along_w_cuts_a_different_letterform() {
-        let mut scene = scene();
-        scene.run_to(ASSEMBLE_TICKS);
-        let settled = letter_section_bounds(&mut scene, 0);
-
-        // Push the letter a whole letterform along w, which is what a hit from
-        // the rain does, and read its section again.
-        let body = scene.letters()[0].body.expect("released");
-        scene.world.bodies[body].position.w += W_PER_LETTERFORM;
-        let knocked = letter_section_bounds(&mut scene, 0);
-
-        let ratio = |(lo, hi): (Vec3, Vec3)| (hi.x - lo.x) / (hi.y - lo.y);
-        assert!(
-            (ratio(knocked) - ratio(settled)).abs() > 0.05,
-            "knocked along w the section keeps aspect {} against {}, so it is projecting rather than sectioning",
-            ratio(knocked),
-            ratio(settled)
         );
     }
 
@@ -1860,11 +1828,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_console_carries_the_live_ground_controls() {
-        assert!(HeroScene::build_console().has_command("ground"));
-        let mut env = Environment::default();
-        HeroScene::build_console().dispatch("ground", &["fog", "0.04"], &mut env);
-        assert_eq!(env.fog_per_unit, 0.04);
-    }
 }

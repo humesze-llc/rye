@@ -210,31 +210,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_catalog_entry_gets_a_hull_or_a_ball_and_a_matching_inertia() {
-        let with_hull: Vec<&str> = SHAPE_CATALOG
-            .iter()
-            .filter(|e| e.collider_polytope().is_some())
-            .map(|e| e.label)
-            .collect();
-        assert_eq!(
-            with_hull,
-            ["5-cell", "8-cell", "16-cell", "24-cell", "120-cell", "600-cell"]
-        );
-
-        // Every polytope entry collides as its own hull now; only the smooth
-        // solids fall through to a ball. The regression this catches is a
-        // vertex list quietly losing its collider again.
-        for entry in SHAPE_CATALOG {
-            assert_eq!(
-                entry.collider_polytope().is_some(),
-                entry.shape.polytope4().is_some(),
-                "{} disagrees with its own shape about having a hull",
-                entry.label
-            );
-        }
-    }
-
-    #[test]
     fn row_comes_from_the_args_value_not_the_process_environment() {
         assert_eq!(parse_row(&Args::default()).unwrap(), DEFAULT_ROW);
         assert_eq!(

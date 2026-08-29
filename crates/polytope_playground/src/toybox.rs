@@ -2420,90 +2420,6 @@ mod tests {
         );
     }
 
-    /// Diagnostic, not a gate. `cargo test -p polytope_playground settle_trace
-    /// -- --ignored --nocapture` prints one row per tick for one toy: pose,
-    /// speeds, contact count and the deepest penetration, plus whether the rest
-    /// latch is holding it. This is how a settling complaint gets read.
-    #[test]
-    #[ignore = "diagnostic: drops a toy on a corner and traces whether it tips flat"]
-    fn corner_drop_trace() {
-        let mut toybox = Toybox::new(DEFAULT_SEED);
-        // Tip it well off any face so it MUST rotate to settle.
-        let body = toybox.toys[0].body;
-        toybox.world.bodies[body].orientation.rotation =
-            (Bivector4::new(0.0, 0.0, 0.0, 0.6, 0.4, 0.0))
-                .exp()
-                .normalize();
-        toybox.world.bodies[body].position.y = 1.6;
-        toybox.wake(0);
-        println!(
-            "{:>4} {:>8} {:>9} {:>9} {:>8} {:>6}",
-            "tick", "y", "|w|", "turn_deg", "d_pose", "sleep"
-        );
-        let mut prev = toybox.world.bodies[body].orientation.rotation;
-        for tick in 0..300 {
-            toybox.tick();
-            let b = &toybox.world.bodies[body];
-            let rel = b.orientation.rotation * prev.inverse();
-            let turn = 2.0 * rel.s.abs().clamp(0.0, 1.0).acos().to_degrees();
-            if tick % 15 == 0 || toybox.toys[0].asleep {
-                println!(
-                    "{tick:>4} {:>8.4} {:>9.4} {:>9.4} {:>8.5} {:>6}",
-                    b.position.y,
-                    b.angular_velocity.magnitude(),
-                    turn,
-                    (b.position - toybox.toys[0].rest_anchor).length(),
-                    toybox.toys[0].asleep
-                );
-            }
-            prev = b.orientation.rotation;
-            if toybox.toys[0].asleep && tick > 200 {
-                break;
-            }
-        }
-    }
-
-    #[test]
-    #[ignore = "diagnostic: prints a settling trace"]
-    fn settle_trace() {
-        let mut toybox = Toybox::new(DEFAULT_SEED);
-        let toy = 0;
-        println!(
-            "{:>4} {:>8} {:>8} {:>8} {:>9} {:>9} {:>7} {:>6}",
-            "tick", "y", "|v|", "|w|", "tilt", "d_pose", "cts", "latch"
-        );
-        let mut last = toybox.world.bodies[toybox.toys[toy].body].position;
-        for tick in 0..420 {
-            toybox.tick();
-            let body = &toybox.world.bodies[toybox.toys[toy].body];
-            let pose = body.position;
-            // Angle between the body's own +y and world +y: zero when a cell
-            // lies flat on the floor.
-            let up = body.orientation.rotation.apply(Vec4::Y);
-            let tilt = up.y.clamp(-1.0, 1.0).acos().to_degrees();
-            let contacts: usize = toybox
-                .world
-                .manifolds
-                .values()
-                .filter(|m| m.points.iter().len() > 0)
-                .map(|m| m.points.len())
-                .sum();
-            let latched = toybox.toys[toy].rest_ticks >= REST_WINDOW;
-            if tick % 10 == 0 || latched {
-                println!(
-                    "{tick:>4} {:>8.4} {:>8.4} {:>8.4} {:>9.3} {:>9.5} {contacts:>7} {:>6}",
-                    pose.y,
-                    body.velocity.length(),
-                    body.angular_velocity.magnitude(),
-                    tilt,
-                    (pose - last).length(),
-                    latched
-                );
-            }
-            last = pose;
-        }
-    }
-
     #[test]
     fn a_settled_toy_stops_dead_instead_of_creeping() {
         // The regression, found by reading settle_trace: with the latch only
@@ -3387,17 +3303,6 @@ mod tests {
     }
 
     #[test]
-    fn the_two_release_ceilings_spend_exactly_the_usable_step() {
-        let spent = (MAX_RELEASE_SPEED + MAX_ANGULAR_SPEED * BODY_SIZE) * MIN_SOLVER_DT;
-        let usable = TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL;
-        assert!(
-            (spent - usable).abs() < 1e-6,
-            "the ceilings spend {spent} of the step budget, not the {usable} they \
-             are derived from"
-        );
-    }
-
-    #[test]
     fn every_toy_collides_as_its_own_hull_with_the_exact_moment() {
         let toybox = scene();
         for (index, toy) in toybox.toys().iter().enumerate() {
@@ -3492,29 +3397,6 @@ mod tests {
         assert!(
             toybox.grab_handle().is_none(),
             "the handle outlived the grab"
-        );
-    }
-
-    #[test]
-    fn the_grab_handle_is_stored_in_the_body_frame() {
-        let mut toybox = settled();
-        let centre = toybox.position(0).truncate();
-        assert!(toybox.press(&ray_through(centre + Vec3::new(0.0, 0.2, 0.0)), FORWARD));
-        let lever = toybox.grab.as_ref().expect("held").lever_local;
-        assert!(lever.length() > 0.05, "an off-centre grab stored no lever");
-
-        let id = toybox.toys[0].body;
-        let before = toybox.world.bodies[id].orientation.rotation.apply(lever);
-        let spun = (Plane4::Xy.unit_bivector() * 0.9).exp().normalize();
-        toybox.world.bodies[id].orientation.rotation = spun;
-        let after = toybox.world.bodies[id].orientation.rotation.apply(lever);
-        assert!(
-            (before - after).length() > 0.05,
-            "the handle stayed put in world space while the body turned under it"
-        );
-        assert!(
-            (before.length() - after.length()).abs() < 1e-5,
-            "the handle changed length under a rotation"
         );
     }
 

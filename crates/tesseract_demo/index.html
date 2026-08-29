@@ -27,8 +27,7 @@
 
          Why not use Trunk's `data-initializer`: would require a separate
          JS file shipped with each demo. The 6-line regex below is the
-         minimum-friction Phase A solution; revisit if multi-demo demos
-         start to share a real initializer anyway. -->
+         minimum-friction solution while no two demos share an initializer anyway. -->
     <script>
       // Generic match: trunk emits one `<script type="module">` with an
       // `import init from '/...js'` line. Pick the first `.js` URL in

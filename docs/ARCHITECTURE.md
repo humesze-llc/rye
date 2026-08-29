@@ -11,8 +11,8 @@ crate with no first-party dependencies, so every crate depends only on
 strictly lower tiers.
 
 ```
-tier 0  loam-math  loam-input  loam-time  loam-asset  loam-console
-tier 1  loam-shape  loam-camera  loam-player  loam-shader
+tier 0  loam-math  loam-input  loam-asset  loam-console
+tier 1  loam-shape  loam-camera  loam-player  loam-shader  loam-time
 tier 2  loam-scene  loam-physics  loam-text  loam-render  loam-egui
 tier 3  loam-app
 tier 4  loam  polytope_playground  hero  tesseract_demo
@@ -24,10 +24,10 @@ constrain the tiers.
 ```
 loam-math             (none)
 loam-input            (none)
-loam-time             (none)
 loam-asset            (none)
 loam-console          (none)
 loam-shape            math
+loam-time             math
 loam-camera           math  input
 loam-player           math  input
 loam-shader           math  asset                 dev: scene

@@ -37,7 +37,7 @@ loam-time    = { path = "../loam-time",    version = "0.1.0" }
 epaint_default_fonts = "0.33"
 
 [dev-dependencies]
-# Headless device request in the `sdf_edit_latency` example. Dev-only: the demo
+# Headless device request in the `build_cost` measurement. Dev-only: the demo
 # itself gets its device from the runner.
 pollster.workspace = true
 

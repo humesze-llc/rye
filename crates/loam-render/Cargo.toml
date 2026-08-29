@@ -10,13 +10,6 @@ description = "Loam renderer: wgpu surface lifecycle, raymarch and raster pipeli
 keywords = ["wgpu", "renderer", "raymarching", "graphics", "gamedev"]
 categories = ["graphics", "rendering", "game-development"]
 
-[features]
-default = []
-2d = []
-3d = []
-voxel = []
-postfx = []
-
 [dependencies]
 anyhow.workspace = true
 tracing.workspace = true

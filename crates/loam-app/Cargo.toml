@@ -49,7 +49,7 @@ loam-shader = { path = "../loam-shader", version = "0.1.0" }
 loam-time   = { path = "../loam-time",   version = "0.1.0" }
 loam-egui   = { path = "../loam-egui",   version = "0.1.0" }
 
-# Direct dep so the worker-mode `WorkerUi` (N5 Phase B4) can use
+# Direct dep so the worker-mode `WorkerUi` can use
 # `egui_wgpu::Renderer` without going through loam-egui's `UiIntegration`
 # (which is winit-coupled). Same version loam-egui pulls in to keep the
 # egui type universe consistent across the workspace.
@@ -94,7 +94,7 @@ web-sys = { version = "0.3", features = [
     "Performance",
     "Event",
     "EventTarget",
-    # Worker-mode (Phase A onward). See OFFSCREEN_CANVAS_WORKERS.md.
+    # Worker-mode.
     # - DedicatedWorkerGlobalScope: type to detect "am I in a worker?"
     #   and to call requestAnimationFrame inside the worker.
     # - Worker: main-thread handle for spawning + posting messages.
@@ -113,7 +113,7 @@ web-sys = { version = "0.3", features = [
     "Blob",
     "BlobPropertyBag",
     "Url",
-    # DOM event types we forward to the worker from main thread (Phase B3).
+    # DOM event types we forward to the worker from the main thread.
     "MouseEvent",
     "KeyboardEvent",
     "WheelEvent",

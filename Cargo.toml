@@ -28,7 +28,7 @@ rust-version = "1.95.0"
 license = "MIT OR Apache-2.0"
 version = "0.1.0"
 authors = ["Zach Humes <humesze@proton.me>"]
-repository = "https://github.com/humesze-llc/loam"
+repository = "https://github.com/throgsoft/loam"
 
 [workspace.dependencies]
 anyhow = "1"

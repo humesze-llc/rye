@@ -2,7 +2,7 @@
 
 **A Rust game engine on wgpu where the ambient geometry is a parameter: higher dimensions and curved manifolds are first-class primitives.** Built in the open by one person, for the author's games. Source-available and dual-licensed; not a community engine and not a supported product.
 
-[![CI](https://github.com/humesze-llc/loam/actions/workflows/ci.yml/badge.svg)](https://github.com/humesze-llc/loam/actions/workflows/ci.yml)
+[![CI](https://github.com/throgsoft/loam/actions/workflows/ci.yml/badge.svg)](https://github.com/throgsoft/loam/actions/workflows/ci.yml)
 
 <!-- HERO SLOT: assets/readme/hero.webp
      v1 capture: the playground's default polytope row under xw rotation,
@@ -22,7 +22,7 @@ The Polytope Playground is the flagship demo and the first thing to look at. Rus
 
 Runs natively on Vulkan and in the browser on WebGPU. CI exercises Vulkan through lavapipe and builds the wasm32 target. No other wgpu backend has been run here.
 
-Rustdoc for every crate is published at [humesze-llc.github.io/loam](https://humesze-llc.github.io/loam/).
+Rustdoc for every crate is published at [throgsoft.github.io/loam](https://throgsoft.github.io/loam/).
 
 <!-- 600-CELL SLOT: assets/readme/600-cell.webp
      The 600-cell rotating through the exact cross-section path, wireframe

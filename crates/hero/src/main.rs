@@ -6,7 +6,8 @@
 //! panel and encode the sequence:
 //!
 //! ```text
-//! ffmpeg -framerate 60 -i frame%05d.png //!     -c:v libvpx-vp9 -crf 30 -b:v 0 -row-mt 1 -pix_fmt yuv420p hero.webm
+//! ffmpeg -framerate 60 -i frame%05d.png -c:v libvpx-vp9 \
+//!     -crf 30 -b:v 0 -row-mt 1 -pix_fmt yuv420p hero.webm
 //! ```
 //!
 //! `loam-app` writes PNG, GIF and APNG; it has no video encoder and should not

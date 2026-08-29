@@ -208,6 +208,9 @@ pub(crate) struct HeroSequence {
     rng: u64,
     tick: u32,
     next_spawn_tick: u32,
+    /// Reused across sub-steps; a fresh `Vec` here would allocate four times a
+    /// tick for four floats.
+    letter_w_scratch: Vec<f32>,
 }
 
 impl HeroSequence {
@@ -250,6 +253,7 @@ impl HeroSequence {
             rng: seed ^ 0x9e37_79b9_7f4a_7c15,
             tick: 0,
             next_spawn_tick: RAIN_START_TICK,
+            letter_w_scratch: Vec::new(),
         })
     }
 
@@ -260,11 +264,15 @@ impl HeroSequence {
             if self.tick >= self.next_spawn_tick {
                 self.spawn_drop();
             }
+            let mut before_w = std::mem::take(&mut self.letter_w_scratch);
             for _ in 0..SUBSTEPS_PER_TICK {
+                self.letter_w_velocities(&mut before_w);
                 self.world.step(SOLVER_DT);
                 self.hold_letters_in_the_slice();
+                self.keep_scenery_from_moving_letters_in_w(&before_w);
                 self.land_touched_drops();
             }
+            self.letter_w_scratch = before_w;
         }
         self.tick += 1;
         // The handover closes the assemble phase rather than opening the fall
@@ -321,6 +329,57 @@ impl HeroSequence {
             spin.xw = 0.0;
             spin.yw = 0.0;
             spin.zw = 0.0;
+        }
+    }
+
+    /// Each letter's `w` velocity, to be handed back to
+    /// [`Self::keep_scenery_from_moving_letters_in_w`] after the solve.
+    fn letter_w_velocities(&self, out: &mut Vec<f32>) {
+        out.clear();
+        out.extend(self.letters.iter().map(|letter| {
+            letter
+                .body
+                .map_or(0.0, |body| self.world.bodies[body].velocity.w)
+        }));
+    }
+
+    /// Stops the scenery from ever SPEEDING a letter up along `w`, while
+    /// leaving it free to slow one down.
+    ///
+    /// A DELIBERATE DEVIATION, and a narrow one twice over: only contacts
+    /// against SCENERY, only along `w`, and only in the direction that adds
+    /// speed. A drop striking a letter still drives it off the slice, which is
+    /// the whole effect. The one-sidedness is load-bearing: neutering the
+    /// floor's `w` friction outright leaves a letter that the rain has pushed
+    /// sliding in `w` forever with nothing to brake it, which measured as a
+    /// letter travelling 4.4 em out of a 3.5 em word.
+    ///
+    /// The floor's normal is pure `y`, so it is not the normal impulse that
+    /// does this. It is friction: a contact's tangent space in R⁴ is
+    /// three-dimensional and contains `w`, the landing gives a letter
+    /// `w`-plane spin, `velocity_at_point` reads that as `w` motion at the
+    /// contact, and friction converts it into linear `w` on the centre of
+    /// mass. Measured before this: a letter left its landing with
+    /// `w` velocity 0.096 and settled to a CONSTANT 0.0126 that never decayed,
+    /// because once the spin is held out of the `w` planes there is no `w`
+    /// left in the tangent for friction to brake.
+    fn keep_scenery_from_moving_letters_in_w(&mut self, before: &[f32]) {
+        for (index, letter) in self.letters.iter().enumerate() {
+            let Some(body) = letter.body else { continue };
+            let only_scenery = (self.world.manifolds.iter())
+                .filter(|(key, manifold)| {
+                    !manifold.points.is_empty() && (key.0 == body || key.1 == body)
+                })
+                .all(|(key, _)| {
+                    let other = if key.0 == body { key.1 } else { key.0 };
+                    self.world.bodies[other].inv_mass == 0.0
+                });
+            if only_scenery {
+                let w = &mut self.world.bodies[body].velocity.w;
+                if w.abs() > before[index].abs() {
+                    *w = before[index];
+                }
+            }
         }
     }
 
@@ -1131,8 +1190,8 @@ mod tests {
     // rather than nudged. The test it gates asks whether the rain moved ANY
     // letter past it, which is the scene's claim, and not that of every
     // letter. Measured by `the_quoted_figures_are_the_ones_the_scene_produces`:
-    // the rain moves `L` 0.468, `O` 0.753, `A` 0.554 and `M` 0.444 em, so it
-    // clears on the best by 3.0x. The scene is chaotic, so these are a record
+    // the rain moves `L` 0.708, `O` 0.726, `A` 0.423 and `M` 0.518 em, so it
+    // clears on the best by 2.9x. The scene is chaotic, so these are a record
     // of one seed and not a property; the threshold is not the measurement.
     const SCATTER_THRESHOLD: f32 = 0.25;
 
@@ -1312,7 +1371,7 @@ mod tests {
             .zip(&scattered)
             .map(|(b, a)| b.distance(*a))
             .collect();
-        for (got, want) in measured.iter().zip([0.468f32, 0.753, 0.554, 0.444]) {
+        for (got, want) in measured.iter().zip([0.708f32, 0.726, 0.423, 0.518]) {
             assert!(
                 (got - want).abs() < 5e-3,
                 "SCATTER_THRESHOLD's doc quotes {want} em; the scene produces {got}"
@@ -1652,6 +1711,38 @@ mod tests {
             landed * 2 > scene.drops().len(),
             "only {landed} of {} drops ever touched anything",
             scene.drops().len()
+        );
+    }
+
+    #[test]
+    fn the_floor_never_slides_a_letter_along_w_but_the_rain_still_does() {
+        let mut scene = scene();
+        // The whole settle, where the only thing touching a letter is scenery.
+        for tick in ASSEMBLE_TICKS..RAIN_START_TICK {
+            scene.run_to(tick);
+            for (index, letter) in scene.letters().iter().enumerate() {
+                let body = letter.body.expect("released");
+                let w = scene.world.bodies[body].position.w;
+                assert!(
+                    (w - letter.mark.w).abs() < 1e-6,
+                    "{:?} slid to w {w} on the floor alone at tick {tick}",
+                    label(index)
+                );
+            }
+        }
+
+        // And the rain still drives them off the slice, which is the effect
+        // the deviation above exists to protect rather than to suppress.
+        scene.run_to(PHYSICS_PAUSE_TICK);
+        let pushed = (scene.letters().iter())
+            .map(|l| {
+                let body = l.body.expect("released");
+                (scene.world.bodies[body].position.w - l.mark.w).abs()
+            })
+            .fold(0.0f32, f32::max);
+        assert!(
+            pushed > 0.05,
+            "the rain moved no letter further than {pushed} in w, so the letters              never morph"
         );
     }
 

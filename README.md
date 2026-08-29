@@ -1,6 +1,6 @@
 # Loam
 
-**A Rust game engine on wgpu where the ambient geometry is a parameter: higher dimensions and curved manifolds are first-class primitives.** Built in the open by one person, for the author's games. Source-available and dual-licensed; not a community engine and not a supported product.
+**A Rust game engine with non-Euclidean geometry as a primitive: on wgpu, higher dimensions and curved manifolds are the parameters a scene picks, not assumptions baked into the renderer.** Built in the open by one person, for the author's games. Source-available and dual-licensed; not a community engine and not a supported product.
 
 [![CI](https://github.com/throgsoft/loam/actions/workflows/ci.yml/badge.svg)](https://github.com/throgsoft/loam/actions/workflows/ci.yml)
 

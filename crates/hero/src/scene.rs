@@ -1071,10 +1071,10 @@ mod tests {
     const SEED: u64 = 0x10a3_5eed;
 
     // Ticks over which a settled letter must hold still, and the position
-    // spread allowed across them. The bound is `glyph-letter-bodies`'s, and the
-    // measured worst here is 0.0063 em on `L`. What is left at rest is the
-    // Baumgarte limit cycle: gravity sinks the letter over a step and the
-    // positional bias pushes it back out, forever, at the slop's amplitude.
+    // spread allowed across them. The measured worst is 0.0063 em on `L`, and
+    // what is left at rest is the Baumgarte limit cycle: gravity sinks the
+    // letter over a step and the positional bias pushes it back out, forever,
+    // at the slop's amplitude.
     const REST_WINDOW_TICKS: u32 = 60;
     const REST_SPREAD: f32 = 0.02;
 

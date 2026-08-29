@@ -50,9 +50,8 @@ jobs:
             echo '<title>Loam API documentation</title>'
             echo '<style>body{font:16px/1.6 system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem}li{margin:.3rem 0}</style>'
             echo '</head><body><h1>Loam API documentation</h1>'
-            echo '<p>A geometry engine for spaces where curvature and dimension are'
-            echo 'structural. Start with <code>loam_math</code> and <code>loam_shape</code>'
-            echo '(the stable surfaces).</p><ul>'
+            echo '<p>Start with <code>loam_math</code> and <code>loam_shape</code>,'
+            echo 'the stable surfaces.</p><ul>'
             for d in */; do
               name="${d%/}"
               [ -f "${d}all.html" ] && echo "<li><a href=\"${name}/index.html\"><code>${name}</code></a></li>"

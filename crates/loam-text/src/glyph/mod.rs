@@ -8,7 +8,7 @@ mod outline;
 mod solid;
 
 pub use field::DistanceField2D;
-pub use solid::GlyphSolid;
+pub use solid::{append_field_prism, GlyphSolid};
 
 use ab_glyph::{Font, FontRef, GlyphId};
 use glam::Vec2;

@@ -58,24 +58,6 @@ const W_ENTRY_SPAN: f32 = 0.6;
 // `GlyphParams::default().slab` is `(-0.075, 0.075)`: the letter solid is the
 // glyph swept through that interval in `w`, so its section at the slice is the
 // whole glyph while the slice is inside the interval and EMPTY outside it.
-const GLYPH_SLAB_HALF: f32 = 0.075;
-
-// A letter's ASSEMBLY-TIME solid is a bicone rather than the prism its
-// collider is: outside the slab the glyph tapers linearly to a point at
-// `±W_ENTRY_SPAN`, so the slice really does cut a smaller letter the further
-// out it sits. This is the title scene's construction (`title::section_scale`)
-// applied symmetrically, because hero letters approach from both signs of `w`.
-//
-// The prism is what physics gets, and the two agree where it matters: the
-// taper is `1` everywhere inside the slab, and a letter is at `w = 0` by the
-// time it is released, so the body that starts falling is the full solid.
-
-// Height of the lowest hull vertex above the floor at release, in em. The fall
-// is short by design: `glyph-letter-bodies` sampled drop clearance from 0.01 to
-// 0.17 em and found the landing is not monotone in height, because a level 4D
-// landing has more tied deepest corners than the one contact per step the
-// narrowphase reports. This value is inside the band that settles; widening it
-// is a multi-contact narrowphase in `loam-physics`, not a change here.
 const RELEASE_CLEARANCE: f32 = 0.05;
 
 // Every letter is at rest well inside this, which
@@ -145,9 +127,6 @@ pub(crate) enum Phase {
 
 pub(crate) struct HeroLetter {
     mesh: TriangleMesh<3>,
-    /// The point the taper shrinks toward, at the centre of the letter's own
-    /// bounds so it grows outward evenly rather than out of a corner.
-    apex: Vec3,
     hull: Vec<Vec4>,
     mark: Vec4,
     entry: Vec4,
@@ -184,6 +163,7 @@ impl HeroPose {
 }
 
 pub(crate) struct HeroSequence {
+    morph: MorphField,
     world: World<EuclideanR4>,
     director: Director,
     letters: Vec<HeroLetter>,
@@ -215,8 +195,12 @@ impl HeroSequence {
         centre_word_on_origin(&mut letters);
 
         let director = Director::new(assembly_timeline(&letters))?;
+        let cell = GlyphParams::default().em_size / GlyphParams::default().resolution as f32;
+        let morph = MorphField::new(&solids, cell)
+            .ok_or_else(|| anyhow::anyhow!("{WORD} laid out with no ink to morph"))?;
 
         Ok(Self {
+            morph,
             world,
             director,
             letters,
@@ -450,6 +434,101 @@ fn lerp(a: f32, b: f32, u: f32) -> f32 {
     a + (b - a) * u
 }
 
+/// Every letter of the word resampled onto one shared grid, so a blend between
+/// two of them is elementwise. This is what makes the wordmark a single 4D
+/// solid rather than four: letter `k` is the same field read at a `w` offset
+/// of `k`, so sliding a letter through `w` sweeps its cross-section through
+/// the other letterforms and lands on its own.
+pub(crate) struct MorphField {
+    origin: glam::Vec2,
+    cell: f32,
+    counts: (usize, usize),
+    /// One resampled grid per letter, in word order.
+    letters: Vec<Vec<f32>>,
+    blended: Vec<f32>,
+}
+
+// A letter's own field is baked over its own bounding box, so the shared grid
+// has to cover the widest letter with the padding the blend needs: a shape
+// growing out of a neighbour reaches past both outlines on the way.
+const MORPH_PAD_EM: f32 = 0.25;
+
+// How much `w` separates one letterform from the next. Sized against
+// `W_ENTRY_SPAN` so the entry sweeps about two letterforms, which reads as a
+// morph rather than as a full cycle of the word.
+const W_PER_LETTERFORM: f32 = 0.3;
+
+impl MorphField {
+    /// `None` if the word has no ink, which cannot happen for a real font but
+    /// is the honest result for one that hands back only blanks.
+    fn new(solids: &[GlyphSolid], cell: f32) -> Option<Self> {
+        let inked: Vec<&GlyphSolid> = solids.iter().filter(|s| !s.is_blank()).collect();
+        let mut half = glam::Vec2::ZERO;
+        for solid in &inked {
+            let field = solid.field()?;
+            let (nx, ny) = field.sample_counts();
+            let lo = field.sample_position(0, 0);
+            let hi = field.sample_position(nx - 1, ny - 1);
+            let centre = 0.5 * (lo + hi);
+            half = half.max((hi - centre).abs());
+        }
+        half += glam::Vec2::splat(MORPH_PAD_EM);
+        let counts = (
+            (2.0 * half.x / cell).ceil() as usize + 1,
+            (2.0 * half.y / cell).ceil() as usize + 1,
+        );
+        let origin = -half;
+
+        // Each letter is resampled about its OWN centre, so the blend morphs a
+        // letter in place instead of sliding it across the shared grid.
+        let letters = inked
+            .iter()
+            .map(|solid| {
+                let field = solid.field().expect("checked above");
+                let (nx, ny) = field.sample_counts();
+                let centre = 0.5
+                    * (field.sample_position(0, 0) + field.sample_position(nx - 1, ny - 1));
+                let mut grid = Vec::with_capacity(counts.0 * counts.1);
+                for j in 0..counts.1 {
+                    for i in 0..counts.0 {
+                        let p = origin + glam::Vec2::new(i as f32, j as f32) * cell;
+                        grid.push(field.sample(p + centre));
+                    }
+                }
+                grid
+            })
+            .collect::<Vec<_>>();
+        (!letters.is_empty()).then(|| Self {
+            origin,
+            cell,
+            counts,
+            blended: vec![0.0; counts.0 * counts.1],
+            letters,
+        })
+    }
+
+    /// The field `u` letterforms along the word, wrapping, so the sequence is a
+    /// loop and a letter approaching from either side of the slice finds a
+    /// neighbour rather than an edge.
+    fn blend_at(&mut self, u: f32) -> Option<loam_text::glyph::DistanceField2D> {
+        let n = self.letters.len();
+        let wrapped = u.rem_euclid(n as f32);
+        let lo = wrapped.floor() as usize % n;
+        let t = wrapped - wrapped.floor();
+        let (a, b) = (&self.letters[lo], &self.letters[(lo + 1) % n]);
+        for (out, (x, y)) in self.blended.iter_mut().zip(a.iter().zip(b.iter())) {
+            *out = x + (y - x) * t;
+        }
+        loam_text::glyph::DistanceField2D::from_samples(
+            self.origin,
+            self.cell,
+            self.counts.0,
+            self.counts.1,
+            self.blended.clone(),
+        )
+    }
+}
+
 fn letter_from(solid: &GlyphSolid, index: usize) -> Result<HeroLetter> {
     let (centre, shape) = solid
         .rigid_hull_4d()
@@ -466,36 +545,15 @@ fn letter_from(solid: &GlyphSolid, index: usize) -> Result<HeroLetter> {
     }
     let lowest = vertices.iter().fold(f32::INFINITY, |m, v| m.min(v.y));
     let mark = Vec4::new(centre.x, RELEASE_CLEARANCE - lowest, centre.z, centre.w);
-    let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
-    for v in &mesh.vertices {
-        let p = Vec3::from_array(*v);
-        lo = lo.min(p);
-        hi = hi.max(p);
-    }
     let side = if index.is_multiple_of(2) { -1.0 } else { 1.0 };
     Ok(HeroLetter {
         mesh,
-        apex: 0.5 * (lo + hi),
         hull: vertices,
         mark,
         entry: mark + Vec4::new(0.0, 0.0, 0.0, side * W_ENTRY_SPAN),
         track: format!("letter{index}"),
         body: None,
     })
-}
-
-/// How large the slice cuts a letter whose centre sits `w_from_slice` away.
-/// `1` inside the slab, tapering linearly to nothing at `±W_ENTRY_SPAN`, and
-/// `None` where the slice misses the solid entirely. Linear because that is
-/// what a cone's cross-section does; anything smoother would be a curve the
-/// geometry does not have.
-fn letter_section_scale(w_from_slice: f32) -> Option<f32> {
-    let past_slab = w_from_slice.abs() - GLYPH_SLAB_HALF;
-    if past_slab <= 0.0 {
-        return Some(1.0);
-    }
-    let scale = 1.0 - past_slab / (W_ENTRY_SPAN - GLYPH_SLAB_HALF);
-    (scale > 0.0).then_some(scale)
 }
 
 /// Shifts every mark so the assembled word straddles the origin in `x`. The
@@ -624,7 +682,7 @@ fn drop_color(polytope: Polytope4) -> [f32; 3] {
 // gives; the drawn mesh is the glyph either way, so no re-extraction is
 // needed, only a scale about a point.
 fn build_frame_mesh(
-    sequence: &HeroSequence,
+    sequence: &mut HeroSequence,
     local: &mut Vec<Vec4>,
     scratch: &mut SectionScratch,
     mesh: &mut TriangleMesh<3>,
@@ -636,26 +694,62 @@ fn build_frame_mesh(
     push_drop_caps(sequence, local, scratch, mesh);
 }
 
-fn push_letters(sequence: &HeroSequence, mesh: &mut TriangleMesh<3>) {
-    for (index, letter) in sequence.letters().iter().enumerate() {
+// COST, measured with `--release` over 200 rebuilds: a frame that is morphing
+// builds in 3.31 ms against 0.62 ms once everything has settled, so the blend
+// and its marching are 2.7 ms, about a sixth of a 60 Hz budget. That is paid
+// only across the 90-tick assembly and only while the director still owns a
+// letter. It is affordable there and would not be at 240 Hz; the fix, if that
+// day comes, is to bake the 4D surface once and slice it the way the rain is
+// sliced, not to bake an atlas of `w` slices, whose quantisation would land
+// exactly where the topology changes.
+//
+// The letters are drawn from the shared morph field while the director still
+// owns them, and from their own baked mesh once physics does. Freezing at the
+// handoff is not only cheaper: a letter that is falling and tumbling is no
+// longer axis-aligned with `w`, so a section of the morph would no longer be
+// the letterform the wordmark is supposed to read as.
+fn push_letters(sequence: &mut HeroSequence, mesh: &mut TriangleMesh<3>) {
+    let half_depth = 0.5 * GlyphParams::default().depth;
+    for index in 0..sequence.letters().len() {
         let pose = sequence.letter_pose(index);
-        // The slice misses this letter's solid, so it contributes nothing.
-        let Some(scale) = letter_section_scale(pose.position.w - W_SLICE) else {
+        let released = sequence.letters()[index].body.is_some();
+        let translate = pose.position_r3();
+        let base = mesh.vertices.len() as u32;
+
+        if released {
+            let letter = &sequence.letters()[index];
+            for v in &letter.mesh.vertices {
+                let posed = pose.rotor.apply(Vec4::new(v[0], v[1], v[2], 0.0));
+                mesh.vertices
+                    .push((posed.truncate() + translate).to_array());
+                mesh.colors.push(LETTER_COLOR);
+            }
+            mesh.indices.extend(
+                (letter.mesh.indices.iter()).map(|t| [t[0] + base, t[1] + base, t[2] + base]),
+            );
+            continue;
+        }
+
+        // `w` runs the other way from the letterform index so a letter
+        // approaching from negative `w` arrives through the letters BEFORE it
+        // in the word, which reads as the word assembling rather than
+        // unwinding.
+        let u = index as f32 - (pose.position.w - W_SLICE) / W_PER_LETTERFORM;
+        let Some(field) = sequence.morph.blend_at(u) else {
             continue;
         };
-        let base = mesh.vertices.len() as u32;
-        let translate = pose.position_r3();
-        for v in &letter.mesh.vertices {
-            let section = letter.apex + scale * (Vec3::from_array(*v) - letter.apex);
-            let posed = pose
-                .rotor
-                .apply(Vec4::new(section.x, section.y, section.z, 0.0));
+        let mut section = TriangleMesh::<3>::default();
+        if !loam_text::glyph::append_field_prism(&field, half_depth, LETTER_COLOR, &mut section) {
+            continue;
+        }
+        for v in &section.vertices {
+            let posed = pose.rotor.apply(Vec4::new(v[0], v[1], v[2], 0.0));
             mesh.vertices
                 .push((posed.truncate() + translate).to_array());
             mesh.colors.push(LETTER_COLOR);
         }
         mesh.indices
-            .extend((letter.mesh.indices.iter()).map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+            .extend((section.indices.iter()).map(|t| [t[0] + base, t[1] + base, t[2] + base]));
     }
 }
 
@@ -887,7 +981,7 @@ impl loam_app::shell::Scene for HeroScene {
             .record(ctx.encoder, ctx.view, &depth.view, None);
 
         build_frame_mesh(
-            &self.sequence,
+            &mut self.sequence,
             &mut self.local_vertices,
             &mut self.section_scratch,
             &mut self.mesh,
@@ -1252,79 +1346,84 @@ mod tests {
             .reduce(|(lo, hi), (l, h)| (lo.min(l), hi.max(h)))
     }
 
-    #[test]
-    fn the_slice_cuts_a_smaller_letter_the_further_out_it_sits() {
-        assert_eq!(letter_section_scale(0.0), Some(1.0));
-        assert_eq!(
-            letter_section_scale(GLYPH_SLAB_HALF),
-            Some(1.0),
-            "the slab edge is still inside the slab"
-        );
-        assert_eq!(
-            letter_section_scale(W_ENTRY_SPAN),
-            None,
-            "a letter at its entry offset is cut, so it does not grow in"
-        );
-        assert_eq!(letter_section_scale(-W_ENTRY_SPAN), None, "the taper is not even");
-
-        // Strictly shrinking across the taper. A constant here is the defect
-        // the apex exists to remove: a prism section that never changes size,
-        // which is what an opacity fade was standing in for.
-        let mut previous = 1.0;
-        for step in 1..=40 {
-            let d = GLYPH_SLAB_HALF + (W_ENTRY_SPAN - GLYPH_SLAB_HALF) * step as f32 / 41.0;
-            let scale = letter_section_scale(d).expect("still inside the taper");
-            assert!(scale < previous, "section did not shrink at {d} from the slice");
-            previous = scale;
-        }
-    }
-
-    #[test]
-    fn a_letter_mid_approach_draws_a_physically_smaller_section() {
-        let mut scene = scene();
-        // Part way through the first letter's slide, where it is outside its
-        // slab but inside the taper.
-        scene.run_to(LETTER_SLIDE_TICKS / 2);
+    // Bounds of everything the frame drew, which is how a section's identity
+    // is compared without pinning vertex positions a re-bake would move.
+    fn letter_section_bounds(scene: &mut HeroSequence, index: usize) -> (Vec3, Vec3) {
+        let pose = scene.letter_pose(index);
+        let u = index as f32 - (pose.position.w - W_SLICE) / W_PER_LETTERFORM;
+        let field = scene.morph.blend_at(u).expect("the blend has a grid");
         let mut mesh = TriangleMesh::<3>::default();
-        let (mut local, mut scratch) = (Vec::new(), SectionScratch::default());
-        build_frame_mesh(&scene, &mut local, &mut scratch, &mut mesh);
-        let mid = bounds_of(&mesh).expect("the assembly drew nothing");
-
-        scene.run_to(ASSEMBLE_TICKS);
-        let mut full_mesh = TriangleMesh::<3>::default();
-        build_frame_mesh(&scene, &mut local, &mut scratch, &mut full_mesh);
-        let full = bounds_of(&full_mesh).expect("the assembled word drew nothing");
-
-        let (mid_h, full_h) = (mid.1.y - mid.0.y, full.1.y - full.0.y);
         assert!(
-            mid_h < 0.9 * full_h,
-            "mid-approach the word stands {mid_h} em tall against {full_h} at              its mark, so the section is not shrinking"
+            loam_text::glyph::append_field_prism(
+                &field,
+                0.5 * GlyphParams::default().depth,
+                LETTER_COLOR,
+                &mut mesh,
+            ),
+            "letter {index} cut an empty section"
         );
-        // Every colour opaque: the entrance is geometry now, not a fade.
-        assert!(
-            mesh.colors.iter().all(|c| c[3] == 1.0),
-            "a letter drew transparent geometry"
-        );
+        bounds_of(&mesh).expect("a non-empty section has bounds")
     }
 
     #[test]
-    fn every_letter_starts_uncut_and_is_whole_by_the_time_it_is_released() {
+    fn at_its_mark_every_letter_cuts_its_own_letterform() {
         let mut scene = scene();
-        for (index, letter) in scene.letters().iter().enumerate() {
-            assert_eq!(
-                letter_section_scale(letter.entry.w - W_SLICE),
-                None,
-                "{:?} already has a section at its entry pose",
+        scene.run_to(ASSEMBLE_TICKS);
+        for index in 0..scene.letters().len() {
+            let (lo, hi) = letter_section_bounds(&mut scene, index);
+            let own = bounds_of(&scene.letters()[index].mesh).expect("baked mesh");
+            // The morph grid is centred on each glyph and resampled at the
+            // same pitch it was baked at, so at its own letterform the section
+            // reproduces the glyph to within a cell.
+            let cell = GlyphParams::default().em_size / GlyphParams::default().resolution as f32;
+            let (want, got) = (own.1 - own.0, hi - lo);
+            assert!(
+                (want.x - got.x).abs() < 2.0 * cell && (want.y - got.y).abs() < 2.0 * cell,
+                "{:?} settled on a section {got:?} against its own {want:?}",
                 label(index)
             );
         }
+    }
+
+    #[test]
+    fn a_letter_mid_approach_is_a_different_letterform_and_not_a_scaled_copy() {
+        let mut scene = scene();
         scene.run_to(ASSEMBLE_TICKS);
-        for index in 0..scene.letters().len() {
-            assert_eq!(
-                letter_section_scale(scene.letter_pose(index).position.w - W_SLICE),
-                Some(1.0),
-                "{:?} is still a partial section when physics takes it over",
-                label(index)
+        let settled: Vec<(Vec3, Vec3)> = (0..scene.letters().len())
+            .map(|i| letter_section_bounds(&mut scene, i))
+            .collect();
+
+        let mut approaching = HeroSequence::new(hero_font_bytes(), DEFAULT_SEED).expect("scene");
+        approaching.run_to(LETTER_SLIDE_TICKS / 2);
+        let mid = letter_section_bounds(&mut approaching, 0);
+        let own = settled[0];
+
+        // Not a scaled copy: a pure scale about a point keeps the aspect
+        // ratio, so a changed ratio is the signature of a genuine morph. This
+        // is exactly what the bicone could not do, and what an opacity fade
+        // stood in for before that.
+        let ratio = |(lo, hi): (Vec3, Vec3)| (hi.x - lo.x) / (hi.y - lo.y);
+        assert!(
+            (ratio(mid) - ratio(own)).abs() > 0.05,
+            "mid-approach aspect {} matches its own {}, so the section is only              scaling",
+            ratio(mid),
+            ratio(own)
+        );
+        // And it is never empty on the way in, which the taper was.
+        assert!(mid.1.y - mid.0.y > 0.1, "the approach drew almost nothing");
+    }
+
+    #[test]
+    fn the_letterform_sequence_wraps_so_neither_direction_runs_off_the_word() {
+        let mut scene = scene();
+        let count = scene.letters().len() as f32;
+        // Far outside `[0, count)` in both directions: the word is a loop, so
+        // every `u` names a blend and none falls off an end.
+        for step in -20..=20 {
+            let u = step as f32 * 0.37 * count;
+            assert!(
+                scene.morph.blend_at(u).is_some(),
+                "the blend at u = {u} has no field"
             );
         }
     }
@@ -1340,8 +1439,8 @@ mod tests {
             // is the regression this pins.
             let offset = letter.entry + letter.mark * -1.0;
             assert!(
-                offset.w.abs() > GLYPH_SLAB_HALF,
-                "{:?} starts inside its own slab, so it never enters the slice",
+                offset.w.abs() > W_PER_LETTERFORM,
+                "{:?} starts less than a letterform away, so it never morphs",
                 label(index)
             );
             assert!(
@@ -1371,7 +1470,7 @@ mod tests {
         scene.run_to(SEQUENCE_TICKS);
         let mut mesh = TriangleMesh::<3>::default();
         let (mut local, mut scratch) = (Vec::new(), SectionScratch::default());
-        build_frame_mesh(&scene, &mut local, &mut scratch, &mut mesh);
+        build_frame_mesh(&mut scene, &mut local, &mut scratch, &mut mesh);
 
         assert_eq!(mesh.colors.len(), mesh.vertices.len());
         let count = mesh.vertices.len() as u32;
@@ -1390,7 +1489,7 @@ mod tests {
         );
 
         let repeat = mesh.vertices.clone();
-        build_frame_mesh(&scene, &mut local, &mut scratch, &mut mesh);
+        build_frame_mesh(&mut scene, &mut local, &mut scratch, &mut mesh);
         assert_eq!(mesh.vertices, repeat);
     }
 
@@ -1406,7 +1505,7 @@ mod tests {
             .fold(0.0f32, f32::max);
 
         let mut mesh = TriangleMesh::<3>::default();
-        push_letters(&scene, &mut mesh);
+        push_letters(&mut scene, &mut mesh);
         assert_eq!(
             mesh.vertices.len(),
             scene

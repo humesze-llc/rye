@@ -284,33 +284,57 @@ fn extract_cover(field: &DistanceField2D, cell: f32) -> Isovolume<2> {
     )
 }
 
+/// The slab `{ field <= 0 } x [-half_depth, half_depth]`, triangulated.
+///
+/// The same construction [`Visualizable::to_triangles`] runs for a glyph, but
+/// over any field rather than the one a `GlyphSolid` baked, so a blended field
+/// can be drawn. Appends, and returns whether it wrote anything: an empty
+/// result means the zero level enclosed no area, not an error.
+pub fn append_field_prism(
+    field: &DistanceField2D,
+    half_depth: f32,
+    color: [f32; 4],
+    mesh: &mut TriangleMesh<3>,
+) -> bool {
+    let pieces = extract_pieces(field);
+    if pieces.is_empty() {
+        return false;
+    }
+    append_prism(&pieces, half_depth, color, mesh);
+    true
+}
+
+fn append_prism(pieces: &[Piece], half_depth: f32, color: [f32; 4], mesh: &mut TriangleMesh<3>) {
+    for piece in pieces {
+        let n = piece.ring.len();
+        let back = mesh.vertices.len() as u32;
+        let front = back + n as u32;
+        for z in [-half_depth, half_depth] {
+            for q in &piece.ring {
+                mesh.vertices.push([q.x, q.y, z]);
+                mesh.colors.push(color);
+            }
+        }
+        for k in 1..n as u32 - 1 {
+            mesh.indices.push([front, front + k, front + k + 1]);
+            mesh.indices.push([back, back + k + 1, back + k]);
+        }
+        if let Some(cut) = piece.cut {
+            let a = cut as u32;
+            let b = ((cut + 1) % n) as u32;
+            mesh.indices.push([back + a, back + b, front + b]);
+            mesh.indices.push([back + a, front + b, front + a]);
+        }
+    }
+}
+
 impl Visualizable<3> for GlyphSolid {
     fn to_triangles(&self) -> Result<TriangleMesh<3>, NotVisualizable> {
         if self.pieces.is_empty() {
             return Err(NotVisualizable::Degenerate);
         }
         let mut mesh = TriangleMesh::default();
-        for piece in &self.pieces {
-            let n = piece.ring.len();
-            let back = mesh.vertices.len() as u32;
-            let front = back + n as u32;
-            for z in [-self.half_depth, self.half_depth] {
-                for q in &piece.ring {
-                    mesh.vertices.push([q.x, q.y, z]);
-                    mesh.colors.push(self.color);
-                }
-            }
-            for k in 1..n as u32 - 1 {
-                mesh.indices.push([front, front + k, front + k + 1]);
-                mesh.indices.push([back, back + k + 1, back + k]);
-            }
-            if let Some(cut) = piece.cut {
-                let a = cut as u32;
-                let b = ((cut + 1) % n) as u32;
-                mesh.indices.push([back + a, back + b, front + b]);
-                mesh.indices.push([back + a, front + b, front + a]);
-            }
-        }
+        append_prism(&self.pieces, self.half_depth, self.color, &mut mesh);
         Ok(mesh)
     }
 

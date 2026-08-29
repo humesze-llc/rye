@@ -78,6 +78,44 @@ impl DistanceField2D {
     /// the fourth is one cell nearer the wall, which drives the interpolant's
     /// gradient to `(1, 1)`. A sphere tracer stepping by this value must scale
     /// steps by `1 / sqrt(2)`, or step per axis, to avoid tunnelling.
+    /// A field over a caller-chosen grid, for a signed distance this module
+    /// did not bake: the morph between two glyphs is the elementwise blend of
+    /// their fields, which is only defined once both sit on a common grid.
+    ///
+    /// `samples` is row-major with `samples_x` per row, `y` increasing with row
+    /// index, the same order the field bakes in.
+    /// `None` if the grid is degenerate or the buffer is the wrong length,
+    /// because every accessor below indexes it without a bounds check.
+    pub fn from_samples(
+        origin: Vec2,
+        cell: f32,
+        samples_x: usize,
+        samples_y: usize,
+        samples: Vec<f32>,
+    ) -> Option<Self> {
+        let sane = cell > 0.0 && samples_x >= 2 && samples_y >= 2;
+        if !sane || samples.len() != samples_x * samples_y {
+            return None;
+        }
+        Some(Self {
+            origin,
+            cell,
+            samples_x,
+            samples_y,
+            samples,
+        })
+    }
+
+    /// Grid corner count, which is one more than the cell count per axis.
+    pub fn sample_counts(&self) -> (usize, usize) {
+        (self.samples_x, self.samples_y)
+    }
+
+    /// World position of grid corner `(i, j)`.
+    pub fn sample_position(&self, i: usize, j: usize) -> Vec2 {
+        self.corner(i, j)
+    }
+
     pub fn sample(&self, p: Vec2) -> f32 {
         let grid = (p - self.origin) / self.cell;
         let clamped = grid.clamp(

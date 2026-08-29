@@ -224,6 +224,7 @@ impl HeroSequence {
             }
             for _ in 0..SUBSTEPS_PER_TICK {
                 self.world.step(SOLVER_DT);
+                self.hold_letters_in_the_slice();
             }
         }
         self.tick += 1;
@@ -232,6 +233,35 @@ impl HeroSequence {
         // who owns a letter at a tick boundary.
         if self.tick == ASSEMBLE_TICKS {
             self.release_letters();
+        }
+    }
+
+    /// Zeroes the `w`-plane spin of every letter, leaving the three planes
+    /// inside the slice untouched. A DELIBERATE DEVIATION from the physics,
+    /// and the reason is that the alternative is worse than wrong, it is
+    /// misleading: a letter is drawn by posing its section with the rotor and
+    /// dropping `w`, and the 3x3 block of a 4D rotation is not a rotation. Let
+    /// a letter tumble into a `w` plane and that block goes singular, so the
+    /// letter flattens to a sheet and briefly mirrors. Measured on a corner
+    /// hit: the block's determinant fell from 1.000 to -0.046 and the drawn
+    /// height from 0.707 em to 0.111.
+    ///
+    /// Held in the slice, the block is always a rotation and the draw is
+    /// EXACT rather than an approximation. The letters keep their whole 4D
+    /// reading through `w` TRANSLATION, which is what drives the morph; the
+    /// rain still tumbles through every plane, because a drop is sliced
+    /// properly and shows it honestly.
+    ///
+    /// The three planes are closed under the Lie bracket, so a rotor whose
+    /// generator stays in them stays in SO(3) and this is a projection rather
+    /// than a fight with the integrator.
+    fn hold_letters_in_the_slice(&mut self) {
+        for letter in &self.letters {
+            let Some(body) = letter.body else { continue };
+            let spin = &mut self.world.bodies[body].angular_velocity;
+            spin.xw = 0.0;
+            spin.yw = 0.0;
+            spin.zw = 0.0;
         }
     }
 
@@ -650,12 +680,15 @@ const SLICE_SCRUB_GAIN: f32 = 2.0;
 // on one, which reads as mush.
 const SLICE_SCRUB_MAX: f32 = 1.5 * W_PER_LETTERFORM;
 
-// Displacement below this is the landing transient, not a hit: a letter comes
-// to rest about 0.002 em off the slice in `w`, because a contact's tangent
-// space in R⁴ contains `w` and friction against the floor slides it there.
-// Without the deadband the word would sweep gently from the moment it landed,
-// which is the opposite of a scrub that answers an impact.
-const SLICE_SCRUB_DEADBAND: f32 = 0.02;
+// Displacement below this is the landing, not a hit. A contact's tangent space
+// in R⁴ contains `w`, so friction against the floor slides a letter there; with
+// the letters' `w`-plane spin held out, that friction goes into translation
+// instead and the word reaches 0.040 em off the slice by the time the rain
+// starts, measured across the whole settle. Sized at 1.5x that. A real hit
+// pushes several times further, so nothing is lost by ignoring this band, and
+// without it the word would sweep from the moment it landed, which is the
+// opposite of a scrub that answers an impact.
+const SLICE_SCRUB_DEADBAND: f32 = 0.06;
 
 // 32-bit float: the caps of a tumbling 24-cell are thin and densely stacked,
 // and 24-bit depth cracks them.
@@ -1048,7 +1081,7 @@ mod tests {
     // Displacement, in em, that counts as a letter having been knocked aside
     // rather than nudged. Measured by
     // `the_quoted_figures_are_the_ones_the_scene_produces`: the rain moves `L`
-    // 1.383, `O` 1.202, `A` 0.566 and `M` 1.807 em, so the criterion has 2.3x
+    // 0.796, `O` 0.775, `A` 0.364 and `M` 0.607 em, so the criterion has 1.5x
     // of margin on the least-moved letter. The scene is chaotic, so these are
     // a record of one seed and not a property; the threshold is not the
     // measurement.
@@ -1227,7 +1260,7 @@ mod tests {
             .zip(&scattered)
             .map(|(b, a)| b.distance(*a))
             .collect();
-        for (got, want) in measured.iter().zip([1.383f32, 1.202, 0.566, 1.807]) {
+        for (got, want) in measured.iter().zip([0.796f32, 0.775, 0.364, 0.607]) {
             assert!(
                 (got - want).abs() < 5e-3,
                 "SCATTER_THRESHOLD's doc quotes {want} em; the scene produces {got}"
@@ -1444,6 +1477,57 @@ mod tests {
             ratio(knocked),
             ratio(settled)
         );
+    }
+
+    #[test]
+    fn a_letters_pose_stays_a_rotation_of_the_slice_however_hard_it_is_hit() {
+        let mut scene = scene();
+        let mut worst = 1.0f32;
+        let mut worst_tick = 0;
+        for tick in ASSEMBLE_TICKS..SEQUENCE_TICKS {
+            scene.run_to(tick);
+            for index in 0..scene.letters().len() {
+                let r = scene.letter_pose(index).rotor;
+                // The block the draw actually uses: the rotor applied to each
+                // local axis, truncated. A 4D rotation's 3x3 block is NOT a
+                // rotation, and when the letter tumbles into a `w` plane it
+                // goes singular and the letter flattens to a sheet. Holding
+                // the letters' spin inside the slice is what keeps this at 1.
+                let det = r
+                    .apply(Vec4::X)
+                    .truncate()
+                    .dot(r.apply(Vec4::Y).truncate().cross(r.apply(Vec4::Z).truncate()));
+                if (det - 1.0).abs() > (worst - 1.0).abs() {
+                    worst = det;
+                    worst_tick = tick;
+                }
+            }
+        }
+        assert!(
+            (worst - 1.0).abs() < 1e-3,
+            "a letter's drawn basis had determinant {worst} at tick {worst_tick}, so              it is being scaled rather than rotated"
+        );
+    }
+
+    #[test]
+    fn the_rain_still_tumbles_through_the_w_planes_the_letters_are_held_out_of() {
+        let mut scene = scene();
+        scene.run_to(SEQUENCE_TICKS);
+        // The deviation is the LETTERS', not the scene's: a drop is sliced
+        // properly, so it can tumble anywhere and show it honestly.
+        let spun = (0..scene.drops().len())
+            .map(|i| {
+                let spin = scene.world.bodies[scene.drops()[i].body].angular_velocity;
+                spin.xw.abs() + spin.yw.abs() + spin.zw.abs()
+            })
+            .fold(0.0f32, f32::max);
+        assert!(spun > 0.1, "the rain lost its w-plane tumble too, at {spun}");
+
+        for letter in scene.letters() {
+            let body = letter.body.expect("released");
+            let spin = scene.world.bodies[body].angular_velocity;
+            assert_eq!((spin.xw, spin.yw, spin.zw), (0.0, 0.0, 0.0));
+        }
     }
 
     #[test]

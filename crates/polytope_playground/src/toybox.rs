@@ -168,9 +168,8 @@ const RELEASE_SPIN_GAIN: f32 = 0.25;
 const MAX_CARRY_SPEED: f32 = 20.0;
 
 // Most the grab may change a held body's velocity per tick. Finite so a
-// contact impulse can win: the drive used to assign velocity outright, which
-// discarded whatever the solver had just done to push the body out of a wall
-// and drove it straight back in for as long as the cursor stayed there.
+// contact impulse can win: an outright assignment discards what the solver just
+// did to push the body out of a wall, and drives it back in.
 const MAX_GRAB_ACCEL: f32 = 400.0;
 
 const _: () = assert!(MAX_CARRY_SPEED < MAX_RELEASE_SPEED);
@@ -229,8 +228,8 @@ const W_PER_RISE: f32 = 1.0;
 const PLANE_MIN_COS: f32 = 1e-3;
 
 // Cross-section half-width at which a cap is drawn opaque. The widest section a
-// body presents is its circumradius; below a third of that the cap is already a
-// sliver, and the sliver is what used to blink out.
+// body presents is its circumradius, and below a third of that the cap is a
+// sliver, which is what would otherwise blink out.
 const FADE_EXTENT: f32 = 0.35 * BODY_SIZE;
 
 // A resting contact is a Baumgarte limit cycle, not a fixpoint: the bias pushes
@@ -583,13 +582,8 @@ impl Toybox {
             }
             toy.rest_ticks += 1;
             if toy.rest_ticks >= REST_WINDOW {
-                // Velocity only. Restoring the POSE here used to teleport a
-                // settled body back to a stale anchor: a trace showed it moving
-                // 0.0086 and turning 0.43 degrees on the tick it parked, with
-                // its velocity already exactly zero, which is the "mysterious
-                // force" a settled toy appeared to be under. It also froze a
-                // body that was still slowly tipping onto a face, so shapes
-                // that landed at an angle stayed at that angle.
+                // Velocity only: restoring the POSE snaps a settled body back
+                // to a stale anchor, and freezes one still tipping onto a face.
                 body.velocity = Vec4::ZERO;
                 body.angular_velocity = Bivector4::ZERO;
                 body.inv_mass = 0.0;

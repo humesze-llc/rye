@@ -70,9 +70,9 @@ const LETTER_SLIDE_TICKS: u32 = 36;
 // across it.
 const W_ENTRY_SPAN: f32 = 0.6;
 
-// `GlyphParams::default().slab` is `(-0.075, 0.075)`: the letter solid is the
-// glyph swept through that interval in `w`, so its section at the slice is the
-// whole glyph while the slice is inside the interval and EMPTY outside it.
+// Height of the lowest hull vertex above the floor at release, in em. The
+// settle holds at 0.15 and 0.25 either side of this; the narrowphase still
+// reports one contact per step, so above 0.25 is untested.
 const RELEASE_CLEARANCE: f32 = 0.20;
 
 // Every letter is at rest well inside this, which
@@ -110,13 +110,9 @@ const RAIN_SIZE: f32 = 0.30;
 
 const LETTER_MASS: f32 = 1.0;
 
-// A drop is 0.30 em across against a letter's ~0.75 em of height and a full em
-// of width, so it outweighing a letter at 1.5 was always backwards; it only
-// stopped mattering when there were fourteen of them. The rain runs until the
-// freeze now, and 48 drops at the old mass drove a body 0.10 em under the
-// floor, past the 0.075 tunnelling bound. Lighter rain and more solver sweeps
-// together hold it; 0.75 is the heaviest that does, and heavier rain is what
-// makes the letters scatter, so it is worth having.
+// Lighter than a letter, which a 0.30 em drop should be. 48 drops heavier than
+// this drive a body past the 0.075 em tunnelling bound; heavier rain is also
+// what scatters the letters, so this is the most the floor will hold.
 const RAIN_MASS: f32 = 0.75;
 
 // The lower bound clears the tops of the letters, so nothing is ever spawned
@@ -275,25 +271,15 @@ impl HeroSequence {
         }
     }
 
-    /// Zeroes the `w`-plane spin of every letter, leaving the three planes
-    /// inside the slice untouched. A DELIBERATE DEVIATION from the physics,
-    /// and the reason is that the alternative is worse than wrong, it is
-    /// misleading: a letter is drawn by posing its section with the rotor and
-    /// dropping `w`, and the 3x3 block of a 4D rotation is not a rotation. Let
-    /// a letter tumble into a `w` plane and that block goes singular, so the
-    /// letter flattens to a sheet and briefly mirrors. Measured on a corner
-    /// hit: the block's determinant fell from 1.000 to -0.046 and the drawn
-    /// height from 0.707 em to 0.111.
+    /// A DELIBERATE DEVIATION: letters spin only inside the slice. The draw
+    /// poses a section with the rotor and drops `w`, and a 4D rotation's 3x3
+    /// block is not a rotation, so a letter tumbling into a `w` plane flattens
+    /// as that block goes singular. Held here the block is a rotation and the
+    /// draw is exact; the letters read as 4D through `w` translation instead,
+    /// and the rain, which is sliced properly, still tumbles anywhere.
     ///
-    /// Held in the slice, the block is always a rotation and the draw is
-    /// EXACT rather than an approximation. The letters keep their whole 4D
-    /// reading through `w` TRANSLATION, which is what drives the morph; the
-    /// rain still tumbles through every plane, because a drop is sliced
-    /// properly and shows it honestly.
-    ///
-    /// The three planes are closed under the Lie bracket, so a rotor whose
-    /// generator stays in them stays in SO(3) and this is a projection rather
-    /// than a fight with the integrator.
+    /// The three kept planes are closed under the Lie bracket, so the rotor
+    /// stays in SO(3): a projection, not a fight with the integrator.
     /// Promotes a drop out of [`GROUP_FALLING`] the first step it touches
     /// anything, so it stops being transparent to the rest of the rain. Read
     /// off the manifolds rather than a height, because "has landed" is exactly
@@ -335,26 +321,16 @@ impl HeroSequence {
         }));
     }
 
-    /// Stops the scenery from ever SPEEDING a letter up along `w`, while
-    /// leaving it free to slow one down.
+    /// A DELIBERATE DEVIATION: scenery may slow a letter along `w` but never
+    /// speed one up. Narrow three ways, so a drop striking a letter still
+    /// drives it off the slice: scenery contacts only, `w` only, and only the
+    /// direction that adds speed.
     ///
-    /// A DELIBERATE DEVIATION, and a narrow one twice over: only contacts
-    /// against SCENERY, only along `w`, and only in the direction that adds
-    /// speed. A drop striking a letter still drives it off the slice, which is
-    /// the whole effect. The one-sidedness is load-bearing: neutering the
-    /// floor's `w` friction outright leaves a letter that the rain has pushed
-    /// sliding in `w` forever with nothing to brake it, which measured as a
-    /// letter travelling 4.4 em out of a 3.5 em word.
-    ///
-    /// The floor's normal is pure `y`, so it is not the normal impulse that
-    /// does this. It is friction: a contact's tangent space in R⁴ is
-    /// three-dimensional and contains `w`, the landing gives a letter
-    /// `w`-plane spin, `velocity_at_point` reads that as `w` motion at the
-    /// contact, and friction converts it into linear `w` on the centre of
-    /// mass. Measured before this: a letter left its landing with
-    /// `w` velocity 0.096 and settled to a CONSTANT 0.0126 that never decayed,
-    /// because once the spin is held out of the `w` planes there is no `w`
-    /// left in the tangent for friction to brake.
+    /// Friction, not the normal impulse: the floor's normal is pure `y`, but a
+    /// contact's tangent space in R⁴ contains `w`, so a letter's `w`-plane
+    /// spin reads as `w` motion at the contact and friction turns it into
+    /// linear `w`. One-sided because braking must survive; without it a
+    /// rain-pushed letter slides in `w` with nothing to stop it.
     fn keep_scenery_from_moving_letters_in_w(&mut self, before: &[f32]) {
         for (index, letter) in self.letters.iter().enumerate() {
             let Some(body) = letter.body else { continue };
@@ -775,30 +751,20 @@ const SLICE_SWEEP_RANGE: f32 = 4.0 * W_PER_LETTERFORM;
 // and 24-bit depth cracks them.
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-// The word is 3.488 em wide and the frame is `d * tan(30 deg) * 16/9` half-wide
-// at the 60 degree vertical field of view, so at the original 7.5 it filled 23%
-// and read as a small thing in a large room. Here it fills 42%.
-//
-// What actually bounds this is the rain, not the word. The spread is `+/-2.04`
-// em across, against a 4.11 em half-frame, so the pile has room. The spawn
-// HEIGHT of 2.6 to 3.6 em sits above the 2.73 em top of the view, which is
-// wanted: a drop falls into frame rather than appearing inside it.
+// The 3.488 em word fills 42% of a `d * tan(30 deg) * 16/9` half-frame here.
+// The bound is the rain, not the word: its +/-2.04 em spread fits the 4.11 em
+// half-frame, and its 2.6 to 3.6 em spawn height sits above the 2.73 em top of
+// view, so a drop falls into frame rather than appearing inside it.
 const BOOT_ORBIT_DISTANCE: f32 = 4.0;
 const BOOT_ORBIT_PITCH: f32 = -0.12;
 const BOOT_EYE_HEIGHT: f32 = 1.4;
 
-// Hack Regular, the same face the HUD bakes its atlas from and for the same
-// reason: a system font would make the letters, and therefore the whole
-// trajectory, differ between two machines running the same binary.
 /// Latin Modern Roman 10 Bold, GUST's OpenType cut of Knuth's Computer
-/// Modern, under the GUST Font License (LPPL 1.3c) beside it. Vendored
-/// unmodified, so the licence's rename request, which applies to derived
-/// works, does not bite.
+/// Modern, under the GUST Font License beside it. Vendored unmodified, so the
+/// licence's rename request, which binds derived works, does not apply.
 ///
-/// A wordmark wants a display face, and the previous font was
-/// `epaint_default_fonts::HACK_REGULAR`: egui's monospace terminal font,
-/// inherited because it was the only one already in the tree. Monospace forced
-/// `M` and `O` into the same advance whatever their shapes wanted.
+/// Bundled rather than a system face so the typeset word, and with it the
+/// trajectory, is identical on any machine running the same binary.
 pub(crate) fn hero_font_bytes() -> &'static [u8] {
     include_bytes!("../fonts/lmroman10-bold.otf")
 }
@@ -854,27 +820,15 @@ fn build_frame_mesh(
     push_drop_caps(sequence, local, scratch, mesh);
 }
 
-// COST, measured with `--release` over 200 rebuilds: a frame that is morphing
-// builds in 3.31 ms against 0.62 ms once everything has settled, so the blend
-// and its marching are 2.7 ms, about a sixth of a 60 Hz budget. That is paid
-// only across the 90-tick assembly and only while the director still owns a
-// letter. It is affordable there and would not be at 240 Hz; the fix, if that
-// day comes, is to bake the 4D surface once and slice it the way the rain is
-// sliced, not to bake an atlas of `w` slices, whose quantisation would land
-// exactly where the topology changes.
+// The morph field IS a letter's 4D solid, so it is read for the letter's whole
+// life: one knocked along `w` sweeps its section through the neighbouring
+// letterforms. Exact while a letter's own `w` axis stays parallel to the
+// world's, which covers all of its `w` translation; once a hit tumbles it into
+// a `w` plane the true section would need marching a 3D implicit surface, and
+// the morph parameter is taken at the body centre instead.
 //
-// Every letter is drawn from the shared morph field for its whole life, not
-// just while the director owns it. The field IS the letter's 4D solid, so a
-// letter knocked along `w` by the rain sweeps its cross-section through the
-// neighbouring letterforms exactly as it did coming in; drawing a baked mesh
-// after release would make the same body 4D on the way in and flat once it
-// landed.
-//
-// EXACT while the letter's own `w` axis stays parallel to the world's, which
-// covers its whole `w` translation. Once a hit has tumbled it INTO a `w` plane
-// the local `w` at a given world point varies across the letter, and the true
-// section would need marching a 3D implicit surface rather than reading one
-// 2D blend. The approximation is the morph parameter taken at the body centre.
+// 3.31 ms a frame while morphing against 0.62 ms settled: a sixth of a 60 Hz
+// budget, and it would not fit at 240 Hz.
 fn push_letters(sequence: &mut HeroSequence, mesh: &mut TriangleMesh<3>) {
     let half_depth = 0.5 * GlyphParams::default().depth;
     let slice = sequence.slice();
@@ -1136,13 +1090,9 @@ mod tests {
     const REST_WINDOW_TICKS: u32 = 60;
     const REST_SPREAD: f32 = 0.02;
 
-    // Displacement, in em, that counts as a letter having been knocked aside
-    // rather than nudged. The test it gates asks whether the rain moved ANY
-    // letter past it, which is the scene's claim, and not that of every
-    // letter. Measured by `the_quoted_figures_are_the_ones_the_scene_produces`:
-    // the rain moves `L` 0.708, `O` 0.726, `A` 0.423 and `M` 0.518 em, so it
-    // clears on the best by 2.9x. The scene is chaotic, so these are a record
-    // of one seed and not a property; the threshold is not the measurement.
+    // Displacement, in em, that reads as knocked aside rather than nudged. The
+    // scene is chaotic, so the figures beside it record one seed rather than a
+    // property, and the threshold is not the measurement.
     const SCATTER_THRESHOLD: f32 = 0.25;
 
     // A tunneling bound, not a contact bound: the resting overlap the solver
@@ -1150,11 +1100,8 @@ mod tests {
     // a body 0.075 under would be one that the contact never caught.
     const TUNNEL_DEPTH: f32 = 0.075;
 
-    // 1.5x the measured 27392 at the fullest tick, which is tick 300. The mesh
-    // is rebuilt and re-uploaded every frame, so its size is a per-frame
-    // bandwidth cost and not a one-time bake. The peak rose from 21342 when
-    // the wordmark moved off a monospace terminal face onto a proportional
-    // bold display one, which carries far more outline detail per glyph.
+    // 1.5x the measured peak. The mesh is rebuilt and re-uploaded every frame,
+    // so its size is a per-frame bandwidth cost rather than a one-time bake.
     const MESH_VERTEX_BUDGET: u32 = 42_000;
 
     // Per-step travel, in em, the R⁴ narrowphase still resolves against a thin

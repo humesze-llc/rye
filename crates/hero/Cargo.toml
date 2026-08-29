@@ -1,0 +1,31 @@
+[package]
+name = "hero"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "LOAM wordmark: letters assemble through w, polychora rain, and the slice sweeps."
+publish = false
+
+# A workspace member rather than a cargo example for the reason the playground
+# is one: Trunk's wasm pipeline can only target `[[bin]]`.
+
+[dependencies]
+ab_glyph = "0.2"
+anyhow.workspace = true
+glam.workspace = true
+tracing.workspace = true
+winit.workspace = true
+wgpu.workspace = true
+
+loam-app     = { path = "../loam-app",     version = "0.1.0", default-features = false }
+loam-console = { path = "../loam-console", version = "0.1.0" }
+loam-egui    = { path = "../loam-egui",    version = "0.1.0" }
+loam-math    = { path = "../loam-math",    version = "0.1.0" }
+loam-physics = { path = "../loam-physics", version = "0.1.0" }
+loam-render  = { path = "../loam-render",  version = "0.1.0" }
+loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
+loam-text    = { path = "../loam-text",    version = "0.1.0" }
+loam-time    = { path = "../loam-time",    version = "0.1.0" }

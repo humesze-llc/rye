@@ -152,14 +152,6 @@ const RAIN_SHAPES: [Polytope4; 6] = [
     Polytope4::Cell120,
 ];
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Phase {
-    Assemble,
-    Fall,
-    Rain,
-    /// The sim is frozen and only the slice moves.
-    Sweep,
-}
 
 pub(crate) struct HeroLetter {
     hull: Vec<Vec4>,
@@ -383,25 +375,10 @@ impl HeroSequence {
         }
     }
 
-    pub(crate) fn tick_index(&self) -> u32 {
-        self.tick
-    }
-
     pub(crate) fn finished(&self) -> bool {
         self.tick >= SEQUENCE_TICKS
     }
 
-    pub(crate) fn phase(&self) -> Phase {
-        if self.tick < ASSEMBLE_TICKS {
-            Phase::Assemble
-        } else if self.tick < RAIN_START_TICK {
-            Phase::Fall
-        } else if self.tick < PHYSICS_PAUSE_TICK {
-            Phase::Rain
-        } else {
-            Phase::Sweep
-        }
-    }
 
     /// Where the scene is sliced this tick. Pinned at [`W_SLICE`] for as long
     /// as the sim runs, then swept once everything has frozen: a slice moving
@@ -844,12 +821,17 @@ pub(crate) fn build_triangles(
     )
 }
 
+// The playground's catalogue colours, inlined: this crate draws six shapes and
+// does not otherwise need a shape table.
 fn drop_color(polytope: Polytope4) -> [f32; 3] {
-    crate::catalog::SHAPE_CATALOG
-        .iter()
-        .find(|entry| entry.shape.polytope4() == Some(polytope))
-        .map(|entry| entry.body_color)
-        .unwrap_or([1.0, 1.0, 1.0])
+    match polytope {
+        Polytope4::Pentatope => [0.95, 0.55, 0.30],
+        Polytope4::Tesseract => [0.30, 0.55, 0.95],
+        Polytope4::Cell16 => [0.55, 0.95, 0.40],
+        Polytope4::Cell24 => [0.95, 0.45, 0.85],
+        Polytope4::Cell120 => [0.40, 0.85, 0.85],
+        Polytope4::Cell600 => [0.95, 0.85, 0.40],
+    }
 }
 
 // A drop is SLICED at [`W_SLICE`], so a tumble through a `w` plane visibly
@@ -979,7 +961,6 @@ pub(crate) struct HeroScene {
 impl HeroScene {
     fn build_console() -> Console<Environment> {
         let mut console = Console::<Environment>::new();
-        loam_app::shell::register_command::<Environment, crate::shell::Playground>(&mut console);
         register_ground_command(&mut console, |env| env);
         console
     }
@@ -1030,40 +1011,6 @@ impl HeroScene {
         }
     }
 
-    fn panel(&mut self, ctx: &egui::Context) {
-        let mut replay: Option<u64> = None;
-        egui::Window::new("Hero")
-            .id(egui::Id::new("hero-scene-controls"))
-            .default_pos(egui::pos2(16.0, 48.0))
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.label(format!(
-                    "tick {} / {SEQUENCE_TICKS}   {:?}",
-                    self.sequence.tick_index(),
-                    self.sequence.phase()
-                ));
-                ui.label(format!(
-                    "{} of {RAIN_CAP} polychora fallen",
-                    self.sequence.drops().len()
-                ));
-                ui.checkbox(&mut self.paused, "pause (Space)");
-                ui.checkbox(&mut self.hold_at_end, "hold on the last frame");
-                if ui.button("replay this seed").clicked() {
-                    replay = Some(self.seed);
-                }
-                if ui.button("next seed (N)").clicked() {
-                    replay = Some(self.seed.wrapping_add(1));
-                }
-                ui.label(
-                    egui::RichText::new(format!("seed {:#x}", self.seed))
-                        .small()
-                        .weak(),
-                );
-            });
-        if let Some(seed) = replay {
-            self.replay(seed);
-        }
-    }
 }
 
 impl loam_app::shell::Scene for HeroScene {
@@ -1095,7 +1042,6 @@ impl loam_app::shell::Scene for HeroScene {
     }
 
     fn ui(&mut self, ctx: &egui::Context, _frame: &mut FrameCtx<'_>) {
-        self.panel(ctx);
         loam_app::log::pump_into(&mut self.console);
         loam_app::command::pump_into(&mut self.console);
         self.console.ui(ctx);
@@ -1289,7 +1235,6 @@ mod tests {
         let mut scene = scene();
         assert_eq!(scene.world.bodies.iter().count(), 1, "floor only");
         scene.run_to(ASSEMBLE_TICKS - 1);
-        assert_eq!(scene.phase(), Phase::Assemble);
         assert_eq!(
             scene.world.bodies.iter().count(),
             1,
@@ -1299,7 +1244,6 @@ mod tests {
         let directed = letter_positions(&scene);
         let frame_at_release = scene.director.frame() + 1;
         scene.tick();
-        assert_eq!(scene.phase(), Phase::Fall);
         assert_eq!(
             scene.world.bodies.iter().count(),
             scene.letters().len() + 1,
@@ -1325,7 +1269,7 @@ mod tests {
         let mut scene = scene();
         scene.run_to(RAIN_START_TICK - REST_WINDOW_TICKS);
         let mut window: Vec<Vec<Vec4>> = Vec::with_capacity(REST_WINDOW_TICKS as usize);
-        while scene.tick_index() < RAIN_START_TICK {
+        while scene.tick < RAIN_START_TICK {
             scene.tick();
             window.push(letter_positions(&scene));
         }
@@ -1366,7 +1310,7 @@ mod tests {
             s.tick();
             if s.drops().len() > seen {
                 seen = s.drops().len();
-                last_spawn = s.tick_index();
+                last_spawn = s.tick;
             }
         }
         let scattered = letter_positions(&s);
@@ -1420,13 +1364,13 @@ mod tests {
             assert!(
                 deepest > -TUNNEL_DEPTH,
                 "a body reached {deepest} below the floor at tick {}",
-                scene.tick_index()
+                scene.tick
             );
             let travel = scene.fastest_body_speed() * SOLVER_DT;
             assert!(
                 travel < RESOLVABLE_STEP_TRAVEL,
                 "a body travelled {travel} in one step at tick {}",
-                scene.tick_index()
+                scene.tick
             );
         }
         for index in 0..scene.letters().len() {

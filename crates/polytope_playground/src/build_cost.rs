@@ -9,8 +9,7 @@
 //!
 //! `RenderDevice` needs a surface and therefore a window, so this drives the
 //! same builder-side calls from a surfaceless device instead of calling
-//! `RotateScene::new` and `HeroScene::new` whole. What is left out of each is
-//! named at its call site.
+//! `RotateScene::new` whole. What is left out is named at its call site.
 
 use std::time::Instant;
 
@@ -96,21 +95,4 @@ fn scene_build_cost() {
         time(|| drop(crate::hud::TextHud::new(&device, &queue, FORMAT, SAMPLES).expect("hud"))),
     );
 
-    println!("hero, milliseconds over {RUNS} builds:");
-    // `HeroScene::new` in full, bar the console registry: the typeset word,
-    // the physics world and the assembly timeline, then the raster pipeline.
-    report(
-        "typeset + world",
-        time(|| {
-            crate::hero::HeroSequence::new(
-                crate::hero::hero_font_bytes(),
-                crate::hero::DEFAULT_SEED,
-            )
-            .expect("hero sequence");
-        }),
-    );
-    report(
-        "raster pipeline",
-        time(|| drop(crate::hero::build_triangles(&device, FORMAT, SAMPLES))),
-    );
 }

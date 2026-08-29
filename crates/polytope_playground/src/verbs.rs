@@ -49,7 +49,7 @@ pub(crate) fn wireframe_subcommands<Ctx: 'static>(
 ) -> SubcommandSet<Ctx> {
     loam_egui::subcommands::<Ctx>("wireframe", "4D hull wireframe overlay")
         .with_long_help(
-            "Draws every edge of every posed 4D hull, with each vertex shaded by              how far it sits from the current slice. The cross-section alone              cannot tell a body turning in a w plane from one sliding; the whole              hull can.",
+            "Draws every edge of every posed 4D hull, with each vertex shaded by how far it sits from the current slice. The cross-section alone cannot tell a body turning in a w plane from one sliding; the whole hull can.",
         )
         .on_bare(move |ctx| {
             let w = reach(ctx);
@@ -172,7 +172,10 @@ mod tests {
                 projection: WireframeProjection::WPinhole,
             }
         );
-        assert_eq!(scene.untouched, 0, "the lens reached past the state it names");
+        assert_eq!(
+            scene.untouched, 0,
+            "the lens reached past the state it names"
+        );
     }
 
     #[test]

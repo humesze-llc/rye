@@ -28,9 +28,9 @@ use loam_shape::{LineMesh, TriangleMesh};
 
 use crate::consts::W_SCRUB_RATE;
 use crate::environment::{register_ground_command, Environment};
-use crate::verbs::WireframeControls;
 use crate::physics::ndc_from_pixels;
 use crate::projections::WireframeProjection;
+use crate::verbs::WireframeControls;
 use crate::wireframe_geom::{push_projected_chord, stereographic_view_radius};
 
 const TICK_HZ: u32 = 60;
@@ -708,8 +708,8 @@ impl Toybox {
         // A lerp back toward the spin the body already had, which is the
         // fraction-of-the-torque above written with the operators `Bivector4`
         // actually has.
-        body.angular_velocity = body.angular_velocity * RELEASE_SPIN_GAIN
-            + spin_before * (1.0 - RELEASE_SPIN_GAIN);
+        body.angular_velocity =
+            body.angular_velocity * RELEASE_SPIN_GAIN + spin_before * (1.0 - RELEASE_SPIN_GAIN);
         let angular = body.angular_velocity.magnitude();
         if angular > MAX_ANGULAR_SPEED {
             body.angular_velocity = body.angular_velocity * (MAX_ANGULAR_SPEED / angular);
@@ -1004,8 +1004,10 @@ fn draw_slice_ruler(
     marks: impl Iterator<Item = SliceMark>,
 ) -> Option<f32> {
     let width = ui.available_width();
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, RULER_HEIGHT), egui::Sense::click_and_drag());
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(width, RULER_HEIGHT),
+        egui::Sense::click_and_drag(),
+    );
     let painter = ui.painter();
     painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(20, 22, 28));
 
@@ -1051,7 +1053,12 @@ fn draw_slice_ruler(
     }
 
     let pointer = response.interact_pointer_pos()?;
-    Some(slice_for_ruler_x(pointer.x, rect.left(), rect.width(), reach))
+    Some(slice_for_ruler_x(
+        pointer.x,
+        rect.left(),
+        rect.width(),
+        reach,
+    ))
 }
 
 /// Inverse of the ruler's own `x_for`. Split out because the panel cannot be
@@ -1520,9 +1527,9 @@ pub(crate) fn register_toybox_commands(console: &mut Console<ToyboxControls>) {
         )
         .with_args(&[&["on", "off"]]),
     );
-    console.register(
-        crate::verbs::wireframe_subcommands::<ToyboxControls>(|c| &mut c.wireframe),
-    );
+    console.register(crate::verbs::wireframe_subcommands::<ToyboxControls>(|c| {
+        &mut c.wireframe
+    }));
     console.register(
         loam_egui::subcommands::<ToyboxControls>(
             "physics",
@@ -1768,12 +1775,10 @@ impl ToyboxScene {
                         .filter(|m| (m.w - slice).abs() < IN_SLICE_HALF_WIDTH)
                         .count();
                     ui.label(
-                        egui::RichText::new(format!("{reachable}/{} in reach", TOYS.len()))
-                            .weak(),
+                        egui::RichText::new(format!("{reachable}/{} in reach", TOYS.len())).weak(),
                     );
                 });
-                if let Some(dragged) =
-                    draw_slice_ruler(ui, slice, reach, self.toybox.slice_marks())
+                if let Some(dragged) = draw_slice_ruler(ui, slice, reach, self.toybox.slice_marks())
                 {
                     self.toybox.set_slice(dragged);
                     slice = self.toybox.slice();
@@ -2313,7 +2318,7 @@ mod tests {
         let carried = toybox.position(0) - start;
         assert!(
             carried.truncate().length() > 0.05,
-            "a held body moved {carried} while being carried, so the latch              pulled it back to its anchor"
+            "a held body moved {carried} while being carried, so the latch pulled it back to its anchor"
         );
     }
 
@@ -2340,7 +2345,7 @@ mod tests {
         let edges: usize = TOYS.iter().map(|t| t.topology().edges.len()).sum();
         assert!(
             mesh.segments.len() > edges,
-            "{} segments for {edges} edges: the wireframe is drawing straight              chords, so it is not going through the shared projection",
+            "{} segments for {edges} edges: the wireframe is drawing straight chords, so it is not going through the shared projection",
             mesh.segments.len()
         );
     }
@@ -2350,7 +2355,13 @@ mod tests {
         let toybox = settled();
         let draw = |controls: &WireframeControls| {
             let mut mesh = LineMesh::<3>::default();
-            append_toy_wireframe(&toybox.world, &toybox.toys, toybox.slice(), controls, &mut mesh);
+            append_toy_wireframe(
+                &toybox.world,
+                &toybox.toys,
+                toybox.slice(),
+                controls,
+                &mut mesh,
+            );
             mesh
         };
         let shipped = ToyboxControls::default().wireframe;
@@ -2405,7 +2416,7 @@ mod tests {
             |m: &LineMesh<3>| -> f32 { m.colors.iter().map(|(a, _)| a[0] + a[1] + a[2]).sum() };
         assert!(
             brightness(&far) < brightness(&near),
-            "moving the slice off the pile did not dim the wireframe, so the              shade is not reading w at all"
+            "moving the slice off the pile did not dim the wireframe, so the shade is not reading w at all"
         );
     }
 
@@ -2552,7 +2563,7 @@ mod tests {
         let frames = ARENA_HALF_EXTENT * 2.0 / MAX_RELEASE_SPEED * TICK_HZ as f32;
         assert!(
             frames >= 4.0,
-            "the fastest throw crosses the container in {frames} frames, which is              too fast to see"
+            "the fastest throw crosses the container in {frames} frames, which is too fast to see"
         );
     }
 
@@ -2581,7 +2592,7 @@ mod tests {
         );
         assert!(
             hard > 4.0 * medium,
-            "a ten-times-faster drag threw only {hard} against {medium}, so the              top of the range is still flattened"
+            "a ten-times-faster drag threw only {hard} against {medium}, so the top of the range is still flattened"
         );
         assert!(
             hard <= MAX_RELEASE_SPEED,
@@ -3090,12 +3101,12 @@ mod tests {
         // grabbed. An impulse through the centre of mass has no lever arm and
         // would leave the spin exactly where it was.
         let lever = rotation.apply(lever_local);
-        let expected = Bivector4::wedge(lever, toybox.velocity(0) * BODY_MASS)
-            * (RELEASE_SPIN_GAIN / inertia);
+        let expected =
+            Bivector4::wedge(lever, toybox.velocity(0) * BODY_MASS) * (RELEASE_SPIN_GAIN / inertia);
         let got = after + before * -1.0;
         assert!(
             (got + expected * -1.0).magnitude() < 1e-3 * expected.magnitude().max(1.0),
-            "the release torqued by {got:?}, not RELEASE_SPIN_GAIN of the grabbed              point's {expected:?}"
+            "the release torqued by {got:?}, not RELEASE_SPIN_GAIN of the grabbed point's {expected:?}"
         );
     }
 
@@ -3288,7 +3299,7 @@ mod tests {
         assert_eq!(
             toybox.pick(&ray_through(far)),
             None,
-            "a ray far outside the section still grabbed, so the fallback is              behaving like a bounding-ball pick"
+            "a ray far outside the section still grabbed, so the fallback is behaving like a bounding-ball pick"
         );
     }
 
@@ -3456,14 +3467,17 @@ mod tests {
     #[test]
     fn the_drawn_handle_rides_the_caught_point_rather_than_the_body_centre() {
         let mut toybox = settled();
-        assert!(toybox.grab_handle().is_none(), "a handle drew with nothing held");
+        assert!(
+            toybox.grab_handle().is_none(),
+            "a handle drew with nothing held"
+        );
         let centre = toybox.position(0).truncate();
         assert!(toybox.press(&ray_through(centre + Vec3::new(0.0, 0.2, 0.0)), FORWARD));
 
         let held = toybox.grab_handle().expect("held");
         assert!(
             (held - toybox.position(0).truncate()).length() > 0.05,
-            "the handle drew at the centre of mass, which is exactly the             off-centre catch the marker exists to show"
+            "the handle drew at the centre of mass, which is exactly the off-centre catch the marker exists to show"
         );
 
         let id = toybox.toys[0].body;
@@ -3475,7 +3489,10 @@ mod tests {
         );
 
         toybox.release();
-        assert!(toybox.grab_handle().is_none(), "the handle outlived the grab");
+        assert!(
+            toybox.grab_handle().is_none(),
+            "the handle outlived the grab"
+        );
     }
 
     #[test]

@@ -120,7 +120,7 @@ impl PlaygroundPhysics {
     }
 
     // The slot's UI spin is BAKED into the hull's vertex list, because
-    // `world_vertices4_into` applies `body.orientation.rotation` alone. The
+    // `PosedHull4` applies `body.orientation.rotation` alone. The
     // spin's rim velocity stays unmodelled: 16% of MAX_RESOLVED_SPEED by default.
     pub(crate) fn sync(&mut self, row: &[ShapeEntry], spins: &SlotSpins, size: f32) {
         if self.world.bodies.len() != row.len() {

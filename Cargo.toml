@@ -16,7 +16,7 @@ members = [
   "crates/loam-console",
   "crates/loam-egui",
   "crates/hero",
-    "crates/polytope_playground",
+  "crates/polytope_playground",
   "crates/tesseract_demo",
 ]
 resolver = "2"

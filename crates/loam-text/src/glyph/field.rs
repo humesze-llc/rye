@@ -66,26 +66,15 @@ impl DistanceField2D {
         })
     }
 
-    /// Bilinear between grid samples, so an approximation of the exact contour
-    /// distance: adequate for sphere tracing, not for exact containment.
+    /// A field over a caller-chosen grid, for a signed distance this module did
+    /// not bake: a morph between two glyphs is the elementwise blend of their
+    /// fields, which is only defined once both sit on a common grid. The
+    /// caller owns the padded all-outside boundary ring that `bake`
+    /// establishes and this does not check.
     ///
-    /// The exact contour distance is 1-Lipschitz in L2; this interpolant is
-    /// not. Adjacent samples differ by at most one cell, so each partial
-    /// derivative of the bilinear form is bounded by 1 and
-    /// `|sample(a) - sample(b)| <= |a - b|` holds in the L1 norm, hence only
-    /// `sqrt(2) |a - b|` in L2. The L2 constant is attained: at a cell corner
-    /// on the medial axis the three near corners carry the same distance and
-    /// the fourth is one cell nearer the wall, which drives the interpolant's
-    /// gradient to `(1, 1)`. A sphere tracer stepping by this value must scale
-    /// steps by `1 / sqrt(2)`, or step per axis, to avoid tunnelling.
-    /// A field over a caller-chosen grid, for a signed distance this module
-    /// did not bake: the morph between two glyphs is the elementwise blend of
-    /// their fields, which is only defined once both sit on a common grid.
-    ///
-    /// `samples` is row-major with `samples_x` per row, `y` increasing with row
-    /// index, the same order the field bakes in.
-    /// `None` if the grid is degenerate or the buffer is the wrong length,
-    /// because every accessor below indexes it without a bounds check.
+    /// `samples` is row-major with `samples_x` per row, `y` increasing with
+    /// row index. `None` if the grid is degenerate or the buffer is the wrong
+    /// length, because every accessor indexes it without a bounds check.
     pub fn from_samples(
         origin: Vec2,
         cell: f32,
@@ -116,6 +105,18 @@ impl DistanceField2D {
         self.corner(i, j)
     }
 
+    /// Bilinear between grid samples, so an approximation of the exact contour
+    /// distance: adequate for sphere tracing, not for exact containment.
+    ///
+    /// The exact contour distance is 1-Lipschitz in L2; this interpolant is
+    /// not. Adjacent samples differ by at most one cell, so each partial
+    /// derivative of the bilinear form is bounded by 1 and
+    /// `|sample(a) - sample(b)| <= |a - b|` holds in the L1 norm, hence only
+    /// `sqrt(2) |a - b|` in L2. The L2 constant is attained: at a cell corner
+    /// on the medial axis the three near corners carry the same distance and
+    /// the fourth is one cell nearer the wall, which drives the interpolant's
+    /// gradient to `(1, 1)`. A sphere tracer stepping by this value must scale
+    /// steps by `1 / sqrt(2)`, or step per axis, to avoid tunnelling.
     pub fn sample(&self, p: Vec2) -> f32 {
         let grid = (p - self.origin) / self.cell;
         let clamped = grid.clamp(

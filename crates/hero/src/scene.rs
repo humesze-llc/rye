@@ -9,18 +9,18 @@ use glam::{Mat4, Vec3, Vec4};
 use loam_app::{egui, Camera, CameraController, FrameCtx, OrbitController, RenderCtx, SetupCtx};
 use loam_egui::{Console, ConsoleUi};
 use loam_math::{Bivector4, EuclideanR3, EuclideanR4, Projection, Rotor, Rotor4, WPlane};
+use loam_physics::body::MASK_ALL;
 use loam_physics::euclidean_r4::{
     halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
 };
-use loam_physics::body::MASK_ALL;
 use loam_physics::{BodyId, Gravity, World};
 use loam_render::{
     DepthBuffer, DepthMode, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode, Viewport,
 };
 use loam_shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
-use loam_shape::{Shape, TriangleMesh};
 #[cfg(test)]
 use loam_shape::Visualizable;
+use loam_shape::{Shape, TriangleMesh};
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 use loam_time::director::{BodyTrack, Director, Drive, Ease, Timeline, Track};
 
@@ -30,10 +30,10 @@ const WORD: &str = "LOAM";
 
 const TICK_HZ: u32 = 60;
 
-// `glyph-letter-bodies` measured that a letter hull dropped on a half-space
-// settles at 240 Hz and does NOT at 120 Hz, where the same drops skid 0.45 to
-// 0.61 em and end tipped on a corner: `polytope_halfspace_r4` reports one
-// deepest vertex per step, a manifold holds four, and halving the rate halves
+// A letter hull dropped on a half-space settles at 240 Hz and does NOT at 120,
+// where the same drops skid 0.45 to 0.61 em and end tipped on a corner:
+// `polytope_halfspace_r4` reports one deepest vertex per step, a manifold holds
+// four, and halving the rate halves
 // the constraints the solver has accumulated by the time a letter rocks over.
 // Four sub-steps of a 60 Hz tick is that rate, reached without moving the host
 // clock.
@@ -64,10 +64,8 @@ const LETTER_STAGGER_TICKS: u32 = 12;
 
 const LETTER_SLIDE_TICKS: u32 = 36;
 
-// How far out in `w` a letter starts. Eight times the glyph slab's half
-// thickness, so a letter spends most of its approach with no cross-section in
-// the slice at all and arrives by entering the slice rather than by sliding
-// across it.
+// How far out in `w` a letter starts: two letterforms, so the entrance sweeps
+// its section through both neighbours before settling on its own.
 const W_ENTRY_SPAN: f32 = 0.6;
 
 // Height of the lowest hull vertex above the floor at release, in em. The
@@ -147,7 +145,6 @@ const RAIN_SHAPES: [Polytope4; 6] = [
     Polytope4::Tesseract,
     Polytope4::Cell120,
 ];
-
 
 pub(crate) struct HeroLetter {
     hull: Vec<Vec4>,
@@ -263,23 +260,13 @@ impl HeroSequence {
             self.letter_w_scratch = before_w;
         }
         self.tick += 1;
-        // The handover closes the assemble phase rather than opening the fall
-        // one, so `Self::phase` and the world's body count never disagree about
-        // who owns a letter at a tick boundary.
+        // Closes the assemble tick rather than opening the fall one, so the
+        // director and the world never both own a letter at a tick boundary.
         if self.tick == ASSEMBLE_TICKS {
             self.release_letters();
         }
     }
 
-    /// A DELIBERATE DEVIATION: letters spin only inside the slice. The draw
-    /// poses a section with the rotor and drops `w`, and a 4D rotation's 3x3
-    /// block is not a rotation, so a letter tumbling into a `w` plane flattens
-    /// as that block goes singular. Held here the block is a rotation and the
-    /// draw is exact; the letters read as 4D through `w` translation instead,
-    /// and the rain, which is sliced properly, still tumbles anywhere.
-    ///
-    /// The three kept planes are closed under the Lie bracket, so the rotor
-    /// stays in SO(3): a projection, not a fight with the integrator.
     /// Promotes a drop out of [`GROUP_FALLING`] the first step it touches
     /// anything, so it stops being transparent to the rest of the rain. Read
     /// off the manifolds rather than a height, because "has landed" is exactly
@@ -300,6 +287,15 @@ impl HeroSequence {
         }
     }
 
+    /// A DELIBERATE DEVIATION: letters spin only inside the slice. The draw
+    /// poses a section with the rotor and drops `w`, and a 4D rotation's 3x3
+    /// block is not a rotation, so a letter tumbling into a `w` plane flattens
+    /// as that block goes singular. Held here the block is a rotation and the
+    /// draw is exact; the letters read as 4D through `w` translation instead,
+    /// and the rain, which is sliced properly, still tumbles anywhere.
+    ///
+    /// The three kept planes are closed under the Lie bracket, so the rotor
+    /// stays in SO(3): a projection, not a fight with the integrator.
     fn hold_letters_in_the_slice(&mut self) {
         for letter in &self.letters {
             let Some(body) = letter.body else { continue };
@@ -354,7 +350,6 @@ impl HeroSequence {
     pub(crate) fn finished(&self) -> bool {
         self.tick >= SEQUENCE_TICKS
     }
-
 
     /// Where the scene is sliced this tick. Pinned at [`W_SLICE`] for as long
     /// as the sim runs, then swept once everything has frozen: a slice moving
@@ -800,13 +795,6 @@ fn drop_color(polytope: Polytope4) -> [f32; 3] {
     }
 }
 
-// A drop is SLICED at [`W_SLICE`], so a tumble through a `w` plane visibly
-// changes its cross-section. A letter is PROJECTED: its solid is a product with
-// the glyph slab, so its true slice is the same cross-section at every `w` the
-// slab covers. During assembly its solid is a bicone instead, so the section
-// is the glyph scaled about the letter's apex, which [`letter_section_scale`]
-// gives; the drawn mesh is the glyph either way, so no re-extraction is
-// needed, only a scale about a point.
 fn build_frame_mesh(
     sequence: &mut HeroSequence,
     local: &mut Vec<Vec4>,
@@ -827,7 +815,7 @@ fn build_frame_mesh(
 // a `w` plane the true section would need marching a 3D implicit surface, and
 // the morph parameter is taken at the body centre instead.
 //
-// 3.31 ms a frame while morphing against 0.62 ms settled: a sixth of a 60 Hz
+// 3.31 ms a frame while morphing against 0.62 ms settled: a fifth of a 60 Hz
 // budget, and it would not fit at 240 Hz.
 fn push_letters(sequence: &mut HeroSequence, mesh: &mut TriangleMesh<3>) {
     let half_depth = 0.5 * GlyphParams::default().depth;
@@ -925,7 +913,8 @@ impl HeroScene {
         let sequence = HeroSequence::new(hero_font_bytes(), DEFAULT_SEED)?;
         let mut camera = Camera::<EuclideanR3>::at_origin();
         camera.position = Vec3::new(0.0, BOOT_EYE_HEIGHT, BOOT_ORBIT_DISTANCE);
-        let mut orbit: OrbitController<EuclideanR3> = OrbitController::around(sequence.word_centre());
+        let mut orbit: OrbitController<EuclideanR3> =
+            OrbitController::around(sequence.word_centre());
         orbit.set_orbit(BOOT_ORBIT_DISTANCE, BOOT_ORBIT_PITCH);
 
         Ok(Self {
@@ -964,7 +953,6 @@ impl HeroScene {
             Err(error) => tracing::error!("hero: could not rebuild at seed {seed:#x}: {error:#}"),
         }
     }
-
 }
 
 impl loam_app::shell::Scene for HeroScene {
@@ -1071,7 +1059,7 @@ impl loam_app::shell::Scene for HeroScene {
     }
 
     fn title(&self, _fps: f32) -> Cow<'static, str> {
-        Cow::Borrowed("polytope playground - hero")
+        Cow::Borrowed("loam")
     }
 }
 
@@ -1114,8 +1102,11 @@ mod tests {
         HeroSequence::new(hero_font_bytes(), SEED).expect("hero scene")
     }
 
+    // Indexes the INKED solids, which is what every caller enumerates, so a
+    // word carrying a blank would otherwise mislabel every message downstream.
     fn label(index: usize) -> char {
         WORD.chars()
+            .filter(|c| !c.is_whitespace())
             .nth(index)
             .expect("letter index is in the word")
     }
@@ -1171,8 +1162,7 @@ mod tests {
         // until the freeze rather than to a fixed total, so the seed reaches
         // how many fell as well as where.
         assert!(
-            drops_a.len() != drops_b.len()
-                || drops_a.iter().zip(&drops_b).any(|(a, b)| a != b),
+            drops_a.len() != drops_b.len() || drops_a.iter().zip(&drops_b).any(|(a, b)| a != b),
             "two seeds rained identically, so the seed is decoration"
         );
     }
@@ -1351,7 +1341,10 @@ mod tests {
         // reason that cap is gone, so the rain is where their absence would
         // show first.
         for large in [Polytope4::Cell120, Polytope4::Cell600] {
-            assert!(RAIN_SHAPES.contains(&large), "{large:?} dropped out of the rain");
+            assert!(
+                RAIN_SHAPES.contains(&large),
+                "{large:?} dropped out of the rain"
+            );
         }
     }
 
@@ -1442,7 +1435,7 @@ mod tests {
             scene.run_to(tick);
             assert!(
                 (scene.slice() - W_SLICE).abs() < 1e-6,
-                "the slice moved to {} at tick {tick}, while the pile was still                  rolling",
+                "the slice moved to {} at tick {tick}, while the pile was still rolling",
                 scene.slice()
             );
         }
@@ -1515,7 +1508,7 @@ mod tests {
         let ratio = |(lo, hi): (Vec3, Vec3)| (hi.x - lo.x) / (hi.y - lo.y);
         assert!(
             (ratio(knocked) - ratio(settled)).abs() > 0.05,
-            "knocked along w the section keeps aspect {} against {}, so it is              projecting rather than sectioning",
+            "knocked along w the section keeps aspect {} against {}, so it is projecting rather than sectioning",
             ratio(knocked),
             ratio(settled)
         );
@@ -1535,10 +1528,11 @@ mod tests {
                 // rotation, and when the letter tumbles into a `w` plane it
                 // goes singular and the letter flattens to a sheet. Holding
                 // the letters' spin inside the slice is what keeps this at 1.
-                let det = r
-                    .apply(Vec4::X)
-                    .truncate()
-                    .dot(r.apply(Vec4::Y).truncate().cross(r.apply(Vec4::Z).truncate()));
+                let det = r.apply(Vec4::X).truncate().dot(
+                    r.apply(Vec4::Y)
+                        .truncate()
+                        .cross(r.apply(Vec4::Z).truncate()),
+                );
                 if (det - 1.0).abs() > (worst - 1.0).abs() {
                     worst = det;
                     worst_tick = tick;
@@ -1547,7 +1541,7 @@ mod tests {
         }
         assert!(
             (worst - 1.0).abs() < 1e-3,
-            "a letter's drawn basis had determinant {worst} at tick {worst_tick}, so              it is being scaled rather than rotated"
+            "a letter's drawn basis had determinant {worst} at tick {worst_tick}, so it is being scaled rather than rotated"
         );
     }
 
@@ -1563,7 +1557,10 @@ mod tests {
                 spin.xw.abs() + spin.yw.abs() + spin.zw.abs()
             })
             .fold(0.0f32, f32::max);
-        assert!(spun > 0.1, "the rain lost its w-plane tumble too, at {spun}");
+        assert!(
+            spun > 0.1,
+            "the rain lost its w-plane tumble too, at {spun}"
+        );
 
         for letter in scene.letters() {
             let body = letter.body.expect("released");
@@ -1580,7 +1577,10 @@ mod tests {
             .map(|d| d.body)
             .filter(|id| scene.world.bodies[*id].collision_group == GROUP_FALLING)
             .collect();
-        assert!(!falling.is_empty(), "nothing was in the air 20 ticks into the rain");
+        assert!(
+            !falling.is_empty(),
+            "nothing was in the air 20 ticks into the rain"
+        );
 
         // No manifold ever holds two bodies that are both still falling.
         for tick in RAIN_START_TICK..PHYSICS_PAUSE_TICK {
@@ -1637,7 +1637,7 @@ mod tests {
             .fold(0.0f32, f32::max);
         assert!(
             pushed > 0.05,
-            "the rain moved no letter further than {pushed} in w, so the letters              never morph"
+            "the rain moved no letter further than {pushed} in w, so the letters never morph"
         );
     }
 
@@ -1692,7 +1692,7 @@ mod tests {
         let ratio = |(lo, hi): (Vec3, Vec3)| (hi.x - lo.x) / (hi.y - lo.y);
         assert!(
             (ratio(mid) - ratio(own)).abs() > 0.05,
-            "mid-approach aspect {} matches its own {}, so the section is only              scaling",
+            "mid-approach aspect {} matches its own {}, so the section is only scaling",
             ratio(mid),
             ratio(own)
         );

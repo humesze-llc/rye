@@ -357,9 +357,7 @@ pub fn ball4_inertia(mass: f32, radius: f32) -> f32 {
 }
 
 /// Isotropic moment of a uniform-density regular polychoron about any 2-plane
-/// through its centroid, at circumradius `circumradius`. `None` for the
-/// 120-cell and the 600-cell, whose second moments are not derived here; the
-/// bounding ball is within 12% of both.
+/// through its centroid, at circumradius `circumradius`.
 ///
 /// Exact, not the bounding-sphere approximation [`polytope_body_r4`] carries.
 /// Each of these symmetry groups acts irreducibly on R⁴, so Schur's lemma
@@ -396,8 +394,6 @@ pub fn ball4_inertia(mass: f32, radius: f32) -> f32 {
 ///   dodecahedron has `<|u|²> = rc²·(45 + 11√5)/150`, equivalently
 ///   `a²(95 + 39√5)/200` in its edge.
 ///
-/// The two large cases were checked against a direct simplex decomposition of
-/// the 600-cell's 600 tetrahedral cells before being written down.
 pub fn regular_polytope4_inertia(shape: Polytope4, mass: f32, circumradius: f32) -> f32 {
     const SQRT_5: f32 = 2.236_068;
     let mean_radius_sq = match shape {

@@ -259,6 +259,49 @@ fn orthogonal_to_hull(simplex: &[MinkowskiPoint4], tried: &[Vec4]) -> Option<Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loam_math::{Bivector, Bivector4, Plane4};
+
+    #[test]
+    fn a_posed_hull_supports_where_the_world_vertices_would() {
+        let local = [
+            Vec4::new(0.6, 0.1, -0.2, 0.35),
+            Vec4::new(-0.4, 0.7, 0.15, -0.5),
+            Vec4::new(0.05, -0.8, 0.45, 0.2),
+            Vec4::new(-0.3, 0.2, -0.65, -0.1),
+            Vec4::new(0.25, 0.4, 0.5, 0.6),
+        ];
+        let position = Vec4::new(3.0, -1.5, 0.75, -2.25);
+        // A simple rotation and a double one: the double mixes all four axes,
+        // which is what a transposed or un-inverted rotor gets wrong.
+        let simple = (Plane4::Xw.unit_bivector() * 0.8).exp().normalize();
+        let double = (Bivector4::new(0.5, 0.0, 0.0, 0.0, 0.0, -0.9).exp()).normalize();
+
+        for rotation in [Rotor4::identity(), simple, double] {
+            let world: Vec<Vec4> = local
+                .iter()
+                .map(|v| rotation.apply(*v) + position)
+                .collect();
+            let posed = PosedHull4 {
+                local: &local,
+                position,
+                rotation,
+            };
+            let materialised = ConvexHull4 { vertices: &world };
+            for dir in [
+                Vec4::X,
+                Vec4::W,
+                Vec4::new(1.0, 1.0, 1.0, 1.0),
+                Vec4::new(-0.3, 0.9, -0.2, 0.7),
+                Vec4::new(0.0, -1.0, 0.4, -0.4),
+            ] {
+                let (a, b) = (posed.support(dir), materialised.support(dir));
+                assert!(
+                    (a - b).length() < 1e-5,
+                    "posed support {a:?} against materialised {b:?} for {dir:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn separated_spheres() {

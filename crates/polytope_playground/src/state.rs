@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
+use crate::verbs::WireframeControls;
 use glam::{Vec3, Vec4};
 use loam_app::{freecam::Freecam, Camera, OrbitController};
 use loam_math::{Bivector, Bivector4, EuclideanR3, Plane4, Projection, Rotor, Rotor4};
 use loam_render::raymarch::{BodyUniform, Hyperslice4DNode};
 use loam_render::SkyGroundNode;
-use crate::verbs::WireframeControls;
 use loam_shape::polytope::Polytope4;
 
 use crate::catalog::ShapeEntry;

@@ -11,21 +11,20 @@ use crate::response::Contact;
 /// polytopes, which is why Box2D and rapier also use 4 in 3D.
 pub const MAX_POINTS: usize = 4;
 
-// Squared world units. A new contact within this squared distance of a slot
-// refreshes that slot. Tuned for unit-scale demos.
-const MERGE_RADIUS_SQ: f32 = 0.02 * 0.02;
-
 /// Separation, in world units, at which [`Manifold::refresh`] drops a retained
 /// point: Bullet's `gContactBreakingThreshold` default, applied the way
 /// `btPersistentManifold::refreshContactPoints` applies it (Coumans, Bullet
 /// Physics SDK 3.x, `BulletCollision/NarrowPhaseCollision`), to the normal gap
-/// and to the tangential drift alike. It is the same 0.02 as
-/// `MERGE_RADIUS_SQ`, and deliberately: a point that has moved far enough to
-/// stop merging with a fresh contact is a point that no longer describes the
-/// geometry it was born on.
+/// and to the tangential drift alike. An absolute length, so it carries the
+/// unit-scale assumption the rest of this module makes.
 pub const CONTACT_BREAK_DISTANCE: f32 = 0.02;
 
 const CONTACT_BREAK_DISTANCE_SQ: f32 = CONTACT_BREAK_DISTANCE * CONTACT_BREAK_DISTANCE;
+
+// A point that has drifted far enough to stop merging with a fresh contact is
+// a point that no longer describes the geometry it was born on, so the merge
+// radius and the break distance are one number.
+const MERGE_RADIUS_SQ: f32 = CONTACT_BREAK_DISTANCE_SQ;
 
 #[derive(Clone, Copy)]
 pub struct ContactPoint<S: PhysicsSpace> {
@@ -92,10 +91,6 @@ where
     /// `penetration` from the re-projection, so a point solved this step
     /// describes where the bodies are now.
     ///
-    /// Without this a point kept the geometry of the frame it was created in
-    /// and was solved again every step, pushing on a feature the body had
-    /// already rocked off: a resting hull climbed against gravity.
-    ///
     /// `a` and `b` must be the bodies named by [`Self::body_a`] and
     /// [`Self::body_b`], in that order. Retains in slot order, never in hash
     /// order.
@@ -104,8 +99,6 @@ where
             let pa = anchor_world_point(space, a, cp.anchor_a);
             let pb = anchor_world_point(space, b, cp.anchor_b);
             let gap = space.log(pa, pb);
-            // The normal runs from A toward B, so a positive component means
-            // the two anchors have pulled apart along it.
             let separation = VectorOps::dot(gap, cp.normal);
             if separation > CONTACT_BREAK_DISTANCE {
                 return false;

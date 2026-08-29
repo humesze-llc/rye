@@ -94,5 +94,4 @@ fn scene_build_cost() {
         "HUD atlas",
         time(|| drop(crate::hud::TextHud::new(&device, &queue, FORMAT, SAMPLES).expect("hud"))),
     );
-
 }

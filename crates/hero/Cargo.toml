@@ -21,7 +21,6 @@ winit.workspace = true
 wgpu.workspace = true
 
 loam-app     = { path = "../loam-app",     version = "0.1.0", default-features = false }
-loam-console = { path = "../loam-console", version = "0.1.0" }
 loam-egui    = { path = "../loam-egui",    version = "0.1.0" }
 loam-math    = { path = "../loam-math",    version = "0.1.0" }
 loam-physics = { path = "../loam-physics", version = "0.1.0" }

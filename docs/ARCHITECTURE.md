@@ -15,7 +15,7 @@ tier 0  loam-math  loam-input  loam-time  loam-asset  loam-console
 tier 1  loam-shape  loam-camera  loam-player  loam-shader
 tier 2  loam-scene  loam-physics  loam-text  loam-render  loam-egui
 tier 3  loam-app
-tier 4  loam  polytope_playground  tesseract_demo
+tier 4  loam  polytope_playground  hero  tesseract_demo
 ```
 
 Every first-party edge, from the manifests. Dev edges are test-only and do not
@@ -38,8 +38,9 @@ loam-render           math  shape  time           dev: scene  shader
 loam-egui             math  camera  console
 loam-app              math  asset  input  time  camera  egui  render  shader
 loam                  every loam-* crate except loam-console and loam-egui
-polytope_playground   math  shape  time  scene  physics  camera  egui
+polytope_playground   math  shape  time  scene  physics  camera  text  egui
                       render  app
+hero                  math  shape  time  physics  text  egui  render  app
 tesseract_demo        math  shape  time  camera  egui  render  app
 ```
 

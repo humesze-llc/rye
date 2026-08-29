@@ -959,14 +959,26 @@ mod tests {
         register_default_narrowphase(&mut world.narrowphase);
         // Overlapping, so only the mask can keep them apart.
         let a = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 1.0, 1.0));
-        let b = world.push_body(sphere_body_r3(Vec3::new(0.5, 0.0, 0.0), Vec3::ZERO, 1.0, 1.0));
-        assert_eq!(world.broadphase().len(), 1, "the pair does not overlap to begin with");
+        let b = world.push_body(sphere_body_r3(
+            Vec3::new(0.5, 0.0, 0.0),
+            Vec3::ZERO,
+            1.0,
+            1.0,
+        ));
+        assert_eq!(
+            world.broadphase().len(),
+            1,
+            "the pair does not overlap to begin with"
+        );
 
         world.bodies[a].collision_group = 0b01;
         world.bodies[a].collision_mask = 0b01;
         world.bodies[b].collision_group = 0b10;
         world.bodies[b].collision_mask = 0b10;
-        assert!(world.broadphase().is_empty(), "a filtered pair still reached the narrowphase");
+        assert!(
+            world.broadphase().is_empty(),
+            "a filtered pair still reached the narrowphase"
+        );
 
         // One-sided: `b` would accept `a`, but `a` still refuses `b`, and the
         // filter is symmetric so the pair stays out.
@@ -977,7 +989,11 @@ mod tests {
         );
 
         world.bodies[a].collision_mask = 0b11;
-        assert_eq!(world.broadphase().len(), 1, "agreement did not restore the pair");
+        assert_eq!(
+            world.broadphase().len(),
+            1,
+            "agreement did not restore the pair"
+        );
     }
 
     #[test]

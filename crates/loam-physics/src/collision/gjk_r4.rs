@@ -3,6 +3,7 @@
 //! [`super::simplex_r4`].
 
 use glam::Vec4;
+use loam_math::{Rotor, Rotor4};
 
 use super::simplex_r4::{closest_to_origin, Closest};
 
@@ -26,6 +27,38 @@ impl<'a> SupportFn4 for ConvexHull4<'a> {
             }
         }
         best
+    }
+}
+
+/// A hull kept in body-local coordinates and posed on demand. Supporting in
+/// the body frame and mapping only the winning vertex out means the world
+/// vertices are never materialized, so a hull costs O(1) scratch whatever its
+/// vertex count and no fixed buffer bounds it.
+///
+/// A rotor is an isometry, so `<R v, d> = <v, R⁻¹ d>` and the argmax is the
+/// same vertex computed either way; one inverse rotation replaces `n` forward
+/// ones. Translation shifts every candidate equally and so cannot change the
+/// argmax, which is why `position` is added after the search rather than
+/// before it.
+pub struct PosedHull4<'a> {
+    pub local: &'a [Vec4],
+    pub position: Vec4,
+    pub rotation: Rotor4,
+}
+
+impl SupportFn4 for PosedHull4<'_> {
+    fn support(&self, direction: Vec4) -> Vec4 {
+        let local_dir = self.rotation.inverse().apply(direction);
+        let mut best = self.local[0];
+        let mut best_d = best.dot(local_dir);
+        for &v in &self.local[1..] {
+            let d = v.dot(local_dir);
+            if d > best_d {
+                best_d = d;
+                best = v;
+            }
+        }
+        self.rotation.apply(best) + self.position
     }
 }
 

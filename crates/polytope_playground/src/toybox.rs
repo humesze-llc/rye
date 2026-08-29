@@ -442,9 +442,7 @@ impl Toybox {
             body.orientation.rotation = pose;
             // The exact uniform-solid moment rather than `polytope_body_r4`'s
             // bounding ball, which the lever arm of a grab reads directly.
-            if let Some(inertia) = regular_polytope4_inertia(polytope, BODY_MASS, BODY_SIZE) {
-                body.inertia = inertia;
-            }
+            body.inertia = regular_polytope4_inertia(polytope, BODY_MASS, BODY_SIZE);
             toys.push(ToyBody {
                 body: id,
                 polytope,
@@ -3403,8 +3401,7 @@ mod tests {
                 panic!("toy {index} collides as {:?}", body.collider.kind());
             };
             assert_eq!(vertices.len(), toy.polytope.topology().vertices.len());
-            let exact = regular_polytope4_inertia(toy.polytope, BODY_MASS, BODY_SIZE)
-                .expect("every toy shape has a derived moment");
+            let exact = regular_polytope4_inertia(toy.polytope, BODY_MASS, BODY_SIZE);
             assert_eq!(body.inertia, exact, "toy {index} kept the bounding ball");
         }
     }

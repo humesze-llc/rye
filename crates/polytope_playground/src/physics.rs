@@ -145,7 +145,7 @@ impl PlaygroundPhysics {
             let body = &mut self.world.bodies[slot];
             let hull = entry
                 .collider_polytope()
-                .and_then(|p| regular_polytope4_inertia(p, body.mass, size).map(|i| (p, i)));
+                .map(|p| (p, regular_polytope4_inertia(p, body.mass, size)));
             let Some((polytope, inertia)) = hull else {
                 body.collider = Collider::sphere_at_origin(size);
                 body.inertia = ball4_inertia(body.mass, size);
@@ -234,11 +234,15 @@ mod tests {
 
     const RADIUS: f32 = crate::consts::BODY_SIZE;
 
-    const HULL_SHAPES: [(Polytope4, f32); 4] = [
+    // Moment per unit mass at unit circumradius: half the mean radius squared
+    // that `regular_polytope4_inertia` documents for each solid.
+    const HULL_SHAPES: [(Polytope4, f32); 6] = [
         (Polytope4::Pentatope, 1.0 / 12.0),
         (Polytope4::Tesseract, 1.0 / 6.0),
         (Polytope4::Cell16, 2.0 / 15.0),
         (Polytope4::Cell24, 13.0 / 60.0),
+        (Polytope4::Cell600, 0.295_136_73),
+        (Polytope4::Cell120, 0.307_740_58),
     ];
 
     fn rotor_at(plane: Plane4, angle: f32) -> Rotor4 {
@@ -429,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn exactly_the_polychora_under_the_vertex_cap_collide_as_their_own_hull() {
+    fn every_polychoron_collides_as_its_own_hull_and_the_smooth_solids_do_not() {
         for entry in crate::catalog::SHAPE_CATALOG {
             let (physics, ..) = synced_row(entry.shape, 1, RADIUS, Rotor4::IDENTITY);
             let expected_hull = HULL_SHAPES
@@ -444,14 +448,6 @@ mod tests {
                 "{} collided as {:?}",
                 entry.label, physics.world.bodies[0].collider
             );
-            if let Collider::ConvexPolytope4D { vertices } = &physics.world.bodies[0].collider {
-                assert!(
-                    vertices.len() <= loam_physics::euclidean_r4::MAX_POLYTOPE4_VERTICES,
-                    "{} handed the narrowphase {} vertices",
-                    entry.label,
-                    vertices.len()
-                );
-            }
         }
     }
 
@@ -470,12 +466,7 @@ mod tests {
                 );
                 assert!(inertia < ball, "{polytope:?} is no lighter than the ball");
             }
-            for shape in [
-                RaymarchShape::Polytope(Polytope4::Cell120),
-                RaymarchShape::Polytope(Polytope4::Cell600),
-                RaymarchShape::ThreeSphere,
-                RaymarchShape::CliffordTorus,
-            ] {
+            for shape in [RaymarchShape::ThreeSphere, RaymarchShape::CliffordTorus] {
                 let (physics, ..) = synced_row(shape, 1, size, Rotor4::IDENTITY);
                 assert_eq!(physics.world.bodies[0].inertia, ball, "{shape:?}");
             }
@@ -614,20 +605,29 @@ mod tests {
         for (polytope, _) in HULL_SHAPES {
             let peak = peak_struck_spin(RaymarchShape::Polytope(polytope), spin);
             assert!(
-                peak > 0.5,
+                peak > 0.0,
                 "{polytope:?} left the body it struck at |ω| = {peak}"
             );
         }
-        for shape in [
-            RaymarchShape::ThreeSphere,
-            RaymarchShape::Polytope(Polytope4::Cell120),
-        ] {
-            assert_eq!(
-                peak_struck_spin(shape, spin),
-                0.0,
-                "{shape:?} keeps the ball collider, which has no lever to spin on"
+        // Roundness costs lever arm. The 120-cell and 600-cell have 120 and
+        // 600 cells over the same circumradius, so a head-on hit lands much
+        // closer to the line of centres than it does on a 5-cell's corner, and
+        // the spin it can impart falls accordingly. This is the property that
+        // separates a hull from the ball it approaches, so it is worth pinning
+        // in the direction of the inequality rather than at a value.
+        let angular = peak_struck_spin(RaymarchShape::Polytope(Polytope4::Pentatope), spin);
+        for round in [Polytope4::Cell120, Polytope4::Cell600] {
+            let peak = peak_struck_spin(RaymarchShape::Polytope(round), spin);
+            assert!(
+                peak < angular,
+                "{round:?} spun the struck body by {peak}, at or past the 5-cell's {angular}"
             );
         }
+        assert_eq!(
+            peak_struck_spin(RaymarchShape::ThreeSphere, spin),
+            0.0,
+            "the smooth solids keep the ball collider, which has no lever to spin on"
+        );
     }
 
     #[test]

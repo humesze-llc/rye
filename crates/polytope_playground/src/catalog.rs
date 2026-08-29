@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Result};
 use loam_app::args::Args;
 use loam_app::egui;
-use loam_physics::euclidean_r4::MAX_POLYTOPE4_VERTICES;
 use loam_render::raymarch::RaymarchShape;
 use loam_shape::polytope::Polytope4;
 
@@ -17,15 +16,13 @@ pub(crate) struct ShapeEntry {
 }
 
 impl ShapeEntry {
-    // Two independent reasons for `None`. A vertex list longer than
-    // [`MAX_POLYTOPE4_VERTICES`] is truncated by the narrowphase in release,
-    // which is a corrupt hull rather than a coarse one, so the 120-cell (600
-    // vertices) and 600-cell (120) stay spheres. The four smooth solids simply
-    // have no vertex list.
+    // `None` only for the four smooth solids, which have no vertex list. The
+    // 120-cell and 600-cell used to be excluded here as well, because the
+    // narrowphase posed hulls through a fixed 32-vertex buffer and silently
+    // truncated past it; it supports in the body frame now and materializes
+    // nothing, so vertex count no longer bounds what can collide.
     pub(crate) fn collider_polytope(&self) -> Option<Polytope4> {
-        self.shape
-            .polytope4()
-            .filter(|p| p.vertex_count() <= MAX_POLYTOPE4_VERTICES)
+        self.shape.polytope4()
     }
 }
 
@@ -219,31 +216,21 @@ mod tests {
             .filter(|e| e.collider_polytope().is_some())
             .map(|e| e.label)
             .collect();
-        assert_eq!(with_hull, ["5-cell", "8-cell", "16-cell", "24-cell"]);
+        assert_eq!(
+            with_hull,
+            ["5-cell", "8-cell", "16-cell", "24-cell", "120-cell", "600-cell"]
+        );
 
+        // Every polytope entry collides as its own hull now; only the smooth
+        // solids fall through to a ball. The regression this catches is a
+        // vertex list quietly losing its collider again.
         for entry in SHAPE_CATALOG {
-            match entry.collider_polytope() {
-                Some(shape) => {
-                    assert!(shape.vertex_count() <= MAX_POLYTOPE4_VERTICES, "{shape:?}");
-                    assert!(
-                        loam_physics::euclidean_r4::regular_polytope4_inertia(shape, 1.0, 1.0)
-                            .is_some(),
-                        "{} collides its hull with no exact inertia to go with it",
-                        entry.label
-                    );
-                }
-                None => {
-                    let over_budget = entry
-                        .shape
-                        .polytope4()
-                        .is_some_and(|p| p.vertex_count() > MAX_POLYTOPE4_VERTICES);
-                    assert!(
-                        over_budget || entry.shape.polytope4().is_none(),
-                        "{} has a hull that fits but was left on the ball",
-                        entry.label
-                    );
-                }
-            }
+            assert_eq!(
+                entry.collider_polytope().is_some(),
+                entry.shape.polytope4().is_some(),
+                "{} disagrees with its own shape about having a hull",
+                entry.label
+            );
         }
     }
 

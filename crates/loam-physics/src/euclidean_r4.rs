@@ -8,7 +8,7 @@ use loam_shape::polytope::Polytope4;
 
 use crate::body::RigidBody;
 use crate::collider::{Collider, ColliderKind};
-use crate::collision::{epa_r4, gjk_intersect_r4, ConvexHull4, GjkResult4, Sphere4 as GjkSphere4};
+use crate::collision::{epa_r4, gjk_intersect_r4, GjkResult4, PosedHull4, Sphere4 as GjkSphere4};
 use crate::integrator::PhysicsSpace;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
@@ -219,30 +219,6 @@ fn polytope4_bounding_radius(local_vertices: &[Vec4]) -> f32 {
         .sqrt()
 }
 
-/// Exceeding it silently truncates vertices and corrupts collisions, so
-/// callers debug-assert.
-pub const MAX_POLYTOPE4_VERTICES: usize = 32;
-
-// Hot path; allocation-free by contract.
-fn world_vertices4_into<'a>(
-    local: &[Vec4],
-    pos: Vec4,
-    rot: loam_math::Rotor4,
-    out: &'a mut [Vec4; MAX_POLYTOPE4_VERTICES],
-) -> &'a [Vec4] {
-    debug_assert!(
-        local.len() <= MAX_POLYTOPE4_VERTICES,
-        "polytope vertex count {} exceeds MAX_POLYTOPE4_VERTICES = {}",
-        local.len(),
-        MAX_POLYTOPE4_VERTICES
-    );
-    let n = local.len().min(MAX_POLYTOPE4_VERTICES);
-    for i in 0..n {
-        out[i] = rot.apply(local[i]) + pos;
-    }
-    &out[..n]
-}
-
 // Accepted EPA penetration band: below is numerical noise, above is an EPA
 // iteration-cap fallback on pathological input.
 const MIN_POLYTOPE4_PENETRATION: f32 = 1e-4;
@@ -293,12 +269,16 @@ fn polytope_polytope_r4(
         return None;
     }
 
-    let mut buf_a = [Vec4::ZERO; MAX_POLYTOPE4_VERTICES];
-    let mut buf_b = [Vec4::ZERO; MAX_POLYTOPE4_VERTICES];
-    let va = world_vertices4_into(va_local, a.position, a.orientation.rotation, &mut buf_a);
-    let vb = world_vertices4_into(vb_local, b.position, b.orientation.rotation, &mut buf_b);
-    let hull_a = ConvexHull4 { vertices: va };
-    let hull_b = ConvexHull4 { vertices: vb };
+    let hull_a = PosedHull4 {
+        local: va_local,
+        position: a.position,
+        rotation: a.orientation.rotation,
+    };
+    let hull_b = PosedHull4 {
+        local: vb_local,
+        position: b.position,
+        rotation: b.orientation.rotation,
+    };
 
     let initial_dir = b.position - a.position;
     let simplex = match gjk_intersect_r4(&hull_a, &hull_b, initial_dir) {
@@ -328,13 +308,15 @@ fn sphere_polytope_r4(
         return None;
     }
 
-    let mut buf_b = [Vec4::ZERO; MAX_POLYTOPE4_VERTICES];
-    let vb = world_vertices4_into(vb_local, b.position, b.orientation.rotation, &mut buf_b);
     let support_a = GjkSphere4 {
         center: a.position,
         radius,
     };
-    let support_b = ConvexHull4 { vertices: vb };
+    let support_b = PosedHull4 {
+        local: vb_local,
+        position: b.position,
+        rotation: b.orientation.rotation,
+    };
     let initial_dir = b.position - a.position;
     let simplex = match gjk_intersect_r4(&support_a, &support_b, initial_dir) {
         GjkResult4::Intersecting { simplex } => simplex,
@@ -403,15 +385,30 @@ pub fn ball4_inertia(mass: f32, radius: f32) -> f32 {
 ///   `{|x|_∞ ≤ 1} ∩ {|x|_1 ≤ 2}` with circumradius `√2`, each facet is the
 ///   octahedron `{|x|_1 ≤ 1}` with `<|b_⊥|²> = 3·2/((3+1)(3+2)) = 3/10`, so
 ///   `<|x|²> = (2/3)·(13/10) = 13/15` and `(13/15)/(√2)² = 13/30`.
-pub fn regular_polytope4_inertia(shape: Polytope4, mass: f32, circumradius: f32) -> Option<f32> {
+/// - 600-cell, `(11 + 3√5)/30`. The same cone decomposition. At circumradius 1
+///   the edge is `1/φ`, so a tetrahedral cell has circumradius squared
+///   `rc² = (3/8)/φ² = (9 - 3√5)/16` and the cells sit at `h² = 1 - rc²`. A
+///   uniform regular tetrahedron has `<|u|²> = rc²/5`, giving
+///   `(2/3)·(h² + rc²/5)`.
+/// - 120-cell, `(215 + 69√5)/600`. Cone decomposition again. Its edge at
+///   circumradius 1 is `1/(φ²√2)`, and its dodecahedral cells have the SAME
+///   `rc² = (9 - 3√5)/16` as the 600-cell's tetrahedra. A uniform regular
+///   dodecahedron has `<|u|²> = rc²·(45 + 11√5)/150`, equivalently
+///   `a²(95 + 39√5)/200` in its edge.
+///
+/// The two large cases were checked against a direct simplex decomposition of
+/// the 600-cell's 600 tetrahedral cells before being written down.
+pub fn regular_polytope4_inertia(shape: Polytope4, mass: f32, circumradius: f32) -> f32 {
+    const SQRT_5: f32 = 2.236_068;
     let mean_radius_sq = match shape {
         Polytope4::Pentatope => 1.0 / 6.0,
         Polytope4::Tesseract => 1.0 / 3.0,
         Polytope4::Cell16 => 4.0 / 15.0,
         Polytope4::Cell24 => 13.0 / 30.0,
-        Polytope4::Cell120 | Polytope4::Cell600 => return None,
+        Polytope4::Cell600 => (11.0 + 3.0 * SQRT_5) / 30.0,
+        Polytope4::Cell120 => (215.0 + 69.0 * SQRT_5) / 600.0,
     };
-    Some(0.5 * mass * circumradius * circumradius * mean_radius_sq)
+    0.5 * mass * circumradius * circumradius * mean_radius_sq
 }
 
 pub fn sphere_body_r4(
@@ -504,36 +501,37 @@ mod tests {
             (Polytope4::Tesseract, mr2 / 6.0),
             (Polytope4::Cell16, 2.0 * mr2 / 15.0),
             (Polytope4::Cell24, 13.0 * mr2 / 60.0),
+            // Verified against a direct simplex decomposition of the
+            // 600-cell's 600 tetrahedral cells, which agrees to nine figures.
+            (Polytope4::Cell600, 0.590_273_46 * 0.5 * mr2),
+            (Polytope4::Cell120, 0.615_481_15 * 0.5 * mr2),
         ];
         for (shape, expected) in cases {
-            assert_close(
-                regular_polytope4_inertia(shape, m, r).expect("closed form"),
-                expected,
-                1e-6,
-            );
+            assert_close(regular_polytope4_inertia(shape, m, r), expected, 1e-6);
         }
         assert_close(
-            regular_polytope4_inertia(Polytope4::Cell24, 2.0 * m, 3.0 * r).expect("closed form"),
+            regular_polytope4_inertia(Polytope4::Cell24, 2.0 * m, 3.0 * r),
             2.0 * 9.0 * 13.0 * mr2 / 60.0,
             1e-5,
         );
 
         let moments: Vec<f32> = cases
             .iter()
-            .map(|(shape, _)| regular_polytope4_inertia(*shape, m, r).unwrap())
+            .map(|(shape, _)| regular_polytope4_inertia(*shape, m, r))
             .chain(std::iter::once(ball4_inertia(m, r)))
             .collect();
-        // Pentatope, tesseract, 16-cell, 24-cell, ball in the declaration
-        // order above, sorted by how far the solid pushes its mass out.
-        let ordered = [moments[0], moments[2], moments[1], moments[3], moments[4]];
+        // Sorted by how far each solid pushes its mass out: pentatope,
+        // 16-cell, tesseract, 24-cell, 600-cell, 120-cell, ball. The ball is
+        // the ceiling because it is the roundest, and the two large polychora
+        // sit just under it, which is the check that catches a transcribed
+        // digit in either new constant.
+        let ordered = [
+            moments[0], moments[2], moments[1], moments[3], moments[4], moments[5], moments[6],
+        ];
         assert!(
             ordered.windows(2).all(|w| w[0] < w[1]),
             "moments out of order: {ordered:?}"
         );
-
-        for shape in [Polytope4::Cell120, Polytope4::Cell600] {
-            assert_eq!(regular_polytope4_inertia(shape, m, r), None);
-        }
     }
 
     // SplitMix64 (Steele, Lea and Flood 2014, *OOPSLA*, §4), so the estimator
@@ -833,8 +831,7 @@ mod tests {
                 .exp()
                 .normalize();
             world.bodies[body].inertia =
-                regular_polytope4_inertia(Polytope4::Cell24, 1.0, CORNER_DROP_CIRCUMRADIUS)
-                    .expect("closed form");
+                regular_polytope4_inertia(Polytope4::Cell24, 1.0, CORNER_DROP_CIRCUMRADIUS);
             Self {
                 world,
                 body,

@@ -125,11 +125,13 @@ const RESTITUTION: f32 = 0.0;
 
 pub(crate) const DEFAULT_SEED: u64 = 0x10a3_5eed;
 
-const RAIN_SHAPES: [Polytope4; 4] = [
+const RAIN_SHAPES: [Polytope4; 6] = [
     Polytope4::Cell24,
     Polytope4::Pentatope,
+    Polytope4::Cell600,
     Polytope4::Cell16,
     Polytope4::Tesseract,
+    Polytope4::Cell120,
 ];
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -366,9 +368,7 @@ impl HeroSequence {
         // The exact uniform-solid moment, not `polytope_body_r4`'s bounding
         // ball: every one of these symmetry groups acts irreducibly on R⁴, so
         // the scalar inertia slot is exact rather than an approximation.
-        if let Some(inertia) = regular_polytope4_inertia(polytope, RAIN_MASS, RAIN_SIZE) {
-            body.inertia = inertia;
-        }
+        body.inertia = regular_polytope4_inertia(polytope, RAIN_MASS, RAIN_SIZE);
         self.drops.push(HeroDrop {
             body: id,
             polytope,
@@ -915,13 +915,11 @@ mod tests {
     const REST_SPREAD: f32 = 0.02;
 
     // Displacement, in em, that counts as a letter having been knocked aside
-    // rather than nudged. The test it gates asks whether the rain moved ANY
-    // letter past it, which is the scene's claim; it does not ask that of
-    // every letter, and at this seed it could not. Measured by
+    // rather than nudged. Measured by
     // `the_quoted_figures_are_the_ones_the_scene_produces`: the rain moves `L`
-    // 0.584, `O` 0.740, `A` 0.813 and `M` 0.536 em, so the criterion clears on
-    // `L` by 7x while `M` is only nudged. The scene is chaotic, so these are a
-    // record of one seed and not a property; the threshold is not the
+    // 0.570, `O` 1.385, `A` 0.413 and `M` 0.903 em, so the criterion has 1.7x
+    // of margin on the least-moved letter. The scene is chaotic, so these are
+    // a record of one seed and not a property; the threshold is not the
     // measurement.
     const SCATTER_THRESHOLD: f32 = 0.25;
 
@@ -1098,7 +1096,7 @@ mod tests {
             .zip(&scattered)
             .map(|(b, a)| b.distance(*a))
             .collect();
-        for (got, want) in measured.iter().zip([0.584f32, 0.740, 0.553, 0.536]) {
+        for (got, want) in measured.iter().zip([0.570f32, 1.385, 0.413, 0.903]) {
             assert!(
                 (got - want).abs() < 5e-3,
                 "SCATTER_THRESHOLD's doc quotes {want} em; the scene produces {got}"
@@ -1171,16 +1169,15 @@ mod tests {
                 );
             };
             assert_eq!(vertices.len(), drop.polytope().topology().vertices.len());
-            let exact = regular_polytope4_inertia(drop.polytope(), RAIN_MASS, RAIN_SIZE)
-                .expect("a raining shape has a derived moment");
+            let exact = regular_polytope4_inertia(drop.polytope(), RAIN_MASS, RAIN_SIZE);
             assert_eq!(body.inertia, exact, "drop {index} kept the ball's moment");
         }
-        for excluded in [Polytope4::Cell120, Polytope4::Cell600] {
-            assert!(
-                !RAIN_SHAPES.contains(&excluded),
-                "{excluded:?} rains but has no hull"
-            );
-            assert!(regular_polytope4_inertia(excluded, 1.0, 1.0).is_none());
+        // The two large polychora were spheres until the narrowphase stopped
+        // materialising world vertices through a fixed buffer. They are the
+        // reason that cap is gone, so the rain is where their absence would
+        // show first.
+        for large in [Polytope4::Cell120, Polytope4::Cell600] {
+            assert!(RAIN_SHAPES.contains(&large), "{large:?} dropped out of the rain");
         }
     }
 

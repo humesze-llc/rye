@@ -60,13 +60,15 @@ const W_ENTRY_SPAN: f32 = 0.6;
 // whole glyph while the slice is inside the interval and EMPTY outside it.
 const GLYPH_SLAB_HALF: f32 = 0.075;
 
-// Width of the materialisation ramp outside the slab. This is a director-owned
-// entrance effect and NOT a cross-section: a prism has the same section at
-// every `w` it covers, so a letter physically cannot shrink as it approaches,
-// and four letters arriving on the slab's hard edge would all pop. The ramp
-// buys the approach something to read while the letter is still outside its
-// own slab. It is over by the time the letter is released to physics.
-const W_MATERIALISE_SPAN: f32 = 0.30;
+// A letter's ASSEMBLY-TIME solid is a bicone rather than the prism its
+// collider is: outside the slab the glyph tapers linearly to a point at
+// `±W_ENTRY_SPAN`, so the slice really does cut a smaller letter the further
+// out it sits. This is the title scene's construction (`title::section_scale`)
+// applied symmetrically, because hero letters approach from both signs of `w`.
+//
+// The prism is what physics gets, and the two agree where it matters: the
+// taper is `1` everywhere inside the slab, and a letter is at `w = 0` by the
+// time it is released, so the body that starts falling is the full solid.
 
 // Height of the lowest hull vertex above the floor at release, in em. The fall
 // is short by design: `glyph-letter-bodies` sampled drop clearance from 0.01 to
@@ -143,6 +145,9 @@ pub(crate) enum Phase {
 
 pub(crate) struct HeroLetter {
     mesh: TriangleMesh<3>,
+    /// The point the taper shrinks toward, at the centre of the letter's own
+    /// bounds so it grows outward evenly rather than out of a corner.
+    apex: Vec3,
     hull: Vec<Vec4>,
     mark: Vec4,
     entry: Vec4,
@@ -461,9 +466,16 @@ fn letter_from(solid: &GlyphSolid, index: usize) -> Result<HeroLetter> {
     }
     let lowest = vertices.iter().fold(f32::INFINITY, |m, v| m.min(v.y));
     let mark = Vec4::new(centre.x, RELEASE_CLEARANCE - lowest, centre.z, centre.w);
+    let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+    for v in &mesh.vertices {
+        let p = Vec3::from_array(*v);
+        lo = lo.min(p);
+        hi = hi.max(p);
+    }
     let side = if index.is_multiple_of(2) { -1.0 } else { 1.0 };
     Ok(HeroLetter {
         mesh,
+        apex: 0.5 * (lo + hi),
         hull: vertices,
         mark,
         entry: mark + Vec4::new(0.0, 0.0, 0.0, side * W_ENTRY_SPAN),
@@ -472,19 +484,18 @@ fn letter_from(solid: &GlyphSolid, index: usize) -> Result<HeroLetter> {
     })
 }
 
-/// Opacity for a letter whose centre sits `w_from_slice` from the slice.
-/// Exactly 1 inside the slab, where the section is the whole glyph, and 0 once
-/// the letter is further out than the ramp. See [`W_MATERIALISE_SPAN`] for why
-/// the middle is a ramp and not a step.
-fn letter_entry_alpha(w_from_slice: f32) -> f32 {
+/// How large the slice cuts a letter whose centre sits `w_from_slice` away.
+/// `1` inside the slab, tapering linearly to nothing at `±W_ENTRY_SPAN`, and
+/// `None` where the slice misses the solid entirely. Linear because that is
+/// what a cone's cross-section does; anything smoother would be a curve the
+/// geometry does not have.
+fn letter_section_scale(w_from_slice: f32) -> Option<f32> {
     let past_slab = w_from_slice.abs() - GLYPH_SLAB_HALF;
     if past_slab <= 0.0 {
-        return 1.0;
+        return Some(1.0);
     }
-    let t = (1.0 - past_slab / W_MATERIALISE_SPAN).clamp(0.0, 1.0);
-    // Smoothstep, so the letter does not arrive with a visible kink in its
-    // fade at either end of the ramp.
-    t * t * (3.0 - 2.0 * t)
+    let scale = 1.0 - past_slab / (W_ENTRY_SPAN - GLYPH_SLAB_HALF);
+    (scale > 0.0).then_some(scale)
 }
 
 /// Shifts every mark so the assembled word straddles the origin in `x`. The
@@ -608,9 +619,10 @@ fn drop_color(polytope: Polytope4) -> [f32; 3] {
 // A drop is SLICED at [`W_SLICE`], so a tumble through a `w` plane visibly
 // changes its cross-section. A letter is PROJECTED: its solid is a product with
 // the glyph slab, so its true slice is the same cross-section at every `w` the
-// slab covers, and slicing it would cost a re-extraction per frame for a
-// section that never changes shape. What DOES change is whether the letter has
-// a section at all, which is what [`letter_entry_alpha`] reads.
+// slab covers. During assembly its solid is a bicone instead, so the section
+// is the glyph scaled about the letter's apex, which [`letter_section_scale`]
+// gives; the drawn mesh is the glyph either way, so no re-extraction is
+// needed, only a scale about a point.
 fn build_frame_mesh(
     sequence: &HeroSequence,
     local: &mut Vec<Vec4>,
@@ -627,22 +639,20 @@ fn build_frame_mesh(
 fn push_letters(sequence: &HeroSequence, mesh: &mut TriangleMesh<3>) {
     for (index, letter) in sequence.letters().iter().enumerate() {
         let pose = sequence.letter_pose(index);
-        let alpha = letter_entry_alpha(pose.position.w - W_SLICE);
-        // Nothing of this letter reaches the slice yet, so it contributes no
-        // geometry rather than transparent geometry the depth pass still has
-        // to sort.
-        if alpha <= 0.0 {
+        // The slice misses this letter's solid, so it contributes nothing.
+        let Some(scale) = letter_section_scale(pose.position.w - W_SLICE) else {
             continue;
-        }
-        let mut color = LETTER_COLOR;
-        color[3] = alpha;
+        };
         let base = mesh.vertices.len() as u32;
         let translate = pose.position_r3();
         for v in &letter.mesh.vertices {
-            let posed = pose.rotor.apply(Vec4::new(v[0], v[1], v[2], 0.0));
+            let section = letter.apex + scale * (Vec3::from_array(*v) - letter.apex);
+            let posed = pose
+                .rotor
+                .apply(Vec4::new(section.x, section.y, section.z, 0.0));
             mesh.vertices
                 .push((posed.truncate() + translate).to_array());
-            mesh.colors.push(color);
+            mesh.colors.push(LETTER_COLOR);
         }
         mesh.indices
             .extend((letter.mesh.indices.iter()).map(|t| [t[0] + base, t[1] + base, t[2] + base]));
@@ -1235,48 +1245,85 @@ mod tests {
         );
     }
 
+    fn bounds_of(mesh: &TriangleMesh<3>) -> Option<(Vec3, Vec3)> {
+        mesh.vertices
+            .iter()
+            .map(|v| (Vec3::from_array(*v), Vec3::from_array(*v)))
+            .reduce(|(lo, hi), (l, h)| (lo.min(l), hi.max(h)))
+    }
+
     #[test]
-    fn a_letter_outside_its_slab_puts_no_geometry_in_the_slice() {
-        assert_eq!(letter_entry_alpha(0.0), 1.0);
+    fn the_slice_cuts_a_smaller_letter_the_further_out_it_sits() {
+        assert_eq!(letter_section_scale(0.0), Some(1.0));
         assert_eq!(
-            letter_entry_alpha(GLYPH_SLAB_HALF),
-            1.0,
+            letter_section_scale(GLYPH_SLAB_HALF),
+            Some(1.0),
             "the slab edge is still inside the slab"
         );
         assert_eq!(
-            letter_entry_alpha(W_ENTRY_SPAN),
-            0.0,
-            "a letter at its entry offset is drawn, so it slides in rather              than entering the slice"
+            letter_section_scale(W_ENTRY_SPAN),
+            None,
+            "a letter at its entry offset is cut, so it does not grow in"
         );
-        assert_eq!(letter_entry_alpha(-W_ENTRY_SPAN), 0.0, "the ramp is not even");
-        // Monotone across the ramp, so the entrance never brightens as the
-        // letter retreats.
+        assert_eq!(letter_section_scale(-W_ENTRY_SPAN), None, "the taper is not even");
+
+        // Strictly shrinking across the taper. A constant here is the defect
+        // the apex exists to remove: a prism section that never changes size,
+        // which is what an opacity fade was standing in for.
         let mut previous = 1.0;
-        for step in 0..=40 {
-            let d = GLYPH_SLAB_HALF + W_MATERIALISE_SPAN * step as f32 / 40.0;
-            let alpha = letter_entry_alpha(d);
-            assert!(alpha <= previous + 1e-6, "alpha rose at {d} from the slice");
-            previous = alpha;
+        for step in 1..=40 {
+            let d = GLYPH_SLAB_HALF + (W_ENTRY_SPAN - GLYPH_SLAB_HALF) * step as f32 / 41.0;
+            let scale = letter_section_scale(d).expect("still inside the taper");
+            assert!(scale < previous, "section did not shrink at {d} from the slice");
+            previous = scale;
         }
     }
 
     #[test]
-    fn every_letter_starts_invisible_and_is_solid_by_the_time_it_is_released() {
+    fn a_letter_mid_approach_draws_a_physically_smaller_section() {
+        let mut scene = scene();
+        // Part way through the first letter's slide, where it is outside its
+        // slab but inside the taper.
+        scene.run_to(LETTER_SLIDE_TICKS / 2);
+        let mut mesh = TriangleMesh::<3>::default();
+        let (mut local, mut scratch) = (Vec::new(), SectionScratch::default());
+        build_frame_mesh(&scene, &mut local, &mut scratch, &mut mesh);
+        let mid = bounds_of(&mesh).expect("the assembly drew nothing");
+
+        scene.run_to(ASSEMBLE_TICKS);
+        let mut full_mesh = TriangleMesh::<3>::default();
+        build_frame_mesh(&scene, &mut local, &mut scratch, &mut full_mesh);
+        let full = bounds_of(&full_mesh).expect("the assembled word drew nothing");
+
+        let (mid_h, full_h) = (mid.1.y - mid.0.y, full.1.y - full.0.y);
+        assert!(
+            mid_h < 0.9 * full_h,
+            "mid-approach the word stands {mid_h} em tall against {full_h} at              its mark, so the section is not shrinking"
+        );
+        // Every colour opaque: the entrance is geometry now, not a fade.
+        assert!(
+            mesh.colors.iter().all(|c| c[3] == 1.0),
+            "a letter drew transparent geometry"
+        );
+    }
+
+    #[test]
+    fn every_letter_starts_uncut_and_is_whole_by_the_time_it_is_released() {
         let mut scene = scene();
         for (index, letter) in scene.letters().iter().enumerate() {
             assert_eq!(
-                letter_entry_alpha(letter.entry.w - W_SLICE),
-                0.0,
-                "{:?} is already in the slice at its entry pose",
+                letter_section_scale(letter.entry.w - W_SLICE),
+                None,
+                "{:?} already has a section at its entry pose",
                 label(index)
             );
         }
         scene.run_to(ASSEMBLE_TICKS);
         for index in 0..scene.letters().len() {
-            let alpha = letter_entry_alpha(scene.letter_pose(index).position.w - W_SLICE);
             assert_eq!(
-                alpha, 1.0,
-                "{:?} is still fading when physics takes it over",
+                letter_section_scale(scene.letter_pose(index).position.w - W_SLICE),
+                Some(1.0),
+                "{:?} is still a partial section when physics takes it over",
                 label(index)
             );
         }

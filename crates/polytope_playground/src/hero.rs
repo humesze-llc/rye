@@ -17,7 +17,9 @@ use loam_render::{
     DepthBuffer, DepthMode, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode, Viewport,
 };
 use loam_shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
-use loam_shape::{Shape, TriangleMesh, Visualizable};
+use loam_shape::{Shape, TriangleMesh};
+#[cfg(test)]
+use loam_shape::Visualizable;
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 use loam_time::director::{BodyTrack, Director, Drive, Ease, Timeline, Track};
 
@@ -58,7 +60,7 @@ const W_ENTRY_SPAN: f32 = 0.6;
 // `GlyphParams::default().slab` is `(-0.075, 0.075)`: the letter solid is the
 // glyph swept through that interval in `w`, so its section at the slice is the
 // whole glyph while the slice is inside the interval and EMPTY outside it.
-const RELEASE_CLEARANCE: f32 = 0.05;
+const RELEASE_CLEARANCE: f32 = 0.20;
 
 // Every letter is at rest well inside this, which
 // `every_letter_is_at_rest_on_the_floor_before_the_rain_starts` pins at the
@@ -126,7 +128,6 @@ pub(crate) enum Phase {
 }
 
 pub(crate) struct HeroLetter {
-    mesh: TriangleMesh<3>,
     hull: Vec<Vec4>,
     mark: Vec4,
     entry: Vec4,
@@ -255,6 +256,19 @@ impl HeroSequence {
     /// Centre of the assembled word's bounding box, which is what the orbit
     /// target is set to: the controller aims the camera at its target, so the
     /// point named here is the point that lands at the centre of the frame.
+    /// Where the scene is sliced this tick. Rests at [`W_SLICE`] and sweeps
+    /// once the letters have been knocked off it.
+    pub(crate) fn slice(&self) -> f32 {
+        let pushed = (self.letters.iter())
+            .filter_map(|letter| letter.body)
+            .map(|body| (self.world.bodies[body].position.w - W_SLICE).abs())
+            .fold(0.0f32, f32::max);
+        let struck = (pushed - SLICE_SCRUB_DEADBAND).max(0.0);
+        let amplitude = (SLICE_SCRUB_GAIN * struck).min(SLICE_SCRUB_MAX);
+        let phase = std::f32::consts::TAU * self.tick as f32 / SLICE_SCRUB_PERIOD_TICKS;
+        W_SLICE + amplitude * phase.sin()
+    }
+
     pub(crate) fn word_centre(&self) -> Vec3 {
         let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
         for letter in &self.letters {
@@ -485,9 +499,15 @@ impl MorphField {
             .iter()
             .map(|solid| {
                 let field = solid.field().expect("checked above");
-                let (nx, ny) = field.sample_counts();
-                let centre = 0.5
-                    * (field.sample_position(0, 0) + field.sample_position(nx - 1, ny - 1));
+                // The SAME centre `rigid_hull_4d` puts the collider on, which
+                // is the hull ring's centroid and not the field's bounding-box
+                // centre. Resampling about the box centre instead offsets the
+                // drawn section from the body it belongs to, which shows up as
+                // the word sinking through the floor.
+                let centre = solid
+                    .rigid_hull_4d()
+                    .map(|(c, _)| glam::Vec2::new(c.x, c.y))
+                    .unwrap_or(glam::Vec2::ZERO);
                 let mut grid = Vec::with_capacity(counts.0 * counts.1);
                 for j in 0..counts.1 {
                     for i in 0..counts.0 {
@@ -536,18 +556,10 @@ fn letter_from(solid: &GlyphSolid, index: usize) -> Result<HeroLetter> {
     let Shape::ConvexPolytope4D { vertices } = shape else {
         anyhow::bail!("{:?} hulls to a non-convex collider", solid.ch());
     };
-    let mut mesh = Visualizable::<3>::to_triangles(solid)
-        .map_err(|e| anyhow::anyhow!("{:?} has no render mesh: {e:?}", solid.ch()))?;
-    for v in &mut mesh.vertices {
-        v[0] -= centre.x;
-        v[1] -= centre.y;
-        v[2] -= centre.z;
-    }
     let lowest = vertices.iter().fold(f32::INFINITY, |m, v| m.min(v.y));
     let mark = Vec4::new(centre.x, RELEASE_CLEARANCE - lowest, centre.z, centre.w);
     let side = if index.is_multiple_of(2) { -1.0 } else { 1.0 };
     Ok(HeroLetter {
-        mesh,
         hull: vertices,
         mark,
         entry: mark + Vec4::new(0.0, 0.0, 0.0, side * W_ENTRY_SPAN),
@@ -622,7 +634,28 @@ const FLOOR_Y: f32 = 0.0;
 
 // The letters live in a slab about `w = 0`, so this is where their neighbours
 // have to be cut to share a scene with them.
+// The slice the scene is viewed at while nothing has been disturbed. Letters
+// rest here, so at rest each one cuts its own letterform.
 const W_SLICE: f32 = 0.0;
+
+// Once the rain has knocked the letters along `w` the slice sweeps rather than
+// sitting still, so their sections morph instead of holding one letterform.
+// Amplitude tracks how far the word has actually been pushed off the resting
+// slice, so an undisturbed word does not drift and a badly hit one sweeps
+// furthest: the scrub is a consequence of the impact, not an idle animation.
+const SLICE_SCRUB_PERIOD_TICKS: f32 = 300.0;
+const SLICE_SCRUB_GAIN: f32 = 2.0;
+
+// Beyond this the sections spend their time between letterforms rather than
+// on one, which reads as mush.
+const SLICE_SCRUB_MAX: f32 = 1.5 * W_PER_LETTERFORM;
+
+// Displacement below this is the landing transient, not a hit: a letter comes
+// to rest about 0.002 em off the slice in `w`, because a contact's tangent
+// space in R⁴ contains `w` and friction against the floor slides it there.
+// Without the deadband the word would sweep gently from the moment it landed,
+// which is the opposite of a scrub that answers an impact.
+const SLICE_SCRUB_DEADBAND: f32 = 0.02;
 
 // 32-bit float: the caps of a tumbling 24-cell are thin and densely stacked,
 // and 24-bit depth cracks them.
@@ -703,38 +736,31 @@ fn build_frame_mesh(
 // sliced, not to bake an atlas of `w` slices, whose quantisation would land
 // exactly where the topology changes.
 //
-// The letters are drawn from the shared morph field while the director still
-// owns them, and from their own baked mesh once physics does. Freezing at the
-// handoff is not only cheaper: a letter that is falling and tumbling is no
-// longer axis-aligned with `w`, so a section of the morph would no longer be
-// the letterform the wordmark is supposed to read as.
+// Every letter is drawn from the shared morph field for its whole life, not
+// just while the director owns it. The field IS the letter's 4D solid, so a
+// letter knocked along `w` by the rain sweeps its cross-section through the
+// neighbouring letterforms exactly as it did coming in; drawing a baked mesh
+// after release would make the same body 4D on the way in and flat once it
+// landed.
+//
+// EXACT while the letter's own `w` axis stays parallel to the world's, which
+// covers its whole `w` translation. Once a hit has tumbled it INTO a `w` plane
+// the local `w` at a given world point varies across the letter, and the true
+// section would need marching a 3D implicit surface rather than reading one
+// 2D blend. The approximation is the morph parameter taken at the body centre.
 fn push_letters(sequence: &mut HeroSequence, mesh: &mut TriangleMesh<3>) {
     let half_depth = 0.5 * GlyphParams::default().depth;
+    let slice = sequence.slice();
     for index in 0..sequence.letters().len() {
         let pose = sequence.letter_pose(index);
-        let released = sequence.letters()[index].body.is_some();
         let translate = pose.position_r3();
         let base = mesh.vertices.len() as u32;
-
-        if released {
-            let letter = &sequence.letters()[index];
-            for v in &letter.mesh.vertices {
-                let posed = pose.rotor.apply(Vec4::new(v[0], v[1], v[2], 0.0));
-                mesh.vertices
-                    .push((posed.truncate() + translate).to_array());
-                mesh.colors.push(LETTER_COLOR);
-            }
-            mesh.indices.extend(
-                (letter.mesh.indices.iter()).map(|t| [t[0] + base, t[1] + base, t[2] + base]),
-            );
-            continue;
-        }
 
         // `w` runs the other way from the letterform index so a letter
         // approaching from negative `w` arrives through the letters BEFORE it
         // in the word, which reads as the word assembling rather than
         // unwinding.
-        let u = index as f32 - (pose.position.w - W_SLICE) / W_PER_LETTERFORM;
+        let u = index as f32 - (pose.position.w - slice) / W_PER_LETTERFORM;
         let Some(field) = sequence.morph.blend_at(u) else {
             continue;
         };
@@ -759,6 +785,7 @@ fn push_drop_caps(
     scratch: &mut SectionScratch,
     mesh: &mut TriangleMesh<3>,
 ) {
+    let slice = sequence.slice();
     for (index, drop) in sequence.drops().iter().enumerate() {
         let pose = sequence.drop_pose(index);
         let topo = drop.polytope().topology();
@@ -773,7 +800,7 @@ fn push_drop_caps(
             topo.edges,
             topo.cells,
             local,
-            WPlane::new(W_SLICE),
+            WPlane::new(slice),
             [r, g, b, 1.0],
             scratch,
             mesh,
@@ -1021,7 +1048,7 @@ mod tests {
     // Displacement, in em, that counts as a letter having been knocked aside
     // rather than nudged. Measured by
     // `the_quoted_figures_are_the_ones_the_scene_produces`: the rain moves `L`
-    // 0.570, `O` 1.385, `A` 0.413 and `M` 0.903 em, so the criterion has 1.7x
+    // 1.383, `O` 1.202, `A` 0.566 and `M` 1.807 em, so the criterion has 2.3x
     // of margin on the least-moved letter. The scene is chaotic, so these are
     // a record of one seed and not a property; the threshold is not the
     // measurement.
@@ -1200,7 +1227,7 @@ mod tests {
             .zip(&scattered)
             .map(|(b, a)| b.distance(*a))
             .collect();
-        for (got, want) in measured.iter().zip([0.570f32, 1.385, 0.413, 0.903]) {
+        for (got, want) in measured.iter().zip([1.383f32, 1.202, 0.566, 1.807]) {
             assert!(
                 (got - want).abs() < 5e-3,
                 "SCATTER_THRESHOLD's doc quotes {want} em; the scene produces {got}"
@@ -1366,12 +1393,77 @@ mod tests {
     }
 
     #[test]
+    fn an_undisturbed_word_holds_its_slice_and_a_struck_one_sweeps() {
+        let mut scene = scene();
+        // Strictly before the first drop spawns: the word has landed and is
+        // settled, and nothing has hit it yet.
+        for tick in (ASSEMBLE_TICKS + SETTLE_TICKS / 2)..RAIN_START_TICK {
+            scene.run_to(tick);
+            assert!(
+                (scene.slice() - W_SLICE).abs() < 1e-4,
+                "the slice drifted to {} at tick {tick}, before anything had                  hit the word",
+                scene.slice()
+            );
+        }
+
+        scene.run_to(SEQUENCE_TICKS);
+        let mut swept = 0.0f32;
+        for tick in 0..SLICE_SCRUB_PERIOD_TICKS as u32 {
+            scene.run_to(SEQUENCE_TICKS + tick);
+            swept = swept.max((scene.slice() - W_SLICE).abs());
+        }
+        // The rain leaves the letters off the resting slice, so the sweep has
+        // to be doing something; an idle animation would have moved before the
+        // rain too, which the first half of this test rules out.
+        assert!(
+            swept > 0.01,
+            "the slice never swept after the rain, so a knocked letter sits on              one letterform"
+        );
+        assert!(
+            swept <= SLICE_SCRUB_MAX + 1e-4,
+            "the slice swept {swept}, past its own cap"
+        );
+    }
+
+    #[test]
+    fn a_letter_knocked_along_w_cuts_a_different_letterform() {
+        let mut scene = scene();
+        scene.run_to(ASSEMBLE_TICKS);
+        let settled = letter_section_bounds(&mut scene, 0);
+
+        // Push the letter a whole letterform along w, which is what a hit from
+        // the rain does, and read its section again.
+        let body = scene.letters()[0].body.expect("released");
+        scene.world.bodies[body].position.w += W_PER_LETTERFORM;
+        let knocked = letter_section_bounds(&mut scene, 0);
+
+        let ratio = |(lo, hi): (Vec3, Vec3)| (hi.x - lo.x) / (hi.y - lo.y);
+        assert!(
+            (ratio(knocked) - ratio(settled)).abs() > 0.05,
+            "knocked along w the section keeps aspect {} against {}, so it is              projecting rather than sectioning",
+            ratio(knocked),
+            ratio(settled)
+        );
+    }
+
+    #[test]
     fn at_its_mark_every_letter_cuts_its_own_letterform() {
         let mut scene = scene();
         scene.run_to(ASSEMBLE_TICKS);
         for index in 0..scene.letters().len() {
             let (lo, hi) = letter_section_bounds(&mut scene, index);
-            let own = bounds_of(&scene.letters()[index].mesh).expect("baked mesh");
+            // Oracle built independently of the scene: the glyph's own mesh,
+            // straight from the font, so the blend is checked against the
+            // letterform and not against another copy of itself.
+            let font = ab_glyph::FontRef::try_from_slice(hero_font_bytes()).expect("font");
+            let solids = layout_word(&font, WORD, &GlyphParams::default()).expect("layout");
+            let solid = solids
+                .iter()
+                .filter(|s| !s.is_blank())
+                .nth(index)
+                .expect("a solid per letter");
+            let own = bounds_of(&Visualizable::<3>::to_triangles(solid).expect("glyph mesh"))
+                .expect("baked mesh");
             // The morph grid is centred on each glyph and resampled at the
             // same pitch it was baked at, so at its own letterform the section
             // reproduces the glyph to within a cell.
@@ -1504,33 +1596,22 @@ mod tests {
             .map(GlyphSolid::collider_margin)
             .fold(0.0f32, f32::max);
 
+        // Per-letter spans are gone: a morph section has its own vertex
+        // count per letter and per frame, so the bound is taken over the
+        // whole drawn word instead. It still fails if any single letter sinks
+        // or floats, which is the property.
         let mut mesh = TriangleMesh::<3>::default();
         push_letters(&mut scene, &mut mesh);
-        assert_eq!(
-            mesh.vertices.len(),
-            scene
-                .letters()
-                .iter()
-                .map(|l| l.mesh.vertices.len())
-                .sum::<usize>()
+        assert!(!mesh.vertices.is_empty(), "the settled word drew nothing");
+        let drawn = mesh.vertices.iter().fold(f32::INFINITY, |m, v| m.min(v[1]));
+        assert!(
+            drawn > -2.0 * PENETRATION_SLOP,
+            "the word is drawn {drawn} below the floor"
         );
-
-        let mut offset = 0;
-        for (index, letter) in scene.letters().iter().enumerate() {
-            let span = &mesh.vertices[offset..offset + letter.mesh.vertices.len()];
-            offset += letter.mesh.vertices.len();
-            let drawn = span.iter().fold(f32::INFINITY, |m, v| m.min(v[1]));
-            assert!(
-                drawn > -2.0 * PENETRATION_SLOP,
-                "{:?} is drawn {drawn} below the floor",
-                label(index)
-            );
-            assert!(
-                drawn < margin + 2.0 * PENETRATION_SLOP,
-                "{:?} floats {drawn} above the floor, past the {margin} margin",
-                label(index)
-            );
-        }
+        assert!(
+            drawn < margin + 2.0 * PENETRATION_SLOP,
+            "the word floats {drawn} above the floor, past the {margin} margin"
+        );
     }
 
     #[test]

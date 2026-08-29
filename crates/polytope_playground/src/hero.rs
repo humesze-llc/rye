@@ -566,8 +566,17 @@ const BOOT_EYE_HEIGHT: f32 = 1.4;
 // Hack Regular, the same face the HUD bakes its atlas from and for the same
 // reason: a system font would make the letters, and therefore the whole
 // trajectory, differ between two machines running the same binary.
+/// Latin Modern Roman 10 Bold, GUST's OpenType cut of Knuth's Computer
+/// Modern, under the GUST Font License (LPPL 1.3c) beside it. Vendored
+/// unmodified, so the licence's rename request, which applies to derived
+/// works, does not bite.
+///
+/// A wordmark wants a display face, and the previous font was
+/// `epaint_default_fonts::HACK_REGULAR`: egui's monospace terminal font,
+/// inherited because it was the only one already in the tree. Monospace forced
+/// `M` and `O` into the same advance whatever their shapes wanted.
 pub(crate) fn hero_font_bytes() -> &'static [u8] {
-    epaint_default_fonts::HACK_REGULAR
+    include_bytes!("../fonts/lmroman10-bold.otf")
 }
 
 // The scene's whole GPU footprint, in one call so a rebuild's cost is
@@ -910,7 +919,7 @@ mod tests {
     // letter past it, which is the scene's claim; it does not ask that of
     // every letter, and at this seed it could not. Measured by
     // `the_quoted_figures_are_the_ones_the_scene_produces`: the rain moves `L`
-    // 1.808, `O` 0.611, `A` 0.813 and `M` 0.184 em, so the criterion clears on
+    // 0.584, `O` 0.740, `A` 0.813 and `M` 0.536 em, so the criterion clears on
     // `L` by 7x while `M` is only nudged. The scene is chaotic, so these are a
     // record of one seed and not a property; the threshold is not the
     // measurement.
@@ -921,10 +930,12 @@ mod tests {
     // a body 0.075 under would be one that the contact never caught.
     const TUNNEL_DEPTH: f32 = 0.075;
 
-    // 1.5x the measured 21342 at the fullest tick: the mesh is rebuilt and
-    // re-uploaded every frame, so its size is a per-frame bandwidth cost and
-    // not a one-time bake.
-    const MESH_VERTEX_BUDGET: u32 = 32_000;
+    // 1.5x the measured 27392 at the fullest tick, which is tick 300. The mesh
+    // is rebuilt and re-uploaded every frame, so its size is a per-frame
+    // bandwidth cost and not a one-time bake. The peak rose from 21342 when
+    // the wordmark moved off a monospace terminal face onto a proportional
+    // bold display one, which carries far more outline detail per glyph.
+    const MESH_VERTEX_BUDGET: u32 = 42_000;
 
     // Per-step travel, in em, the R⁴ narrowphase still resolves against a thin
     // static wall, as recorded by `loam_physics::world`'s tunneling gate.
@@ -1087,7 +1098,7 @@ mod tests {
             .zip(&scattered)
             .map(|(b, a)| b.distance(*a))
             .collect();
-        for (got, want) in measured.iter().zip([1.808f32, 0.611, 0.813, 0.184]) {
+        for (got, want) in measured.iter().zip([0.584f32, 0.740, 0.553, 0.536]) {
             assert!(
                 (got - want).abs() < 5e-3,
                 "SCATTER_THRESHOLD's doc quotes {want} em; the scene produces {got}"

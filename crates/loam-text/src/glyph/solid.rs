@@ -121,6 +121,12 @@ impl GlyphSolid {
         self.field.as_ref()
     }
 
+    /// Boxes in the conservative isovolume cover, which is the COARSE
+    /// decomposition: `piece_count` counts clipped distance-field cells.
+    pub fn cover_box_count(&self) -> usize {
+        self.cover.as_ref().map(|c| c.piece_count()).unwrap_or(0)
+    }
+
     pub fn piece_count(&self) -> usize {
         self.pieces.len()
     }

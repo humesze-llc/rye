@@ -799,10 +799,14 @@ const SLICE_SWEEP_RANGE: f32 = 4.0 * W_PER_LETTERFORM;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 // The word is 3.488 em wide and the frame is `d * tan(30 deg) * 16/9` half-wide
-// at the 60 degree vertical field of view, so at 7.5 it filled 23% of the frame
-// and read as a small thing in a large room. At 5.0 it fills 34%, which is as
-// close as the rain's 2.6 to 3.6 em spawn height allows without cropping it.
-const BOOT_ORBIT_DISTANCE: f32 = 5.0;
+// at the 60 degree vertical field of view, so at the original 7.5 it filled 23%
+// and read as a small thing in a large room. Here it fills 42%.
+//
+// What actually bounds this is the rain, not the word. The spread is `+/-2.04`
+// em across, against a 4.11 em half-frame, so the pile has room. The spawn
+// HEIGHT of 2.6 to 3.6 em sits above the 2.73 em top of the view, which is
+// wanted: a drop falls into frame rather than appearing inside it.
+const BOOT_ORBIT_DISTANCE: f32 = 4.0;
 const BOOT_ORBIT_PITCH: f32 = -0.12;
 const BOOT_EYE_HEIGHT: f32 = 1.4;
 

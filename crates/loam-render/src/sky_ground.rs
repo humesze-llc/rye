@@ -40,11 +40,10 @@ pub const GROUND_LIGHT_GREY: [f32; 3] = [0.30, 0.32, 0.36];
 
 /// Sky blended into the ground per world unit of view distance. Half the sky
 /// is mixed in at `ln 2 / density`, so this is the number that decides how far
-/// out the checker stays legible: half sky at 139 units here. The blend runs
-/// toward the SKY colour, so this number had to come down once the sky was
-/// lifted out of dusk; a density that read as a dark haze against a near-black
-/// sky reads as a bright wash against a pale one.
-pub const DEFAULT_FOG_PER_UNIT: f32 = 0.005;
+/// out the checker stays legible: half sky at 462 units here. The blend runs
+/// toward the SKY colour, so a pale sky makes the same density read as a
+/// bright wash rather than the dark haze a near-black sky gave.
+pub const DEFAULT_FOG_PER_UNIT: f32 = 0.0015;
 
 /// The checkerboard plane under the sky. `y` is a parameter because a scene
 /// may centre its content on the origin, where a plane at `y = 0` would cut it

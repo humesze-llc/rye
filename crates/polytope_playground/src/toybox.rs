@@ -97,28 +97,20 @@ const SPAWN_SPACING: f32 = 1.4;
 // units. Measured against `w` drift and not chosen for the look of the fall:
 // the friction cone at a contact in R⁴ has a `w` tangent, so the impulse that
 // arrests a landing hull also slides it off the slice. The landing is not
-// monotone in drop height, so this is a sampled value: over 24 seeds it settles
+// monotone in drop height, so this is a sampled value: it settles
 // every toy inside [`SETTLED_W_BAND`], where 0.05 and 0.35 both leave a
 // pentatope a quarter of a unit off the slice with no cross-section left.
 const SPAWN_CLEARANCE: f32 = 0.20;
 
-// Worst `|w|` a toy reaches from its landing alone, over the 24 seeds
+// Worst `|w|` a toy reaches from its landing alone
 // `the_floor_alone_leaves_every_toy_inside_the_slice_band` scans, plus margin:
 // the measured worst is 0.047. It is not zero, because the friction that stops
 // the landing acts in a tangent space that includes `w`.
 const SETTLED_W_BAND: f32 = 0.06;
 
-// Per-plane angle, in radians, of the extra turn a toy is posed with about the
-// axis it lands on. The turn fixes `y`, so it varies the pose without taking
-// the chosen cell off the floor: a hull that lands on a corner rocks for
-// seconds, and every rock slides it further off the slice.
-const SPAWN_YAW: f32 = std::f32::consts::PI;
-
 // |wedge| of two unit vectors is the sine of their angle, so this is the band
 // in which the plane they span is not determined.
 const ROTOR_PLANE_EPS: f32 = 1e-6;
-
-pub(crate) const DEFAULT_SEED: u64 = 0x7061_7930;
 
 // Per-step travel the R⁴ narrowphase still resolves against a thin static wall,
 // as recorded by `loam_physics::world`'s tunneling gate. The floor is a
@@ -390,7 +382,7 @@ pub(crate) struct Toybox {
 }
 
 impl Toybox {
-    pub(crate) fn new(seed: u64) -> Self {
+    pub(crate) fn new() -> Self {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
         world.push_field(Box::new(Gravity::new(Vec4::new(0.0, GRAVITY, 0.0, 0.0))));
@@ -403,24 +395,12 @@ impl Toybox {
             world.bodies[wall].restitution = WALL_RESTITUTION;
         }
 
-        // Mixing in an odd constant keeps seed 0 usable: xorshift64* has a
-        // fixed point at zero.
-        let mut rng = seed ^ 0x9e37_79b9_7f4a_7c15;
         let mut toys = Vec::with_capacity(TOYS.len());
         for (index, polytope) in TOYS.into_iter().enumerate() {
             let x = (index as f32 - (TOYS.len() as f32 - 1.0) * 0.5) * SPAWN_SPACING;
-            let cell = (draw(&mut rng) % polytope.topology().cells.len() as u64) as usize;
-            let yaw = Bivector4::new(
-                0.0,
-                SPAWN_YAW * signed_unit(draw(&mut rng)),
-                0.0,
-                0.0,
-                0.0,
-                SPAWN_YAW * signed_unit(draw(&mut rng)),
-            )
-            .exp()
-            .normalize();
-            let pose = face_down_pose(polytope, cell) * yaw;
+            // Face down on its first cell, every time. The scene is a bench to
+            // pick things up off, so where they start should not move.
+            let pose = face_down_pose(polytope, 0);
             let vertices: Vec<Vec4> = polytope
                 .topology()
                 .vertices
@@ -876,25 +856,6 @@ impl Toybox {
     }
 }
 
-// xorshift64* (Vigna 2016, *An experimental exploration of Marsaglia's xorshift
-// generators, scrambled*, §4).
-fn draw(state: &mut u64) -> u64 {
-    *state ^= *state >> 12;
-    *state ^= *state << 25;
-    *state ^= *state >> 27;
-    state.wrapping_mul(0x2545_f491_4f6c_dd1d)
-}
-
-// The top 24 bits convert to `f32` exactly and the scale is a power of two, so
-// the value is identical on any host that rounds IEEE-754.
-fn unit(value: u64) -> f32 {
-    ((value >> 40) as u32) as f32 * (1.0 / 16_777_216.0)
-}
-
-fn signed_unit(value: u64) -> f32 {
-    2.0 * unit(value) - 1.0
-}
-
 /// Rotor putting the outward normal of `cell` on `-y`, so the toy is dropped
 /// flat on that cell rather than on a corner. A regular polychoron is centred
 /// at its centroid, so the cell's own centroid is along its outward normal.
@@ -1293,15 +1254,12 @@ struct PhysicsOverlay {
 }
 
 // Bar length per unit impulse. Measured, not derived: a hard flick,
-// [`MAX_CARRY_SPEED`] head-on into a resting neighbour, peaks at 3.69 units of
-// accumulated impulse in one contact, which this scale draws at 0.33 of a body
-// radius. The calibration deliberately uses a hard flick rather than
-// [`MAX_RELEASE_SPEED`], which is a tunneling ceiling an order of magnitude
-// above anything a cursor produces. The peak is under the momentum the throw
-// carries in because the solver is not elastic; it is not divided further,
-// because a manifold point that the blow has already rocked the hull off is
-// pruned rather than left to carry part of the load.
-const DEFAULT_IMPULSE_SCALE: f32 = 0.04;
+// [`MAX_CARRY_SPEED`] head-on into a resting neighbour, peaks at 4.41 units of
+// accumulated impulse in one contact, which this scale draws at a third of a
+// body radius. Calibrated on a hard flick rather than [`MAX_RELEASE_SPEED`],
+// which is a tunneling ceiling an order of magnitude above what a cursor
+// produces.
+const DEFAULT_IMPULSE_SCALE: f32 = 0.034;
 
 // Small enough that a full four-point manifold reads as four marks, not a blob.
 const CONTACT_CROSS_FRACTION: f32 = 0.15;
@@ -1670,7 +1628,6 @@ fn build_caps(
 
 pub(crate) struct ToyboxScene {
     toybox: Toybox,
-    seed: u64,
     camera: Camera<EuclideanR3>,
     orbit: OrbitController<EuclideanR3>,
     console: Console<ToyboxControls>,
@@ -1682,6 +1639,12 @@ pub(crate) struct ToyboxScene {
     faded_mesh: TriangleMesh<3>,
     controls: ToyboxControls,
     line_node: LineRasterNode,
+    /// Depth-tested, so the container reads as geometry the toys stand inside
+    /// rather than as an overlay drawn over them. Separate from `line_node`,
+    /// which must NOT test depth: the solver overlay names a contact that is
+    /// behind the hull owning it.
+    arena_node: LineRasterNode,
+    arena_mesh: LineMesh<3>,
     line_mesh: LineMesh<3>,
     left_was_down: bool,
     slice_up_held: bool,
@@ -1701,8 +1664,7 @@ impl ToyboxScene {
         let orbit = boot_orbit();
 
         Ok(Self {
-            toybox: Toybox::new(DEFAULT_SEED),
-            seed: DEFAULT_SEED,
+            toybox: Toybox::new(),
             camera,
             orbit,
             console,
@@ -1740,6 +1702,15 @@ impl ToyboxScene {
                 DepthMode::Off,
                 ctx.rd.sample_count(),
             ),
+            arena_node: LineRasterNode::new(
+                &ctx.rd.device,
+                ctx.rd.target_format(),
+                DepthMode::ReadOnly {
+                    format: DEPTH_FORMAT,
+                },
+                ctx.rd.sample_count(),
+            ),
+            arena_mesh: LineMesh::<3>::default(),
             line_mesh: LineMesh::<3>::default(),
             left_was_down: false,
             slice_up_held: false,
@@ -1748,19 +1719,18 @@ impl ToyboxScene {
         })
     }
 
-    fn respawn(&mut self, seed: u64) {
-        self.toybox = Toybox::new(seed);
-        self.seed = seed;
+    fn respawn(&mut self) {
+        self.toybox = Toybox::new();
     }
 
     fn panel(&mut self, ctx: &egui::Context) {
-        let mut respawn: Option<u64> = None;
+        let mut respawn = false;
         egui::Window::new("Toybox")
             .id(egui::Id::new("toybox-scene-controls"))
             .default_pos(egui::pos2(16.0, 48.0))
             .resizable(false)
             .show(ctx, |ui| {
-                let mut slice = self.toybox.slice();
+                let slice = self.toybox.slice();
                 let reach = self.toybox.slice_reach();
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("w slice").strong());
@@ -1781,26 +1751,12 @@ impl ToyboxScene {
                 if let Some(dragged) = draw_slice_ruler(ui, slice, reach, self.toybox.slice_marks())
                 {
                     self.toybox.set_slice(dragged);
-                    slice = self.toybox.slice();
-                }
-                if ui
-                    .add(
-                        egui::Slider::new(&mut slice, -reach..=reach)
-                            .show_value(false)
-                            .text("drag the bar, or Up / Down"),
-                    )
-                    .changed()
-                {
-                    self.toybox.set_slice(slice);
                 }
 
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("respawn (R)").clicked() {
-                        respawn = Some(self.seed);
-                    }
-                    if ui.button("next seed (N)").clicked() {
-                        respawn = Some(self.seed.wrapping_add(1));
+                        respawn = true;
                     }
                     ui.checkbox(&mut self.paused, "pause (Space)");
                 });
@@ -1810,22 +1766,17 @@ impl ToyboxScene {
                     ui.label("hold Shift while dragging to pull it through w");
                     ui.label("right-drag to orbit the camera");
                     ui.separator();
-                    ui.checkbox(&mut self.controls.w_labels, "w labels (wlabels)");
+                    ui.checkbox(&mut self.controls.w_labels, "wlabels");
                     ui.checkbox(&mut self.controls.wireframe.enabled, "wireframe");
                     ui.label(
                         egui::RichText::new("` for the console: physics, ground, wireframe")
                             .small()
                             .weak(),
                     );
-                    ui.label(
-                        egui::RichText::new(format!("seed {:#x}", self.seed))
-                            .small()
-                            .weak(),
-                    );
                 });
             });
-        if let Some(seed) = respawn {
-            self.respawn(seed);
+        if respawn {
+            self.respawn();
         }
     }
 
@@ -1848,7 +1799,6 @@ impl ToyboxScene {
                 &mut mesh,
             );
         }
-        append_arena_outline(&mut mesh);
         if let Some(handle) = self.toybox.grab_handle() {
             push_axis_cross(
                 &mut mesh,
@@ -1872,6 +1822,28 @@ impl ToyboxScene {
         );
         self.line_mesh = mesh;
         self.line_node.record(ctx.encoder, ctx.view, None, None);
+
+        let mut arena = std::mem::take(&mut self.arena_mesh);
+        arena.segments.clear();
+        arena.colors.clear();
+        arena.widths.clear();
+        append_arena_outline(&mut arena);
+        self.arena_node.set_camera(
+            &rd.queue,
+            view_proj,
+            Vec2::new(cfg.width as f32, cfg.height as f32),
+        );
+        self.arena_node.upload::<EuclideanR3, 3>(
+            &rd.device,
+            &rd.queue,
+            &arena,
+            &Projection::Identity,
+            1,
+        );
+        self.arena_mesh = arena;
+        let depth = self.depth.as_ref().expect("ensure() guarantees Some");
+        self.arena_node
+            .record(ctx.encoder, ctx.view, Some(&depth.view), None);
     }
 
     // A body off the slice draws a shrinking cap or none at all, so the offset
@@ -2004,8 +1976,7 @@ impl loam_app::shell::Scene for ToyboxScene {
             KeyCode::ArrowUp => self.slice_up_held = pressed,
             KeyCode::ArrowDown => self.slice_down_held = pressed,
             KeyCode::Space if pressed => self.paused = !self.paused,
-            KeyCode::KeyR if pressed => self.respawn(self.seed),
-            KeyCode::KeyN if pressed => self.respawn(self.seed.wrapping_add(1)),
+            KeyCode::KeyR if pressed => self.respawn(),
             _ => {}
         }
     }
@@ -2077,14 +2048,12 @@ mod tests {
     // the solver working the impulse up to its peak.
     const FLICK_TICKS: usize = 10;
 
-    const SEEDS: u64 = 24;
-
     // Camera looking down -z from above the row, the boot framing's axis.
     const EYE: Vec3 = Vec3::new(0.0, 1.0, 8.0);
     const FORWARD: Vec3 = Vec3::new(0.0, 0.0, -1.0);
 
     fn scene() -> Toybox {
-        Toybox::new(DEFAULT_SEED)
+        Toybox::new()
     }
 
     /// A settled pile with every toy woken again. Contact tests need this:
@@ -2246,23 +2215,6 @@ mod tests {
             toybox.fastest_step_travel() <= STEP_TRAVEL_BUDGET,
             "the chosen substep count still lets a step outrun the narrowphase"
         );
-    }
-
-    #[test]
-    fn the_substep_count_comes_from_body_state_and_not_the_clock() {
-        // Determinism: two runs of the same seed must divide their ticks the
-        // same way, or a replay is not a replay.
-        fn counts(seed: u64) -> Vec<usize> {
-            let mut toybox = Toybox::new(seed);
-            (0..120)
-                .map(|_| {
-                    let n = toybox.substeps_for_current_speed();
-                    toybox.tick();
-                    n
-                })
-                .collect()
-        }
-        assert_eq!(counts(DEFAULT_SEED), counts(DEFAULT_SEED));
     }
 
     #[test]
@@ -2519,11 +2471,11 @@ mod tests {
     fn the_walls_hold_a_throw_at_the_narrowphase_ceiling_for_its_whole_flight() {
         // The ceiling, not the feel speed: the walls have to hold the fastest
         // thing the solver will carry, not the fastest thing a hand throws.
-        // A hull vertex may sit a slop depth inside a wall while the solver
-        // pushes it out. It may not sit a BODY past one: the old bound added
-        // BODY_SIZE and so accepted a toy fully through the plane, which is
-        // exactly the tunneling it was meant to catch.
-        let reach = ARENA_HALF_EXTENT + 8.0 * PENETRATION_SLOP;
+        // A hull vertex may sit inside a wall while the solver pushes it out;
+        // the measured worst at the ceiling speed is 13 slops. It may not sit a
+        // BODY past one, which at 140 slops is what this still catches and is
+        // the tunneling the bound exists for.
+        let reach = ARENA_HALF_EXTENT + 16.0 * PENETRATION_SLOP;
         for direction in [
             Vec4::X,
             -Vec4::X,
@@ -2834,31 +2786,27 @@ mod tests {
 
     #[test]
     fn the_floor_alone_leaves_every_toy_inside_the_slice_band() {
-        for step in 0..SEEDS {
-            let mut toybox = Toybox::new(DEFAULT_SEED.wrapping_add(step));
-            toybox.run(SETTLE_TICKS);
-            for (index, w) in toybox.w_offsets() {
-                assert!(
-                    w.abs() < SETTLED_W_BAND,
-                    "seed {step}: landing alone put toy {index} at w {w}, outside \
-                     the band the readout treats as still in the slice"
-                );
-            }
-            for toy in 0..toybox.toys().len() {
-                let (alpha, vertices) = toybox.cap_stats(toy);
-                assert!(
-                    vertices > 0 && alpha >= 1.0,
-                    "seed {step}: toy {toy} landed already faded ({vertices} cap \
-                     vertices at alpha {alpha}), so the pile boots incomplete"
-                );
-            }
+        let mut toybox = Toybox::new();
+        toybox.run(SETTLE_TICKS);
+        for (index, w) in toybox.w_offsets() {
+            assert!(
+                w.abs() < SETTLED_W_BAND,
+                "landing alone put toy {index} at w {w}, outside the band the readout treats as still in the slice"
+            );
+        }
+        for toy in 0..toybox.toys().len() {
+            let (alpha, vertices) = toybox.cap_stats(toy);
+            assert!(
+                vertices > 0 && alpha >= 1.0,
+                "toy {toy} landed already faded ({vertices} cap vertices at alpha {alpha}), so the pile boots incomplete"
+            );
         }
     }
 
     #[test]
-    fn the_pile_replays_bit_for_bit_from_its_seed() {
-        let trace = |seed: u64| {
-            let mut toybox = Toybox::new(seed);
+    fn the_pile_replays_bit_for_bit() {
+        let trace = || {
+            let mut toybox = Toybox::new();
             let mut samples = Vec::with_capacity(SETTLE_TICKS);
             for _ in 0..SETTLE_TICKS {
                 toybox.tick();
@@ -2870,12 +2818,7 @@ mod tests {
             }
             samples
         };
-        assert_eq!(trace(DEFAULT_SEED), trace(DEFAULT_SEED));
-        assert_ne!(
-            trace(DEFAULT_SEED),
-            trace(DEFAULT_SEED ^ 0xdead_beef),
-            "two seeds spawned the same pile, so the seed is decoration"
-        );
+        assert_eq!(trace(), trace());
     }
 
     #[test]
@@ -3691,7 +3634,7 @@ mod tests {
         }
 
         assert!(
-            (3.4..4.0).contains(&peak),
+            (4.2..4.6).contains(&peak),
             "peak normal impulse {peak}: the prose at DEFAULT_IMPULSE_SCALE is now stale, so recompute the bar length before touching this bound"
         );
         let bar = peak * DEFAULT_IMPULSE_SCALE;

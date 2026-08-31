@@ -1947,11 +1947,12 @@ impl loam_app::shell::Scene for ToyboxScene {
             // `OrbitController` drives off the left button. The left button is
             // the grab here, so the right one is handed to it under that name
             // and neither path has to know about the other.
-            let mut input = ctx.input;
-            input.left_mouse_down = input.buttons.right.down;
-            input.buttons.left = input.buttons.right;
-            self.orbit
-                .advance(input, &mut self.camera, &EuclideanR3, ctx.dt);
+            self.orbit.advance(
+                loam_app::orbit_on_right(ctx.input),
+                &mut self.camera,
+                &EuclideanR3,
+                ctx.dt,
+            );
         }
     }
 

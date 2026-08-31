@@ -46,7 +46,7 @@ use crate::args::Args;
 
 pub use loam_asset::AssetEvent;
 pub use loam_camera::{
-    Camera, CameraController, CameraView, FirstPersonController, OrbitController,
+    orbit_on_right, Camera, CameraController, CameraView, FirstPersonController, OrbitController,
 };
 pub use loam_egui::{egui, world_to_screen, UiCapture};
 pub use loam_input::FrameInput as Input;

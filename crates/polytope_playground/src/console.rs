@@ -36,7 +36,7 @@ impl RotateScene {
         // so a rotation a bug report describes can be reproduced exactly.
         c.register(loam_egui::cmd(
             "select",
-            "aim the rotation controls at one body: `select <slot>` (a click on the body does the same)",
+            "aim the rotation controls at one body: `select <slot>`, which a left click on the body also does",
             |args, demo: &mut Demo, out| {
                 let [slot] = args else {
                     anyhow::bail!("usage: select <slot>");

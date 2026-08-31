@@ -30,6 +30,36 @@ pub(crate) enum ViewMode {
     Filmstrip,
 }
 
+/// Index of the ball the ray ENTERS first. A ball rather than the hull: the
+/// row is spaced well apart, so a ball can only be wrong where two bodies
+/// nearly touch, and it costs one quadratic per slot against a GJK query per
+/// slot.
+pub(crate) fn nearest_ball_hit(
+    ray: &loam_camera::Ray,
+    centres: &[Vec3],
+    radius: f32,
+) -> Option<usize> {
+    let mut best: Option<(f32, usize)> = None;
+    for (index, centre) in centres.iter().enumerate() {
+        let to_centre = *centre - ray.origin;
+        let along = to_centre.dot(ray.direction);
+        if along <= 0.0 {
+            continue;
+        }
+        let gap_sq = to_centre.length_squared() - along * along;
+        if gap_sq > radius * radius {
+            continue;
+        }
+        // The entry point, not the closest approach: a ray that clips the near
+        // edge of a far body must not beat one that pierces a near body.
+        let entry = along - (radius * radius - gap_sq).sqrt();
+        if best.is_none_or(|(nearest, _)| entry < nearest) {
+            best = Some((entry, index));
+        }
+    }
+    best.map(|(_, index)| index)
+}
+
 pub(crate) fn render_row_entries<'a>(
     view_mode: ViewMode,
     row: &'a [ShapeEntry],
@@ -428,6 +458,19 @@ impl Demo {
         }
     }
 
+    /// Slot whose bounding ball the ray enters first, if any.
+    pub(crate) fn slot_under_ray(&self, ray: &loam_camera::Ray) -> Option<usize> {
+        let slots = self.render_row().len();
+        let centres: Vec<Vec3> = (0..slots)
+            .map(|slot| {
+                self.physics
+                    .pose(slot, slots, Rotor4::IDENTITY)
+                    .position_r3()
+            })
+            .collect();
+        nearest_ball_hit(ray, &centres, self.effective_body_size())
+    }
+
     pub(crate) fn selected_slot(&self) -> usize {
         self.spins.selected()
     }
@@ -634,9 +677,52 @@ impl Demo {
 
 #[cfg(test)]
 mod tests {
+    use glam::Vec3;
+
+    #[test]
+    fn a_click_reaches_every_body_in_the_row_and_misses_off_it() {
+        // The defect this names: nothing wired a press to `select_picked`, so
+        // the selection never left slot 0 however far along the row you
+        // clicked, while `select`'s own help said a click did the same.
+        let centres: Vec<Vec3> = (0..5)
+            .map(|i| Vec3::new(i as f32 * 2.0 - 4.0, 0.0, 0.0))
+            .collect();
+        let radius = 0.7;
+        for (slot, centre) in centres.iter().enumerate() {
+            let ray = loam_camera::Ray {
+                origin: *centre + Vec3::new(0.0, 0.0, 12.0),
+                direction: Vec3::new(0.0, 0.0, -1.0),
+            };
+            assert_eq!(nearest_ball_hit(&ray, &centres, radius), Some(slot));
+        }
+
+        let over = loam_camera::Ray {
+            origin: Vec3::new(0.0, 40.0, 12.0),
+            direction: Vec3::new(0.0, 0.0, -1.0),
+        };
+        assert_eq!(nearest_ball_hit(&over, &centres, radius), None);
+
+        // Behind the camera is not a hit, however well aimed.
+        let behind = loam_camera::Ray {
+            origin: Vec3::new(0.0, 0.0, 12.0),
+            direction: Vec3::new(0.0, 0.0, 1.0),
+        };
+        assert_eq!(nearest_ball_hit(&behind, &centres, radius), None);
+
+        // Two balls on the ray: the near one wins, which the closest-approach
+        // form would get wrong when the ray clips the far one's near edge.
+        let stacked = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.6, -4.0)];
+        let down = loam_camera::Ray {
+            origin: Vec3::new(0.0, 0.0, 12.0),
+            direction: Vec3::new(0.0, 0.0, -1.0),
+        };
+        assert_eq!(nearest_ball_hit(&down, &stacked, radius), Some(0));
+    }
+
     use super::{
         active_plane_angle, body_position, body_upload_needed, compose_active_rotor,
-        mode_annotation, render_row_entries, resolve_schlegel_params, row_blocks_sdf,
+        mode_annotation, nearest_ball_hit, render_row_entries, resolve_schlegel_params,
+        row_blocks_sdf,
         sdf_body_uniform, section_layer_projection, set_if_changed, synced_schlegel_projection,
         SectionLayer, SurfaceMode, ViewMode, WireframeProjection, BASE_ROTATION_RATE, BODY_SIZE,
         STEREOGRAPHIC_DEFAULT_POLE,

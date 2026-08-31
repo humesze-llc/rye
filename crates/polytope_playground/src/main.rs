@@ -400,7 +400,22 @@ impl Demo {
         // The gimbal owns the left button whenever egui does not and the
         // camera is not flying, which is what `left_was_down` tracks.
         let pointer_free = !ctx.ui_capture.pointer && self.camera_mode == CameraMode::Orbit;
+        let pressed = ctx.input.buttons.left.down && !self.left_was_down;
         let gimbaling = self.update_gimbal(pointer_free, &ctx.input, viewport);
+
+        // A left press the gimbal did not take aims the rotation controls at
+        // whatever body it hit. Without this the selection never leaves slot 0
+        // and only `select <slot>` can move it, which is what `select`'s own
+        // help has always claimed a click does.
+        if pointer_free && pressed && !gimbaling {
+            if let Some(press_px) = ctx.input.buttons.left.press_pos {
+                let ray = self
+                    .camera
+                    .ray_from_ndc(physics::ndc_from_pixels(press_px, viewport));
+                let picked = self.slot_under_ray(&ray);
+                self.spins.select_picked(picked);
+            }
+        }
 
         let dir = (self.slider_up_held as i32 - self.slider_down_held as i32) as f32;
         let host_owns_w = !self
@@ -468,10 +483,12 @@ impl Demo {
         self.orbit.target.y = if lift_orbit { BODY_Y } else { 0.0 };
         match self.camera_mode {
             CameraMode::Orbit if !ctx.ui_capture.pointer => {
-                let mut input = ctx.input;
-                input.left_mouse_down &= !gimbaling;
-                self.orbit
-                    .advance(input, &mut self.camera, &EuclideanR3, dt_secs);
+                self.orbit.advance(
+                    loam_app::orbit_on_right(ctx.input),
+                    &mut self.camera,
+                    &EuclideanR3,
+                    dt_secs,
+                );
             }
             CameraMode::FreeRoam if !(ctx.ui_capture.pointer || ctx.ui_capture.keyboard) => {
                 self.freecam.advance(ctx.input, &mut self.camera, dt_secs);
@@ -503,6 +520,11 @@ impl Demo {
             u.tick = ctx.tick as f32;
             self.sdf_upload_pending |= changed;
         }
+
+        // Last, after every reader of the press edge. Without it `pressed` is
+        // true for as long as the button is held, which re-takes the gimbal's
+        // drag every frame and so discards the rotation it had accumulated.
+        self.left_was_down = ctx.input.buttons.left.down;
     }
 
     pub(crate) fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {

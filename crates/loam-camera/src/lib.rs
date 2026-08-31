@@ -2,7 +2,7 @@ mod camera;
 mod controller;
 
 pub use camera::{Camera, Ray};
-pub use controller::{CameraController, FirstPersonController, OrbitController};
+pub use controller::{orbit_on_right, CameraController, FirstPersonController, OrbitController};
 
 use glam::Vec3;
 

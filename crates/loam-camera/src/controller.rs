@@ -27,6 +27,19 @@ pub trait CameraController<S: Space> {
     fn advance(&mut self, input: FrameInput, camera: &mut Camera<S>, space: &S, dt: f32);
 }
 
+/// Remaps the right mouse button onto the left for [`CameraController::advance`],
+/// which drags on the left.
+///
+/// The left button belongs to the SCENE: grabbing a body, picking one, taking a
+/// gizmo handle. A camera that also took it fights every scene that wants to
+/// click something, so orbiting is the right button everywhere and freecam,
+/// which captures the cursor outright, is the exception.
+pub fn orbit_on_right(mut input: FrameInput) -> FrameInput {
+    input.left_mouse_down = input.buttons.right.down;
+    input.buttons.left = input.buttons.right;
+    input
+}
+
 /// In flat space this is plain spherical-coordinate framing. In H³ / S³ the camera
 /// position is computed by `Space::exp` from the target along the orbit-direction
 /// tangent vector, and the camera basis parallel-transports from the target to the

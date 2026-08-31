@@ -1655,7 +1655,10 @@ pub(crate) struct ToyboxScene {
 impl ToyboxScene {
     pub(crate) fn new(ctx: &mut SetupCtx<'_>) -> Result<Self> {
         let mut console = Console::<ToyboxControls>::new();
-        loam_app::shell::register_command::<ToyboxControls, crate::shell::Playground>(&mut console);
+        loam_app::shell::register_shell_commands::<ToyboxControls, crate::shell::Playground>(
+            &mut console,
+            loam_app::build_info!(),
+        );
         register_toybox_commands(&mut console);
 
         let mut camera = Camera::<EuclideanR3>::at_origin();

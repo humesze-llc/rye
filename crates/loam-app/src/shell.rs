@@ -160,7 +160,44 @@ fn queue_restart(forced: bool) {
     }
 }
 
-pub fn register_command<Ctx: 'static, R: SceneRegistry>(console: &mut Console<Ctx>) {
+/// What `version` prints. Fill it with [`crate::build_info`] rather than by
+/// hand: the `env!` must expand in the demo's own crate, not in this one.
+pub struct BuildInfo {
+    pub crate_name: &'static str,
+    pub crate_version: &'static str,
+    pub build_hash: &'static str,
+    pub build_dirty: &'static str,
+}
+
+/// Every verb the RUNNER owns, in one call, so a scene cannot be missing half
+/// of them. These touch the shell, the surface and the frame clock rather than
+/// any scene state, which is why they are registered here for all scenes
+/// instead of per-scene: a scene that forgets one is a scene whose console
+/// disagrees with its neighbour's for no reason a user can see.
+///
+/// Scene-owned verbs are a different problem and belong to the scene, or to a
+/// lens shared between scenes that both hold the state it names.
+pub fn register_shell_commands<Ctx: 'static, R: SceneRegistry>(
+    console: &mut Console<Ctx>,
+    build: BuildInfo,
+) {
+    register_scene_commands::<Ctx, R>(console);
+    crate::capture::register_commands(console);
+    crate::capture::bind_default_hotkeys(console);
+    crate::log::register_command(console);
+    crate::trace::register_command(console);
+    crate::fps::register_command(console);
+    crate::vsync::register_command(console);
+    crate::version::register_command(
+        console,
+        build.crate_name,
+        build.crate_version,
+        build.build_hash,
+        build.build_dirty,
+    );
+}
+
+fn register_scene_commands<Ctx: 'static, R: SceneRegistry>(console: &mut Console<Ctx>) {
     let slugs = R::SCENES.iter().map(|entry| entry.slug).collect::<Vec<_>>();
     console.register(
         cmd::<Ctx, _>(
@@ -788,7 +825,7 @@ mod tests {
             let mut slots =
                 build_boot_only(REGISTRY.len(), 0, || Ok(stub_scene())).expect("boot build");
             let mut console = Console::<()>::new();
-            register_command::<(), Fixture>(&mut console);
+            register_scene_commands::<(), Fixture>(&mut console);
             let builds = Cell::new(0);
             let mut active = 0;
             let drain = |slots: &mut SceneSlots, active: usize| {
@@ -821,7 +858,7 @@ mod tests {
             let mut slots =
                 build_boot_only(REGISTRY.len(), 0, || Ok(stub_scene())).expect("boot build");
             let mut console = Console::<()>::new();
-            register_command::<(), Fixture>(&mut console);
+            register_scene_commands::<(), Fixture>(&mut console);
 
             crate::command::run_on_console(&mut console, "scene nope", &mut ());
             let active = applied(
@@ -880,7 +917,7 @@ mod tests {
             let mut slots =
                 build_boot_only(REGISTRY.len(), 0, || Ok(stub_scene())).expect("boot build");
             let mut console = Console::<()>::new();
-            register_command::<(), Fixture>(&mut console);
+            register_scene_commands::<(), Fixture>(&mut console);
 
             crate::command::run_on_console(&mut console, "scene third", &mut ());
             let active = applied(
@@ -895,7 +932,7 @@ mod tests {
     #[test]
     fn scene_command_registers_against_any_console_context() {
         let mut console = Console::<u32>::new();
-        register_command::<u32, Fixture>(&mut console);
+        register_scene_commands::<u32, Fixture>(&mut console);
         assert!(console.has_command("scene"));
         assert!(
             console.has_command("restart"),
@@ -1008,7 +1045,7 @@ mod tests {
             let mut slots =
                 build_boot_only(REGISTRY.len(), 0, || Ok(stub_scene())).expect("boot build");
             let mut console = Console::<()>::new();
-            register_command::<(), Fixture>(&mut console);
+            register_scene_commands::<(), Fixture>(&mut console);
             let builds = Cell::new(0);
 
             crate::command::run_on_console(&mut console, "restart", &mut ());

@@ -903,6 +903,10 @@ pub(crate) struct HeroScene {
 impl HeroScene {
     fn build_console() -> Console<Environment> {
         let mut console = Console::<Environment>::new();
+        loam_app::shell::register_shell_commands::<Environment, crate::Hero>(
+            &mut console,
+            loam_app::build_info!(),
+        );
         register_ground_command(&mut console, |env| env);
         console
     }

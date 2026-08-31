@@ -12,7 +12,10 @@ fn handles_arg(arg: Option<&str>, current: bool) -> anyhow::Result<bool> {
 impl RotateScene {
     pub(crate) fn build_console() -> Console<Demo> {
         let mut c = Console::<Demo>::new();
-        loam_app::shell::register_command::<Demo, shell::Playground>(&mut c);
+        loam_app::shell::register_shell_commands::<Demo, shell::Playground>(
+            &mut c,
+            loam_app::build_info!(),
+        );
         c.register(loam_egui::cmd(
             "reset",
             "reset slice, rate, active set, orientation and time in place",
@@ -400,21 +403,6 @@ impl RotateScene {
             ),
         );
 
-        loam_app::capture::register_commands(&mut c);
-        loam_app::capture::bind_default_hotkeys(&mut c);
-
-        loam_app::log::register_command(&mut c);
-        loam_app::trace::register_command(&mut c);
-        loam_app::fps::register_command(&mut c);
-        loam_app::vsync::register_command(&mut c);
-        loam_app::version::register_command(
-            &mut c,
-            env!("CARGO_PKG_NAME"),
-            env!("CARGO_PKG_VERSION"),
-            env!("BUILD_HASH"),
-            env!("BUILD_DIRTY"),
-        );
-
         c.register(
             loam_egui::cmd::<Demo, _>(
                 "camera",
@@ -638,7 +626,10 @@ mod tests {
     #[test]
     fn the_help_listing_describes_the_scene_switcher() {
         let mut console = Console::<()>::new();
-        loam_app::shell::register_command::<(), shell::Playground>(&mut console);
+        loam_app::shell::register_shell_commands::<(), shell::Playground>(
+            &mut console,
+            loam_app::build_info!(),
+        );
         console.execute("help");
         let listed = console
             .history()

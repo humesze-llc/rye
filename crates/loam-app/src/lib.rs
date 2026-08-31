@@ -1275,6 +1275,21 @@ impl<A: App> Runner<A> {
     }
 }
 
+/// Fills [`shell::BuildInfo`] from the calling crate. `BUILD_HASH` and
+/// `BUILD_DIRTY` come from a `build.rs` and are optional; without one the
+/// `version` line collapses to crate name and version.
+#[macro_export]
+macro_rules! build_info {
+    () => {
+        $crate::shell::BuildInfo {
+            crate_name: env!("CARGO_PKG_NAME"),
+            crate_version: env!("CARGO_PKG_VERSION"),
+            build_hash: option_env!("BUILD_HASH").unwrap_or(""),
+            build_dirty: option_env!("BUILD_DIRTY").unwrap_or(""),
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

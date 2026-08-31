@@ -2,7 +2,7 @@
 //!
 //! A shared verb is written once against its own state struct; a scene opts in
 //! by handing over a `fn(&mut Ctx) -> &mut State` that says where it keeps
-//! that state. Same shape as [`crate::environment::register_ground_command`],
+//! that state. Same shape as `loam_app::environment::register_ground_command`,
 //! generalized. The verbs here are the ones every 4D scene can honour, and
 //! they are the surface the scripting layer will bind to, so a verb that means
 //! subtly different things in two scenes stays out.
@@ -154,6 +154,27 @@ mod tests {
         let mut c = Console::<Scene>::new();
         c.register(wireframe_subcommands::<Scene>(|s| &mut s.wireframe));
         c
+    }
+
+    // The regression the whole module exists to prevent, stated as a list: a
+    // scene that grows its own copy of one of these, or simply forgets to
+    // register it, drifts from every other scene's console for no reason a
+    // viewer can see.
+    #[test]
+    fn every_scene_console_carries_the_shared_vocabulary() {
+        const SHARED: [&str; 12] = [
+            "camera", "capture", "floor", "fps", "ground", "log", "restart", "scene", "trace",
+            "version", "vsync", "wireframe",
+        ];
+
+        let rotate = crate::RotateScene::build_console();
+        let mut toybox = Console::<crate::toybox::ToyboxControls>::new();
+        crate::toybox::register_toybox_commands(&mut toybox);
+
+        for verb in SHARED {
+            assert!(rotate.has_command(verb), "rotate lost `{verb}`");
+            assert!(toybox.has_command(verb), "the toybox never registered `{verb}`");
+        }
     }
 
     #[test]

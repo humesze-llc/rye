@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::verbs::WireframeControls;
 use glam::{Vec3, Vec4};
-use loam_app::{freecam::Freecam, Camera, OrbitController};
+use loam_app::{Camera, OrbitController};
 use loam_math::{Bivector, Bivector4, EuclideanR3, Plane4, Projection, Rotor, Rotor4};
 use loam_render::raymarch::{BodyUniform, Hyperslice4DNode};
 use loam_render::SkyGroundNode;
@@ -126,13 +126,6 @@ impl WireframeColorMode {
             Self::Active => "Active",
         }
     }
-}
-
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum CameraMode {
-    #[default]
-    Orbit,
-    FreeRoam,
 }
 
 // Bivector addition within a term is commutative, so plane order inside a term
@@ -325,8 +318,7 @@ pub(crate) struct Demo {
     pub(crate) gimbal_node: loam_render::LineRasterNode,
     pub(crate) camera: Camera<EuclideanR3>,
     pub(crate) orbit: OrbitController<EuclideanR3>,
-    pub(crate) freecam: Freecam,
-    pub(crate) camera_mode: CameraMode,
+    pub(crate) rig: loam_app::camera_rig::CameraRig,
     pub(crate) node: Hyperslice4DNode,
     /// Owns the frame's colour and depth clear, so it is recorded first and
     /// unconditionally; every later pass loads.
@@ -347,8 +339,7 @@ pub(crate) struct Demo {
     pub(crate) unique_edge_palette_cache: HashMap<Polytope4, Vec<[f32; 4]>>,
     pub(crate) cell_centers_cache: HashMap<Polytope4, Vec<Vec4>>,
     pub(crate) surface_scale: f32,
-    pub(crate) floor_enabled: bool,
-    pub(crate) environment: crate::environment::Environment,
+    pub(crate) environment: loam_app::environment::Environment,
     pub(crate) section_faces: loam_render::TriangleRasterNode,
     pub(crate) section_faces_translucent: loam_render::TriangleRasterNode,
     pub(crate) points_node: loam_render::PointRasterNode,

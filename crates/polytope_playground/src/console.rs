@@ -403,111 +403,7 @@ impl RotateScene {
             ),
         );
 
-        c.register(
-            loam_egui::cmd::<Demo, _>(
-                "camera",
-                "camera mode: orbit | freecam; bare cycles. `camera freecam speed=<N>` / `cursor_mode hold|toggle` tune the preset",
-                |args, demo, out| {
-                    if matches!(args.first().copied(), Some("freecam")) && args.len() >= 2 {
-                        let second = args[1];
-                        if let Some(value) = second.strip_prefix("speed=") {
-                            let parsed: f32 = value
-                                .parse()
-                                .map_err(|e| anyhow!("invalid speed `{value}`: {e}"))?;
-                            if !(0.1..=200.0).contains(&parsed) {
-                                return Err(anyhow!(
-                                    "camera freecam speed {parsed} out of range; expected 0.1..=200.0"
-                                ));
-                            }
-                            demo.freecam.speed = parsed;
-                            out.line(format!("camera freecam speed: set to {parsed:.2} u/sec"));
-                            return Ok(());
-                        }
-                        if second == "speed" {
-                            if let Some(value) = args.get(2) {
-                                let parsed: f32 = value.parse().map_err(|e| {
-                                    anyhow!("invalid speed `{value}`: {e}")
-                                })?;
-                                if !(0.1..=200.0).contains(&parsed) {
-                                    return Err(anyhow!(
-                                        "camera freecam speed {parsed} out of range; expected 0.1..=200.0"
-                                    ));
-                                }
-                                demo.freecam.speed = parsed;
-                                out.line(format!(
-                                    "camera freecam speed: set to {parsed:.2} u/sec"
-                                ));
-                            } else {
-                                out.line(format!(
-                                    "camera freecam speed: {:.2} u/sec",
-                                    demo.freecam.speed
-                                ));
-                            }
-                            return Ok(());
-                        }
-                        if second == "cursor_mode" {
-                            match args.get(2).copied() {
-                                None => {
-                                    out.line(format!(
-                                        "camera freecam cursor_mode: {}",
-                                        demo.freecam.cursor_mode().token()
-                                    ));
-                                }
-                                Some(token) => {
-                                    let mode = CursorMode::from_token(token).ok_or_else(|| {
-                                        anyhow!(
-                                            "unknown cursor_mode `{token}` (try hold|toggle)"
-                                        )
-                                    })?;
-                                    demo.freecam.set_cursor_mode(mode);
-                                    out.line(format!(
-                                        "camera freecam cursor_mode: set to {}",
-                                        mode.token()
-                                    ));
-                                }
-                            }
-                            return Ok(());
-                        }
-                    }
-
-                    let next = match args.first().copied() {
-                        None => match demo.camera_mode {
-                            CameraMode::Orbit => CameraMode::FreeRoam,
-                            CameraMode::FreeRoam => CameraMode::Orbit,
-                        },
-                        Some("orbit") => CameraMode::Orbit,
-                        Some("freecam") => CameraMode::FreeRoam,
-                        Some(other) => {
-                            out.line(format!(
-                                "camera: unknown mode `{other}` (try orbit|freecam)"
-                            ));
-                            return Ok(());
-                        }
-                    };
-                    demo.camera_mode = next;
-                    match next {
-                        CameraMode::Orbit => {
-                            demo.orbit = OrbitController::default();
-                            demo.orbit.set_orbit(8.0, -0.25);
-                            demo.freecam.set_active(false, demo.camera.position);
-                            out.line("camera: orbit (reset to world origin)");
-                        }
-                        CameraMode::FreeRoam => {
-                            demo.freecam.set_active(true, demo.camera.position);
-                            out.line(
-                                "camera: freecam (WASD + Space/Shift; mouse-look; Alt to free cursor)",
-                            );
-                        }
-                    }
-                    Ok(())
-                },
-            )
-            .with_args(&[
-                &["orbit", "freecam"],
-                &["speed=", "cursor_mode"],
-                &["hold", "toggle"],
-            ]),
-        );
+        loam_app::camera_rig::register_camera_command(&mut c, |demo| &mut demo.rig);
 
         c.register(
             loam_egui::cmd::<Demo, _>(
@@ -537,28 +433,8 @@ impl RotateScene {
         // The SDF kernel reads `u.params[0]`; when 0.0 the wrapper around
         // `loam_scene_sdf` short-circuits to a huge distance, so the marcher
         // never converges on the floor.
-        c.register(
-            loam_egui::cmd::<Demo, _>(
-                "floor",
-                "toggle the y=0 hyperplane ground (on | off; bare flips)",
-                |args, demo, out| {
-                    let next = match args.first().copied() {
-                        None => !demo.floor_enabled,
-                        Some("on") => true,
-                        Some("off") => false,
-                        Some(other) => {
-                            return Err(anyhow!("floor: unknown arg `{other}` (try on|off)"));
-                        }
-                    };
-                    demo.floor_enabled = next;
-                    out.line(format!("floor: {}", if next { "on" } else { "off" }));
-                    Ok(())
-                },
-            )
-            .with_args(&[&["on", "off"]]),
-        );
-
-        environment::register_ground_command(&mut c, |demo| &mut demo.environment);
+        loam_app::environment::register_ground_command(&mut c, |demo| &mut demo.environment);
+        loam_app::environment::register_floor_command(&mut c, |demo| &mut demo.environment);
 
         c
     }

@@ -27,7 +27,7 @@ use loam_shape::polytope::{polytope_section_faces_append, Polytope4, SectionScra
 use loam_shape::{LineMesh, TriangleMesh};
 
 use crate::consts::W_SCRUB_RATE;
-use crate::environment::{register_ground_command, Environment};
+use loam_app::environment::{register_floor_command, register_ground_command, Environment};
 use crate::physics::ndc_from_pixels;
 use crate::projections::WireframeProjection;
 use crate::verbs::WireframeControls;
@@ -1437,7 +1437,7 @@ fn build_physics_overlay_mesh(
 /// Everything the toybox console writes to. The overlay is one field of it so
 /// the `physics` verb keeps its own vocabulary while `ground` and `wlabels`
 /// reach the scene's other live settings.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct ToyboxControls {
     overlay: PhysicsOverlay,
     /// Whole-hull wireframe behind the cross-sections. Off by default; it is a
@@ -1447,6 +1447,7 @@ pub(crate) struct ToyboxControls {
     /// with cross-section size already says a body is leaving the slice.
     w_labels: bool,
     environment: Environment,
+    rig: loam_app::camera_rig::CameraRig,
 }
 
 impl Default for ToyboxControls {
@@ -1459,12 +1460,19 @@ impl Default for ToyboxControls {
             },
             w_labels: false,
             environment: Environment::default(),
+            rig: loam_app::camera_rig::CameraRig::default(),
         }
     }
 }
 
 pub(crate) fn register_toybox_commands(console: &mut Console<ToyboxControls>) {
+    loam_app::shell::register_shell_commands::<ToyboxControls, crate::shell::Playground>(
+        console,
+        loam_app::build_info!(),
+    );
     register_ground_command(console, |c| &mut c.environment);
+    register_floor_command(console, |c| &mut c.environment);
+    loam_app::camera_rig::register_camera_command(console, |c| &mut c.rig);
     console.register(
         loam_egui::cmd::<ToyboxControls, _>(
             "wlabels",
@@ -1655,10 +1663,6 @@ pub(crate) struct ToyboxScene {
 impl ToyboxScene {
     pub(crate) fn new(ctx: &mut SetupCtx<'_>) -> Result<Self> {
         let mut console = Console::<ToyboxControls>::new();
-        loam_app::shell::register_shell_commands::<ToyboxControls, crate::shell::Playground>(
-            &mut console,
-            loam_app::build_info!(),
-        );
         register_toybox_commands(&mut console);
 
         let mut camera = Camera::<EuclideanR3>::at_origin();
@@ -2011,7 +2015,9 @@ impl loam_app::shell::Scene for ToyboxScene {
             &SkyGroundUniforms::new(
                 view_proj,
                 Viewport::full([cfg.width, cfg.height]),
-                self.controls.environment.ground(FLOOR_Y, true),
+                self.controls
+                    .environment
+                    .ground(FLOOR_Y, self.controls.environment.floor_visible),
             ),
         );
         self.sky_ground

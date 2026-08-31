@@ -1,7 +1,11 @@
-//! Ground colours and fog density for every scene that records
-//! [`loam_render::SkyGroundNode`], plus the `ground` console verb that edits
+//! Ground colours, fog density and floor visibility for every scene that
+//! records [`loam_render::SkyGroundNode`], with the console verbs that edit
 //! them live. They are art parameters: a rebuild is too slow a loop to judge
 //! them in.
+//!
+//! Shared rather than per-demo because two scenes holding their own copy of
+//! this drift, and a viewer reading one scene's `ground` output learns nothing
+//! about the next.
 
 use anyhow::{anyhow, Result};
 use loam_egui::Console;
@@ -14,10 +18,14 @@ use loam_render::Ground;
 const MAX_FOG_PER_UNIT: f32 = 1.0;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub(crate) struct Environment {
-    pub(crate) dark: [f32; 3],
-    pub(crate) light: [f32; 3],
-    pub(crate) fog_per_unit: f32,
+pub struct Environment {
+    pub dark: [f32; 3],
+    pub light: [f32; 3],
+    pub fog_per_unit: f32,
+    /// Whether the ground plane is drawn at all. A scene that hides it is left
+    /// with bare sky, which is how a wireframe is read without a checker
+    /// behind it.
+    pub floor_visible: bool,
 }
 
 impl Default for Environment {
@@ -26,12 +34,13 @@ impl Default for Environment {
             dark: GROUND_DARK_GREY,
             light: GROUND_LIGHT_GREY,
             fog_per_unit: DEFAULT_FOG_PER_UNIT,
+            floor_visible: true,
         }
     }
 }
 
 impl Environment {
-    pub(crate) fn ground(&self, y: f32, visible: bool) -> Ground {
+    pub fn ground(&self, y: f32, visible: bool) -> Ground {
         Ground {
             y,
             dark: self.dark,
@@ -42,7 +51,7 @@ impl Environment {
     }
 
     /// Bare-read text for one field, or for all three when `field` is `None`.
-    pub(crate) fn report(&self, field: Option<&str>) -> String {
+    pub fn report(&self, field: Option<&str>) -> String {
         match field {
             Some("dark") => format!("ground dark: {}", rgb_text(self.dark)),
             Some("light") => format!("ground light: {}", rgb_text(self.light)),
@@ -63,7 +72,7 @@ impl Environment {
 
     /// Runs one `ground` line. `args` is the verb's argument list, so an empty
     /// slice is the bare read.
-    pub(crate) fn apply(&mut self, args: &[&str]) -> Result<String> {
+    pub fn apply(&mut self, args: &[&str]) -> Result<String> {
         let Some(field) = args.first().copied() else {
             return Ok(self.report(None));
         };
@@ -100,7 +109,7 @@ impl Environment {
 
 /// Distance at which the sky is half mixed into the ground, from
 /// `1 − exp(−t·density) = 1/2`.
-pub(crate) fn half_blend_distance(fog_per_unit: f32) -> f32 {
+pub fn half_blend_distance(fog_per_unit: f32) -> f32 {
     if fog_per_unit <= 0.0 {
         return f32::INFINITY;
     }
@@ -147,7 +156,7 @@ fn parse_fog(token: &str) -> Result<f32> {
 /// Registers `ground` on a scene console. `reach` names where that scene keeps
 /// its [`Environment`]; a plain `fn` pointer so the same registration serves
 /// consoles over four different context types.
-pub(crate) fn register_ground_command<Ctx: 'static>(
+pub fn register_ground_command<Ctx: 'static>(
     console: &mut Console<Ctx>,
     reach: fn(&mut Ctx) -> &mut Environment,
 ) {
@@ -172,6 +181,36 @@ pub(crate) fn register_ground_command<Ctx: 'static>(
              \x20                          half the sky is mixed in at ln2/density\n\
              ground reset               back to the shipped defaults",
         ),
+    );
+}
+
+/// Registers `floor` on a scene console. Same lens as
+/// [`register_ground_command`]: both verbs edit one [`Environment`], so a
+/// scene that has one has both.
+pub fn register_floor_command<Ctx: 'static>(
+    console: &mut Console<Ctx>,
+    reach: fn(&mut Ctx) -> &mut Environment,
+) {
+    console.register(
+        loam_egui::cmd::<Ctx, _>(
+            "floor",
+            "toggle the ground plane (on | off; bare flips)",
+            move |args, ctx, out| {
+                let env = reach(ctx);
+                let next = match args.first().copied() {
+                    None => !env.floor_visible,
+                    Some("on") => true,
+                    Some("off") => false,
+                    Some(other) => {
+                        return Err(anyhow!("floor: unknown arg `{other}` (try on|off)"));
+                    }
+                };
+                env.floor_visible = next;
+                out.line(format!("floor: {}", if next { "on" } else { "off" }));
+                Ok(())
+            },
+        )
+        .with_args(&[&["on", "off"]]),
     );
 }
 

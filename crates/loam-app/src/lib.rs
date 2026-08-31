@@ -12,8 +12,11 @@ pub mod args;
 #[cfg(any(not(feature = "capture"), target_arch = "wasm32"))]
 #[path = "capture_stub.rs"]
 pub mod capture;
+
+pub mod camera_rig;
 pub mod command;
 pub mod cursor;
+pub mod environment;
 pub mod fps;
 pub mod frame_pacing;
 pub mod freecam;

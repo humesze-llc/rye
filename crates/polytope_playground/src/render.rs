@@ -162,7 +162,7 @@ impl Demo {
                 // The `floor` console verb gates the marched half-space
                 // through `u.params.x`; the background has to follow it or the
                 // checkerboard outlives the leaf that occludes for it.
-                self.environment.ground(FLOOR_Y, self.floor_enabled),
+                self.environment.ground(FLOOR_Y, self.environment.floor_visible),
             ),
         );
         self.sky_ground

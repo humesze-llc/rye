@@ -3,7 +3,6 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 use loam_app::{
     args::Args,
     egui,
-    freecam::{CursorMode, Freecam},
     script::{Script, ScriptDriver, ScriptStatus},
     AssetEvent, Camera, CameraController, FrameCtx, OrbitController, RunConfig, SetupCtx, ShaderDb,
     ShaderOwner,
@@ -45,7 +44,6 @@ mod composer;
 mod console;
 mod consts;
 mod director;
-mod environment;
 mod filmstrip;
 mod hud;
 mod hypergimbal;
@@ -121,7 +119,7 @@ use loam_shape::polytope::Polytope4;
 use loam_time::Director;
 use physics::PlaygroundPhysics;
 use state::{
-    set_if_changed, CameraMode, Demo, RotationMode, RowFrame, SurfaceMode, ViewMode,
+    set_if_changed, Demo, RotationMode, RowFrame, SurfaceMode, ViewMode,
     WireframeColorMode,
 };
 use verbs::WireframeControls;
@@ -283,8 +281,6 @@ impl Demo {
         let mut orbit: OrbitController<EuclideanR3> = OrbitController::default();
         orbit.set_orbit(8.0, -0.25);
 
-        let freecam = Freecam::new();
-
         let initial_w = 0.0;
 
         Ok(Self {
@@ -294,8 +290,7 @@ impl Demo {
             gimbal_node,
             camera,
             orbit,
-            freecam,
-            camera_mode: CameraMode::default(),
+            rig: loam_app::camera_rig::CameraRig::default(),
             node,
             sky_ground: SkyGroundNode::new(
                 &ctx.rd.device,
@@ -319,8 +314,7 @@ impl Demo {
             unique_edge_palette_cache: std::collections::HashMap::new(),
             cell_centers_cache: std::collections::HashMap::new(),
             surface_scale: 1.0,
-            floor_enabled: true,
-            environment: environment::Environment::default(),
+            environment: loam_app::environment::Environment::default(),
             section_faces,
             section_faces_translucent,
             section_faces_projected_scratch: loam_shape::TriangleMesh::<3>::default(),
@@ -399,7 +393,7 @@ impl Demo {
         self.camera.aspect = viewport.0 as f32 / viewport.1.max(1) as f32;
         // The gimbal owns the left button whenever egui does not and the
         // camera is not flying, which is what `left_was_down` tracks.
-        let pointer_free = !ctx.ui_capture.pointer && self.camera_mode == CameraMode::Orbit;
+        let pointer_free = !ctx.ui_capture.pointer && !self.rig.is_flying();
         let pressed = ctx.input.buttons.left.down && !self.left_was_down;
         let gimbaling = self.update_gimbal(pointer_free, &ctx.input, viewport);
 
@@ -481,8 +475,8 @@ impl Demo {
 
         let lift_orbit = self.view_mode == ViewMode::Filmstrip && self.strip_w && self.strip_t;
         self.orbit.target.y = if lift_orbit { BODY_Y } else { 0.0 };
-        match self.camera_mode {
-            CameraMode::Orbit if !ctx.ui_capture.pointer => {
+        match self.rig.mode {
+            loam_app::camera_rig::CameraMode::Orbit if !ctx.ui_capture.pointer => {
                 self.orbit.advance(
                     loam_app::orbit_on_right(ctx.input),
                     &mut self.camera,
@@ -490,8 +484,8 @@ impl Demo {
                     dt_secs,
                 );
             }
-            CameraMode::FreeRoam if !(ctx.ui_capture.pointer || ctx.ui_capture.keyboard) => {
-                self.freecam.advance(ctx.input, &mut self.camera, dt_secs);
+            loam_app::camera_rig::CameraMode::FreeRoam if !(ctx.ui_capture.pointer || ctx.ui_capture.keyboard) => {
+                self.rig.freecam.advance(ctx.input, &mut self.camera, dt_secs);
             }
             _ => {}
         }
@@ -513,7 +507,7 @@ impl Demo {
             changed |= set_if_changed(&mut u.w_slice, self.w_slice);
             // Read by the injected wrapper around `loam_scene_sdf`: 1.0 = floor
             // on, 0.0 = wrapper short-circuits to 1e9.
-            changed |= set_if_changed(&mut u.params[0], if self.floor_enabled { 1.0 } else { 0.0 });
+            changed |= set_if_changed(&mut u.params[0], if self.environment.floor_visible { 1.0 } else { 0.0 });
             // Excluded from the change test (pinned by
             // `assembled_shader_reads_no_clock`): a clock tick must not upload.
             u.time = ctx.time;
@@ -711,13 +705,13 @@ impl Demo {
             KeyCode::KeyT if pressed => {
                 self.rotate = !self.rotate;
             }
-            KeyCode::Space if pressed && !matches!(self.camera_mode, CameraMode::FreeRoam) => {
+            KeyCode::Space if pressed && !self.rig.is_flying() => {
                 self.rotate = !self.rotate;
             }
             KeyCode::AltLeft | KeyCode::AltRight
-                if matches!(self.camera_mode, CameraMode::FreeRoam) =>
+                if self.rig.is_flying() =>
             {
-                self.freecam.on_alt(pressed);
+                self.rig.freecam.on_alt(pressed);
             }
             KeyCode::Digit1 | KeyCode::Numpad1 if pressed => self.toggle_selected_plane(0),
             KeyCode::Digit2 | KeyCode::Numpad2 if pressed => self.toggle_selected_plane(1),

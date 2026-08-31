@@ -18,7 +18,6 @@ use loam_app::shell::{SceneEntry, SceneRegistry};
 use loam_app::RunConfig;
 use winit::window::WindowAttributes;
 
-mod environment;
 mod scene;
 
 struct Hero;

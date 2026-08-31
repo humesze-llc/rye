@@ -24,7 +24,7 @@ use loam_shape::{Shape, TriangleMesh};
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 use loam_time::director::{BodyTrack, Director, Drive, Ease, Timeline, Track};
 
-use crate::environment::{register_ground_command, Environment};
+use loam_app::environment::{register_floor_command, register_ground_command, Environment};
 
 const WORD: &str = "LOAM";
 
@@ -908,6 +908,7 @@ impl HeroScene {
             loam_app::build_info!(),
         );
         register_ground_command(&mut console, |env| env);
+        register_floor_command(&mut console, |env| env);
         console
     }
 
@@ -1038,7 +1039,7 @@ impl loam_app::shell::Scene for HeroScene {
             &SkyGroundUniforms::new(
                 view_proj,
                 Viewport::full([cfg.width, cfg.height]),
-                self.environment.ground(FLOOR_Y, true),
+                self.environment.ground(FLOOR_Y, self.environment.floor_visible),
             ),
         );
         self.sky_ground

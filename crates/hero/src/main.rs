@@ -9,9 +9,9 @@
 //! machine holds.
 //!
 //! APNG is lossless and needs no external encoder, but this writer stores whole
-//! frames rather than deltas, so the file is the sum of its frames: 28 MB for
-//! this sequence at 800x600. `scale` on the capture request is the dial if that
-//! has to come down.
+//! frames rather than deltas, so the file is the sum of its frames: 53 MB for
+//! this sequence at 800x600. `RECORD_FPS` and `scale` on the capture request
+//! are the dials if that has to come down.
 
 use std::path::PathBuf;
 

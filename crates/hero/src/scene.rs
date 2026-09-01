@@ -43,10 +43,11 @@ const SUBSTEPS_PER_TICK: usize = 4;
 // Fixed and never derived from wall time.
 const SOLVER_DT: f32 = 1.0 / (TICK_HZ as f32 * SUBSTEPS_PER_TICK as f32);
 
-// Half the tick rate. Every captured frame is a full image in the APNG and is
-// held in memory until the stop, so the rate is the file-size and footprint
-// dial; the delays keep playback at the sequence's own speed either way.
-const RECORD_FPS: u16 = TICK_HZ as u16 / 2;
+// One captured frame per tick. Every captured frame is a full image in the
+// APNG and is held in memory until the stop, so the rate is the file-size and
+// footprint dial; the delays keep playback at the sequence's own speed at any
+// rate, and halving this halves both costs.
+const RECORD_FPS: u16 = TICK_HZ as u16;
 
 const GRAVITY: f32 = -9.8;
 
@@ -957,12 +958,10 @@ impl HeroScene {
             // where the two are locked: uncapped, this machine rendered 1760
             // frames for 870 ticks.
             loam_app::frame_pacing::set_target_fps(TICK_HZ as f32);
-            // APNG rather than a PNG sequence: one lossless file, no external
-            // encoder, and its per-frame delays are wall-clock gaps, so a
-            // capture at half the tick rate still plays at the right speed.
-            // The cost is that the worker holds every frame in memory until
-            // the stop, which is what bounds a run to this length. Pre-egui,
-            // so the console never lands in a frame.
+            // APNG rather than a PNG sequence: one lossless file and no
+            // external encoder. The cost is that the worker holds every frame
+            // in memory until the stop, which is what bounds a run to this
+            // length. Pre-egui, so the console never lands in a frame.
             loam_app::capture::enqueue(CaptureRequest::StartSequence {
                 format: CaptureFormat::Apng,
                 stage: CaptureStage::Pre,

@@ -2,19 +2,16 @@
 //! panel: what is on screen is what gets recorded.
 //!
 //! The sequence runs 870 ticks, 14.5 s at 60 Hz, and holds on its last frame
-//! rather than looping. `--record` plays it once into a PNG sequence and closes
-//! the window on the last frame; `--record=<dir>` names where the frames go,
-//! and without it they land in the shell's capture directory. The run is real
+//! rather than looping. `--record` plays it once into `hero.apng` and closes
+//! the window on the last frame; `--record=<dir>` names the directory, and
+//! without it the file lands in the shell's capture directory. The run is real
 //! time, not offline, so the recording is only as steady as the frame rate the
-//! machine holds. Encode the sequence with:
+//! machine holds.
 //!
-//! ```text
-//! ffmpeg -framerate 60 -i pre_%06d.png -c:v libvpx-vp9 \
-//!     -crf 30 -b:v 0 -row-mt 1 -pix_fmt yuv420p hero.webm
-//! ```
-//!
-//! `loam-app` writes PNG, GIF and APNG; it has no video encoder and should not
-//! grow one for a single artifact.
+//! APNG is lossless and needs no external encoder, but this writer stores whole
+//! frames rather than deltas, so the file is the sum of its frames: 28 MB for
+//! this sequence at 800x600. `scale` on the capture request is the dial if that
+//! has to come down.
 
 use std::path::PathBuf;
 

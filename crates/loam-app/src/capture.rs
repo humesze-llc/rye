@@ -106,6 +106,17 @@ pub enum CaptureRequest {
     },
 }
 
+// A frame arriving a hair under the interval is the frame that slot was meant
+// for. The render clock and this one are independent, so an exact `>=` drops a
+// beat whenever the requested rate divides the render rate: asking 30 of a
+// 60 Hz surface measured 23. An eighth of a period is far short of the half
+// that would let two frames into one slot.
+const FPS_SLACK_DIVISOR: u32 = 8;
+
+fn interval_elapsed(since_last: Duration, interval: Duration) -> bool {
+    since_last + interval / FPS_SLACK_DIVISOR >= interval
+}
+
 static QUEUE: Mutex<Vec<CaptureRequest>> = Mutex::new(Vec::new());
 
 /// Drained by the runner on the next frame.
@@ -844,7 +855,9 @@ impl Capture {
             } => match (fps_interval, last_capture_time) {
                 (None, _) => true,
                 (Some(_), None) => true,
-                (Some(interval), Some(last)) => now.duration_since(*last) >= *interval,
+                (Some(interval), Some(last)) => {
+                    interval_elapsed(now.duration_since(*last), *interval)
+                }
             },
         }
     }
@@ -1565,6 +1578,24 @@ impl CapturePanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The defect this names: at `fps=30` on a 60 Hz surface the frame meant
+    // for each slot lands a few hundred microseconds early, an exact `>=`
+    // rejects it, and the next candidate is a whole period late.
+    #[test]
+    fn a_frame_a_hair_early_is_taken_and_one_a_half_period_early_is_not() {
+        let interval = Duration::from_micros(33_333);
+        assert!(interval_elapsed(interval, interval));
+        assert!(interval_elapsed(
+            interval - Duration::from_micros(200),
+            interval
+        ));
+        assert!(interval_elapsed(interval * 2, interval));
+
+        // Half a period early is the next render frame, not this slot's.
+        assert!(!interval_elapsed(interval / 2, interval));
+        assert!(!interval_elapsed(Duration::ZERO, interval));
+    }
 
     #[test]
     fn scaled_dims_preserves_aspect_ratio() {

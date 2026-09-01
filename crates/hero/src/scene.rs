@@ -43,6 +43,11 @@ const SUBSTEPS_PER_TICK: usize = 4;
 // Fixed and never derived from wall time.
 const SOLVER_DT: f32 = 1.0 / (TICK_HZ as f32 * SUBSTEPS_PER_TICK as f32);
 
+// Half the tick rate. Every captured frame is a full image in the APNG and is
+// held in memory until the stop, so the rate is the file-size and footprint
+// dial; the delays keep playback at the sequence's own speed either way.
+const RECORD_FPS: u16 = TICK_HZ as u16 / 2;
+
 const GRAVITY: f32 = -9.8;
 
 const PILE_PGS_ITERS: usize = 20;
@@ -948,21 +953,22 @@ impl HeroScene {
         let console = Self::build_console();
         let recording = record.map(|record| {
             // The sequence advances on ticks and the tap fires on rendered
-            // frames, so the encode is only honest where the two run 1:1.
-            // Capping the frame rate is what makes them: uncapped, this
-            // machine rendered 1760 frames for 870 ticks. The tap then takes
-            // every frame rather than a rate of its own, because its throttle
-            // is `elapsed >= 1/fps` from the last capture and asking it for
-            // TICK_HZ against a TICK_HZ cap drops every beat that arrives a
-            // hair early, one frame in seven when measured.
+            // frames, so the recording only runs at the sequence's own speed
+            // where the two are locked: uncapped, this machine rendered 1760
+            // frames for 870 ticks.
             loam_app::frame_pacing::set_target_fps(TICK_HZ as f32);
-            // Pre-egui, so the console never lands in a frame.
+            // APNG rather than a PNG sequence: one lossless file, no external
+            // encoder, and its per-frame delays are wall-clock gaps, so a
+            // capture at half the tick rate still plays at the right speed.
+            // The cost is that the worker holds every frame in memory until
+            // the stop, which is what bounds a run to this length. Pre-egui,
+            // so the console never lands in a frame.
             loam_app::capture::enqueue(CaptureRequest::StartSequence {
-                format: CaptureFormat::Png,
+                format: CaptureFormat::Apng,
                 stage: CaptureStage::Pre,
                 dir: record.dir,
                 name: Some("hero".to_string()),
-                fps: None,
+                fps: Some(RECORD_FPS),
                 scale: None,
                 palette: PaletteMode::default(),
             });

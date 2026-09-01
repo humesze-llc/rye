@@ -12,6 +12,7 @@ use loam_render::gizmo::{
 use loam_shape::LineMesh;
 
 use crate::consts::BASE_ROTATION_RATE;
+use crate::director::Playback;
 use crate::physics::{ndc_from_pixels, PlaygroundPhysics};
 use crate::state::{Demo, RotationMode, ViewMode};
 
@@ -40,6 +41,16 @@ pub(crate) fn gimbal_center(physics: &PlaygroundPhysics, slot: usize, slots: usi
     physics.pose(slot, slots, Rotor4::IDENTITY).position_r3()
 }
 
+// The widget drives the whole row, so it stands at the row's mean position
+// rather than on any one body. The layout is symmetric about the origin, but
+// a body the shafts have already dragged is not, and the widget has to follow.
+pub(crate) fn row_center(physics: &PlaygroundPhysics, slots: usize) -> Vec3 {
+    let sum: Vec3 = (0..slots)
+        .map(|slot| gimbal_center(physics, slot, slots))
+        .sum();
+    sum / slots as f32
+}
+
 // Anchored at the press edge so the whole drag is measured against one origin
 // rather than accumulated frame by frame.
 #[derive(Copy, Clone, Debug)]
@@ -47,7 +58,6 @@ pub(crate) struct GimbalDrag {
     held: HandleDrag,
     base_displayed: f32,
     base_rotor: Rotor4,
-    base_position: Vec4,
 }
 
 #[derive(Default)]
@@ -55,6 +65,9 @@ pub(crate) struct GimbalUi {
     /// Off at startup, by the maintainer's call.
     pub(crate) enabled: bool,
     pub(crate) drag: Option<GimbalDrag>,
+    /// Every body's position at the press, so a shaft drag stays anchored to
+    /// one origin instead of accumulating frame by frame.
+    base_positions: Vec<Vec4>,
     hover: Option<HandleId>,
     built_highlight: Option<HandleId>,
     mesh: LineMesh<3>,
@@ -80,36 +93,16 @@ impl Demo {
     }
 
     fn gimbal_widget(&self) -> TransformGizmo {
-        widget(gimbal_center(
-            &self.physics,
-            self.selected_slot(),
-            self.render_row().len(),
-        ))
+        widget(row_center(&self.physics, self.render_row().len()))
     }
 
-    fn selected_position(&self) -> Vec4 {
-        self.physics
-            .pose(
-                self.selected_slot(),
-                self.render_row().len(),
-                Rotor4::IDENTITY,
-            )
-            .position
-    }
-
-    // Returns `true` while a handle is held, which keeps the orbit off the left
-    // button for the rest of the drag. It owns `left_was_down`, so nothing else
-    // in the frame may read the press edge.
-    pub(crate) fn update_gimbal(
-        &mut self,
-        enabled: bool,
-        input: &Input,
-        viewport: (u32, u32),
-    ) -> bool {
+    // The sole reader of `left_was_down`: the left button is the handles' and
+    // nothing else's, since the camera orbits on the right one.
+    pub(crate) fn update_gimbal(&mut self, enabled: bool, input: &Input, viewport: (u32, u32)) {
         if !enabled || !self.gimbal_visible() {
             self.gimbal.drag = None;
             self.gimbal.hover = None;
-            return false;
+            return;
         }
         let gizmo = self.gimbal_widget();
         let down = input.buttons.left.down;
@@ -118,6 +111,10 @@ impl Demo {
         if !down {
             self.gimbal.drag = None;
         } else if pressed {
+            self.gimbal.base_positions.clear();
+            self.gimbal
+                .base_positions
+                .extend(self.physics.world.bodies.iter().map(|body| body.position));
             self.gimbal.drag = input.buttons.left.press_pos.and_then(|press_px| {
                 let ray = self
                     .camera
@@ -128,8 +125,7 @@ impl Demo {
                         HandleId::Rotate(plane) => self.active_displayed_angle(plane as usize),
                         HandleId::Translate(_) => 0.0,
                     },
-                    base_rotor: self.selected_rotor(),
-                    base_position: self.selected_position(),
+                    base_rotor: self.spins.row_rotor(),
                 })
             });
         }
@@ -146,7 +142,7 @@ impl Demo {
         };
 
         let Some(drag) = self.gimbal.drag else {
-            return false;
+            return;
         };
         // A cursor that left the window, or a camera that swung the handle
         // edge-on, leaves the drag held at its last delta rather than snapping
@@ -154,7 +150,6 @@ impl Demo {
         if let Some(delta) = cursor_ray.and_then(|ray| drag.held.delta(ray.origin, ray.direction)) {
             self.apply_gimbal_drag(&drag, delta);
         }
-        true
     }
 
     fn apply_gimbal_drag(&mut self, drag: &GimbalDrag, delta: TransformDelta) {
@@ -162,29 +157,33 @@ impl Demo {
             TransformDelta::Rotate { plane, angle } => match self.rotation_mode {
                 RotationMode::Active => {
                     let plane_idx = plane as usize;
-                    let spin = if self.spins.selected_spin().active[plane_idx] {
+                    let spin = if self.spins.spin().active[plane_idx] {
                         self.rot_time * BASE_ROTATION_RATE
                     } else {
                         0.0
                     };
-                    self.spins.selected_spin_mut().base_angles[plane_idx] =
+                    self.spins.spin_mut().base_angles[plane_idx] =
                         dragged_base_angle(drag.base_displayed, angle, spin);
-                    self.apply_selected_active_edit();
+                    self.apply_active_edit();
                 }
                 RotationMode::Composer => {
-                    self.spins.selected_spin_mut().rotor =
-                        (delta.rotor() * drag.base_rotor).normalize();
+                    let directed = self.playback.as_ref().map_or(&[][..], Playback::directed);
+                    let turned = (delta.rotor() * drag.base_rotor).normalize();
+                    self.spins.set_row_rotor(turned, directed);
                     self.rebuild_bodies();
                 }
             },
             TransformDelta::Translate { .. } => {
-                let slot = self.selected_slot();
-                let body = &mut self.physics.world.bodies[slot];
-                body.position = drag.base_position + delta.translation();
-                // A held shaft owns the subject's position for the whole drag,
-                // so it takes the velocity with it: otherwise the frame's
-                // physics step integrates the body out from under the cursor.
-                body.velocity = Vec4::ZERO;
+                let step = delta.translation();
+                let bodies = self.physics.world.bodies.iter_mut();
+                for (body, base) in bodies.zip(&self.gimbal.base_positions) {
+                    body.position = *base + step;
+                    // A held shaft owns the row's positions for the whole
+                    // drag, so it takes the velocities with it: otherwise the
+                    // frame's physics step integrates the bodies out from
+                    // under the cursor.
+                    body.velocity = Vec4::ZERO;
+                }
                 // The upload gate keys on a moving world and on changed
                 // rotors, and a teleport is neither.
                 self.rebuild_bodies();
@@ -194,7 +193,7 @@ impl Demo {
 
     // Last pass of the frame and depth-free: a manipulator the scene can hide
     // is a manipulator that cannot be grabbed. The mesh is built about the
-    // ORIGIN and carried to the selected body by a translation folded into the
+    // ORIGIN and carried to the row by a translation folded into the
     // view-projection, so only the highlight can dirty the geometry.
     pub(crate) fn record_gimbal(
         &mut self,
@@ -231,7 +230,7 @@ impl Demo {
         let cfg = &rd.surface_bundle.config;
         let view_dir = self.camera.view();
         let aspect = cfg.width as f32 / cfg.height as f32;
-        let center = gimbal_center(&self.physics, self.selected_slot(), self.render_row().len());
+        let center = row_center(&self.physics, self.render_row().len());
         let view_proj = Mat4::perspective_rh(60.0_f32.to_radians(), aspect, 0.1, 100.0)
             * Mat4::look_to_rh(view_dir.position, view_dir.forward, view_dir.up)
             * Mat4::from_translation(center);
@@ -257,11 +256,11 @@ mod tests {
 
     const WIDEST_ROW: usize = crate::consts::MAX_ROW_LEN;
 
-    fn row_center() -> Vec3 {
+    fn lone_body_center() -> Vec3 {
         gimbal_center(&PlaygroundPhysics::new(1, BODY_SIZE), 0, 1)
     }
 
-    fn selectable_centers(slots: usize) -> Vec<Vec3> {
+    fn slot_centers(slots: usize) -> Vec<Vec3> {
         let physics = PlaygroundPhysics::new(slots, BODY_SIZE);
         (0..slots)
             .map(|slot| gimbal_center(&physics, slot, slots))
@@ -333,7 +332,7 @@ mod tests {
     #[test]
     fn the_pixel_to_ray_seam_round_trips_a_world_point() {
         let camera = startup_camera();
-        for (id, world) in handle_points(&widget(row_center()), 8) {
+        for (id, world) in handle_points(&widget(lone_body_center()), 8) {
             let ray = ray_at(&camera, world).expect("handle is in front of the eye");
             let along = (world - ray.origin).dot(ray.direction);
             let miss = (world - (ray.origin + ray.direction * along)).length();
@@ -345,7 +344,7 @@ mod tests {
     fn every_handle_is_inside_the_startup_view_at_every_selectable_slot() {
         let camera = startup_camera();
         for slots in 1..=WIDEST_ROW {
-            for (slot, center) in selectable_centers(slots).into_iter().enumerate() {
+            for (slot, center) in slot_centers(slots).into_iter().enumerate() {
                 for (id, world) in handle_points(&widget(center), 48) {
                     let pixels = pixels_of(&camera, world)
                         .unwrap_or_else(|| panic!("{id:?} behind the eye"));
@@ -372,9 +371,10 @@ mod tests {
     }
 
     #[test]
-    fn the_widget_stands_on_the_selected_body() {
+    fn the_widget_stands_at_the_centre_of_the_row() {
         for slots in 2..=WIDEST_ROW {
-            let centers = selectable_centers(slots);
+            let physics = PlaygroundPhysics::new(slots, BODY_SIZE);
+            let centers = slot_centers(slots);
             for slot in 1..slots {
                 let step = centers[slot] - centers[slot - 1];
                 assert!(
@@ -382,33 +382,32 @@ mod tests {
                     "slot {slot} of {slots} sits {step} from its neighbour"
                 );
             }
-            assert!((centers[0].x + centers[slots - 1].x).abs() < 1e-6);
+            let center = row_center(&physics, slots);
+            assert!(
+                (center - lone_body_center()).length() < 1e-5,
+                "a {slots}-slot row put the widget at {center}"
+            );
         }
     }
 
     #[test]
-    fn the_widget_follows_a_moving_subject() {
+    fn the_widget_follows_a_moving_row() {
         let slots = 3;
         let mut physics = PlaygroundPhysics::new(slots, BODY_SIZE);
-        let parked = gimbal_center(&physics, 1, slots);
+        let parked = row_center(&physics, slots);
         physics.world.bodies[1].apply_impulse(Vec4::new(0.0, 0.6, 0.0, 0.0));
         physics.step(30);
-        let moved = gimbal_center(&physics, 1, slots);
+        let moved = row_center(&physics, slots);
         assert!(
-            (moved - parked).length() > 0.05,
-            "the handles stayed at {parked} while their subject moved to {moved}"
-        );
-        assert_eq!(
-            gimbal_center(&physics, 0, slots),
-            selectable_centers(slots)[0],
-            "an untouched slot's handles moved"
+            (moved - parked).length() > 0.01,
+            "the handles stayed at {parked} while the row moved to {moved}"
         );
     }
 
     #[test]
     fn a_drag_along_a_ring_asks_its_own_plane_for_the_arc_it_swept() {
         let camera = startup_camera();
-        let gizmo = widget(row_center());
+        let gizmo = widget(lone_body_center());
         let delta = 0.55_f32;
         for plane in Plane4::ALL {
             let (start_theta, held) = (0..48)
@@ -454,7 +453,7 @@ mod tests {
     #[test]
     fn every_handle_is_grabbable_at_the_startup_framing() {
         let camera = startup_camera();
-        let gizmo = widget(row_center());
+        let gizmo = widget(lone_body_center());
         const SAMPLES: usize = 48;
         for plane in Plane4::ALL {
             let own = (0..SAMPLES)
@@ -499,7 +498,7 @@ mod tests {
     #[test]
     fn holding_a_handle_still_asks_for_no_change() {
         let camera = startup_camera();
-        let gizmo = widget(row_center());
+        let gizmo = widget(lone_body_center());
         for (id, world) in handle_points(&gizmo, 12) {
             let ray = ray_at(&camera, world).expect("handle is in front of the eye");
             let Some(handle) = gizmo.pick(ray.origin, ray.direction, PICK_TOLERANCE) else {
@@ -525,16 +524,15 @@ mod tests {
     }
 
     #[test]
-    fn a_shaft_drag_moves_one_component_of_the_selected_body_and_nothing_else() {
+    fn a_shaft_drag_moves_one_component_of_the_whole_row_and_nothing_else() {
         const SLOTS: usize = 3;
-        const SLOT: usize = 1;
         let camera = startup_camera();
         for axis in Axis4::ALL {
             let mut physics = PlaygroundPhysics::new(SLOTS, BODY_SIZE);
             let before: Vec<Vec4> = (0..SLOTS)
                 .map(|slot| physics.pose(slot, SLOTS, Rotor4::IDENTITY).position)
                 .collect();
-            let gizmo = widget(gimbal_center(&physics, SLOT, SLOTS));
+            let gizmo = widget(row_center(&physics, SLOTS));
             let shaft = gizmo.shaft(axis);
 
             let grab_at = shaft.outer - 0.1 * SCALE;
@@ -548,33 +546,31 @@ mod tests {
                 .delta(release.origin, release.direction)
                 .expect("release ray reaches the shaft");
 
-            physics.world.bodies[SLOT].position = before[SLOT] + delta.translation();
+            for (body, base) in physics.world.bodies.iter_mut().zip(&before) {
+                body.position = *base + delta.translation();
+            }
 
             let after: Vec<Vec4> = (0..SLOTS)
                 .map(|slot| physics.pose(slot, SLOTS, Rotor4::IDENTITY).position)
                 .collect();
-            let moved = after[SLOT] - before[SLOT];
             let index = axis as usize;
-            assert!(
-                (moved.to_array()[index] - travel).abs() < 5e-3,
-                "{axis:?} moved its own component by {}, not {travel}",
-                moved.to_array()[index]
-            );
-            for other in 0..4 {
-                if other == index {
-                    continue;
-                }
-                assert_eq!(
-                    after[SLOT].to_array()[other],
-                    before[SLOT].to_array()[other],
-                    "{axis:?} drag moved component {other}"
-                );
-            }
             for slot in 0..SLOTS {
-                if slot == SLOT {
-                    continue;
+                let moved = after[slot] - before[slot];
+                assert!(
+                    (moved.to_array()[index] - travel).abs() < 5e-3,
+                    "{axis:?} moved slot {slot} by {}, not {travel}",
+                    moved.to_array()[index]
+                );
+                for other in 0..4 {
+                    if other == index {
+                        continue;
+                    }
+                    assert_eq!(
+                        after[slot].to_array()[other],
+                        before[slot].to_array()[other],
+                        "{axis:?} drag moved slot {slot} component {other}"
+                    );
                 }
-                assert_eq!(after[slot], before[slot], "slot {slot} moved");
             }
         }
     }

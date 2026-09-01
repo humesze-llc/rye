@@ -32,27 +32,6 @@ impl RotateScene {
                 Ok(())
             },
         ));
-        // The same selection the press ray sets, without a hand on the mouse,
-        // so a rotation a bug report describes can be reproduced exactly.
-        c.register(loam_egui::cmd(
-            "select",
-            "aim the rotation controls at one body: `select <slot>`, which a left click on the body also does",
-            |args, demo: &mut Demo, out| {
-                let [slot] = args else {
-                    anyhow::bail!("usage: select <slot>");
-                };
-                let slot: usize = slot
-                    .parse()
-                    .map_err(|e| anyhow!("invalid slot `{slot}`: {e}"))?;
-                let slots = demo.render_row().len();
-                if slot >= slots {
-                    anyhow::bail!("slot {slot} is outside the rendered row of {slots}");
-                }
-                demo.spins.select_picked(Some(slot));
-                out.line(format!("select: slot {slot} of {slots}"));
-                Ok(())
-            },
-        ));
         c.register(loam_egui::cmd(
             "hud",
             "toggle the top-left loam-text state readout (w, t, rate, planes)",
@@ -420,9 +399,10 @@ impl RotateScene {
             .with_long_help(
                 "Six interlocked rings, one per rotation plane, from the stereographic\n\
                  projection of the 16-cell, plus four arrows, one per translation axis.\n\
-                 Drag a ring to rotate the selected body in its plane; drag an arrowhead\n\
-                 to slide it along that axis. The violet arrow is w: it moves the body off\n\
-                 the 3D slice, so the cross-section changes shape rather than travelling.\n\
+                 Drag a ring to turn the whole row in its plane; drag an arrowhead to\n\
+                 slide the row along that axis. The violet arrow is w: it moves the bodies\n\
+                 off the 3D slice, so the cross-sections change shape rather than\n\
+                 travelling.\n\
                  \n\
                  Off at startup and reachable only from here. The handles are hidden in\n\
                  Filmstrip view, which composes per-cell viewports with no shared world\n\

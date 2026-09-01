@@ -12,7 +12,7 @@ use crate::catalog::ShapeEntry;
 use crate::consts::{BASE_ROTATION_RATE, BODY_SIZE, BODY_X_SPACING, BODY_Y, T_SLIDER_INITIAL};
 use crate::director::Playback;
 use crate::physics::{BodyPose, PlaygroundPhysics};
-use crate::spins::{is_directed, SlotSpins};
+use crate::spins::SlotSpins;
 
 pub(crate) use crate::projections::*;
 pub(crate) use crate::sections::*;
@@ -28,36 +28,6 @@ pub(crate) enum ViewMode {
     Shapes,
     Single,
     Filmstrip,
-}
-
-/// Index of the ball the ray ENTERS first. A ball rather than the hull: the
-/// row is spaced well apart, so a ball can only be wrong where two bodies
-/// nearly touch, and it costs one quadratic per slot against a GJK query per
-/// slot.
-pub(crate) fn nearest_ball_hit(
-    ray: &loam_camera::Ray,
-    centres: &[Vec3],
-    radius: f32,
-) -> Option<usize> {
-    let mut best: Option<(f32, usize)> = None;
-    for (index, centre) in centres.iter().enumerate() {
-        let to_centre = *centre - ray.origin;
-        let along = to_centre.dot(ray.direction);
-        if along <= 0.0 {
-            continue;
-        }
-        let gap_sq = to_centre.length_squared() - along * along;
-        if gap_sq > radius * radius {
-            continue;
-        }
-        // The entry point, not the closest approach: a ray that clips the near
-        // edge of a far body must not beat one that pierces a near body.
-        let entry = along - (radius * radius - gap_sq).sqrt();
-        if best.is_none_or(|(nearest, _)| entry < nearest) {
-            best = Some((entry, index));
-        }
-    }
-    best.map(|(_, index)| index)
 }
 
 pub(crate) fn render_row_entries<'a>(
@@ -438,7 +408,7 @@ impl Demo {
         match self.rotation_mode {
             RotationMode::Active => {
                 let mut omega = Bivector4::ZERO;
-                for (i, &on) in self.spins.selected_spin().active.iter().enumerate() {
+                for (i, &on) in self.spins.spin().active.iter().enumerate() {
                     if on {
                         omega = omega + Plane4::ALL[i].unit_bivector();
                     }
@@ -449,29 +419,8 @@ impl Demo {
         }
     }
 
-    /// Slot whose bounding ball the ray enters first, if any.
-    pub(crate) fn slot_under_ray(&self, ray: &loam_camera::Ray) -> Option<usize> {
-        let slots = self.render_row().len();
-        let centres: Vec<Vec3> = (0..slots)
-            .map(|slot| {
-                self.physics
-                    .pose(slot, slots, Rotor4::IDENTITY)
-                    .position_r3()
-            })
-            .collect();
-        nearest_ball_hit(ray, &centres, self.effective_body_size())
-    }
-
-    pub(crate) fn selected_slot(&self) -> usize {
-        self.spins.selected()
-    }
-
-    pub(crate) fn selected_rotor(&self) -> Rotor4 {
-        self.spins.rotor(self.spins.selected())
-    }
-
     pub(crate) fn active_angle_at(&self, plane_idx: usize, t: f32) -> f32 {
-        self.spins.selected_spin().angle_at(plane_idx, t)
+        self.spins.spin().angle_at(plane_idx, t)
     }
 
     pub(crate) fn active_displayed_angle(&self, plane_idx: usize) -> f32 {
@@ -480,7 +429,7 @@ impl Demo {
 
     pub(crate) fn rotor_at_time(&self, t: f32) -> Rotor4 {
         match self.rotation_mode {
-            RotationMode::Active => self.spins.selected_spin().active_rotor_at(t),
+            RotationMode::Active => self.spins.spin().active_rotor_at(t),
             RotationMode::Composer => (self.omega_animation() * t).exp().normalize(),
         }
     }
@@ -490,10 +439,8 @@ impl Demo {
         match self.rotation_mode {
             RotationMode::Active => self.spins.recompose_active(t, directed),
             RotationMode::Composer => {
-                if !is_directed(directed, self.spins.selected()) {
-                    let rotor = (self.omega_animation() * t).exp().normalize();
-                    self.spins.selected_spin_mut().rotor = rotor;
-                }
+                let rotor = (self.omega_animation() * t).exp().normalize();
+                self.spins.set_row_rotor(rotor, directed);
             }
         }
     }
@@ -577,15 +524,14 @@ impl Demo {
         hyperslice_cull_active(self.wireframe_hyperslice, self.wireframe.projection)
     }
 
-    pub(crate) fn toggle_selected_plane(&mut self, plane_idx: usize) {
-        let spin = self.spins.selected_spin_mut();
+    pub(crate) fn toggle_plane(&mut self, plane_idx: usize) {
+        let spin = self.spins.spin_mut();
         spin.active[plane_idx] = !spin.active[plane_idx];
     }
 
-    pub(crate) fn apply_selected_active_edit(&mut self) {
-        let t = self.rot_time;
-        let spin = self.spins.selected_spin_mut();
-        spin.rotor = spin.active_rotor_at(t);
+    pub(crate) fn apply_active_edit(&mut self) {
+        let directed = self.playback.as_ref().map_or(&[][..], Playback::directed);
+        self.spins.recompose_active(self.rot_time, directed);
         self.rebuild_bodies();
     }
 
@@ -626,7 +572,7 @@ impl Demo {
         let parts: Vec<String> = match self.rotation_mode {
             RotationMode::Active => Plane4::ALL
                 .iter()
-                .zip(self.spins.selected_spin().active.iter())
+                .zip(self.spins.spin().active.iter())
                 .filter(|(_, on)| **on)
                 .map(|(p, _)| p.label().to_string())
                 .collect(),
@@ -668,52 +614,9 @@ impl Demo {
 
 #[cfg(test)]
 mod tests {
-    use glam::Vec3;
-
-    #[test]
-    fn a_click_reaches_every_body_in_the_row_and_misses_off_it() {
-        // The defect this names: nothing wired a press to `select_picked`, so
-        // the selection never left slot 0 however far along the row you
-        // clicked, while `select`'s own help said a click did the same.
-        let centres: Vec<Vec3> = (0..5)
-            .map(|i| Vec3::new(i as f32 * 2.0 - 4.0, 0.0, 0.0))
-            .collect();
-        let radius = 0.7;
-        for (slot, centre) in centres.iter().enumerate() {
-            let ray = loam_camera::Ray {
-                origin: *centre + Vec3::new(0.0, 0.0, 12.0),
-                direction: Vec3::new(0.0, 0.0, -1.0),
-            };
-            assert_eq!(nearest_ball_hit(&ray, &centres, radius), Some(slot));
-        }
-
-        let over = loam_camera::Ray {
-            origin: Vec3::new(0.0, 40.0, 12.0),
-            direction: Vec3::new(0.0, 0.0, -1.0),
-        };
-        assert_eq!(nearest_ball_hit(&over, &centres, radius), None);
-
-        // Behind the camera is not a hit, however well aimed.
-        let behind = loam_camera::Ray {
-            origin: Vec3::new(0.0, 0.0, 12.0),
-            direction: Vec3::new(0.0, 0.0, 1.0),
-        };
-        assert_eq!(nearest_ball_hit(&behind, &centres, radius), None);
-
-        // Two balls on the ray: the near one wins, which the closest-approach
-        // form would get wrong when the ray clips the far one's near edge.
-        let stacked = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.6, -4.0)];
-        let down = loam_camera::Ray {
-            origin: Vec3::new(0.0, 0.0, 12.0),
-            direction: Vec3::new(0.0, 0.0, -1.0),
-        };
-        assert_eq!(nearest_ball_hit(&down, &stacked, radius), Some(0));
-    }
-
     use super::{
         active_plane_angle, body_position, body_upload_needed, compose_active_rotor,
-        mode_annotation, nearest_ball_hit, render_row_entries, resolve_schlegel_params,
-        row_blocks_sdf,
+        mode_annotation, render_row_entries, resolve_schlegel_params, row_blocks_sdf,
         sdf_body_uniform, section_layer_projection, set_if_changed, synced_schlegel_projection,
         SectionLayer, SurfaceMode, ViewMode, WireframeProjection, BASE_ROTATION_RATE, BODY_SIZE,
         STEREOGRAPHIC_DEFAULT_POLE,
@@ -1261,11 +1164,11 @@ mod tests {
         let physics = PlaygroundPhysics::new(SLOTS, BODY_SIZE);
         let shape = entry(RaymarchShape::Polytope(Polytope4::Cell24));
         let mut spins = SlotSpins::new(SLOTS);
-        spins.select_picked(Some(0));
-        spins.selected_spin_mut().active = [true, false, false, false, false, false];
-        spins.select_picked(Some(1));
-        spins.selected_spin_mut().active = [false, false, false, false, false, true];
-        spins.recompose_active(1.7, &[]);
+        spins.spin_mut().active = [true, false, false, false, false, false];
+        // A timeline owning slot 1 is the only thing that can break the row's
+        // shared orientation, and the upload has to carry both.
+        spins.recompose_active(1.7, &[false, true]);
+        spins.set_rotor(1, (Plane4::Zw.unit_bivector() * 0.6).exp());
 
         let uniform = |slot: usize| {
             sdf_body_uniform(
@@ -1283,8 +1186,8 @@ mod tests {
             first.rotor, second.rotor,
             "both bodies uploaded the same orientation"
         );
-        assert_ne!(first.rotor, control.rotor);
         assert_ne!(second.rotor, control.rotor);
+        assert_eq!(first.rotor, control.rotor, "the row split without a track");
         assert_eq!(first.radius_or_shape, second.radius_or_shape);
         assert_eq!(first.position, body_position(0, SLOTS));
         assert_eq!(second.position, body_position(1, SLOTS));
@@ -1437,8 +1340,7 @@ mod tests {
 
         for slot in 0..4 {
             let mut one_turned = SlotSpins::uniform(4, Rotor4::IDENTITY);
-            one_turned.select_picked(Some(slot));
-            one_turned.selected_spin_mut().rotor = spun;
+            one_turned.set_rotor(slot, spun);
             assert!(
                 body_upload_needed(&one_turned, &uploaded, false),
                 "rotating slot {slot} alone left the gate closed"

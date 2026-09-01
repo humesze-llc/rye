@@ -79,7 +79,11 @@ pub fn register_camera_command<Ctx: 'static>(
     );
 }
 
-fn set_speed(rig: &mut CameraRig, value: Option<&str>, out: &mut loam_egui::ConsoleWriter) -> Result<()> {
+fn set_speed(
+    rig: &mut CameraRig,
+    value: Option<&str>,
+    out: &mut loam_egui::ConsoleWriter,
+) -> Result<()> {
     let Some(value) = value else {
         out.line(format!("camera speed: {:.2} u/sec", rig.freecam.speed));
         return Ok(());
@@ -98,7 +102,11 @@ fn set_speed(rig: &mut CameraRig, value: Option<&str>, out: &mut loam_egui::Cons
     Ok(())
 }
 
-fn set_cursor(rig: &mut CameraRig, value: Option<&str>, out: &mut loam_egui::ConsoleWriter) -> Result<()> {
+fn set_cursor(
+    rig: &mut CameraRig,
+    value: Option<&str>,
+    out: &mut loam_egui::ConsoleWriter,
+) -> Result<()> {
     let mode = match value {
         None => {
             out.line(format!("camera cursor: {:?}", rig.freecam.cursor_mode()));
@@ -107,7 +115,9 @@ fn set_cursor(rig: &mut CameraRig, value: Option<&str>, out: &mut loam_egui::Con
         Some("hold") => CursorMode::Hold,
         Some("toggle") => CursorMode::Toggle,
         Some(other) => {
-            return Err(anyhow!("camera cursor: unknown `{other}` (try hold|toggle)"));
+            return Err(anyhow!(
+                "camera cursor: unknown `{other}` (try hold|toggle)"
+            ));
         }
     };
     rig.freecam.set_cursor_mode(mode);

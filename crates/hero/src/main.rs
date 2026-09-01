@@ -2,23 +2,42 @@
 //! panel: what is on screen is what gets recorded.
 //!
 //! The sequence runs 870 ticks, 14.5 s at 60 Hz, and holds on its last frame
-//! rather than looping. To record it, capture PNG from the shell's capture
-//! panel and encode the sequence:
+//! rather than looping. `--record` plays it once into a PNG sequence and closes
+//! the window on the last frame; `--record=<dir>` names where the frames go,
+//! and without it they land in the shell's capture directory. The run is real
+//! time, not offline, so the recording is only as steady as the frame rate the
+//! machine holds. Encode the sequence with:
 //!
 //! ```text
-//! ffmpeg -framerate 60 -i frame%05d.png -c:v libvpx-vp9 \
+//! ffmpeg -framerate 60 -i pre_%06d.png -c:v libvpx-vp9 \
 //!     -crf 30 -b:v 0 -row-mt 1 -pix_fmt yuv420p hero.webm
 //! ```
 //!
 //! `loam-app` writes PNG, GIF and APNG; it has no video encoder and should not
 //! grow one for a single artifact.
 
+use std::path::PathBuf;
+
 use anyhow::Result;
+use loam_app::args::Args;
 use loam_app::shell::{SceneEntry, SceneRegistry};
 use loam_app::RunConfig;
 use winit::window::WindowAttributes;
 
 mod scene;
+
+use scene::RecordRequest;
+
+/// Bare `--record` is the whole flag, so unlike a path-carrying flag it has no
+/// syntax to get wrong: the directory is optional and defaults to the shell's.
+fn record_request(args: &Args) -> Option<RecordRequest> {
+    if args.has_bare_flag("record") {
+        return Some(RecordRequest { dir: None });
+    }
+    args.get("record").map(|dir| RecordRequest {
+        dir: Some(PathBuf::from(dir)),
+    })
+}
 
 struct Hero;
 
@@ -26,7 +45,12 @@ impl SceneRegistry for Hero {
     const SCENES: &'static [SceneEntry] = &[SceneEntry {
         slug: "hero",
         label: "LOAM",
-        build: |ctx| Ok(Box::new(scene::HeroScene::new(ctx)?)),
+        build: |ctx| {
+            Ok(Box::new(scene::HeroScene::new(
+                ctx,
+                record_request(&Args::current()),
+            )?))
+        },
     }];
 }
 
@@ -37,4 +61,27 @@ fn main() -> Result<()> {
             .with_visible(false),
         ..RunConfig::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_takes_a_directory_or_the_shell_default_and_is_off_otherwise() {
+        assert!(record_request(&Args::from_argv(["--seed=7"])).is_none());
+
+        let bare = record_request(&Args::from_argv(["--record"])).expect("bare --record records");
+        assert_eq!(bare.dir, None);
+
+        let named = record_request(&Args::from_argv(["--record=out/hero"])).expect("named");
+        assert_eq!(named.dir, Some(PathBuf::from("out/hero")));
+
+        // The value of a detached `--record out/hero` is a positional the arg
+        // parser drops, so the run would record somewhere the caller did not
+        // name. Recording to the default is the right answer only because the
+        // directory is optional; a required path would have to error here.
+        let detached = record_request(&Args::from_argv(["--record", "out/hero"])).expect("bare");
+        assert_eq!(detached.dir, None);
+    }
 }

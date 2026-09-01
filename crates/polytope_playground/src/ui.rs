@@ -381,12 +381,11 @@ impl Demo {
                          formula bar.",
                 );
                 ui.label(
-                    "Every body in the row carries its OWN rotation. The \
-                         controls, the rings and the 1..6 keys write the \
-                         selected body; click a body to select it, and the \
-                         rings move to whichever one that is. Bodies you never \
-                         select keep spinning on the shared clock in their own \
-                         planes, so a row can hold several rotations at once.",
+                    "One rotation drives the whole row: the controls, the \
+                         rings and the 1..6 keys write it and every body \
+                         reads it, so the row turns as one. A timeline is \
+                         the only thing that poses a single body, and it \
+                         holds that pose for the rest of the run.",
                 );
                 ui.add_space(8.0);
 
@@ -403,7 +402,7 @@ impl Demo {
                 ui.heading("Keyboard");
                 ui.label("• Space / T: toggle continuous spin.");
                 ui.label("• Up / Down arrows: scrub w with the keyboard.");
-                ui.label("• 1..6: toggle a plane in the selected body's Active set.");
+                ui.label("• 1..6: toggle a plane in the row's Active set.");
                 ui.label("• H: expand / collapse the controls panel.");
                 ui.label("• R: restart the scene at its boot state.");
                 ui.label("• Esc: exit.");
@@ -411,15 +410,16 @@ impl Demo {
 
                 ui.heading("Mouse");
                 ui.label(
-                    "• This scene is a rotation study and has no grab: the \
-                         console verb `select <slot>` chooses the body every \
-                         rotation control writes, and the `toybox` scene is \
-                         where a shape is picked up and thrown.",
+                    "• This scene is a rotation study and has no grab: \
+                         every rotation control writes the whole row, and \
+                         the Toybox scene is where a shape is picked up \
+                         and thrown.",
                 );
                 ui.label(
-                    "• Drag a hypergimbal ring: rotate the selected body in \
-                         that ring's plane. The six rings stand on that body \
-                         and are the six rotation planes, drawn as the \
+                    "• Drag a hypergimbal ring: turn the whole row in that \
+                         ring's plane. The six rings stand at the row's \
+                         centre and are the six rotation planes, drawn as \
+                         the \
                          stereographic projection of a 16-cell; the ring under \
                          the cursor lights up. Rings sharing a hue are a \
                          plane and its orthogonal complement, so xy and zw \
@@ -427,12 +427,13 @@ impl Demo {
                          verb `handles` turns them on.",
                 );
                 ui.label(
-                    "• Drag an arrowhead: slide the selected body along that \
-                         axis. Red, green and blue are x, y and z. Violet is \
-                         w, the axis with no direction on screen: it points \
-                         away from all three, and dragging it moves the body \
-                         off the 3D slice, so what changes is the shape of \
-                         the cross-section, not where the body sits.",
+                    "• Drag an arrowhead: slide the row along that axis. \
+                         Red, green and blue are x, y and z. Violet is w, \
+                         the axis with no direction on screen: it points \
+                         away from all three, and dragging it moves the \
+                         bodies off the 3D slice, so what changes is the \
+                         shape of the cross-sections, not where the bodies \
+                         sit.",
                 );
                 ui.label("• Drag in the viewport: orbit camera.");
                 ui.label(

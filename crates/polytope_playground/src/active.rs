@@ -110,19 +110,18 @@ impl Demo {
         let mut deg = wrap_slider_deg(displayed_before.to_degrees());
         let checkbox_resp = ui.add_sized(
             [checkbox_w, 18.0],
-            egui::Checkbox::new(&mut self.spins.selected_spin_mut().active[plane_idx], ""),
+            egui::Checkbox::new(&mut self.spins.spin_mut().active[plane_idx], ""),
         );
         if checkbox_resp.changed() {
             // Re-solve base so the displayed angle is continuous across the
             // toggle: `base = displayed_before - spin_contribution(after)`.
-            let spin_contribution = if self.spins.selected_spin().active[plane_idx] {
+            let spin_contribution = if self.spins.spin().active[plane_idx] {
                 self.rot_time * crate::consts::BASE_ROTATION_RATE
             } else {
                 0.0
             };
-            self.spins.selected_spin_mut().base_angles[plane_idx] =
-                displayed_before - spin_contribution;
-            self.apply_selected_active_edit();
+            self.spins.spin_mut().base_angles[plane_idx] = displayed_before - spin_contribution;
+            self.apply_active_edit();
         }
         ui.add_sized(
             [label_w, 18.0],
@@ -162,13 +161,13 @@ impl Demo {
         );
         if slider_resp.changed() || popup_changed {
             let target_rad = deg.to_radians();
-            let spin_contribution = if self.spins.selected_spin().active[plane_idx] {
+            let spin_contribution = if self.spins.spin().active[plane_idx] {
                 self.rot_time * crate::consts::BASE_ROTATION_RATE
             } else {
                 0.0
             };
-            self.spins.selected_spin_mut().base_angles[plane_idx] = target_rad - spin_contribution;
-            self.apply_selected_active_edit();
+            self.spins.spin_mut().base_angles[plane_idx] = target_rad - spin_contribution;
+            self.apply_active_edit();
         }
     }
 }

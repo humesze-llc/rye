@@ -27,11 +27,11 @@ use loam_shape::polytope::{polytope_section_faces_append, Polytope4, SectionScra
 use loam_shape::{LineMesh, TriangleMesh};
 
 use crate::consts::W_SCRUB_RATE;
-use loam_app::environment::{register_floor_command, register_ground_command, Environment};
 use crate::physics::ndc_from_pixels;
 use crate::projections::WireframeProjection;
 use crate::verbs::WireframeControls;
 use crate::wireframe_geom::{push_projected_chord, stereographic_view_radius};
+use loam_app::environment::{register_floor_command, register_ground_command, Environment};
 
 const TICK_HZ: u32 = 60;
 
@@ -2038,7 +2038,7 @@ impl loam_app::shell::Scene for ToyboxScene {
     }
 
     fn title(&self, _fps: f32) -> Cow<'static, str> {
-        Cow::Borrowed("polytope playground - toybox")
+        Cow::Borrowed("polytope playground - Toybox")
     }
 }
 

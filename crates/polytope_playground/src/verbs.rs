@@ -163,8 +163,18 @@ mod tests {
     #[test]
     fn every_scene_console_carries_the_shared_vocabulary() {
         const SHARED: [&str; 12] = [
-            "camera", "capture", "floor", "fps", "ground", "log", "restart", "scene", "trace",
-            "version", "vsync", "wireframe",
+            "camera",
+            "capture",
+            "floor",
+            "fps",
+            "ground",
+            "log",
+            "restart",
+            "scene",
+            "trace",
+            "version",
+            "vsync",
+            "wireframe",
         ];
 
         let rotate = crate::RotateScene::build_console();
@@ -173,7 +183,10 @@ mod tests {
 
         for verb in SHARED {
             assert!(rotate.has_command(verb), "rotate lost `{verb}`");
-            assert!(toybox.has_command(verb), "the toybox never registered `{verb}`");
+            assert!(
+                toybox.has_command(verb),
+                "the toybox never registered `{verb}`"
+            );
         }
     }
 

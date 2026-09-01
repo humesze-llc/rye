@@ -23,7 +23,6 @@ struct Readout {
     w_slice: f32,
     rot_time: f32,
     rate_scale: f32,
-    selected: usize,
     slots: usize,
     active: [bool; 6],
 }
@@ -34,9 +33,8 @@ impl Readout {
             w_slice: demo.w_slice,
             rot_time: demo.rot_time,
             rate_scale: demo.rate_scale,
-            selected: demo.selected_slot(),
             slots: demo.render_row().len(),
-            active: demo.spins.selected_spin().active,
+            active: demo.spins.spin().active,
         }
     }
 }
@@ -48,12 +46,7 @@ fn write_readout(out: &mut String, r: &Readout) {
     let _ = writeln!(out, "{:<6} {:>+8.3}", "w", r.w_slice);
     let _ = writeln!(out, "{:<6} {:>7.2}s", "t", r.rot_time);
     let _ = writeln!(out, "{:<6} {:>7.2}x", "rate", r.rate_scale);
-    let _ = writeln!(
-        out,
-        "{:<6} {:>7}",
-        "body",
-        format!("{}/{}", r.selected, r.slots)
-    );
+    let _ = writeln!(out, "{:<6} {:>7}", "bodies", r.slots);
     let _ = write!(out, "{:<6} ", "planes");
     for (i, name) in PLANE_NAMES.iter().enumerate() {
         if i > 0 {
@@ -199,7 +192,6 @@ mod tests {
             w_slice,
             rot_time,
             rate_scale,
-            selected: 7,
             slots: 8,
             active,
         }

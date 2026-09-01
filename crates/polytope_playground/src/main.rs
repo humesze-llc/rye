@@ -119,8 +119,7 @@ use loam_shape::polytope::Polytope4;
 use loam_time::Director;
 use physics::PlaygroundPhysics;
 use state::{
-    set_if_changed, Demo, RotationMode, RowFrame, SurfaceMode, ViewMode,
-    WireframeColorMode,
+    set_if_changed, Demo, RotationMode, RowFrame, SurfaceMode, ViewMode, WireframeColorMode,
 };
 use verbs::WireframeControls;
 use wireframe_geom::*;
@@ -391,25 +390,8 @@ impl Demo {
         };
 
         self.camera.aspect = viewport.0 as f32 / viewport.1.max(1) as f32;
-        // The gimbal owns the left button whenever egui does not and the
-        // camera is not flying, which is what `left_was_down` tracks.
         let pointer_free = !ctx.ui_capture.pointer && !self.rig.is_flying();
-        let pressed = ctx.input.buttons.left.down && !self.left_was_down;
-        let gimbaling = self.update_gimbal(pointer_free, &ctx.input, viewport);
-
-        // A left press the gimbal did not take aims the rotation controls at
-        // whatever body it hit. Without this the selection never leaves slot 0
-        // and only `select <slot>` can move it, which is what `select`'s own
-        // help has always claimed a click does.
-        if pointer_free && pressed && !gimbaling {
-            if let Some(press_px) = ctx.input.buttons.left.press_pos {
-                let ray = self
-                    .camera
-                    .ray_from_ndc(physics::ndc_from_pixels(press_px, viewport));
-                let picked = self.slot_under_ray(&ray);
-                self.spins.select_picked(picked);
-            }
-        }
+        self.update_gimbal(pointer_free, &ctx.input, viewport);
 
         let dir = (self.slider_up_held as i32 - self.slider_down_held as i32) as f32;
         let host_owns_w = !self
@@ -484,8 +466,12 @@ impl Demo {
                     dt_secs,
                 );
             }
-            loam_app::camera_rig::CameraMode::FreeRoam if !(ctx.ui_capture.pointer || ctx.ui_capture.keyboard) => {
-                self.rig.freecam.advance(ctx.input, &mut self.camera, dt_secs);
+            loam_app::camera_rig::CameraMode::FreeRoam
+                if !(ctx.ui_capture.pointer || ctx.ui_capture.keyboard) =>
+            {
+                self.rig
+                    .freecam
+                    .advance(ctx.input, &mut self.camera, dt_secs);
             }
             _ => {}
         }
@@ -507,7 +493,14 @@ impl Demo {
             changed |= set_if_changed(&mut u.w_slice, self.w_slice);
             // Read by the injected wrapper around `loam_scene_sdf`: 1.0 = floor
             // on, 0.0 = wrapper short-circuits to 1e9.
-            changed |= set_if_changed(&mut u.params[0], if self.environment.floor_visible { 1.0 } else { 0.0 });
+            changed |= set_if_changed(
+                &mut u.params[0],
+                if self.environment.floor_visible {
+                    1.0
+                } else {
+                    0.0
+                },
+            );
             // Excluded from the change test (pinned by
             // `assembled_shader_reads_no_clock`): a clock tick must not upload.
             u.time = ctx.time;
@@ -546,11 +539,11 @@ impl Demo {
         if self.show_formula {
             let formula = self.formula_string();
             let name = if self.rotation_mode == RotationMode::Active {
-                combo_name(&self.spins.selected_spin().active)
+                combo_name(&self.spins.spin().active)
             } else {
                 None
             };
-            let bivec = self.selected_rotor().log();
+            let bivec = self.spins.row_rotor().log();
             let default_pos = formula_popup_seat(ctx);
             let popup_frame = egui::Frame::popup(&ctx.style()).inner_margin(8.0);
             const FORMULA_POPUP_W: f32 = 320.0;
@@ -708,17 +701,15 @@ impl Demo {
             KeyCode::Space if pressed && !self.rig.is_flying() => {
                 self.rotate = !self.rotate;
             }
-            KeyCode::AltLeft | KeyCode::AltRight
-                if self.rig.is_flying() =>
-            {
+            KeyCode::AltLeft | KeyCode::AltRight if self.rig.is_flying() => {
                 self.rig.freecam.on_alt(pressed);
             }
-            KeyCode::Digit1 | KeyCode::Numpad1 if pressed => self.toggle_selected_plane(0),
-            KeyCode::Digit2 | KeyCode::Numpad2 if pressed => self.toggle_selected_plane(1),
-            KeyCode::Digit3 | KeyCode::Numpad3 if pressed => self.toggle_selected_plane(2),
-            KeyCode::Digit4 | KeyCode::Numpad4 if pressed => self.toggle_selected_plane(3),
-            KeyCode::Digit5 | KeyCode::Numpad5 if pressed => self.toggle_selected_plane(4),
-            KeyCode::Digit6 | KeyCode::Numpad6 if pressed => self.toggle_selected_plane(5),
+            KeyCode::Digit1 | KeyCode::Numpad1 if pressed => self.toggle_plane(0),
+            KeyCode::Digit2 | KeyCode::Numpad2 if pressed => self.toggle_plane(1),
+            KeyCode::Digit3 | KeyCode::Numpad3 if pressed => self.toggle_plane(2),
+            KeyCode::Digit4 | KeyCode::Numpad4 if pressed => self.toggle_plane(3),
+            KeyCode::Digit5 | KeyCode::Numpad5 if pressed => self.toggle_plane(4),
+            KeyCode::Digit6 | KeyCode::Numpad6 if pressed => self.toggle_plane(5),
             _ => {}
         }
     }

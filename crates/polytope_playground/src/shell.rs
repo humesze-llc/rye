@@ -11,7 +11,7 @@ impl SceneRegistry for Playground {
         },
         SceneEntry {
             slug: "toybox",
-            label: "toybox",
+            label: "Toybox",
             build: |ctx| Ok(Box::new(crate::toybox::ToyboxScene::new(ctx)?)),
         },
     ];

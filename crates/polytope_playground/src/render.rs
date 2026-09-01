@@ -54,7 +54,7 @@ impl Demo {
                         t_norm * self.strip_t_extent
                     };
                     let cell_rotor = if t_offset == 0.0 {
-                        self.selected_rotor()
+                        self.spins.row_rotor()
                     } else {
                         self.rotor_at_time(self.rot_time + t_offset)
                     };
@@ -162,7 +162,8 @@ impl Demo {
                 // The `floor` console verb gates the marched half-space
                 // through `u.params.x`; the background has to follow it or the
                 // checkerboard outlives the leaf that occludes for it.
-                self.environment.ground(FLOOR_Y, self.environment.floor_visible),
+                self.environment
+                    .ground(FLOOR_Y, self.environment.floor_visible),
             ),
         );
         self.sky_ground

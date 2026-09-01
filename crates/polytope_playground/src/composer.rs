@@ -1,6 +1,4 @@
-//! There is one authored seq and it drives one body: the selected slot.
-//! Handing the same integrated delta to every slot would be the row-wide spin
-//! per-slot rotation exists to remove.
+//! There is one authored seq and it drives the whole row.
 
 use loam_app::egui;
 use loam_egui::{
@@ -14,6 +12,7 @@ use loam_egui::{
 use loam_math::{Bivector, Plane4, Rotor};
 
 use crate::consts::{CARD_ITEM_SPACING_X, CONTROL_H, MINI_BUTTON_W};
+use crate::director::Playback;
 use crate::state::{render_plane_sum, DeferredAction, Demo, DragPayload, RotorTerm};
 
 // Degrees default; `rad` overrides. The `*` / `·` separator and outer parens
@@ -181,7 +180,7 @@ impl Demo {
         self.render_composer_scrub_slider(ui);
     }
 
-    // Slider value is the projection of the selected slot's `log(R)` onto unit
+    // Slider value is the projection of the row's `log(R)` onto unit
     // `D = compose_omega()/|compose_omega()|`, in degrees; the perpendicular
     // component is preserved on drag so other rotations stay put.
     pub(crate) fn render_composer_scrub_slider(&mut self, ui: &mut egui::Ui) {
@@ -191,7 +190,7 @@ impl Demo {
             return;
         }
         let unit = omega * (1.0 / mag_sq.sqrt());
-        let bivec = self.selected_rotor().log();
+        let bivec = self.spins.row_rotor().log();
         let proj_rad = bivec.dot(unit);
         let mut proj_deg = proj_rad.to_degrees();
 
@@ -225,7 +224,8 @@ impl Demo {
                 let new_proj = proj_deg.to_radians();
                 let old_proj = bivec.dot(unit);
                 let new_b = bivec + unit * (new_proj - old_proj);
-                self.spins.selected_spin_mut().rotor = new_b.exp();
+                let directed = self.playback.as_ref().map_or(&[][..], Playback::directed);
+                self.spins.set_row_rotor(new_b.exp(), directed);
                 self.rebuild_bodies();
             }
         });

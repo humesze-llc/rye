@@ -24,6 +24,7 @@ use loam_shape::{Shape, TriangleMesh};
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 use loam_time::director::{BodyTrack, Director, Drive, Ease, Timeline, Track};
 
+use loam_app::capture::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
 use loam_app::environment::{register_floor_command, register_ground_command, Environment};
 
 const WORD: &str = "LOAM";
@@ -883,6 +884,36 @@ fn push_drop_caps(
     }
 }
 
+/// Where `--record` writes its frames. `None` takes the shell's capture
+/// directory, the same one the capture panel uses.
+pub(crate) struct RecordRequest {
+    pub(crate) dir: Option<std::path::PathBuf>,
+}
+
+// The runner drains capture requests AFTER `update` and taps the swapchain
+// after that, so a stop enqueued on the tick the sequence ends would discard
+// that tick's frame, which is the pose the whole sequence builds to. One frame
+// of lag records it and then stops.
+enum Recording {
+    Running,
+    LastFrameQueued,
+    Stopped,
+}
+
+impl Recording {
+    fn advance(&mut self, finished: bool) {
+        match self {
+            Recording::Running if finished => *self = Recording::LastFrameQueued,
+            Recording::LastFrameQueued => {
+                loam_app::capture::enqueue(CaptureRequest::Stop);
+                loam_app::script::request_exit();
+                *self = Recording::Stopped;
+            }
+            _ => {}
+        }
+    }
+}
+
 pub(crate) struct HeroScene {
     sequence: HeroSequence,
     seed: u64,
@@ -898,6 +929,7 @@ pub(crate) struct HeroScene {
     section_scratch: SectionScratch,
     hold_at_end: bool,
     paused: bool,
+    recording: Option<Recording>,
 }
 
 impl HeroScene {
@@ -912,8 +944,24 @@ impl HeroScene {
         console
     }
 
-    pub(crate) fn new(ctx: &mut SetupCtx<'_>) -> Result<Self> {
+    pub(crate) fn new(ctx: &mut SetupCtx<'_>, record: Option<RecordRequest>) -> Result<Self> {
         let console = Self::build_console();
+        let recording = record.map(|record| {
+            // Pre-egui, so the console never lands in a frame. The rate is the
+            // encode rate rather than every render frame: the tap is throttled
+            // on wall clock, so a display faster than TICK_HZ would otherwise
+            // write duplicate frames that `-framerate 60` plays back slowed.
+            loam_app::capture::enqueue(CaptureRequest::StartSequence {
+                format: CaptureFormat::Png,
+                stage: CaptureStage::Pre,
+                dir: record.dir,
+                name: Some("hero".to_string()),
+                fps: Some(TICK_HZ as u16),
+                scale: None,
+                palette: PaletteMode::default(),
+            });
+            Recording::Running
+        });
 
         let sequence = HeroSequence::new(hero_font_bytes(), DEFAULT_SEED)?;
         let mut camera = Camera::<EuclideanR3>::at_origin();
@@ -946,6 +994,7 @@ impl HeroScene {
             section_scratch: SectionScratch::default(),
             hold_at_end: true,
             paused: false,
+            recording,
         })
     }
 
@@ -979,6 +1028,9 @@ impl loam_app::shell::Scene for HeroScene {
                 }
                 self.sequence.tick();
             }
+        }
+        if let Some(recording) = &mut self.recording {
+            recording.advance(self.sequence.finished());
         }
         let cfg = &ctx.rd.surface_bundle.config;
         self.camera.aspect = cfg.width as f32 / cfg.height.max(1) as f32;
@@ -1039,7 +1091,8 @@ impl loam_app::shell::Scene for HeroScene {
             &SkyGroundUniforms::new(
                 view_proj,
                 Viewport::full([cfg.width, cfg.height]),
-                self.environment.ground(FLOOR_Y, self.environment.floor_visible),
+                self.environment
+                    .ground(FLOOR_Y, self.environment.floor_visible),
             ),
         );
         self.sky_ground
@@ -1832,5 +1885,4 @@ mod tests {
             assert!((h - RELEASE_CLEARANCE).abs() < 1.0e-5, "released at {h}");
         }
     }
-
 }

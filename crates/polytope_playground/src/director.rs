@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use loam_math::{Bivector, Bivector4};
 use loam_time::{Director, Drive};
 
-use crate::spins::{is_directed, SlotSpins};
+use crate::spins::SlotSpins;
 use crate::state::RotationMode;
 
 const SLOT_PREFIX: &str = "slot";
@@ -112,18 +112,17 @@ pub(crate) fn step_row_rotation(
         }
         None => &[],
     };
-    if spins.any_unowned(directed) {
+    let unowned = spins.any_unowned(directed);
+    if unowned {
         *rot_time += dt_animation;
     }
     match mode {
         RotationMode::Active => spins.recompose_active(*rot_time, directed),
         RotationMode::Composer => {
             let step = omega * dt_animation;
-            // Composer integrates the selected slot and no other, so an unowned
-            // selection is the whole gate.
-            if step.magnitude_squared() > 0.0 && !is_directed(directed, spins.selected()) {
-                let spin = spins.selected_spin_mut();
-                spin.rotor = (step.exp() * spin.rotor).normalize();
+            if unowned && step.magnitude_squared() > 0.0 {
+                let turned = (step.exp() * spins.row_rotor()).normalize();
+                spins.set_row_rotor(turned, directed);
             }
         }
     }

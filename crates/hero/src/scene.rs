@@ -947,16 +947,22 @@ impl HeroScene {
     pub(crate) fn new(ctx: &mut SetupCtx<'_>, record: Option<RecordRequest>) -> Result<Self> {
         let console = Self::build_console();
         let recording = record.map(|record| {
-            // Pre-egui, so the console never lands in a frame. The rate is the
-            // encode rate rather than every render frame: the tap is throttled
-            // on wall clock, so a display faster than TICK_HZ would otherwise
-            // write duplicate frames that `-framerate 60` plays back slowed.
+            // The sequence advances on ticks and the tap fires on rendered
+            // frames, so the encode is only honest where the two run 1:1.
+            // Capping the frame rate is what makes them: uncapped, this
+            // machine rendered 1760 frames for 870 ticks. The tap then takes
+            // every frame rather than a rate of its own, because its throttle
+            // is `elapsed >= 1/fps` from the last capture and asking it for
+            // TICK_HZ against a TICK_HZ cap drops every beat that arrives a
+            // hair early, one frame in seven when measured.
+            loam_app::frame_pacing::set_target_fps(TICK_HZ as f32);
+            // Pre-egui, so the console never lands in a frame.
             loam_app::capture::enqueue(CaptureRequest::StartSequence {
                 format: CaptureFormat::Png,
                 stage: CaptureStage::Pre,
                 dir: record.dir,
                 name: Some("hero".to_string()),
-                fps: Some(TICK_HZ as u16),
+                fps: None,
                 scale: None,
                 palette: PaletteMode::default(),
             });

@@ -28,3 +28,10 @@ loam-render  = { path = "../loam-render",  version = "0.1.0" }
 loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
 loam-text    = { path = "../loam-text",    version = "0.1.0" }
 loam-time    = { path = "../loam-time",    version = "0.1.0" }
+
+[features]
+# Native keeps capture on, matching the playground: without it `--record`
+# enqueues into `capture_stub` and writes nothing. A wasm build opts out via
+# `--no-default-features`, dropping the native-only encoder crates.
+default = ["capture"]
+capture = ["loam-app/capture"]

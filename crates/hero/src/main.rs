@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use loam_app::args::Args;
 use loam_app::shell::{SceneEntry, SceneRegistry};
 use loam_app::RunConfig;
@@ -30,13 +30,20 @@ use scene::RecordRequest;
 
 /// Bare `--record` is the whole flag, so unlike a path-carrying flag it has no
 /// syntax to get wrong: the directory is optional and defaults to the shell's.
-fn record_request(args: &Args) -> Option<RecordRequest> {
-    if args.has_bare_flag("record") {
-        return Some(RecordRequest { dir: None });
+fn record_request(args: &Args) -> Result<Option<RecordRequest>> {
+    let request = if args.has_bare_flag("record") {
+        Some(RecordRequest { dir: None })
+    } else {
+        args.get("record").map(|dir| RecordRequest {
+            dir: Some(PathBuf::from(dir)),
+        })
+    };
+    // `capture_stub` accepts every request and writes nothing, so without this
+    // the flag plays the whole sequence and exits empty-handed.
+    if request.is_some() && !cfg!(feature = "capture") {
+        bail!("--record needs the `capture` feature, and this build has it off");
     }
-    args.get("record").map(|dir| RecordRequest {
-        dir: Some(PathBuf::from(dir)),
-    })
+    Ok(request)
 }
 
 struct Hero;
@@ -48,7 +55,7 @@ impl SceneRegistry for Hero {
         build: |ctx| {
             Ok(Box::new(scene::HeroScene::new(
                 ctx,
-                record_request(&Args::current()),
+                record_request(&Args::current())?,
             )?))
         },
     }];
@@ -69,19 +76,27 @@ mod tests {
 
     #[test]
     fn record_takes_a_directory_or_the_shell_default_and_is_off_otherwise() {
-        assert!(record_request(&Args::from_argv(["--seed=7"])).is_none());
+        let ask = |argv: [&str; 2]| record_request(&Args::from_argv(argv)).expect("capture is on");
 
-        let bare = record_request(&Args::from_argv(["--record"])).expect("bare --record records");
-        assert_eq!(bare.dir, None);
-
-        let named = record_request(&Args::from_argv(["--record=out/hero"])).expect("named");
-        assert_eq!(named.dir, Some(PathBuf::from("out/hero")));
+        assert!(ask(["--seed=7", "--fps=60"]).is_none());
+        assert_eq!(
+            ask(["--record", "--seed=7"]).expect("bare records").dir,
+            None
+        );
+        assert_eq!(
+            ask(["--record=out/hero", "--seed=7"])
+                .expect("named records")
+                .dir,
+            Some(PathBuf::from("out/hero"))
+        );
 
         // The value of a detached `--record out/hero` is a positional the arg
         // parser drops, so the run would record somewhere the caller did not
         // name. Recording to the default is the right answer only because the
         // directory is optional; a required path would have to error here.
-        let detached = record_request(&Args::from_argv(["--record", "out/hero"])).expect("bare");
-        assert_eq!(detached.dir, None);
+        assert_eq!(
+            ask(["--record", "out/hero"]).expect("detached records").dir,
+            None
+        );
     }
 }

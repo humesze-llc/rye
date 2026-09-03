@@ -1,0 +1,9 @@
+# Toys settle, then three get thrown across the box. Recorded at 30 fps.
+# cargo run --release -p polytope_playground -- --scene=toybox --script=assets/readme/toybox.script
+0 fps 60
+0 wireframe
+150 capture apng pre captures fps=30 scale=800
+180 throw 2 -2.5 4.5 0 0
+260 throw 4 2.5 5 -1 0
+340 throw 0 0 5.5 0 0
+520 capture stop

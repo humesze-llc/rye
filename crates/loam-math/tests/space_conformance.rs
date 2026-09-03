@@ -1,11 +1,6 @@
 //! The single hook that separates flat from curved is the metric inner product
-//! [`SpaceFixture::inner`]. Every length in this file is measured with it, so
-//! "preserves length" means the lambda-weighted length in the Poincaré ball,
-//! the lifted 4D length in the S³ hemisphere chart, and the plain dot product
-//! in the flat impls, without the assertions branching on which is which.
-//! Vector residuals are always `|u - v|_metric`, never componentwise, and point
-//! residuals are always `distance`, because a geodesic residual is a physical
-//! quantity and a chart residual is not.
+//! [`SpaceFixture::inner`]: every length here is measured with it. Vector
+//! residuals are `|u - v|_metric`, point residuals are `distance`.
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use loam_math::{
@@ -14,9 +9,7 @@ use loam_math::{
     LinearBlendX, Space, SphericalS3, SphericalS3Embedded,
 };
 
-// A tolerance is meaningless without the sampling extent it was derived at;
-// each fixture states its extent next to its numbers, and a fixture that
-// widens its domain must re-derive rather than inherit.
+// A tolerance is meaningless without the sampling extent it was derived at.
 #[derive(Clone, Copy)]
 struct Tol {
     /// Geodesic distance between two points that should coincide.
@@ -26,9 +19,7 @@ struct Tol {
     /// Difference of two scalars that should agree (a distance or a norm).
     scalar: f32,
     /// Same as `scalar`, but for inputs the fixture declares degenerate: the
-    /// cut locus and the saturation shells, where the conditioning class is
-    /// different and pretending otherwise would mean loosening `scalar` for
-    /// everyone.
+    /// cut locus and the saturation shells.
     degenerate: f32,
 }
 
@@ -94,8 +85,7 @@ impl Xorshift32 {
 }
 
 // Seeded points in a ball of radius `max_radius`, radius bounded away from
-// zero so no sample is accidentally coincident with the chart origin. Shared
-// by the two `Vec3` chart fixtures, whose domains are both a ball.
+// zero so no sample is accidentally coincident with the chart origin.
 fn ball_samples(seed: u32, count: usize, max_radius: f32) -> Vec<Vec3> {
     let mut rng = Xorshift32::new(seed);
     (0..count)
@@ -118,8 +108,6 @@ fn agrees(got: f32, want: f32, tol: f32) -> bool {
 // absolutely below unit magnitude and relatively above: an f32 coordinate's
 // ulp is proportional to its magnitude and the flat charts are unbounded, so a
 // fixed absolute budget would buy a different number of ulps at every sample.
-// The bounded charts (both S³ models, the Poincaré ball) never leave the
-// absolute regime.
 fn chart_magnitude<F: SpaceFixture>(f: &F, p: F::Point) -> f32 {
     f.point_components(p)
         .iter()
@@ -143,16 +131,12 @@ fn metric_angle<F: SpaceFixture>(f: &F, at: F::Point, u: F::Vector, v: F::Vector
 }
 
 // Side of the geodesic triangle in `geodesic_triangle_angle_excess_matches_
-// gauss_bonnet`, in metric units. Gauss-Bonnet is exact for a geodesic
-// triangle, but the harness compares against the *flat* equilateral area
-// `(sqrt(3)/4)L^2`, whose relative error is O(K L^2); at L = 0.1 that is ~1e-3,
-// well under the 5% bound below, while the excess itself (4.3e-3 at |K| = 1)
-// stays far above the f32 noise in the six `log` calls that build it.
+// gauss_bonnet`, in metric units. The harness compares against the *flat*
+// equilateral area `(sqrt(3)/4)L^2`, whose relative error is O(K L^2).
 const TRIANGLE_SIDE: f32 = 0.1;
 
 // Fraction of the triangle's area by which the measured angle excess may miss
-// `K * area`. Sized by the flat-area truncation above, not by what makes the
-// suite green; a sign flip in `K` misses by `2 * area`, forty times this.
+// `K * area`. A sign flip in `K` misses by `2 * area`, forty times this.
 const GAUSS_BONNET_RELATIVE_TOL: f32 = 0.05;
 
 mod invariants {
@@ -587,13 +571,6 @@ mod invariants {
 
     /// `PT(a, b, log(a, b))` is the forward tangent at `b`, which points along
     /// `-log(b, a)`: a geodesic's own velocity field is parallel along it.
-    ///
-    /// Coincident and near-coincident pairs need no guard: both sides vanish
-    /// with the separation, and the budget below is absolute for separations
-    /// under one metric unit. Worst measured residual over the curved fixtures
-    /// is 1.7e-2 of the budget; the identity map lands at 1.8e3 (H³) to 4.9e4
-    /// (ambient S³) and swapping the gyration's operands at 3.1e3, so the item
-    /// separates by five decades rather than by a margin.
     pub fn parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic<F: SpaceFixture>(
         f: &F,
     ) {
@@ -620,36 +597,14 @@ mod invariants {
     /// `PT(a, b, .)` from `exp` and `log` alone (Pennec, *Parallel Transport
     /// with Pole Ladder: a Third Order Scheme in Affine Connection Spaces which
     /// is Exact in Affine Symmetric Spaces*, arXiv:1805.11436, 2018, §3), so an
-    /// impl whose `exp` and `log` are already pinned has no freedom
-    /// left in its transport. This is the item that sees a twist about the
-    /// direction of travel: the geodesic-tangent item above pins the image of
-    /// that direction alone, and any rotation about it fixes that image, while
-    /// norm and linearity are blind to a rotation outright.
+    /// impl whose `exp` and `log` are already pinned has no freedom left in its
+    /// transport. This is the item that sees a twist about the direction of
+    /// travel.
     ///
-    /// Exact here, not asymptotic. Write `s_m` for the geodesic symmetry at the
-    /// midpoint `m` of `a` and `b`, the map `x -> exp(m, -log(m, x))`. In a
-    /// symmetric space `s_m` is an isometry with `s_m(a) = b`, and the
-    /// transvection `s_m . s_a` is the transport along the geodesic (Helgason,
-    /// *Differential Geometry, Lie Groups, and Symmetric Spaces*, 1978, Ch. IV,
-    /// §3), so `s_m(exp(a, v)) = exp(b, -PT(a, b, v))`: the construction below,
-    /// read backwards. Every fixture here that declares
-    /// `TRANSPORT_FOLLOWS_THE_GEODESIC` is a symmetric space, flat R^n or one
-    /// of the two constant-curvature models; the ladder's leading error term
-    /// carries `∇R`, so a future impl with non-parallel curvature would fail
-    /// this item rather than pass it vacuously, which is the direction a stale
-    /// precondition should fail in.
-    ///
-    /// The pairs are unfiltered. Coincident `a` and `b` collapse the ladder to
-    /// the `exp`/`log` round trip, which is the identity the transport also
-    /// returns; near-antipodal pairs are the fixtures' declared degenerate set
-    /// and are not sampled here.
-    ///
-    /// Worst measured residual is 2.5e-1 of the budget on the flat trio, where
-    /// the ladder is the identity map and the number is the six `exp`/`log`
-    /// calls' own rounding at chart coordinates of order 1, and 1.5e-2 on the
-    /// curved fixtures. A 0.05 rad twist about the direction of travel lands at
-    /// 1.1e3 (ambient S³) and 7.0e1 (H³) while leaving every other item in this
-    /// suite green, so the separation is four decades and not a margin.
+    /// Exact, not asymptotic: in a symmetric space the transvection
+    /// `s_m . s_a` is the transport along the geodesic (Helgason, *Differential
+    /// Geometry, Lie Groups, and Symmetric Spaces*, 1978, Ch. IV, §3), and every
+    /// fixture declaring `TRANSPORT_FOLLOWS_THE_GEODESIC` is one.
     pub fn parallel_transport_matches_the_one_its_own_geodesics_imply<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
@@ -663,8 +618,7 @@ mod invariants {
                     let ratio = residual / (tol.vector * metric_norm(f, b, ladder).max(1.0));
                     // The `is_nan` arm is load-bearing: a NaN ratio compares
                     // false against everything, so tracking the worst by `>`
-                    // alone would leave the seed in place and report this item
-                    // green on a transport that returned NaN.
+                    // alone would report green on a transport that returned NaN.
                     if ratio.is_nan() || ratio > worst.0 {
                         worst = (ratio, a, b, v);
                     }
@@ -695,10 +649,6 @@ mod invariants {
     /// `K * area` (do Carmo, *Differential Geometry of Curves and Surfaces*,
     /// 1976, §4.5). This is what independently cross-checks a fixture's
     /// `inner`: a wrong metric produces the wrong angle sum.
-    ///
-    /// A fixture with no constant curvature still runs the construction and
-    /// pins that the angles are finite and sum near `pi` for a small triangle;
-    /// its curvature is pinned where it varies, not here.
     pub fn geodesic_triangle_angle_excess_matches_gauss_bonnet<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let l = TRIANGLE_SIDE;
@@ -752,11 +702,7 @@ mod invariants {
                 let transported = s.parallel_transport(a, b, w);
                 assert_vector_is_finite(f, transported, "parallel_transport");
                 // Norm preservation is a statement about a Riemannian metric,
-                // so it has no content where there is none. A degenerate set is
-                // built from the chart boundary and the cut locus, and the
-                // metric diverges at the Poincaré ideal boundary and at the S³
-                // equator; the transported vector's own finiteness is asserted
-                // above, so skipping here cannot hide a blow-up.
+                // so it has no content where there is none.
                 if !metric_is_defined(f, a, w) || !metric_is_defined(f, b, transported) {
                     continue;
                 }
@@ -774,9 +720,7 @@ mod invariants {
     }
 
     /// The group half of the item above: no isometry turns a degenerate input
-    /// into a NaN or an infinity. Separate because the fixture's degenerate set
-    /// is a property of its chart, which every Space has, while the isometries
-    /// are not.
+    /// into a NaN or an infinity.
     pub fn isometries_of_degenerate_inputs_stay_finite<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
@@ -794,9 +738,8 @@ mod invariants {
     }
 
     /// Same binary, same inputs, same bits. Compared with `to_bits`, not with a
-    /// tolerance; no golden constant, because every curved impl here is built
-    /// on libm transcendentals that are not bit-portable across targets, and
-    /// cross-target bit-identity is not part of the determinism contract.
+    /// tolerance; no golden constant, because libm transcendentals are not
+    /// bit-portable across targets.
     pub fn sampled_calls_are_bit_reproducible<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let points = f.points();
@@ -867,9 +810,7 @@ mod invariants {
 
     // The fixture's isometries, with the floor of three enforced: two operands
     // cannot distinguish a composition convention from its transpose in a
-    // group that is nearly abelian on the sample. Every group item reads its
-    // isometries through here, so no fixture can shrink its sample into a
-    // vacuous pass.
+    // group that is nearly abelian on the sample.
     fn sampled_isos<F: IsometryFixture>(f: &F) -> Vec<F::Iso>
     where
         F::S: IsometryGroup<Iso = F::Iso>,
@@ -884,9 +825,8 @@ mod invariants {
     }
 
     // The residual carries the magnitudes rather than comparing unit
-    // directions: `|log|` is pinned against `distance` by its own item, and
-    // normalizing here would divide the transport's error by a separation
-    // that goes to zero on the diagonal.
+    // directions: normalizing would divide the transport's error by a
+    // separation that goes to zero on the diagonal.
     fn worst_geodesic_tangent_ratio<F: SpaceFixture>(f: &F) -> (f32, F::Point, F::Point) {
         let s = f.space();
         let tol = f.tol();
@@ -911,8 +851,7 @@ mod invariants {
     // One rung of the pole ladder: parallel transport of `v` from `a` to `b`
     // along the geodesic, built from `exp` and `log` and nothing else, so it is
     // independent of the impl's own transport. Mirror `exp(a, v)` through the
-    // geodesic midpoint and read the result off at `b`, negated. Both signs,
-    // the exactness claim and the citations are at the item that uses this.
+    // geodesic midpoint and read the result off at `b`, negated.
     fn pole_ladder<F: SpaceFixture>(
         f: &F,
         s: &F::S,
@@ -931,8 +870,7 @@ mod invariants {
 
     // Two metric-orthonormal tangents at `at`, Gram-Schmidt over the fixture's
     // `inner` (do Carmo, *Differential Geometry of Curves and Surfaces*, 1976,
-    // §1.4). The harness can build them generically only because it has the
-    // metric.
+    // §1.4).
     fn metric_orthonormal_pair<F: SpaceFixture>(f: &F, at: F::Point) -> (F::Vector, F::Vector) {
         let tangents = f.tangents(at);
         assert!(
@@ -973,8 +911,7 @@ mod invariants {
 
     // Raw bits of a point's coordinates. `f32`'s `PartialEq` is the wrong
     // comparison for a reproducibility claim: it calls two NaNs different and
-    // the two signed zeros the same, and both are outcomes a repeatability
-    // regression can produce.
+    // the two signed zeros the same.
     fn point_bits<F: SpaceFixture>(f: &F, p: F::Point) -> [u32; 4] {
         f.point_components(p).map(f32::to_bits)
     }
@@ -1333,10 +1270,6 @@ impl IsometryFixture for EuclideanR4Fixture {
 // Hyperbolic H³, Poincaré ball. Extent: `|p| <= 0.4`, where the inline tests'
 // 1e-4 holds; the Möbius chains compound, so it is a decade looser than the
 // flat trio at the same extent.
-//
-// `inner` is `lambda(p)^2 * dot(u, v)` with `lambda = 2/(1 - |p|^2)`, which is
-// exactly `ConformallyFlat::conformal_factor`: the ball chart really is
-// conformal, so sourcing it there is the metric and not a coincidence.
 struct HyperbolicH3Fixture;
 
 impl SpaceFixture for HyperbolicH3Fixture {
@@ -1370,19 +1303,13 @@ impl SpaceFixture for HyperbolicH3Fixture {
     fn degenerate_pairs(&self) -> Vec<(Vec3, Vec3)> {
         let interior = Vec3::new(0.3, 0.0, 0.0);
         // H³ has no cut locus; its conditioning hazard is the ideal boundary.
-        // The mirrored pair at |p| = 0.85 spans 5.0 hyperbolic units and is the
-        // one place transport can be checked against an exactly known answer:
-        // the gyration's axis `to × -from` vanishes identically for antipodal
-        // arguments and the conformal ratio is a value over itself, so the
-        // transported vector is bit-identical to the input on any IEEE target.
+        // The mirrored pair at |p| = 0.85 transports bit-identically: the
+        // gyration's axis vanishes and the conformal ratio is a value over
+        // itself.
         let near_boundary = Vec3::new(0.85, 0.0, 0.0);
-        // Off-axis and outside, chosen because it is one of the ~34% of
-        // out-of-ball directions whose naive clamp overshoots: the scale factor
-        // is two square roots, a divide and three products, and this direction
-        // rounds back to `|q|² == 1.0` exactly. `gyr_apply(q, -q, v)` then has
-        // `1 + a·b == 0` and a zero axis, so an unenforced clamp postcondition
-        // returns NaN here. Every other out-of-domain sample above is
-        // axis-aligned, which is the benign case.
+        // Off-axis and outside, one of the ~34% of out-of-ball directions
+        // whose naive clamp overshoots and rounds back to `|q|² == 1.0`
+        // exactly, where an unenforced clamp postcondition returns NaN.
         let off_axis_outside = Vec3::new(1.2, 0.9, 1.4);
         vec![
             (interior, interior),
@@ -1436,12 +1363,6 @@ impl IsometryFixture for HyperbolicH3Fixture {
 //
 // `inner` is the lifted ambient one the impl uses internally: with
 // `w = sqrt(1 - |p|^2)` and `u4 = (u, -dot(u, p)/w)`, `inner = dot(u4, v4)`.
-// Written out here rather than routed through `ConformallyFlat`, unlike H³:
-// this chart's metric is `delta_ij + p_i p_j/(1 - |p|^2)`, which is not a
-// scalar multiple of the identity, so no conformal factor can express it and
-// any that appeared would be a stereographic factor belonging to a different
-// chart. The distinction is recorded once here instead of being rediscovered
-// per test; the angle-excess item is what would catch getting it wrong.
 struct SphericalS3Fixture;
 
 impl SphericalS3Fixture {
@@ -1573,9 +1494,7 @@ impl SpaceFixture for SphericalS3EmbeddedFixture {
                     rng.signed_unit(),
                 );
                 // Ambient tangents are perpendicular to their base point by
-                // this impl's contract; a radial part would be projected out
-                // by `exp` and the reverse round trip would be testing the
-                // projection instead of the geodesic.
+                // this impl's contract.
                 (raw - raw.dot(at) * at) * 0.2
             })
             .collect()
@@ -1642,17 +1561,10 @@ impl IsometryFixture for SphericalS3EmbeddedFixture {
 // are two to three decades looser than the closed-form impls because `exp` is
 // RK4-of-32 and `log` is Gauss-Newton shooting on top of it.
 //
-// Extent: `|p| <= 0.34`, chart separation `<= 0.66`, with `x` covering both
-// zone extremes twice and the blend interior twice, so the pure-A and pure-B
-// short circuits in `distance` are both exercised by a same-extreme pair. The
-// bound is measured, not guessed, and it is the tightest constraint any
-// fixture here carries: `log` is a shooting solve seeded with the chart
-// displacement (Press et al., *Numerical Recipes*, 3rd ed., 2007, §18.1), and
-// past roughly this separation the seed is far enough off in the H³-dominated
-// half that Newton walks the integrator out of the Poincaré ball instead of
-// converging. Inside the bound the worst measured `log` residual is 6.6e-6 and
-// the worst distance asymmetry 1.5e-4; just outside it, both diverge without
-// bound.
+// Extent: `|p| <= 0.34`, chart separation `<= 0.66`. `log` is a shooting solve
+// seeded with the chart displacement (Press et al., *Numerical Recipes*, 3rd
+// ed., 2007, §18.1), and past roughly this separation Newton walks the
+// integrator out of the Poincaré ball instead of converging.
 struct BlendedSpaceFixture;
 
 impl SpaceFixture for BlendedSpaceFixture {
@@ -1661,23 +1573,10 @@ impl SpaceFixture for BlendedSpaceFixture {
     type S = BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>;
 
     // `parallel_transport` integrates the transport ODE along the
-    // chart-coordinate straight line, which is not this Space's geodesic; the
-    // impl names the geodesic path's cost (~7x) at that callsite. So
-    // `PT(a, b, log(a, b))` is not the forward tangent at `b` here, and the
-    // items that pin the geodesic transport everywhere else would be pinning
-    // the wrong map. The pole ladder is doubly inapplicable: a blended metric
-    // has non-parallel curvature, which is the ladder's own precondition.
-    // Declared rather than omitted: the exemption is one fixture's and not the
-    // suite's, and both gated items assert the miss is real, 4.9 and 2.0e1
-    // budgets at their worst sampled pairs.
-    //
-    // - `h3_transport_agrees_with_the_closed_form_by_a_vanishing_coefficient`
-    //   is what pins the connection, against the one source metric that has a
-    //   closed form. It divides the disagreement by the step and shrinks the
-    //   step: following the chord instead of the geodesic costs O(h³), so its
-    //   coefficient vanishes, while a wrong connection contributes a term
-    //   linear in h whose coefficient does not. That separation is what an
-    //   absolute budget on one short segment cannot make.
+    // chart-coordinate straight line, which is not this Space's geodesic, so
+    // `PT(a, b, log(a, b))` is not the forward tangent at `b` here. The pole
+    // ladder is doubly inapplicable: a blended metric has non-parallel
+    // curvature, which is the ladder's own precondition.
     const TRANSPORT_FOLLOWS_THE_GEODESIC: bool = false;
 
     fn space(&self) -> Self::S {
@@ -1715,8 +1614,7 @@ impl SpaceFixture for BlendedSpaceFixture {
     fn degenerate_pairs(&self) -> Vec<(Vec3, Vec3)> {
         // Both endpoints stay inside the Poincaré ball: outside it the H³
         // source's conformal factor is infinite, which `BlendedSpace` treats as
-        // a caller error (debug assertion), not as a degenerate input to
-        // survive.
+        // a caller error.
         let interior = Vec3::new(0.1, 0.0, 0.0);
         vec![
             (interior, interior),
@@ -1748,20 +1646,14 @@ impl SpaceFixture for BlendedSpaceFixture {
 }
 
 // The lens space `L(p, q)`, the crate's curved quotient. Extent: lifts within
-// `0.25·π/p` of `Vec4::X`, the centre of the fundamental domain, with
-// tangents under `0.4·π/p`. Both bounds are read off
-// [`LensSpace::injectivity_radius`] rather than written down, so a suite at a
-// different `(p, q)` re-derives them: past that radius `log` is multivalued
-// and the round-trip items would be measuring the cut locus.
+// `0.25·π/p` of `Vec4::X`, with tangents under `0.4·π/p`, both read off
+// [`LensSpace::injectivity_radius`]: past that radius `log` is multivalued.
 //
 // Every point item here is a statement about orbits, because the harness
 // compares points with `Space::distance` and this Space's distance is the
-// quotient's. That is what lets one harness cover a quotient at all: `exp`
-// returns a canonical lift, an isometry returns whichever lift its matrix
-// lands on, and neither is a discrepancy in the quotient.
+// quotient's.
 //
-// Tolerances are the ambient S³ fixture's, unchanged: the metric primitives
-// are that impl's, called on a lift the deck minimisation picked.
+// Tolerances are the ambient S³ fixture's, unchanged.
 struct LensSpaceFixture(LensSpace);
 
 impl LensSpaceFixture {
@@ -1784,8 +1676,7 @@ impl LensSpaceFixture {
     // Complex conjugation in both planes, `diag(1, -1, 1, -1)`. Determinant
     // `+1`, and it sends the deck generator to its inverse, so it normalises
     // the deck group and descends to the quotient without commuting with the
-    // rotations above. It is what makes this fixture's isometries pairwise
-    // non-commuting at every `(p, q)`; the two-torus alone is abelian.
+    // rotations above.
     fn conjugation() -> Iso4 {
         Iso4 {
             matrix: Mat4::from_cols(
@@ -1836,9 +1727,7 @@ impl SpaceFixture for LensSpaceFixture {
                     rng.signed_unit(),
                 );
                 // Ambient tangents are perpendicular to their base point by
-                // the cover's contract; a radial part would be projected out
-                // by `exp` and the reverse round trip would be testing the
-                // projection instead of the geodesic.
+                // the cover's contract.
                 (raw - raw.dot(at) * at) * reach
             })
             .collect()
@@ -1897,9 +1786,7 @@ impl IsometryFixture for LensSpaceFixture {
 
     // Three elements of the deck group's normaliser, pairwise
     // non-commuting: a torus element, the conjugation, and their product.
-    // An `Iso4` outside the normaliser would not descend to the quotient and
-    // would fail `distance_is_invariant_under_isometry`, which is the item
-    // that makes this choice a claim rather than a convenience.
+    // An `Iso4` outside the normaliser would not descend to the quotient.
     fn isos(&self) -> Vec<Iso4> {
         let space = self.space();
         vec![

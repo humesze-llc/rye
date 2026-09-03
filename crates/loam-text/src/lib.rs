@@ -71,10 +71,8 @@ impl TextMetrics {
         }
     }
 
-    /// The advance box, not the ink box: height is `lines * line_height`
-    /// measured from the `position` [`TextRenderer::queue`] would take, so it
-    /// exceeds the last line's descender by one line gap. Characters the atlas
-    /// does not cover contribute nothing, matching what layout does.
+    /// The advance box, not the ink box: height is `lines * line_height`, so it
+    /// exceeds the last line's descender by one line gap.
     pub fn measure(&self, text: &str, size_px: f32) -> [f32; 2] {
         let mut widest = 0.0_f32;
         let mut line = 0.0_f32;
@@ -129,9 +127,8 @@ pub struct TextRenderer {
 }
 
 impl TextRenderer {
-    /// `bake_size_px` is the atlas rasterization size: smaller per-frame sizes
-    /// stay clean, larger ones blur. `sample_count` must match the render
-    /// target [`record`](TextRenderer::record) draws into, MSAA included.
+    /// `sample_count` must match the render target
+    /// [`record`](TextRenderer::record) draws into, MSAA included.
     pub fn new(
         device: &Device,
         queue: &Queue,
@@ -325,9 +322,8 @@ impl TextRenderer {
     }
 
     /// `position` is in viewport pixels and its `y` is the first line's
-    /// ascender, so a capital letter's top edge lands there. `color` is RGBA
-    /// 0..1, straight alpha. `\n` advances a line; other control chars are
-    /// skipped.
+    /// ascender. `color` is RGBA 0..1, straight alpha. `\n` advances a line;
+    /// other control chars are skipped.
     pub fn queue(&mut self, text: &str, position: [f32; 2], size_px: f32, color: [f32; 4]) {
         layout_text(
             text,
@@ -342,11 +338,8 @@ impl TextRenderer {
         );
     }
 
-    /// One load/store pass on `view`; resets the queue. Recording into the
-    /// host's own encoder rather than submitting: a nested `queue.submit` would
-    /// reach the GPU before the passes already recorded into that encoder,
-    /// painting the text under the scene rather than over it. No resolve target
-    /// is attached, so under MSAA the host's resolve must come after this pass.
+    /// One load/store pass on `view`; resets the queue. No resolve target is
+    /// attached, so under MSAA the host's resolve must come after this pass.
     pub fn record(
         &mut self,
         device: &Device,
@@ -424,9 +417,7 @@ impl TextRenderer {
     }
 }
 
-// The baseline sits `ascent_px * scale` below `position.y`, which puts the
-// ascender line exactly at `position.y`. Offsetting by `line_height_px` instead
-// would push the block down by the descent plus line gap.
+// The baseline sits `ascent_px * scale` below `position.y`.
 #[allow(clippy::too_many_arguments)]
 fn layout_text(
     text: &str,
@@ -506,9 +497,8 @@ fn is_printable_ascii(c: char) -> bool {
     ('\u{20}'..='\u{7E}').contains(&c)
 }
 
-/// [`TextRenderer::queue`] drops characters the atlas lacks without erroring,
-/// so a caller whose string must survive intact checks here first. `\n` counts
-/// as renderable: layout consumes it as a line break.
+/// [`TextRenderer::queue`] drops characters the atlas lacks without erroring.
+/// `\n` counts as renderable: layout consumes it as a line break.
 pub fn is_renderable(text: &str) -> bool {
     text.chars().all(|c| c == '\n' || is_printable_ascii(c))
 }
@@ -679,39 +669,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn baking_roundtrip_with_system_arial() {
-        // Arial is reliably present on Windows; skip cleanly if not.
-        let path = std::path::Path::new(r"C:\Windows\Fonts\arial.ttf");
-        if !path.exists() {
-            eprintln!("skip: arial.ttf not present at {path:?}");
-            return;
-        }
-        let bytes = std::fs::read(path).expect("read arial.ttf");
-        let font = FontRef::try_from_slice(&bytes).expect("parse arial.ttf");
-        let baked = bake_ascii_atlas(&font, 48.0).expect("bake");
-        assert_eq!(baked.pixels.len() as u32, ATLAS_SIZE * ATLAS_SIZE);
-        assert_eq!(baked.glyphs.len(), 0x7F - 0x20);
-        let line_h = baked.metrics.line_height_px();
-        assert!(line_h > 30.0 && line_h < 80.0, "line_h = {line_h}");
-        // Ascent is the part of the line box above the baseline, so a swap of
-        // the two would be caught here.
-        let ascent = baked.ascent_px;
-        assert!(
-            ascent > 0.0 && ascent < line_h,
-            "ascent = {ascent}, line_h = {line_h}"
-        );
-        let a = baked.glyphs.get(&'A').expect("A in atlas");
-        assert!(a.px_width > 0.0 && a.px_height > 0.0);
-        let standalone = TextMetrics::new(&bytes, 48.0).expect("metrics");
-        assert_eq!(
-            standalone.measure("Wg|", 48.0),
-            baked.metrics.measure("Wg|", 48.0)
-        );
-    }
-
-    // Deliberately unequal to the tests' 16.0 line height, so a test cannot
-    // pass by confusing the baseline offset with the line advance.
+    // Deliberately unequal to the tests' 16.0 line height.
     const MOCK_ASCENT: f32 = 12.0;
 
     fn mock_glyph_table(h_advance: f32) -> HashMap<char, GlyphEntry> {

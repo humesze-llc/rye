@@ -1,11 +1,7 @@
 //! Sim and math are bit-reproducible for a given binary on a given machine:
 //! same inputs, same bits. That is a debugging tool, not a product promise.
-//! It holds under f32 IEEE-754 semantics with no fast-math and no FMA
-//! contraction, a fixed call order, and one build.
-//!
-//! It is NOT cross-platform. The transcendentals here reach libm, whose
-//! results differ between wasm and native, so a seed does not replay
-//! identically across targets. `sqrt` is IEEE-exact and does carry over.
+//! Not cross-platform: the transcendentals reach libm, whose results differ
+//! between wasm and native. `sqrt` is IEEE-exact and does carry over.
 
 pub mod bivector;
 pub mod blended;

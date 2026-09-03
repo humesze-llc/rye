@@ -1,9 +1,7 @@
 //! Worker inbound-queue policy. `crate::wasm` is wasm32-gated, so the
-//! module is included by path: the bound is plain data-structure policy
-//! and this pins the shipping source rather than a copy of it.
+//! module is included by path.
 
 #[path = "../src/wasm/input_queue.rs"]
-// Variants this test has no reason to construct.
 #[allow(dead_code)]
 mod input_queue;
 

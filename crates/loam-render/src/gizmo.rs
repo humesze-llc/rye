@@ -1,5 +1,4 @@
-//! Ten handles: six [`crate::hypergimbal`] rings and four shafts. A drag
-//! reports a delta for the caller to compose; nothing here holds a pose.
+//! Ten handles: six [`crate::hypergimbal`] rings and four shafts.
 
 use glam::{Vec3, Vec4};
 use loam_math::{Bivector, Plane4, Rotor4};

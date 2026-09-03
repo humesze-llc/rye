@@ -15,31 +15,16 @@ use crate::{EuclideanR3, EuclideanR4};
 const PROJECTION_DENOM_EPSILON: f32 = 1e-4;
 
 /// Floor for the stereographic denominator `1 - dot(p, n)`. The pole is a
-/// reachable input (the 16-cell has `±e_i` vertices; a cell-center pole such as
-/// `(1,1,1,1)/2` is a real tesseract vertex direction), so a vertex at the pole
-/// gives `dot = 1` and a bare divide NaNs the buffer. Same order-1 reasoning as
-/// `PROJECTION_DENOM_EPSILON`.
-///
-/// `pub` because a renderer drawing the image as a finite polyline must clip the
-/// near-pole blow-up, and the clip radius is interdependent with this floor: a
-/// clamped sample maps to magnitude at most `sqrt(2 / eps)`, so a clip radius
-/// below that ceiling catches every saturated near-pole sample. The clip lives
-/// in the demo layer so this map stays the pure conformal projection.
+/// reachable input, so a vertex at the pole gives `dot = 1` and a bare divide
+/// NaNs the buffer. Same order-1 reasoning as `PROJECTION_DENOM_EPSILON`.
 pub const STEREOGRAPHIC_POLE_EPSILON: f32 = 1e-4;
 
-// Orthonormal basis `(e1, e2, e3)` of the 3-flat perpendicular to unit `n`, for
-// reading an in-3-flat point out as R³ (the Schlegel screen coordinates).
+// Orthonormal basis `(e1, e2, e3)` of the 3-flat perpendicular to unit `n`.
 // Deterministic in `n`: drop the world axis most aligned with `n`, then
 // Gram-Schmidt the surviving three in x, y, z, w order (do Carmo, *Differential
-// Geometry of Curves and Surfaces*, §1.4). Dropping the most-aligned axis keeps
-// every residual well clear of zero.
-//
-// Using this frame instead of a naive drop of the `n`-aligned coordinate is
-// what keeps the diagram faithful for a non-axis-aligned cell normal: an oblique
-// drop-w flattens the boundary cell and breaks nesting.
+// Geometry of Curves and Surfaces*, §1.4).
 fn perp_frame(n: Vec4) -> (Vec4, Vec4, Vec4) {
-    // Dropping the most-aligned axis keeps the remaining three independent in the
-    // 3-flat; ties resolve toward the earliest axis for determinism.
+    // Ties resolve toward the earliest axis for determinism.
     let ax = n.x.abs();
     let ay = n.y.abs();
     let az = n.z.abs();
@@ -74,16 +59,9 @@ fn perp_frame(n: Vec4) -> (Vec4, Vec4, Vec4) {
 }
 
 // Stereographic map of `p` on S³ to R³ from unit `pole` (Wikipedia,
-// *Stereographic projection*).
-//
-// `image = (p - dot(p, pole)*pole) / (1 - dot(p, pole))`, read out in the
-// `perp_frame` of the `pole`-perpendicular 3-flat. The numerator is truncated
-// before the divide so the image lies in that 3-flat; the bare `p / denom` form
-// leaks a `pole`-component. `dot` is clamped to `[-1, 1]` and the denominator
-// floored at `STEREOGRAPHIC_POLE_EPSILON` (see those items).
-//
-// Pole `Vec4::W` takes the closed-form fast path `(p.x, p.y, p.z) / (1 - p.w)`,
-// bit-identical to the general path since `perp_frame(W)` is `(X, Y, Z)`.
+// *Stereographic projection*). The numerator is truncated before the divide
+// so the image lies in the `pole`-perpendicular 3-flat; the bare `p / denom`
+// form leaks a `pole`-component.
 pub(crate) fn stereographic_to_r3(p: Vec4, pole: Vec4) -> Vec3 {
     let dot = p.dot(pole).clamp(-1.0, 1.0);
     let denom = (1.0 - dot).max(STEREOGRAPHIC_POLE_EPSILON);
@@ -118,8 +96,6 @@ pub enum Projection<const N: usize> {
     /// **Precondition: `focal_distance > max(w)` over every vertex.** Otherwise
     /// the denominator hits zero (eye singularity) or flips sign; the impl clamps
     /// it rather than NaN-ing the upload, but the picture is then meaningless.
-    ///
-    /// Only meaningful for `N == 4`; other `N` return `Vec3::ZERO`.
     Perspective4D { focal_distance: f32 },
 
     /// 4D Schlegel diagram: central projection from a viewpoint just outside a
@@ -127,22 +103,8 @@ pub enum Projection<const N: usize> {
     /// 3rd ed., ch. 13). The chosen cell maps to the outer boundary and the rest
     /// nest inside.
     ///
-    /// The cell lies in `{x : dot(cell_normal, x) = cell_offset}`; the eye sits at
-    /// `E = viewpoint_distance * cell_normal`. Each vertex `p` projects along the
-    /// ray `E + t*(p - E)` onto the hyperplane,
-    /// `t = (cell_offset - dot(n, E)) / (dot(n, p) - dot(n, E))`.
-    ///
-    /// The result is read out in the supplied orthonormal `basis`, not by dropping
-    /// w: an oblique w-drop is exact only for a w-aligned `n` and otherwise
-    /// flattens the boundary cell. The basis is carried (not rebuilt from the live
-    /// normal) so its in-flat gauge cannot snap across a tie during rotation.
-    ///
     /// **Precondition: `cell_normal` is the *outward* unit normal and
-    /// `viewpoint_distance > cell_offset`.** The inward normal breaks nesting. The
-    /// denominator is sign-preservingly clamped so a vertex on the viewer's 3-flat
-    /// stays finite.
-    ///
-    /// Only meaningful for `N == 4`; other `N` return `Vec3::ZERO`.
+    /// `viewpoint_distance > cell_offset`.** The inward normal breaks nesting.
     Schlegel {
         cell_normal: Vec4,
         /// Signed plane offset: the cell lies in
@@ -159,18 +121,8 @@ pub enum Projection<const N: usize> {
     /// read out in an orthonormal basis of the `pole`-perpendicular 3-flat (see
     /// `perp_frame`). Pole `Vec4::W` collapses to `(p.x, p.y, p.z) / (1 - p.w)`.
     ///
-    /// **The truncated `pole`-perpendicular numerator is load-bearing:**
-    /// dividing the full 4-vector and dropping the radial part in the readout
-    /// leaks a `pole`-component and corrupts the projection. Subtract
-    /// `dot(p, pole)*pole` before dividing.
-    ///
     /// **Precondition: `pole` and `p` are unit.** `dot` is clamped to `[-1, 1]`
-    /// (matching [`crate::SphericalS3Embedded`]) and the denominator floored at
-    /// `STEREOGRAPHIC_POLE_EPSILON` so a vertex at the reachable pole stays
-    /// finite. The antipode `-pole` is the safe far point (`dot = -1`, maps to
-    /// the origin).
-    ///
-    /// Only meaningful for `N == 4`; other `N` return `Vec3::ZERO`.
+    /// (matching [`crate::SphericalS3Embedded`]).
     Stereographic {
         /// Unit `Vec4` pole the projection casts away from. `Vec4::W` gives the
         /// closed-form `(x, y, z) / (1 - w)` map.
@@ -580,8 +532,7 @@ mod tests {
                 );
             }
         }
-        // Coarse non-degeneracy guard; the radius/nesting asserts above are what
-        // actually discriminate the old w-drop bug.
+        // Coarse non-degeneracy guard.
         let all: Vec<Vec3> = verts.iter().map(|&v| proj_pt(v)).collect();
         for axis in 0..3 {
             let comp = |p: Vec3| [p.x, p.y, p.z][axis];
@@ -690,19 +641,6 @@ mod tests {
             assert!(e1.dot(e3).abs() < 1e-5, "e1·e3 != 0 for n {n:?}");
             assert!(e2.dot(e3).abs() < 1e-5, "e2·e3 != 0 for n {n:?}");
         }
-    }
-
-    #[test]
-    fn schlegel_unsupported_on_r3_returns_zero() {
-        let p = Vec3::new(1.0, 2.0, 3.0);
-        let proj = Projection::<3>::Schlegel {
-            cell_normal: Vec4::W,
-            cell_offset: 0.5,
-            viewpoint_distance: 0.75,
-            basis: [Vec4::X, Vec4::Y, Vec4::Z],
-        };
-        let got = <EuclideanR3 as RasterizableSpace<3>>::project_point(p, &proj);
-        assert_eq!(got, Vec3::ZERO);
     }
 
     // Inverse stereographic map for pole `Vec4::W`: with `s = |q|²`,
@@ -923,14 +861,6 @@ mod tests {
             .clamp(-1.0, 1.0)
             .acos();
         assert_relative_eq!(projected, intrinsic, epsilon = 1e-2);
-    }
-
-    #[test]
-    fn stereographic_unsupported_on_r3_returns_zero() {
-        let p = Vec3::new(1.0, 2.0, 3.0);
-        let proj = Projection::Stereographic { pole: Vec4::W };
-        let got = <EuclideanR3 as RasterizableSpace<3>>::project_point(p, &proj);
-        assert_eq!(got, Vec3::ZERO);
     }
 
     #[test]

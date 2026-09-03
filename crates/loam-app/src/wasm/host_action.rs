@@ -1,9 +1,6 @@
 //! The OffscreenCanvas-in-Worker architecture has no DOM access, so browser
 //! APIs that need it (Pointer Lock, Fullscreen, Clipboard) must round-trip to
 //! the main thread.
-//!
-//! Async postMessage rather than `Atomics.wait` plus `SharedArrayBuffer`: it
-//! never blocks either thread and avoids the COOP/COEP header requirement.
 
 use std::cell::RefCell;
 
@@ -31,19 +28,14 @@ impl HostAction {
 }
 
 thread_local! {
-    // `thread_local` because the producing engine APIs have no direct handle to
-    // the worker runner.
     static PENDING: RefCell<Vec<HostAction>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Queue a host action for the next frame's drain.
 pub fn queue(action: HostAction) {
     PENDING.with(|p| p.borrow_mut().push(action));
 }
 
 /// Posts one `{kind: "host_action", actions: [...]}` message; no-op if empty.
-/// A failed post drops the batch rather than re-queueing, so a permanently
-/// down transport cannot spin.
 pub fn post_pending_actions(scope: &web_sys::DedicatedWorkerGlobalScope) -> anyhow::Result<()> {
     let actions = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
     if actions.is_empty() {
@@ -55,7 +47,6 @@ pub fn post_pending_actions(scope: &web_sys::DedicatedWorkerGlobalScope) -> anyh
         .map_err(|e| anyhow::anyhow!("post host_action: {e:?}"))
 }
 
-// Each action encodes as `{kind: <kind_str()>}`.
 fn encode_actions(actions: &[HostAction]) -> anyhow::Result<JsValue> {
     let msg = js_sys::Object::new();
     js_sys::Reflect::set(

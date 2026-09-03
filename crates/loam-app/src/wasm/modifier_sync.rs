@@ -2,9 +2,6 @@
 //! on the browser path: the OS can swallow a modifier keyup (Alt+Tab, Cmd+Tab)
 //! and leave it stuck down, and `keymap::keycode_winit` has no entry for
 //! `MetaLeft` / `MetaRight`, so Cmd/Win never reaches the held set at all.
-//!
-//! Free of `web-sys` / `js-sys` so `tests/wasm_modifier_sync.rs` can drive it
-//! against a real `InputState` off target.
 
 use winit::keyboard::KeyCode;
 
@@ -26,8 +23,7 @@ pub struct ModifierSync {
 impl ModifierSync {
     /// A flag going false releases both sides of its pair: the flag says neither
     /// is down, and the keyup for one side is exactly what may have been
-    /// swallowed. A flag going true presses the left side, arbitrarily;
-    /// `loam_input` reads the pair as one bit.
+    /// swallowed.
     pub fn reconcile(&mut self, flags: ModifierFlags, mut emit: impl FnMut(KeyCode, bool)) {
         let pairs = [
             (

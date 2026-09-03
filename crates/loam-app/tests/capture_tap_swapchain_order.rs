@@ -1,9 +1,5 @@
 //! `Runner`'s frame loop needs a window, so these pin the GPU-side contract it
-//! is ordered against: the swapchain holds whatever it held before the frame's
-//! passes until `CompositeNode` runs, and after it holds the scene's
-//! sRGB-encoded bits, which is what `capture::read_texture_rgba` turns into PNG
-//! bytes. A tap ordered ahead of the composite captures the first state.
-//!
+//! is ordered against.
 //! The `gpu_probe` suffix is what CI's software-adapter job selects on.
 
 use loam_render::composite::CompositeNode;
@@ -37,14 +33,10 @@ const SCENE_LINEAR_AFTER_UI: [f64; 3] = [0.9, 0.1, 0.4];
 // be confused with.
 const UNWRITTEN_BGRA: [u8; 4] = [255, 0, 255, 255];
 
-// One 8-bit code point of slack, spent on the encode-decode-encode round trip:
-// the scene attachment stores encoded bytes, the composite's sampler decodes
-// them, and the shader encodes again.
+// One 8-bit code point of slack, spent on the encode-decode-encode round trip.
 const TOLERANCE: u8 = 1;
 
 // IEC 61966-2-1 linear to sRGB, mirroring `composite.wgsl`'s `linear_to_srgb`.
-// Restated here so the expectation is a closed form rather than a second
-// reading of the shader under test.
 fn linear_to_srgb(c: f64) -> f64 {
     if c <= 0.003_130_8 {
         12.92 * c
@@ -135,8 +127,6 @@ impl Probe {
         );
     }
 
-    // The state both attachments are in once the scene pass has run and before
-    // anything writes the swapchain.
     fn record_scene(&self) {
         self.fill(&self.swap_view, unwritten_color());
         self.fill_scene(SCENE_LINEAR);

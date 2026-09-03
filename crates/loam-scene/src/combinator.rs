@@ -17,10 +17,7 @@ pub fn difference_expr(da: &str, db: &str) -> String {
 }
 
 /// Quilez polynomial smooth-minimum; `k` is the blend radius in Space distance
-/// units. It is baked as a shortest-round-trip literal, never at fixed
-/// precision: it is a divisor, and a six-decimal print collapses every `k`
-/// below 5e-7 to `0.000000`, dividing by zero on the GPU while a CPU evaluation
-/// of the same scene stays finite.
+/// units.
 pub fn smooth_min_fn(name: &str, k: f32) -> String {
     let k = wgsl_f32(k);
     format!(

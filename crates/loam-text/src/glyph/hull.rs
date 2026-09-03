@@ -3,16 +3,10 @@
 
 use glam::Vec2;
 
-// The 4D prism repeats the ring once per `(z, w)` corner, so its vertex count
-// is `4 * sides`, and `loam-physics` carries a 4D polytope through a fixed
-// 32-vertex stack buffer.
+// `loam-physics` carries a 4D polytope through a fixed 32-vertex stack buffer.
 pub(super) const MAX_HULL_SIDES: usize = 8;
 
-// Counter-clockwise, with collinear points dropped. Andrew's monotone chain
-// (Andrew 1979, "Another efficient algorithm for convex hulls in two
-// dimensions", Inf. Process. Lett. 9(5)). Sorting by `total_cmp` rather than a
-// partial comparator keeps the order total, so the hull is a function of the
-// point set and not of its arrival order.
+// Andrew's monotone chain (Andrew 1979, Inf. Process. Lett. 9(5)).
 pub(super) fn convex_hull(mut points: Vec<Vec2>) -> Vec<Vec2> {
     points.sort_unstable_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
     points.dedup();
@@ -34,9 +28,7 @@ pub(super) fn convex_hull(mut points: Vec<Vec2>) -> Vec<Vec2> {
     hull
 }
 
-// Strictly left, keeping at least `floor` vertices: a non-strict test would
-// retain collinear runs, and a collinear vertex has no removable edge for
-// `reduce_sides`.
+// Strictly left: a collinear vertex has no removable edge for `reduce_sides`.
 fn pop_non_left_turns(hull: &mut Vec<Vec2>, p: Vec2, floor: usize) {
     while hull.len() >= floor {
         let b = hull[hull.len() - 1];
@@ -48,16 +40,7 @@ fn pop_non_left_turns(hull: &mut Vec<Vec2>, p: Vec2, floor: usize) {
     }
 }
 
-// Deleting edge `(b, c)` extends its two neighbouring edges to their
-// intersection `x` and replaces both endpoints by it, so the ring stays convex
-// and gains exactly the triangle `(b, c, x)`. The result therefore still
-// contains everything the input contained, which is the property the collider
-// needs; it is not a bounded-error approximation and none is claimed.
-//
-// A ring of `n >= 5` vertices always has a deletable edge: exterior angles sum
-// to `2*pi`, so some adjacent pair sums to at most `4*pi/n < pi` and its two
-// edges meet ahead of the deleted one. Below five the loop is already done,
-// since `sides >= 4`.
+// A ring of `n >= 5` vertices always has a deletable edge.
 pub(super) fn reduce_sides(ring: &mut Vec<Vec2>, sides: usize) {
     debug_assert!(sides >= 4, "a convex ring cannot be reduced below a quad");
     while ring.len() > sides {
@@ -82,14 +65,12 @@ pub(super) fn reduce_sides(ring: &mut Vec<Vec2>, sides: usize) {
     }
 }
 
-// Line `a -> b` extended past `b` against line `c -> d` extended back before
-// `c`. `None` when the two do not meet on that side.
+// Line `a -> b` extended past `b` against `c -> d` extended back before `c`.
 fn extend_to_meet(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Option<Vec2> {
     let ab = b - a;
     let cd = d - c;
     let denom = ab.perp_dot(cd);
-    // Parallel edges never meet; near-parallel ones meet so far out that the
-    // added area disqualifies them anyway, so no separate tolerance is needed.
+    // Near-parallel edges meet so far out that the added area disqualifies them.
     if denom == 0.0 {
         return None;
     }
@@ -101,7 +82,7 @@ fn extend_to_meet(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Option<Vec2> {
     Some(a + ab * t)
 }
 
-// Shoelace formula: twice the signed area, positive when counter-clockwise.
+// Shoelace formula.
 pub(super) fn double_area(ring: &[Vec2]) -> f32 {
     let n = ring.len();
     (0..n)
@@ -113,9 +94,7 @@ pub(super) fn double_area(ring: &[Vec2]) -> f32 {
         .sum()
 }
 
-// Area centroid, the centre of mass of a uniform prism over the ring. The
-// vertex mean is not: it weights a subdivided edge as if the shape had mass
-// there.
+// Area centroid, the centre of mass of a uniform prism over the ring.
 pub(super) fn centroid(ring: &[Vec2]) -> Vec2 {
     let n = ring.len();
     let mut moment = Vec2::ZERO;
@@ -221,8 +200,6 @@ mod tests {
 
     #[test]
     fn reduction_deletes_the_cheapest_edge_first() {
-        // A square with one corner shaved by a tiny chamfer: deleting the
-        // chamfer costs almost nothing, any other edge a quarter of the square.
         let mut ring = vec![
             Vec2::new(-1.0, -1.0),
             Vec2::new(1.0, -1.0),

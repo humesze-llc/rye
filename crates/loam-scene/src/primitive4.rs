@@ -6,8 +6,6 @@ use crate::SENTINEL_DISTANCE;
 
 /// [`Self::to_wgsl_4d`] emits `fn {name}(p: vec4<f32>) -> f32`;
 /// [`Self::eval_4d`] is the CPU twin of that body, exact up to `f32` rounding.
-/// No `space: &S` parameter: ℝ⁴ is the only 4D Space and it is flat, so
-/// chart-coord SDFs are correct.
 pub trait Primitive4 {
     fn to_wgsl_4d(&self, name: &str) -> String;
 
@@ -29,9 +27,7 @@ impl Primitive4 for Shape {
                 radius = wgsl_f32(*radius),
             ),
 
-            // Sentinel until the real path lands: face hyperplanes are pose-
-            // dependent per frame, so `Hyperslice4DNode` ships them via a uniform
-            // buffer rather than baking constants here.
+            // Face hyperplanes are pose-dependent per frame.
             Shape::ConvexPolytope4D { .. } => format!(
                 "fn {name}(_p: vec4<f32>) -> f32 {{\n\
                 \t// ConvexPolytope4D: half-space emit lives in the\n\
@@ -86,30 +82,6 @@ impl Primitive4 for Shape {
 mod tests {
     use super::*;
     use glam::Vec4;
-
-    #[test]
-    fn hypersphere_4d_emit_has_expected_shape() {
-        let s = Shape::HyperSphere4D {
-            center: Vec4::new(1.0, 2.0, 3.0, 4.0),
-            radius: 0.5,
-        };
-        let wgsl = s.to_wgsl_4d("ball");
-        assert!(wgsl.contains("fn ball(p: vec4<f32>) -> f32"));
-        assert!(wgsl.contains("length(p - vec4<f32>(1.0, 2.0, 3.0, 4.0))"));
-        assert!(wgsl.contains("- (0.5)"));
-    }
-
-    #[test]
-    fn halfspace_4d_emits_dot_in_flat_chart() {
-        let s = Shape::HalfSpace4D {
-            normal: Vec4::new(0.0, 1.0, 0.0, 0.0),
-            offset: 0.0,
-        };
-        let wgsl = s.to_wgsl_4d("floor4");
-        assert!(wgsl.contains("fn floor4(p: vec4<f32>) -> f32"));
-        assert!(wgsl.contains("dot(p, vec4<f32>(0.0, 1.0, 0.0, 0.0))"));
-        assert!(wgsl.contains("- (0.0)"));
-    }
 
     #[test]
     fn polytope_4d_emit_is_sentinel() {

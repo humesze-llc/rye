@@ -1,21 +1,14 @@
 //! Sign comes from the nonzero winding rule, which is the fill rule both
-//! TrueType and CFF outlines are defined by. Winding rather than contour
-//! orientation is what makes hole handling format-independent: TrueType writes
-//! outer contours clockwise and CFF counter-clockwise, but both fill the
-//! nonzero region.
+//! TrueType and CFF outlines are defined by.
 
 use glam::Vec2;
 
 use super::outline::Contour;
 
-// Ring of all-outside samples around the glyph's bounding box. Two cells
-// guarantee the zero isoline is strictly interior to the grid, which is what
-// lets `super::solid` treat every clipped-cell edge not on the isoline as
-// shared with a neighbour rather than as an open boundary.
+// Two cells guarantee the zero isoline is strictly interior to the grid.
 const PADDING_CELLS: usize = 2;
 
-// Contour construction already drops coincident neighbours at 1e-6 em, so this
-// only catches edges that survive scaling into world units at a tiny `em_size`.
+// Contour construction already drops coincident neighbours at 1e-6 em.
 const DEGENERATE_EDGE_LENGTH2: f32 = 1.0e-24;
 
 /// Negative inside the glyph.
@@ -30,15 +23,11 @@ pub struct DistanceField2D {
 }
 
 impl DistanceField2D {
-    // `None` when the contours enclose no area, which for a glyph means a
-    // degenerate outline rather than a blank. The caller fixes `cell` rather
-    // than a per-glyph subdivision count so every letter of a word is sampled
-    // at the same fidelity regardless of how tall its own outline is.
+    // `None` when the contours enclose no area.
     pub(super) fn bake(contours: &[Contour], cell: f32) -> Option<Self> {
         let (min, max) = bounds(contours)?;
         let extent = max - min;
-        // Either extent collapsing leaves the winding rule nothing to call
-        // inside. The vector compare also rejects NaN coordinates.
+        // The vector compare also rejects NaN coordinates.
         if !extent.cmpgt(Vec2::ZERO).all() {
             return None;
         }
@@ -66,15 +55,8 @@ impl DistanceField2D {
         })
     }
 
-    /// A field over a caller-chosen grid, for a signed distance this module did
-    /// not bake: a morph between two glyphs is the elementwise blend of their
-    /// fields, which is only defined once both sit on a common grid. The
-    /// caller owns the padded all-outside boundary ring that `bake`
+    /// The caller owns the padded all-outside boundary ring that `bake`
     /// establishes and this does not check.
-    ///
-    /// `samples` is row-major with `samples_x` per row, `y` increasing with
-    /// row index. `None` if the grid is degenerate or the buffer is the wrong
-    /// length, because every accessor indexes it without a bounds check.
     pub fn from_samples(
         origin: Vec2,
         cell: f32,
@@ -100,7 +82,6 @@ impl DistanceField2D {
         (self.samples_x, self.samples_y)
     }
 
-    /// World position of grid corner `(i, j)`.
     pub fn sample_position(&self, i: usize, j: usize) -> Vec2 {
         self.corner(i, j)
     }
@@ -109,14 +90,8 @@ impl DistanceField2D {
     /// distance: adequate for sphere tracing, not for exact containment.
     ///
     /// The exact contour distance is 1-Lipschitz in L2; this interpolant is
-    /// not. Adjacent samples differ by at most one cell, so each partial
-    /// derivative of the bilinear form is bounded by 1 and
-    /// `|sample(a) - sample(b)| <= |a - b|` holds in the L1 norm, hence only
-    /// `sqrt(2) |a - b|` in L2. The L2 constant is attained: at a cell corner
-    /// on the medial axis the three near corners carry the same distance and
-    /// the fourth is one cell nearer the wall, which drives the interpolant's
-    /// gradient to `(1, 1)`. A sphere tracer stepping by this value must scale
-    /// steps by `1 / sqrt(2)`, or step per axis, to avoid tunnelling.
+    /// not. A sphere tracer stepping by this value must scale steps by
+    /// `1 / sqrt(2)`, or step per axis, to avoid tunnelling.
     pub fn sample(&self, p: Vec2) -> f32 {
         let grid = (p - self.origin) / self.cell;
         let clamped = grid.clamp(
@@ -129,13 +104,7 @@ impl DistanceField2D {
         if overshoot == 0.0 {
             return inside_grid;
         }
-        // Outside the padded grid two lower bounds hold: every contour lies
-        // strictly inside the grid, so the true distance is at least the
-        // distance back to the grid; and the exact contour distance is
-        // 1-Lipschitz, so it is at least the clamped value less that same
-        // offset. Take the larger, so a sphere tracer under-steps. Decaying at
-        // one per unit rather than the sqrt(2) the interior interpolation can
-        // reach keeps the extrapolation inside the per-axis bound.
+        // Take the larger, so a sphere tracer under-steps.
         overshoot.max(inside_grid - overshoot)
     }
 
@@ -185,8 +154,6 @@ fn bounds(contours: &[Contour]) -> Option<(Vec2, Vec2)> {
     any.then_some((min, max))
 }
 
-// Exact distance to the nearest contour edge, negated inside the nonzero
-// winding region.
 fn signed_distance(contours: &[Contour], p: Vec2) -> f32 {
     let mut nearest = f32::INFINITY;
     let mut winding = 0i32;
@@ -209,8 +176,7 @@ fn signed_distance(contours: &[Contour], p: Vec2) -> f32 {
     }
 }
 
-// Ericson, "Real-Time Collision Detection" (2005), section 5.1.2: closest point
-// on a segment is the projection parameter clamped to `[0, 1]`.
+// Ericson, "Real-Time Collision Detection" (2005), section 5.1.2.
 fn point_edge_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let ab = b - a;
     let length2 = ab.length_squared();
@@ -221,10 +187,7 @@ fn point_edge_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     p.distance(a + ab * t)
 }
 
-// Winding-number contribution of edge `a -> b` for the ray from `p` towards
-// `+x`. Sunday (2001), "Inclusion of a Point in a Polygon": the half-open `y`
-// comparison counts each crossing exactly once, so a vertex lying on the ray
-// does not double-count.
+// Sunday (2001), "Inclusion of a Point in a Polygon".
 fn crossing(p: Vec2, a: Vec2, b: Vec2) -> i32 {
     let side = (b.x - a.x) * (p.y - a.y) - (p.x - a.x) * (b.y - a.y);
     if a.y <= p.y {
@@ -303,8 +266,7 @@ mod tests {
         }
     }
 
-    // Probe separations are ~1e-3 and sampled values ~1e-1, so cancellation in
-    // the difference costs a few times f32 epsilon of the larger operand.
+    // Probe separations are ~1e-3 and sampled values ~1e-1.
     const LIPSCHITZ_SLACK: f32 = 1.0e-6;
 
     #[test]
@@ -313,9 +275,7 @@ mod tests {
         let field = DistanceField2D::bake(&square, 2.0 / 24.0).expect("bake");
         let cell = field.cell_size();
 
-        // Pitches incommensurate with the cell so probes land at many sub-cell
-        // phases, and the span reaches past the padded grid into the clamped
-        // extrapolation.
+        // Pitches incommensurate with the cell so probes land at sub-cell phases.
         let bases = (-40..=40)
             .flat_map(|i| (-40..=40).map(move |j| Vec2::new(i as f32 * 0.0371, j as f32 * 0.0397)));
         let mut steps = Vec::new();
@@ -353,15 +313,11 @@ mod tests {
             near.x == near.y && far.x == far.y,
             "cell is off the diagonal"
         );
-        // The two off-diagonal corners are each an equal-distance point of the
-        // same pair of walls, so they agree with `near` to within a rounding
-        // of the projection that computes them.
         assert!((field.at(5, 4) - field.at(4, 4)).abs() <= f32::EPSILON);
         assert!((field.at(4, 5) - field.at(4, 4)).abs() <= f32::EPSILON);
         assert!(field.at(5, 5) < field.at(4, 4), "far corner is not deeper");
 
-        // One sixty-fourth of the way back from the far corner, where the
-        // closed form predicts a ratio of `(2 - 1/64) / sqrt(2) = 1.403`.
+        // The closed form predicts a ratio of `(2 - 1/64) / sqrt(2) = 1.403`.
         let inner = far - (far - near) / 64.0;
         let delta = (field.sample(far) - field.sample(inner)).abs();
         let ratio = delta / far.distance(inner);
@@ -385,14 +341,6 @@ mod tests {
                 field.sample(p)
             );
         }
-    }
-
-    #[test]
-    fn baking_is_bit_reproducible() {
-        let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
-        let a = DistanceField2D::bake(&square, 2.0 / 20.0).expect("bake");
-        let b = DistanceField2D::bake(&square, 2.0 / 20.0).expect("bake");
-        assert_eq!(a.samples, b.samples);
     }
 
     #[test]

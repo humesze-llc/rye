@@ -34,8 +34,6 @@ impl PhysicsSpace for EuclideanR4 {
     type Inertia = f32;
 
     fn integrate_orientation(&self, iso: Iso4Flat, omega: Bivector4, dt: f32) -> Iso4Flat {
-        // Catch a non-finite angular velocity before it reaches the rotor and
-        // the GPU buffer. Release trusts internal callers.
         debug_assert!(
             omega.xy.is_finite()
                 && omega.xz.is_finite()
@@ -350,8 +348,7 @@ pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR4>) {
     );
 }
 
-/// `I = (2/(n+2))·m·r² = m·r²/3` at n = 4, against `(2/5)·m·r²` for the
-/// 3-ball.
+/// `I = (2/(n+2))·m·r² = m·r²/3` at n = 4.
 pub fn ball4_inertia(mass: f32, radius: f32) -> f32 {
     mass * radius * radius / 3.0
 }
@@ -359,41 +356,10 @@ pub fn ball4_inertia(mass: f32, radius: f32) -> f32 {
 /// Isotropic moment of a uniform-density regular polychoron about any 2-plane
 /// through its centroid, at circumradius `circumradius`.
 ///
-/// Exact, not the bounding-sphere approximation [`polytope_body_r4`] carries.
 /// Each of these symmetry groups acts irreducibly on R⁴, so Schur's lemma
 /// forces the second-moment matrix `M_ij = <x_i·x_j>` to `μ·I₄` (Serre,
-/// *Linear Representations of Finite Groups* (1977), §2.2), and an isotropic
-/// `M` is precisely what the scalar [`PhysicsSpace::Inertia`] slot represents
-/// without loss: the moment about a coordinate 2-plane is
-/// `m·(<x_i²> + <x_j²>) = m·<|x|²>/2` for every plane alike.
-///
-/// `<|x|²>` at unit circumradius, and where each value comes from:
-/// - 5-cell, `1/6`. The Dirichlet second moment of a `d`-simplex is
-///   `Σᵢ(vᵢ−c)(vᵢ−c)ᵀ/((d+1)(d+2))` (Lasserre and Avrachenkov 2001, *Amer.
-///   Math. Monthly* 108(2), §3), whose trace at `d = 4`, `c = 0`, `|vᵢ| = 1`
-///   is `5/30`.
-/// - 8-cell, `1/3`. Four independent uniform coordinates of half-width `1/2`,
-///   each contributing `1/12`.
-/// - 16-cell, `4/15`. The same simplex formula on one orthant simplex
-///   (vertices `0`, `eᵢ`) gives `<xᵢ²> = 2/((d+1)(d+2)) = 1/15`.
-/// - 24-cell, `13/30`. Cone decomposition over its 24 octahedral facets: for a
-///   pyramid with apex at the centroid and base in `{x·n = h}`, the `t·b`
-///   parametrisation's `t⁵` and `t³` moments give
-///   `<|x|²> = (2/3)·(h² + <|b_⊥|²>)`. At inradius `h = 1` the 24-cell is
-///   `{|x|_∞ ≤ 1} ∩ {|x|_1 ≤ 2}` with circumradius `√2`, each facet is the
-///   octahedron `{|x|_1 ≤ 1}` with `<|b_⊥|²> = 3·2/((3+1)(3+2)) = 3/10`, so
-///   `<|x|²> = (2/3)·(13/10) = 13/15` and `(13/15)/(√2)² = 13/30`.
-/// - 600-cell, `(11 + 3√5)/30`. The same cone decomposition. At circumradius 1
-///   the edge is `1/φ`, so a tetrahedral cell has circumradius squared
-///   `rc² = (3/8)/φ² = (9 - 3√5)/16` and the cells sit at `h² = 1 - rc²`. A
-///   uniform regular tetrahedron has `<|u|²> = rc²/5`, giving
-///   `(2/3)·(h² + rc²/5)`.
-/// - 120-cell, `(215 + 69√5)/600`. Cone decomposition again. Its edge at
-///   circumradius 1 is `1/(φ²√2)`, and its dodecahedral cells have the SAME
-///   `rc² = (9 - 3√5)/16` as the 600-cell's tetrahedra. A uniform regular
-///   dodecahedron has `<|u|²> = rc²·(45 + 11√5)/150`, equivalently
-///   `a²(95 + 39√5)/200` in its edge.
-///
+/// *Linear Representations of Finite Groups* (1977), §2.2). The per-solid `<|x|²>` values
+/// follow Lasserre and Avrachenkov, Amer. Math. Monthly 108 (2001).
 pub fn regular_polytope4_inertia(shape: Polytope4, mass: f32, circumradius: f32) -> f32 {
     const SQRT_5: f32 = 2.236_068;
     let mean_radius_sq = match shape {
@@ -517,10 +483,7 @@ mod tests {
             .chain(std::iter::once(ball4_inertia(m, r)))
             .collect();
         // Sorted by how far each solid pushes its mass out: pentatope,
-        // 16-cell, tesseract, 24-cell, 600-cell, 120-cell, ball. The ball is
-        // the ceiling because it is the roundest, and the two large polychora
-        // sit just under it, which is the check that catches a transcribed
-        // digit in either new constant.
+        // 16-cell, tesseract, 24-cell, 600-cell, 120-cell, ball.
         let ordered = [
             moments[0], moments[2], moments[1], moments[3], moments[4], moments[5], moments[6],
         ];
@@ -590,8 +553,7 @@ mod tests {
             let (measured, hits) = sampled_mean_radius_sq(shape, TRIALS, 0x51ED_5EED);
             assert!(hits > 2000, "{shape:?} accepted only {hits} samples");
             // 6% of the value, against a sampler whose standard error is
-            // under 2% at the thinnest shape's acceptance rate, and a nearest
-            // rival constant 20% away at the tightest pair.
+            // under 2% at the thinnest shape's acceptance rate.
             let tolerance = 0.06 * closed_form;
             assert!(
                 (measured - closed_form).abs() < tolerance,
@@ -787,14 +749,10 @@ mod tests {
         );
     }
 
-    // The playground's toy: a 24-cell of this circumradius, dropped at the
-    // rate its sub-steps run, under the angular drag a free tumble gets there.
     const CORNER_DROP_DT: f32 = 1.0 / 240.0;
     const CORNER_DROP_CIRCUMRADIUS: f32 = 0.45;
     const CORNER_DROP_GRAVITY: f32 = -9.8;
-    // Per-second exponential decay on the spin. It is what makes the pin
-    // sharp: a resting spin under drag can only hold its magnitude if the
-    // contact solve is putting back exactly what the drag takes out.
+    // Per-second exponential decay on the spin.
     const CORNER_DROP_DRAG: f32 = 1.2;
 
     struct CornerDrop {
@@ -863,8 +821,7 @@ mod tests {
         const LANDING_STEPS: usize = 400;
         const RESTING_STEPS: usize = 800;
         // A tenth of the tolerated penetration: below the resting contact's
-        // own Baumgarte limit cycle, far under the 0.068 a stale manifold
-        // climbed.
+        // own Baumgarte limit cycle.
         const CLIMB_TOLERANCE: f32 = 5e-4;
 
         let mut drop = CornerDrop::new();
@@ -1177,7 +1134,6 @@ mod tests {
         (normals, 0.5)
     }
 
-    // `outside + inside` decomposition.
     fn tesseract_sdf_truth(p: Vec4, half_extent: f32) -> f32 {
         let q = p.abs() - Vec4::splat(half_extent);
         let outside = q.max(Vec4::ZERO).length();
@@ -1242,7 +1198,6 @@ mod tests {
     #[test]
     fn polytope_sdf_wolfe_120cell_sign_correctness() {
         let (normals, r) = cell120_face_planes();
-        // Center: max plane dist = -inradius.
         let d_center = polytope_sdf_wolfe(Vec4::ZERO, &normals, r);
         assert!(
             (d_center + r).abs() < 1e-5,
@@ -1250,7 +1205,6 @@ mod tests {
             -r,
             d_center
         );
-        // Just inside a face plane: small negative.
         let n = normals[0];
         let just_inside = n * (r - 0.01);
         let d_inside = polytope_sdf_wolfe(just_inside, &normals, r);
@@ -1258,7 +1212,6 @@ mod tests {
             d_inside < 0.0,
             "just inside should be negative, got {d_inside}"
         );
-        // Just outside a face plane: small positive, equal to the outward distance.
         let just_outside = n * (r + 0.01);
         let d_outside = polytope_sdf_wolfe(just_outside, &normals, r);
         assert!(

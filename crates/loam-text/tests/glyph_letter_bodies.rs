@@ -17,34 +17,19 @@ use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 const WORD: &str = "LOAM";
 const GRAVITY: f32 = -9.8;
 
-// At 120 Hz the same drops do not come to rest: over ten seconds `O`, `A` and
-// `M` skid 0.45 to 0.61 em off their spawn column and tip. The narrowphase
-// reports one deepest vertex per step and a manifold holds four, so halving the
-// rate halves the constraints the solver has accumulated by the time the letter
-// has rocked onto a corner.
+// At 120 Hz the same drops do not come to rest.
 const DT: f32 = 1.0 / 240.0;
 
-// Clearance from the lowest hull vertex to the floor at spawn, landing at
-// 1.0 m/s. A sampled point, not the top of an envelope: a level 4D landing has
-// more tied deepest corners than the solver can carry constraints for, so
-// recovery is not monotone in drop height. Sampled at 0.01 through 0.17 em over
-// twenty seconds, 0.05 holds every letter within 0.005 em of residual motion
-// and 0.082 em of its spawn column, while 0.02 lets `O` skid 0.48 em, 0.04 lets
-// `M` skid 0.83 em, and everything from 0.06 up skids 0.27 to 2.2 em.
+// Clearance to the floor at spawn, sampled 0.01 to 0.17 em over twenty seconds.
 const DROP_CLEARANCE: f32 = 0.05;
 
-// 8 s. The letter lands inside 0.15 s; the rest is the window in which a jitter
-// that never damps would show itself.
+// 8 s. The letter lands inside 0.15 s.
 const SETTLE_STEPS: usize = 1920;
 // Final second of that run.
 const REST_WINDOW: usize = 240;
-// Against a measured worst of 0.005 em over twenty seconds. What is left at
-// rest is the Baumgarte limit cycle: the letter sinks by gravity over a step
-// and is pushed back out by the positional bias, at an amplitude set by the
-// slop.
+// Against a measured worst of 0.005 em over twenty seconds.
 const REST_SPREAD: f32 = 0.02;
-// Against a measured worst of 0.082 em. The landing impulse arrives at one
-// corner, so the letter takes a small kick before the manifold fills.
+// Against a measured worst of 0.082 em.
 const LANDING_SLIDE: f32 = 0.15;
 
 fn system_font() -> Option<Vec<u8>> {
@@ -80,21 +65,18 @@ fn hull_of(letter: &GlyphSolid) -> (Vec4, Vec<Vec4>) {
     (centre, vertices)
 }
 
-// Gravity along `-y` with a floor at `y = 0`, so letters stand on the baseline
-// they were laid out on.
+// Gravity along `-y` with a floor at `y = 0`.
 fn floor_world() -> World<EuclideanR4> {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
     world.push_field(Box::new(Gravity::new(Vec4::new(0.0, GRAVITY, 0.0, 0.0))));
     let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
-    // Restitution 0 on both sides, so these tests are about the contact
-    // pipeline converging rather than about a bounce damping out.
+    // Restitution 0 on both sides, so these tests are about the contact pipeline.
     world.bodies[floor].restitution = 0.0;
     world
 }
 
-// Spawns with the lowest hull vertex DROP_CLEARANCE above the floor, keeping
-// the laid-out `x`, `z` and `w`.
+// Spawns with the lowest hull vertex DROP_CLEARANCE above the floor.
 fn drop_letter(world: &mut World<EuclideanR4>, letter: &GlyphSolid) -> (BodyId, Vec4) {
     let (centre, vertices) = hull_of(letter);
     let lowest = vertices.iter().fold(f32::INFINITY, |m, v| m.min(v.y));
@@ -115,8 +97,7 @@ fn deepest_y(world: &World<EuclideanR4>, id: BodyId) -> f32 {
         .fold(f32::INFINITY, f32::min)
 }
 
-// Returns `(worst position spread over the last second, deepest hull point,
-// horizontal displacement from spawn)`.
+// Returns `(spread over the last second, deepest hull point, slide from spawn)`.
 fn settle(world: &mut World<EuclideanR4>, id: BodyId, spawn: Vec4) -> (f32, f32, f32) {
     let mut rest = Vec::with_capacity(REST_WINDOW);
     for step in 0..SETTLE_STEPS {
@@ -139,8 +120,7 @@ fn settle(world: &mut World<EuclideanR4>, id: BodyId, spawn: Vec4) -> (f32, f32,
     (spread, deepest_y(world, id), slide)
 }
 
-// Touching within the solver's own resting overlap, neither floating above the
-// floor nor sunk into it.
+// Touching within the solver's own resting overlap.
 fn assert_resting_on_the_floor(ch: char, deepest: f32) {
     assert!(
         deepest <= 1.0e-4,
@@ -191,8 +171,7 @@ fn a_letters_hull_contains_both_its_render_mesh_and_its_cover() {
     for letter in &letters {
         let (centre, vertices) = hull_of(letter);
         let sides = letter.rigid_hull_sides();
-        // The prism repeats the ring once per `(z, w)` corner, so its first
-        // `sides` vertices are the ring itself.
+        // The prism's first `sides` vertices are the ring itself.
         let ring: Vec<Vec2> = vertices[..sides]
             .iter()
             .map(|v| (*v + centre).xy())

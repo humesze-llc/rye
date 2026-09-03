@@ -67,19 +67,13 @@ pub enum InputMessage {
     PointerLockChanged(bool),
 }
 
-/// Reachable only when nothing is draining (paused embed, halted RAF chain),
-/// which is unbounded in wall-clock time.
+/// Reachable only when nothing is draining (paused embed, halted RAF chain).
 pub const MESSAGE_QUEUE_CAPACITY: usize = 256;
 
 thread_local! {
-    // `thread_local` because the message handler closure has no handle to the
-    // asynchronously-constructed runner.
     static MESSAGE_QUEUE: RefCell<VecDeque<InputMessage>> = const { RefCell::new(VecDeque::new()) };
 }
 
-/// Oldest-first eviction because a full queue means no frame has drained for a
-/// long time, so the newest messages carry the state that will still be true on
-/// resume. Dropping the newest can strand a key release behind its press.
 pub fn enqueue(msg: InputMessage) {
     MESSAGE_QUEUE.with(|q| {
         let mut q = q.borrow_mut();
@@ -96,8 +90,7 @@ pub fn drain_messages() -> Vec<InputMessage> {
 }
 
 /// CSS pixels scaled to the physical pixels `FrameInput::cursor_pos` is
-/// specified in. `device_pixel_ratio` is the ratio the canvas backing store was
-/// sized with, so a pick ray built from the result indexes the rendered grid.
+/// specified in.
 pub fn physical_cursor(x: f32, y: f32, device_pixel_ratio: f32) -> (f64, f64) {
     (
         (x * device_pixel_ratio) as f64,

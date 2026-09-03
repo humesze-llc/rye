@@ -1,7 +1,6 @@
 //! Parallel to [`loam_egui::UiIntegration`] but without `egui_winit`: winit's
 //! web backend assumes a `web_sys::Window`, which panics in
-//! `WorkerGlobalScope`. No cursor / clipboard / IME platform-output handling,
-//! and no egui pipeline warmup.
+//! `WorkerGlobalScope`.
 
 use loam_egui::egui;
 
@@ -12,7 +11,6 @@ pub struct WorkerUi {
     renderer: egui_wgpu::Renderer,
     raw_events: Vec<egui::Event>,
     modifiers: egui::Modifiers,
-    /// egui points are CSS-pixel equivalents; this converts them to wgpu pixels.
     width_px: u32,
     height_px: u32,
     pixels_per_point: f32,
@@ -46,7 +44,6 @@ impl WorkerUi {
         }
     }
 
-    /// Updates `modifiers` as a side effect on key events.
     pub fn record_input(&mut self, msg: &InputMessage) {
         match msg {
             InputMessage::MouseMove { x, y, .. } => {
@@ -133,7 +130,6 @@ impl WorkerUi {
         egui::pos2(x, y)
     }
 
-    /// Returns the Context the worker reads [`loam_egui::UiCapture`] from.
     pub fn begin_frame(&mut self) -> &egui::Context {
         let raw_input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -154,8 +150,6 @@ impl WorkerUi {
     }
 
     /// `view` is single-sampled on every path (see `crate::UI_PASS_SAMPLE_COUNT`).
-    /// Mirrors `UiIntegration::paint` without the winit `handle_platform_output`
-    /// step.
     pub fn paint(
         &mut self,
         device: &wgpu::Device,

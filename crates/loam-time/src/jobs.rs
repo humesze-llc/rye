@@ -31,9 +31,8 @@ impl JobPool {
         self.workers.get()
     }
 
-    /// Splits `units` into [`partition_len`] chunks, calls `kernel(index, chunk)`
-    /// on each and joins before returning. `partials` is refilled in ascending
-    /// partition index; a kernel panic resumes on the caller after the join.
+    /// `partials` is refilled in ascending partition index; a kernel panic
+    /// resumes on the caller after the join.
     pub fn run_stage<T, R, F>(&self, units: &mut [T], partials: &mut Vec<R>, kernel: F)
     where
         T: Send,

@@ -7,9 +7,7 @@ use wasm_bindgen::JsValue;
 use super::input_queue::InputMessage;
 
 /// `Ok(None)` covers both the `init` kind, which the caller handles, and unknown
-/// kinds, which are logged and dropped. `Err` means a payload with no `kind`
-/// field. `init` is excluded because its parse depends on the App type parameter
-/// this non-generic module lacks.
+/// kinds, which are logged and dropped.
 pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
     let kind = js_sys::Reflect::get(data, &JsValue::from_str("kind"))
         .ok()
@@ -57,16 +55,13 @@ pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
         "pointer_lock_changed" => {
             InputMessage::PointerLockChanged(read_bool_field(data, "locked").unwrap_or(false))
         }
-        _ => return Ok(None), // unknown kind; logged and dropped by caller
+        _ => return Ok(None),
     };
 
     Ok(Some(msg))
 }
 
-/// Shared with the worker's `init` handler, which parses outside
-/// [`parse_non_init`]. A missing, zero, or non-finite ratio falls back to 1.0:
-/// it divides egui's `size_in_pixels` into points, so anything else poisons the
-/// whole screen rect rather than merely mis-scaling it.
+/// A missing, zero, or non-finite ratio falls back to 1.0.
 pub fn read_device_pixel_ratio(obj: &JsValue) -> f32 {
     read_f32_field(obj, "dpr")
         .filter(|dpr| dpr.is_finite() && *dpr > 0.0)

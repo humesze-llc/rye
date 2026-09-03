@@ -7,7 +7,6 @@ use web_sys::{HtmlCanvasElement, MessageEvent, Worker, WorkerOptions, WorkerType
 
 /// `host_id` is the `data-mode="manual"` container, `button_id` the overlay,
 /// `canvas_id` the `<canvas>` transferred via `transferControlToOffscreen`.
-/// Errors here are config mistakes; click-time errors have no caller to reach.
 pub fn launch_on_click(host_id: &str, button_id: &str, canvas_id: &str) -> Result<()> {
     super::worker::install_logging_idempotent();
 
@@ -18,8 +17,6 @@ pub fn launch_on_click(host_id: &str, button_id: &str, canvas_id: &str) -> Resul
 }
 
 // Set by the demo's inline script (`window.__loam_wasm_url = import.meta.url`).
-// The worker points at this so it runs the same binary. Read at launch time
-// because `import.meta.url` is per-document.
 fn read_wasm_bundle_url() -> Result<String> {
     let window = web_sys::window().ok_or_else(|| anyhow!("no global window"))?;
     let val = js_sys::Reflect::get(&window, &JsValue::from_str("__loam_wasm_url"))
@@ -37,8 +34,6 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
         .ok_or_else(|| anyhow!("no element with id '{canvas_id}'"))?
         .dyn_into::<HtmlCanvasElement>()
         .map_err(|_| anyhow!("element '{canvas_id}' is not a canvas"))?;
-    // Idempotent: reuses an existing `button_id` element or creates one and
-    // injects the CSS once per page.
     let launch_overlay = super::launch::inject_launch_overlay(host_id, button_id)?;
 
     // Size the backing store to displayed size x DPR: CSS may stretch the canvas
@@ -66,7 +61,6 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
         .map_err(|e| anyhow!("transfer_control_to_offscreen: {e:?}"))?;
 
     let js_url = read_wasm_bundle_url()?;
-    // Trunk emits `<name>-<hash>.js` and `<name>-<hash>_bg.wasm` side by side.
     // The wasm URL must reach `init()` explicitly: the worker imports the JS via
     // a Blob URL, which has no document base, so the relative fallback 404s.
     let wasm_url = js_url.strip_suffix(".js").unwrap_or(&js_url).to_string() + "_bg.wasm";
@@ -90,8 +84,6 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
     let worker =
         Worker::new_with_options(&blob_url, &opts).map_err(|e| anyhow!("Worker::new: {e:?}"))?;
 
-    // `worker_ready` flips once the worker posted `ready` and main posted `init`
-    // back; `pending_start` captures a click that lands before then.
     let worker_ready: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
     let pending_start: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
 
@@ -157,7 +149,6 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
             return;
         }
 
-        // Worker is listening now; flush a click that landed during the wait.
         worker_ready_for_ready.set(true);
         if pending_start_for_ready.replace(false) {
             tracing::info!(
@@ -245,9 +236,7 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
     Ok(())
 }
 
-// Dispatched on `document` when an embed activates; detail = host id. Every
-// embed listens: its own id flips it active, another id while active deactivates
-// it. One active demo per page with no shared JS state.
+// Dispatched on `document` when an embed activates; detail = host id.
 const EMBED_ACTIVATED_EVENT: &str = "loam-embed-activated";
 
 fn dispatch_embed_activated(host_id: &str) {
@@ -264,9 +253,7 @@ fn dispatch_embed_activated(host_id: &str) {
     }
 }
 
-// Pointerdown outside the host posts `pause` and restores the blurred overlay;
-// the overlay click posts `resume` and re-announces; another embed's broadcast
-// deactivates this one. Starts inactive until the launch click's broadcast.
+// Starts inactive until the launch click's broadcast.
 fn install_embed_lifecycle(worker: &Worker, host_id: &str, button_id: &str) -> Result<()> {
     let document = web_sys::window()
         .and_then(|w| w.document())
@@ -384,13 +371,11 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
 
     // Resize is debounced, not rate-limited: each event triggers a worker-side
     // `surface.configure()` (swap chain, scene texture, composite bind group),
-    // which mid-drag freezes and crashes the tab. 6 frames at 60Hz (~100 ms of
-    // quiet) coalesces a drag; CSS scales the old backing store meanwhile.
+    // which mid-drag freezes and crashes the tab.
     const RESIZE_DEBOUNCE_FRAMES: u32 = 6;
     {
-        // `None` when settled; each new event resets the counter. `dpr` is
-        // carried rather than re-read at commit time, so it matches the w/h it
-        // was computed with.
+        // `dpr` is carried rather than re-read at commit time, so it matches the
+        // w/h it was computed with.
         let pending: Rc<RefCell<Option<(u32, u32, f32, u32)>>> = Rc::new(RefCell::new(None));
         let pending_for_listener = pending.clone();
         let canvas_for_listener = canvas.clone();
@@ -548,7 +533,7 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
                 1 => (ev.delta_x() as f32, ev.delta_y() as f32),
                 _ => (ev.delta_x() as f32 / 100.0, ev.delta_y() as f32 / 100.0),
             };
-            ev.prevent_default(); // page-scroll suppression while interacting
+            ev.prevent_default();
             let msg = build_msg("mouse_wheel");
             set_msg_f32(&msg, "dx", dx);
             set_msg_f32(&msg, "dy", dy);
@@ -658,9 +643,7 @@ fn set_msg_string(obj: &js_sys::Object, key: &str, v: &str) {
     let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_str(v));
 }
 
-// Drives the `#loam-page-loader-fill` width plus the track's `aria-valuenow`, so
-// a screen reader announces progress. Bar markup lives in
-// `crates/loam-app/static/page_loader.html`.
+// Bar markup lives in `crates/loam-app/static/page_loader.html`.
 fn install_preview_progress_handler(worker: &Worker) -> Result<()> {
     let cb = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data: JsValue = event.data();
@@ -728,21 +711,15 @@ fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()>
     Ok(())
 }
 
-// Everything needing DOM access round-trips here: the worker holds only the
-// `OffscreenCanvas`, no `document` / `window` / canvas element.
-//
 // `requestPointerLock` needs transient activation (~5 s from the user's last key
 // or click); the key-event to worker to request round-trip stays inside that
-// window. Browser auto-releases (Esc, tab switch) produce a `pointerlockchange`
-// forwarded back, and a canvas click re-requests while `want_locked`.
+// window.
 fn install_host_action_handler(worker: &Worker, canvas: &HtmlCanvasElement) -> Result<()> {
     let window = web_sys::window().ok_or_else(|| anyhow!("no global window"))?;
     let document = window
         .document()
         .ok_or_else(|| anyhow!("no document on window"))?;
 
-    // Drives the canvas-click re-engagement: re-request only when `want_locked`
-    // but the actual lock dropped.
     let want_locked: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
 
     {

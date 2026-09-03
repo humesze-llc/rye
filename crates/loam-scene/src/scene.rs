@@ -32,8 +32,7 @@ impl SceneNode {
     }
 
     /// Emits chart-coord `dot(p, n) - d` in flat charts and
-    /// [`crate::SENTINEL_DISTANCE`] in curved ones, until geodesic-plane SDFs
-    /// land.
+    /// [`crate::SENTINEL_DISTANCE`] in curved ones.
     pub fn plane(normal: Vec3, offset: f32) -> Self {
         SceneNode::Leaf(PrimitiveKind::HalfSpace { normal, offset })
     }
@@ -99,8 +98,7 @@ impl Scene {
     }
 
     /// The CPU twin of the emitted `loam_scene_sdf`; see [`Primitive::eval`]
-    /// for the residual divergence that remains. Allocation-free, so a grid
-    /// bake pays no per-sample heap traffic.
+    /// for the residual divergence that remains. Allocation-free.
     pub fn eval<S: Space<Point = Vec3, Vector = Vec3>>(&self, space: &S, p: Vec3) -> f32 {
         eval_node(&self.root, space, p)
     }
@@ -162,10 +160,7 @@ fn emit_node<S: WgslSpace>(
     }
 }
 
-// The combinator expressions are transcribed from `crate::combinator`'s emitted
-// text operand for operand: reassociating them is algebraically neutral but not
-// bit-neutral, and this sits inside the determinism boundary once a baked
-// collider feeds the sim.
+// Reassociating these is algebraically neutral but not bit-neutral.
 fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S, p: Vec3) -> f32 {
     match node {
         SceneNode::Leaf(prim) => prim.eval(space, p),
@@ -181,12 +176,8 @@ fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S,
         }
 
         SceneNode::SmoothUnion { k, left, right } => {
-            // Quilez 2013, "smooth minimum", polynomial variant, as emitted by
-            // `combinator::smooth_min_fn`. `mix(b, a, h)` is transcribed in the
-            // form WGSL defines it, `b·(1 − h) + a·h` (WGSL spec, "mix"), not
-            // the algebraically equal lerp form `b + (a − b)·h`: only the former
-            // is exact at the clamped ends `h ∈ {0, 1}`, which is where the vast
-            // majority of sample points sit.
+            // Quilez 2013, "smooth minimum", polynomial variant.
+            // `mix(b, a, h)` is `b·(1 − h) + a·h` (WGSL spec, "mix").
             let a = eval_node(left, space, p);
             let b = eval_node(right, space, p);
             let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);

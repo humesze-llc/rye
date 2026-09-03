@@ -1,19 +1,9 @@
-//! Spherical 3-space (S³) in the **full ambient embedding**: points are unit
-//! 4-vectors in R⁴, not a chart.
-//!
-//! [`crate::SphericalS3`] is the upper-hemisphere chart (`Vec3`, `vec3<f32>`
-//! WGSL ABI for the fractal demo) and cannot represent `w ≤ 0`, so it collapses
-//! every `w < 0` polytope vertex onto the equator. [`SphericalS3Embedded`] takes
-//! `Point = Vec4` on the unit sphere: full coverage, no chart seam, exact
-//! great-circle geodesics, but no WGSL ABI, so it serves the CPU rasterizer
-//! wireframe path, not the SDF ray-marcher.
-//!
-//! The exp / log / transport
-//! maps are the standard unit-sphere forms (Absil, Mahony & Sepulchre,
-//! *Optimization Algorithms on Matrix Manifolds*, 2008, §3.6, Example 8.1.1);
-//! slerp is Shoemake (*Animating Rotation with Quaternion Curves*, SIGGRAPH
-//! 1985). Isometries reuse [`crate::spherical::Iso4`] (an SO(4) matrix), shared
-//! with the hemisphere model.
+//! S³ in the full ambient embedding: points are unit 4-vectors in R⁴, not a
+//! chart. exp / log / transport are the standard unit-sphere forms (Absil,
+//! Mahony & Sepulchre, *Optimization Algorithms on Matrix Manifolds*, 2008,
+//! §3.6, Example 8.1.1); slerp is Shoemake (*Animating Rotation with
+//! Quaternion Curves*, SIGGRAPH 1985). Isometries reuse
+//! [`crate::spherical::Iso4`], shared with the hemisphere model.
 
 use glam::Vec4;
 
@@ -25,31 +15,13 @@ use crate::EuclideanR4;
 // Floor on the tangent-direction norm below which a geodesic has no defined
 // direction: near-coincident (`p1 ≈ p0`) or near-antipodal (`p1 ≈ −p0`, the
 // great circle is non-unique). Conditioning class: direction recovery, the
-// same class and value as the hemisphere model's `LOG_PERP_MIN`, so the two S³
-// impls agree on "too close to have a direction"; at `1e-7` the residual is
-// one f32 ulp of a coordinate of order 1 and its direction is rounding.
-//
-// Reading the residual as `sin(ω)` assumes unit points. That is the contract
-// on [`SphericalS3Embedded`], enforced at the two entrances that produce
-// points ([`RasterizableSpace::array_to_point`] normalizes,
-// [`IsometryGroup::iso_apply`] re-normalizes to shed drift) and deliberately
-// not re-checked per call; the guards themselves are norm comparisons and stay
-// finite for any input.
+// same class and value as the hemisphere model's `LOG_PERP_MIN`.
 const GEODESIC_DIRECTION_MIN: f32 = 1e-7;
 
 // Floor on the transport denominator `|from + to|² / 2`. Conditioning class:
 // divisor floor on a squared quantity, which is why it is its own constant
-// despite sharing [`GEODESIC_DIRECTION_MIN`]'s value: compared against a
-// square, `1e-7` engages at `|from + to| = 4.5e-4`, an arc within 4.5e-4 rad
-// of the antipodal cut locus where parallel transport is genuinely undefined
-// and any finite answer is a choice rather than an approximation.
-//
-// The arc reading, and the equality with `1 + ⟨from, to⟩`, assume unit points
-// on the same contract as [`GEODESIC_DIRECTION_MIN`]; a non-unit pair scales
-// the denominator by `|from|·|to|` and moves where the floor engages. Unlike
-// the hemisphere model, whose chart floors `w` and so bounds this denominator
-// below without a guard, `Point = Vec4` makes `from = −to` exactly
-// representable, so the floor is load-bearing here.
+// despite sharing [`GEODESIC_DIRECTION_MIN`]'s value. `Point = Vec4` makes
+// `from = −to` exactly representable, so the floor is load-bearing here.
 const TRANSPORT_DENOM_MIN: f32 = 1e-7;
 
 /// Spherical 3-space, full ambient embedding, curvature `K = +1`.
@@ -101,13 +73,9 @@ impl Space for SphericalS3Embedded {
         // Unit-sphere transport `v − (⟨v, to⟩ / denom)·(from + to)` (do Carmo,
         // *Riemannian Geometry*, ch. 2). Undefined at antipodes; the floor keeps
         // it finite.
-        //
         // The denominator is `|from + to|² / 2`, equal to `1 + ⟨from, to⟩` for
         // unit inputs but without its catastrophic cancellation as
-        // `⟨from, to⟩ -> −1`; computed from the same `from + to` the numerator
-        // needs, the transported norm holds to f32 epsilon up to the floor (the
-        // `2·cos²(θ/2)` half-angle identity, same principle as the chord-form
-        // distance).
+        // `⟨from, to⟩ -> −1`.
         let sum = from + to;
         let denom = (sum.length_squared() * 0.5).max(TRANSPORT_DENOM_MIN);
         v - (v.dot(to) / denom) * sum
@@ -140,8 +108,7 @@ impl IsometryGroup for SphericalS3Embedded {
 
     fn iso_transport(&self, iso: Iso4, _at: Vec4, v: Vec4) -> Vec4 {
         // An SO(4) matrix is a global linear isometry, so its differential is the
-        // matrix itself: exact and base-point-independent, no geodesic round-trip
-        // unlike the chart-based hemisphere model.
+        // matrix itself: exact and base-point-independent.
         iso.matrix * v
     }
 }
@@ -164,9 +131,7 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
                 crate::rasterizable::stereographic_to_r3(point, *pole)
             }
             // The other variants project the ambient unit 4-vector exactly as
-            // flat R⁴ does, so an S³ edge and its flat counterpart share one
-            // screen embedding and the lerp-to-slerp morph reads as the edge
-            // bowing out, not a projection change.
+            // flat R⁴ does.
             Projection::Identity
             | Projection::Orthographic { .. }
             | Projection::Perspective4D { .. }
@@ -184,10 +149,7 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
         // This divides only by the pre-normalize perpendicular length `n = sin(ω)`,
         // never by a `sin(ω)` reconstructed from `acos(dot)`, so it stays on S³ to
         // machine epsilon as ω -> π, where the classic `sin((1−t)ω)/sin(ω)` slerp
-        // drifts percent-level off the sphere. `ω` uses the chord half-angle
-        // `2·asin(|p0−p1|/2)`, same well-conditioned form as `Self::distance`.
-        //
-        // Sampling convention matches `EuclideanR4::tessellate_segment`.
+        // drifts percent-level off the sphere.
         let dot = p0.dot(p1).clamp(-1.0, 1.0);
         let half_chord = (p0 - p1).length() * 0.5;
         let omega = 2.0 * half_chord.clamp(0.0, 1.0).asin();
@@ -207,8 +169,6 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
             // Direction undefined (coincident or antipodal): walk a deterministic
             // perpendicular great circle through `p0` rather than dividing by the
             // zero `perp`. Coincident: ω ≈ 0, samples collapse onto `p0`.
-            // Antipodal: ω ≈ π, the final sample approaches −p0 = p1, all unit,
-            // no NaN (the old normalized-lerp produced a zero-vector midpoint).
             let dir = deterministic_perp(p0);
             for i in 1..samples {
                 let t = i as f32 / samples as f32;
@@ -224,8 +184,7 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
 // slerp branch. Picks the world axis least aligned with `p0` (best-conditioned
 // residual), Gram-Schmidt's it against `p0`, normalizes (do Carmo, *Differential
 // Geometry of Curves and Surfaces*, §1.4). Ties resolve toward the earliest
-// axis, so it is a pure function of `p0` (Tier 0). A unit `p0` cannot align with
-// all four axes, so the residual is always clear of zero.
+// axis, so it is a pure function of `p0`.
 fn deterministic_perp(p0: Vec4) -> Vec4 {
     let a = p0.abs();
     // Smallest-magnitude component; `<` ties toward the earlier index.

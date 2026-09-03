@@ -1,10 +1,6 @@
 //! [`Primitive::to_wgsl`](crate::Primitive) asserts on constants WGSL cannot
 //! spell, so a description that merely deserializes is not yet safe to emit.
 //! Both entry points here run the same check.
-//!
-//! wasm32 has no filesystem, so a browser build fetches the text itself and
-//! calls `from_ron` with the URL as the origin; the origin is a parameter and
-//! not an internal detail of `load` for exactly that reason.
 
 use std::path::{Path, PathBuf};
 
@@ -87,9 +83,7 @@ fn read_to_string(path: &Path) -> Result<String, SceneLoadError> {
     })
 }
 
-// `ron::from_str` caps nesting at 128 frames (`ron::Options` default), which is
-// also what bounds the recursion in `check_node` and in every later walk of a
-// loaded tree: file input cannot drive them to a stack overflow.
+// `ron::from_str` caps nesting at 128 frames (`ron::Options` default).
 fn parse<T: DeserializeOwned>(origin: &Path, src: &str) -> Result<T, SceneLoadError> {
     ron::from_str(src).map_err(|source| SceneLoadError::Parse {
         origin: origin.to_path_buf(),
@@ -97,10 +91,7 @@ fn parse<T: DeserializeOwned>(origin: &Path, src: &str) -> Result<T, SceneLoadEr
     })
 }
 
-// Every variant is scanned, not only the ones an emitter bakes today: the
-// sentinel set shrinks as closed forms land, and a description that survives
-// loading only because its shape is currently unemittable is a trap laid for
-// that lap.
+// Every variant is scanned, not only the ones an emitter bakes today.
 fn non_finite_constant(shape: &Shape) -> Option<f32> {
     fn first(values: impl IntoIterator<Item = f32>) -> Option<f32> {
         values.into_iter().find(|v| !v.is_finite())
@@ -148,10 +139,7 @@ fn check_node(node: &SceneNode) -> Result<(), String> {
     }
 }
 
-// The emitted `smin` divides by `k` and the CPU twin divides by the same
-// constant, so a zero blend radius is an infinity in the distance field and a
-// negative one inverts the blend into a field that is no longer an
-// underestimate of `min`.
+// The emitted `smin` divides by `k`, so a zero blend radius is an infinity.
 pub(crate) fn check_blend_radius(k: f32) -> Result<(), String> {
     if !k.is_finite() || k <= 0.0 {
         return Err(format!(

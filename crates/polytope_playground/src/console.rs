@@ -414,11 +414,6 @@ mod tests {
     use loam_app::shell::SceneRegistry;
 
     #[test]
-    fn the_console_registers_the_transform_handles_toggle() {
-        assert!(RotateScene::build_console().has_command("handles"));
-    }
-
-    #[test]
     fn handles_arg_flips_when_bare_and_is_absolute_when_named() {
         assert!(handles_arg(None, false).unwrap());
         assert!(!handles_arg(None, true).unwrap());

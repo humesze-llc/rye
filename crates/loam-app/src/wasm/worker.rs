@@ -204,9 +204,7 @@ async fn init_renderer<A: App + 'static>(
             .context("WorkerRunner::setup")?;
 
     // Browser WebGPU defers `create_render_pipeline` until first use, so warmup
-    // frames force compilation before the click. The default `rotate` state is
-    // false, so warmup advances no simulation state. 11 frames (1 + 10)
-    // empirically covers polytope_playground on Chrome and Firefox WebGPU.
+    // frames force compilation before the click.
     const WARMUP_FRAMES: usize = 10;
     const TOTAL_FRAMES: usize = 1 + WARMUP_FRAMES;
     let post_progress = |step: usize| {
@@ -344,8 +342,7 @@ thread_local! {
     // Resume before Start must not bypass the launch flow.
     static LOOP_STARTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 
-    // Restarts a halted chain on `resume`, re-anchoring the frame clock. Unlike
-    // `RAF_KICKOFF`, reusable across pause cycles.
+    // Restarts a halted chain on `resume`, re-anchoring the frame clock.
     static RAF_RESTART: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
@@ -360,7 +357,6 @@ struct WorkerRunner<A: App + 'static> {
     watcher: Option<AssetWatcher>,
     app: A,
     input: InputState,
-    /// Corrects `input`'s derived modifier set against the browser's own flags.
     modifier_sync: ModifierSync,
     ui: WorkerUi,
     /// Read at each frame's `begin_frame`. Input applies outside the pass, so
@@ -377,12 +373,8 @@ struct WorkerRunner<A: App + 'static> {
     /// not compound into alternating-skip. `None` when uncapped.
     last_redraw_anchor: Option<web_time::Instant>,
     tick_index: u64,
-    /// 60Hz with the catch-up cap at `DEFAULT_MAX_TICKS_PER_FRAME`, matching
-    /// `RunConfig::default()` so `FrameCtx::n_ticks` shows the native cadence.
     timestep: FixedTimestep,
-    /// Resolved through the same `resolve_sim_threads` the native runner uses,
-    /// which is why the knob is an `Args` key: `RunConfig` never crosses the init
-    /// message. `JobPool` then clamps to one worker here.
+    /// `JobPool` clamps to one worker here.
     jobs: JobPool,
 }
 
@@ -538,8 +530,7 @@ impl<A: App + 'static> WorkerRunner<A> {
                 };
                 let state = to_state(pressed);
                 // The flags are the browser's own view of what is held, so they
-                // outrank the transition stream: the OS eats the keyup when a
-                // chord switches windows, and `keymap` has no Meta code.
+                // outrank the transition stream.
                 let (modifier_sync, input) = (&mut self.modifier_sync, &mut self.input);
                 modifier_sync.reconcile(
                     ModifierFlags {
@@ -659,7 +650,7 @@ impl<A: App + 'static> WorkerRunner<A> {
                 rd: &self.rd,
                 input,
                 time: self.start.elapsed().as_secs_f32(),
-                fps: 0.0, // worker-side FPS bookkeeping not yet wired.
+                fps: 0.0,
                 n_ticks,
                 tick: self.tick_index,
                 dt,

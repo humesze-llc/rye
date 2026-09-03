@@ -1781,9 +1781,6 @@ mod tests {
     // The drop takes 12 ticks and the rest latch 30 more; the rest is margin.
     const SETTLE_TICKS: usize = 120;
 
-    // A throw at [`MAX_RELEASE_SPEED`] closes the gap between two
-    // [`SPAWN_SPACING`] neighbours' bounding spheres in two ticks; the rest is
-    // the solver working the impulse up to its peak.
     const FLICK_TICKS: usize = 10;
 
     // Camera looking down -z from above the row, the boot framing's axis.
@@ -1794,10 +1791,6 @@ mod tests {
         Toybox::new()
     }
 
-    /// A settled pile with every toy woken again. Contact tests need this:
-    /// a genuinely settled pile SLEEPS, and a sleeping toy is static to the
-    /// solver, so it forms no manifolds at all. That is the point of sleeping,
-    /// and it is why these tests have to say which state they mean.
     fn settled_awake() -> Toybox {
         let mut toybox = settled();
         for toy in 0..TOYS.len() {
@@ -1820,7 +1813,6 @@ mod tests {
         }
     }
 
-    // One frame of a held drag: move the cursor to `target`, then step.
     fn drag_frame(toybox: &mut Toybox, target: Vec3, axis: GrabAxis) {
         toybox.hold(&ray_through(target), FORWARD, axis, 1.0 / TICK_HZ as f32);
         toybox.tick();
@@ -1835,8 +1827,6 @@ mod tests {
         toybox.w_offsets().map(|(_, w)| w.abs()).fold(0.0, f32::max)
     }
 
-    // Camera at the boot framing and a given aspect, built the way `record`
-    // builds it, so the framing pin cannot drift from the frame.
     fn boot_view_proj(aspect: f32) -> Mat4 {
         let mut camera = Camera::<EuclideanR3>::at_origin();
         camera.aspect = aspect;
@@ -1971,9 +1961,6 @@ mod tests {
 
     #[test]
     fn a_flick_into_a_wall_still_throws() {
-        // The clamp bounds where the body is DRIVEN. If it also bounded what the
-        // release reads, a flick toward a wall would pin the target and throw
-        // nothing, which is the bug the intent accumulator exists to prevent.
         let mut toybox = settled();
         assert!(grab_centre(&mut toybox, 0));
         let mut cursor = toybox.position(0).truncate();
@@ -1991,16 +1978,10 @@ mod tests {
 
     #[test]
     fn a_slowly_carried_body_is_never_snapped_back_by_the_rest_latch() {
-        // The defect: the latch ran over every toy with no exemption for the
-        // one being held. A drag gentle enough to look at rest parked the body
-        // and teleported it back to its anchor while the hand was still
-        // carrying it, which reads as the grab randomly letting go.
         let mut toybox = settled();
         assert!(grab_centre(&mut toybox, 0));
         let start = toybox.position(0);
         let mut cursor = start.truncate();
-        // Well under REST_SPEED and REST_TRAVEL per tick, held far longer than
-        // REST_WINDOW, which is exactly the case that used to park.
         for _ in 0..(REST_WINDOW as usize * 3) {
             cursor += Vec3::new(0.004, 0.0, 0.0);
             drag_frame(&mut toybox, cursor, GrabAxis::Slice);
@@ -2027,11 +2008,6 @@ mod tests {
             &ToyboxControls::default().wireframe,
             &mut mesh,
         );
-        // More segments than edges is the signature of the SHARED geometry:
-        // `push_projected_chord` tessellates each edge so a chord that bows
-        // under the projection is drawn bowed. A local straight-chord copy
-        // would produce exactly one segment per edge, which is what this
-        // scene shipped before it reused rotate's path.
         let edges: usize = TOYS.iter().map(|t| t.topology().edges.len()).sum();
         assert!(
             mesh.segments.len() > edges,
@@ -2081,9 +2057,6 @@ mod tests {
 
     #[test]
     fn the_wireframe_shade_follows_a_vertex_distance_from_the_slice() {
-        // The property that makes it a 4D readout rather than decoration: a
-        // rotation in a w plane moves vertices through the slice, and the
-        // shading is what makes that visible.
         let mut toybox = settled();
         let mut near = LineMesh::<3>::default();
         append_toy_wireframe(
@@ -2112,11 +2085,6 @@ mod tests {
 
     #[test]
     fn a_settled_toy_stops_dead_instead_of_creeping() {
-        // The regression, found by reading settle_trace: with the latch only
-        // zeroing velocity, gravity re-sank a resting body every substep and
-        // Baumgarte pushed it back out by slightly more, so a "settled" toy
-        // climbed and turned forever at 0.00002 per tick. Sleeping makes it
-        // static instead, which is the only state nothing moves.
         let mut toybox = settled();
         let body = toybox.toys[0].body;
         let (pose, rotor) = {
@@ -2134,8 +2102,6 @@ mod tests {
 
     #[test]
     fn a_sleeping_toy_wakes_when_something_runs_into_it() {
-        // Sleeping makes a body static to the solver, so without a wake path a
-        // thrown toy would bounce off a pile that never reacted.
         let mut toybox = settled();
         assert!(
             toybox.toys[1].asleep,
@@ -2146,8 +2112,6 @@ mod tests {
         toybox.wake(0);
         let thrown = toybox.toys[0].body;
         toybox.world.bodies[thrown].velocity = (to - from).normalize() * MAX_CARRY_SPEED;
-        // Watched over the window rather than read at the end of it: a struck
-        // toy settles and latches again well inside 60 ticks.
         let mut woke = false;
         for _ in 0..60 {
             toybox.tick();
@@ -2162,10 +2126,6 @@ mod tests {
 
     #[test]
     fn a_throw_is_slow_enough_to_watch_cross_the_container() {
-        // The regression this guards: at a 259 u/s ceiling a toy crossed the
-        // 7.2-unit arena in 1.7 frames, so it read as having gone through the
-        // wall rather than bounced off it. A throw has to survive several
-        // rendered frames inside the box to be a throw at all.
         let frames = ARENA_HALF_EXTENT * 2.0 / MAX_RELEASE_SPEED * TICK_HZ as f32;
         assert!(
             frames >= 4.0,
@@ -2175,8 +2135,6 @@ mod tests {
 
     #[test]
     fn a_faster_drag_throws_harder_all_the_way_to_the_ceiling() {
-        // The property a flat cap destroyed: every flick above it landed on one
-        // speed, so a fast mouse threw no harder than a medium one.
         fn thrown_at(units_per_frame: f32) -> f32 {
             let mut toybox = settled();
             assert!(grab_centre(&mut toybox, 0));
@@ -2207,12 +2165,6 @@ mod tests {
     }
     #[test]
     fn the_walls_hold_a_throw_at_the_narrowphase_ceiling_for_its_whole_flight() {
-        // The ceiling, not the feel speed: the walls have to hold the fastest
-        // thing the solver will carry, not the fastest thing a hand throws.
-        // A hull vertex may sit inside a wall while the solver pushes it out;
-        // the measured worst at the ceiling speed is 13 slops. It may not sit a
-        // BODY past one, which at 140 slops is what this still catches and is
-        // the tunneling the bound exists for.
         let reach = ARENA_HALF_EXTENT + 16.0 * PENETRATION_SLOP;
         for direction in [
             Vec4::X,
@@ -2290,10 +2242,6 @@ mod tests {
 
     #[test]
     fn the_rim_tolerance_catches_a_ray_that_grazes_the_section_edge() {
-        // The defect this fixes: a ray at the silhouette is nearly parallel to
-        // the triangles it should hit, so Moller-Trumbore rejects it as
-        // parallel and the section reads as grabbable in the middle and dead
-        // at its edges.
         let mut toybox = settled();
         let centre = toybox.position(0).truncate();
         let mut grazing = None;
@@ -2306,10 +2254,6 @@ mod tests {
             }
         }
         let edge = grazing.expect("the pick never stopped, so it has no bound at all");
-        // Far enough out that the rim is real, and near enough that the
-        // fallback has not become a bounding-ball grab: a cube's circumradius
-        // is BODY_SIZE*sqrt(3), so the section plus its rim lives under twice
-        // a body radius.
         assert!(
             edge > PICK_TOLERANCE && edge < 2.0 * BODY_SIZE,
             "the pick died {edge} from the centre, outside the section-plus-rim band"
@@ -2372,8 +2316,6 @@ mod tests {
             last / launched
         );
 
-        // The same damping in place, a hull-against-hull throw still drives a
-        // neighbour past the band the floor alone keeps every toy inside.
         let mut toybox = settled();
         assert!(peak_w(&toybox) < SETTLED_W_BAND);
         assert!(grab_centre(&mut toybox, 0));
@@ -2631,8 +2573,6 @@ mod tests {
 
     #[test]
     fn the_release_reads_recent_cursor_speed_and_not_the_total_drag() {
-        // One long drag, released twice: once in motion, once after the cursor
-        // has stood still for longer than the release window.
         let throw = |stall: usize| {
             let mut toybox = settled();
             assert!(grab_centre(&mut toybox, 0));
@@ -2649,8 +2589,6 @@ mod tests {
         };
         let flicked = throw(0);
         let stalled = throw(12);
-        // 0.05 u/frame is 3 u/s of cursor, so RELEASE_GAIN puts the throw
-        // near 0.9 u/s. The bound is on the gain-scaled speed, not a raw one.
         assert!(
             flicked.x > 0.5 * 3.0 * RELEASE_GAIN,
             "a 3 u/s drag released in motion threw at {flicked}"
@@ -2694,9 +2632,6 @@ mod tests {
             "an off-centre grab left the body spinning at {}",
             after.magnitude()
         );
-        // The change in angular velocity is `I⁻¹(r ∧ J)` about the point that was
-        // grabbed. An impulse through the centre of mass has no lever arm and
-        // would leave the spin exactly where it was.
         let lever = rotation.apply(lever_local);
         let expected =
             Bivector4::wedge(lever, toybox.velocity(0) * BODY_MASS) * (RELEASE_SPIN_GAIN / inertia);
@@ -2885,9 +2820,6 @@ mod tests {
             "a ray at the centre missed the body"
         );
 
-        // The pick is the cross-section plus a rim, NOT the bounding ball. A
-        // ray inside the ball but well outside the section still misses, which
-        // is what keeps a click near one toy from grabbing its neighbour.
         let far = centre + Vec3::new(BODY_SIZE * 0.95, BODY_SIZE * 0.95, 0.0);
         assert!(
             (far - centre).length() < BODY_SIZE * 1.5,
@@ -2950,8 +2882,6 @@ mod tests {
             advance_target(start, delta, GrabAxis::Through),
             start + Vec4::new(0.4, 0.0, 0.1, -0.7 * W_PER_RISE)
         );
-        // The target integrates deltas, so the modifier can be pressed and
-        // released mid-drag without the body jumping.
         for axis in [GrabAxis::Slice, GrabAxis::Through] {
             assert_eq!(
                 advance_target(advance_target(start, delta, axis), -delta, axis),
@@ -3006,9 +2936,6 @@ mod tests {
             "a settled pile should not widen the reach past the spawn range"
         );
 
-        // Deeper in w than the fixed range, which is where a toy used to
-        // become unreachable: the slice clamped short of it, so its
-        // cross-section could never be brought back into view.
         let rolled = W_SLICE_RANGE * 3.0;
         let id = toybox.toys[0].body;
         toybox.world.bodies[id].position.w = rolled;
@@ -3044,8 +2971,6 @@ mod tests {
                 "a click at {x} read as w {got}, not {want}"
             );
         }
-        // Off either end, so a drag that leaves the bar pins rather than
-        // running the slice away to somewhere with no toys in it.
         assert_eq!(slice_for_ruler_x(LEFT - 500.0, LEFT, WIDTH, reach), -reach);
         assert_eq!(slice_for_ruler_x(LEFT + 500.0, LEFT, WIDTH, reach), reach);
     }
@@ -3088,17 +3013,10 @@ mod tests {
     // Past `PENETRATION_SLOP`, so the narrowphase reports rather than grazes.
     const FIXTURE_OVERLAP: f32 = 0.2;
 
-    // Far past the sum of two bounding radii, so the broadphase cannot couple
-    // two pairs into one island.
     const FIXTURE_GROUP_GAP: f32 = 20.0;
 
-    // Fast enough that the Coulomb clamp `|jt| <= mu*jn` binds on the first
-    // step, so the tangent accumulator is the cap rather than a rounding
-    // artefact.
     const FIXTURE_SLIDE_SPEED: f32 = 3.0;
 
-    // Balls, not the scene's hulls, and no floor: one contact point per
-    // manifold is what makes the per-layer segment counts below exact.
     fn overlapping_pairs(pairs: usize) -> World<EuclideanR4> {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
@@ -3357,9 +3275,6 @@ mod tests {
 
         let mut peak = 0.0f32;
         for _ in 0..FLICK_TICKS {
-            // Held awake for the measurement: otherwise this reads the sleep
-            // schedule rather than the blow, since a neighbour that parks
-            // before impact is static and answers with a different impulse.
             for toy in 0..TOYS.len() {
                 toybox.wake(toy);
             }

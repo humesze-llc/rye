@@ -1,7 +1,4 @@
 //! `cargo run --release -p loam-shape --example isovolume_piece_budget`.
-//!
-//! Both test shapes are non-convex, so the piece count is not an artefact of a
-//! shape a single hull would have covered.
 
 use std::time::Instant;
 
@@ -26,8 +23,7 @@ fn torus_volume_3d() -> f32 {
     2.0 * std::f32::consts::PI.powi(2) * MAJOR * MINOR * MINOR
 }
 
-// Revolving the meridian disk with the 2-sphere's `4πu²` measure and the disk's
-// second moment `A·r²/4` gives `V = 4π²·r²·(R² + r²/4)`.
+// Revolving the meridian disk gives `V = 4π²·r²·(R² + r²/4)`.
 fn torus_volume_4d() -> f32 {
     4.0 * std::f32::consts::PI.powi(2) * MINOR * MINOR * (MAJOR * MAJOR + 0.25 * MINOR * MINOR)
 }

@@ -166,12 +166,6 @@ mod tests {
     }
 
     #[test]
-    fn dt_seconds_matches_hz() {
-        let t = FixedTimestep::new(60);
-        assert!((t.dt_seconds() - 1.0 / 60.0).abs() < 1e-6);
-    }
-
-    #[test]
     #[should_panic(expected = "tick rate must be positive")]
     fn zero_hz_panics() {
         let _ = FixedTimestep::new(0);

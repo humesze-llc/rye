@@ -29,9 +29,6 @@ pub fn fnv1a64(words: &[u32]) -> u64 {
 /// FNV-1a of [`ScenarioRun::trajectory`] under the default schedule, recorded
 /// on x86_64 and scoped to that architecture family: glam's SIMD dot reduces
 /// in a different order than its scalar fallback.
-///
-/// The scenario is chaotic, so a mismatch is re-recordable only when
-/// [`assert_scenario_stays_physical`] still passes.
 pub const GOLDEN_TRAJECTORY_HASH: u64 = 0xbc70_273d_6c03_b6da;
 
 pub struct ScenarioRun {
@@ -94,15 +91,6 @@ where
 
 /// Neither limit is a recorded measurement: both follow from the scenario, so
 /// tripping one says the simulation stopped being physical.
-///
-/// Floor: a sphere centre at or below `y = 0` is more than half-buried, which
-/// is tunnelling and not a settling depth; the solver targets
-/// `PENETRATION_SLOP`.
-///
-/// Energy: the scenario has no source. Semi-implicit Euler in a uniform field
-/// loses `½·|g|²·dt²` per unit mass per step, restitution is suppressed below
-/// `RESTITUTION_THRESHOLD`, and Coulomb friction only opposes sliding. The
-/// Baumgarte bias is the one term that can add energy.
 pub fn assert_scenario_stays_physical(run: &ScenarioRun) {
     let envelope = &run.envelope;
     assert!(
@@ -352,10 +340,7 @@ const THROW_WORDS: u32 = 5;
 // `slot` value meaning the tick carried no throw.
 const NO_THROW: u32 = u32::MAX;
 const THROW_PERIOD: u64 = 20;
-// Per-component bound, kg·m/s. The spheres are unit mass, so one throw adds
-// under `sqrt(3)·THROW_IMPULSE` m/s, i.e. under 0.058 m of travel per step,
-// against the 0.150 m per-step bound
-// `thin_wall_holds_only_below_a_recorded_per_step_displacement_r3` records.
+// Per-component bound, kg·m/s.
 const THROW_IMPULSE: f32 = 2.0;
 pub const REPLAY_TICKS: u64 = 180;
 pub const REPLAY_SEED: u64 = 0x5eed_f11c_c0de_0001;

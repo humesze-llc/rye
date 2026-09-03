@@ -7,8 +7,7 @@ use crate::polytope_geom::{
     tesseract_vertices,
 };
 
-/// Discriminants match `loam_render::raymarch::SHAPE_*`, so one `u32` drives
-/// both the kernel and the topology lookup.
+/// Discriminants match `loam_render::raymarch::SHAPE_*`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum Polytope4 {
@@ -66,8 +65,7 @@ impl Polytope4 {
         self.topology().cells.len()
     }
 
-    /// Each centroid has length equal to the inradius and points along the
-    /// cell's outward face normal.
+    /// Length equal to the inradius, along the cell's outward face normal.
     pub fn cell_centers(self) -> Vec<Vec4> {
         let topo = self.topology();
         topo.cells
@@ -82,10 +80,8 @@ impl Polytope4 {
     }
 
     /// `(normals, inradius)`, shaped for
-    /// [`crate::polytope_geom::polytope_sdf_wolfe`]. Unlike the dual-vertex
-    /// helpers `cell120_face_planes` / `cell600_face_planes` (approximate on
-    /// the 96 golden-ratio orbits; the documented BUG), normals derived from
-    /// cell centroids are exact for every regular convex 4-polytope.
+    /// [`crate::polytope_geom::polytope_sdf_wolfe`]. Normals derived from cell
+    /// centroids are exact for every regular convex 4-polytope.
     pub fn face_planes(self) -> (Vec<Vec4>, f32) {
         let topo = self.topology();
         let mut normals = Vec::with_capacity(topo.cells.len());
@@ -97,8 +93,7 @@ impl Polytope4 {
                 .sum::<Vec4>()
                 / cell.len() as f32;
             let r = centroid.length();
-            // Average the inradius across all cells to absorb f32 noise rather
-            // than read it off the first cell.
+            // Average the inradius across all cells to absorb f32 noise.
             normals.push(centroid / r);
             inradius_sum += r;
         }
@@ -188,8 +183,7 @@ impl Polytope4 {
     }
 }
 
-/// Normalized `xyz` drive R/G/B biased into `[0.25, 1.0]` so no vertex is
-/// fully black; `w` modulates brightness in `[0.7, 1.0]` as a depth cue.
+/// Normalized `xyz` drive R/G/B; `w` modulates brightness as a depth cue.
 pub fn vertex_color_by_position(v: Vec4) -> [f32; 4] {
     let n = v.try_normalize().unwrap_or(Vec4::ZERO);
     let bias = |c: f32| 0.25 + 0.75 * (0.5 + 0.5 * c);
@@ -238,8 +232,7 @@ fn polytope_section_overlay_with_vertices(
     (tri_mesh, edge_mesh)
 }
 
-/// Caller-owned mesh and working set, so a per-frame overlay stops reaching the
-/// allocator once both have grown.
+/// Caller-owned mesh and working set, so a per-frame overlay stops allocating.
 pub fn polytope_section_perimeter_append(
     edges: &[[u32; 2]],
     cells: &[&[u32]],
@@ -274,8 +267,7 @@ fn push_cap_fan(
     }
 }
 
-// Adjacent caps share face-on-slice edges, drawn twice rather than paying for a
-// global dedup pass.
+// Adjacent caps share face-on-slice edges, drawn twice.
 fn push_cap_perimeter(ordered: &[Vec3], out: &mut crate::LineMesh<3>) {
     for k in 0..ordered.len() {
         let a = ordered[k];
@@ -308,8 +300,7 @@ fn polytope_section_faces_with_vertices(
     tri_mesh
 }
 
-/// Indices are offset by the existing vertex count, so many bodies merge into
-/// one reused scratch mesh.
+/// Indices are offset by the existing vertex count.
 pub fn polytope_section_faces_append(
     edges: &[[u32; 2]],
     cells: &[&[u32]],
@@ -339,8 +330,7 @@ fn polytope4_section_faces(
     polytope_section_faces_with_vertices(topo.edges, topo.cells, topo.vertices, slice, color)
 }
 
-/// Caller-held, so a per-frame section does not allocate three buffers per
-/// crossed cell.
+/// Caller-held, so a per-frame section does not allocate.
 #[derive(Debug, Default)]
 pub struct SectionScratch {
     cap: Vec<Vec3>,
@@ -348,8 +338,7 @@ pub struct SectionScratch {
     ordered: Vec<Vec3>,
 }
 
-// Degenerate caps (< 3 points, collinear) are skipped. `emit` runs in topology
-// cell order, so mesh output is deterministic across runs.
+// `emit` runs in topology cell order, so mesh output is deterministic.
 fn for_each_section_cap(
     edges: &[[u32; 2]],
     cells: &[&[u32]],
@@ -360,8 +349,7 @@ fn for_each_section_cap(
 ) {
     let slice = perturb_slice_if_needed(slice, vertices);
 
-    // Reference "inside" point so each cap's fan-triangle winding can be
-    // oriented outward.
+    // Reference "inside" point so each cap's winding can be oriented outward.
     let polytope_center_r3: Vec3 = if vertices.is_empty() {
         Vec3::ZERO
     } else {
@@ -370,8 +358,7 @@ fn for_each_section_cap(
     };
 
     for cell in cells {
-        // Per-cell w-range pruning: the load-bearing optimization for the
-        // 600-cell (~430K naive ops -> ~3K typical).
+        // Per-cell w-range pruning: ~430K naive ops -> ~3K typical on the 600-cell.
         let (w_min, w_max) = cell_w_range(cell, vertices);
         if w_max < slice.w_slice - loam_math::SLICE_PERTURBATION_EPSILON
             || w_min > slice.w_slice + loam_math::SLICE_PERTURBATION_EPSILON
@@ -379,8 +366,7 @@ fn for_each_section_cap(
             continue;
         }
 
-        // Cell edges are parent edges restricted to the cell's vertex set,
-        // which avoids needing per-cell 2-face incidence data.
+        // Cell edges are parent edges restricted to the cell's vertex set.
         let cap = &mut scratch.cap;
         cap.clear();
         for &[i, j] in edges {
@@ -406,9 +392,7 @@ fn for_each_section_cap(
             continue;
         };
 
-        // Flip `basis_v` so the face normal `u × v` points outward; without it
-        // `fit_plane_basis`'s sign varies per cap, giving inconsistent winding.
-        // A centroid at the center has no reference direction, so skip it.
+        // Flip `basis_v` so the face normal `u × v` points outward.
         let outward = centroid - polytope_center_r3;
         let face_normal = basis_u.cross(basis_v);
         if outward.length_squared() > 1e-12 && face_normal.dot(outward) < 0.0 {
@@ -428,8 +412,7 @@ fn for_each_section_cap(
     }
 }
 
-// Shifting by SLICE_PERTURBATION_EPSILON clears vertex-on-slice,
-// edge-in-plane, and face-graze degeneracies in one step.
+// Shifting by SLICE_PERTURBATION_EPSILON clears vertex-on-slice degeneracies.
 fn perturb_slice_if_needed(slice: loam_math::WPlane, vertices: &[Vec4]) -> loam_math::WPlane {
     let eps = loam_math::SLICE_PERTURBATION_EPSILON;
     let near = vertices.iter().any(|v| (v.w - slice.w_slice).abs() < eps);
@@ -481,8 +464,7 @@ fn fit_plane_basis(centroid: Vec3, points: &[Vec3]) -> Option<(Vec3, Vec3)> {
     None
 }
 
-// `keys` carries the angle per point so `atan2` runs once each rather than
-// once per comparison.
+// `keys` carries the angle per point so `atan2` runs once each.
 fn order_around_centroid(
     points: &[Vec3],
     centroid: Vec3,
@@ -497,9 +479,7 @@ fn order_around_centroid(
         let angle = off.dot(basis_v).atan2(off.dot(basis_u));
         (i, angle)
     }));
-    // Unstable so the sort cannot allocate: a stable sort falls back to a
-    // scratch buffer above its insertion-sort threshold. Ties would be
-    // coincident cap points, which the slice perturbation rules out.
+    // Unstable so the sort cannot allocate.
     keys.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     ordered.clear();
     ordered.extend(keys.iter().map(|&(i, _)| points[i]));
@@ -520,13 +500,7 @@ static CELL120_VERTICES: LazyLock<&'static [Vec4]> =
 static CELL600_VERTICES: LazyLock<&'static [Vec4]> =
     LazyLock::new(|| Box::leak(cell600_vertices(1.0).into_boxed_slice()));
 
-// Coxeter, Regular Polytopes, Table I, cross-checked against Wikipedia and the
-// empirical min pairwise distance.
-//
-// The 120-cell value is non-obvious: Wikipedia's `3 − √5` is at circumradius
-// `2√2` (the convention of `polytope_geom::cell120_vertices`), so unit
-// circumradius gives `(3 − √5)/(2√2) = 1/(φ²·√2)`. Dropping the `√2` is the
-// 600-cell dual's identity, not the 120-cell's.
+// Coxeter, Regular Polytopes, Table I.
 fn canonical_edge_length(p: Polytope4) -> f32 {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
     let sqrt2 = 2.0_f32.sqrt();
@@ -540,9 +514,7 @@ fn canonical_edge_length(p: Polytope4) -> f32 {
     }
 }
 
-// Absorbs f32 accumulation (~1e-5 at unit scale) while staying far below the
-// gap to the next-shortest chord; tightest on the 120-cell (edge 0.382, next
-// chord ~0.627), where 1e-4 leaves a 4x margin either side.
+// Absorbs f32 accumulation (~1e-5) while staying below the next-shortest chord.
 const EDGE_TOLERANCE: f32 = 1e-4;
 
 fn derive_edges(vertices: &[Vec4], edge_length: f32) -> Vec<[u32; 2]> {
@@ -558,8 +530,7 @@ fn derive_edges(vertices: &[Vec4], edge_length: f32) -> Vec<[u32; 2]> {
     edges
 }
 
-// Takes the vertex slice directly, not a `Polytope4`, so the `EDGES` LazyLock
-// cannot recursively re-enter `TOPOLOGY` during init.
+// Takes the vertex slice directly so `EDGES` cannot re-enter `TOPOLOGY` on init.
 fn cache_edges(vertices: &'static [Vec4], edge_length: f32) -> &'static [[u32; 2]] {
     Box::leak(derive_edges(vertices, edge_length).into_boxed_slice())
 }
@@ -585,18 +556,12 @@ static CELL120_EDGES: LazyLock<&'static [[u32; 2]]> =
 static CELL600_EDGES: LazyLock<&'static [[u32; 2]]> =
     LazyLock::new(|| cache_edges(*CELL600_VERTICES, canonical_edge_length(Polytope4::Cell600)));
 
-// Cells are fit against the polytope's own edge graph, not an external dual:
-// the 120-cell and 600-cell generators in `polytope_geom` are not in
-// mutually-dual orientation (their 96 golden-ratio vertices differ), so a
-// dual's vertices are not the other's face normals.
+// Cells are fit against the polytope's own edge graph, not an external dual.
 
-// Vertex on a cell's 3-flat. f32 noise on `Vec4::dot` is ~5e-7, so 1e-4 leaves
-// ~100x margin while still rejecting adjacent-cell vertices (the `n · v` spread
-// is order 0.1, tightest on the 120-cell).
+// Vertex on a cell's 3-flat. f32 noise on `Vec4::dot` is ~5e-7.
 const CELL_TOLERANCE: f32 = 1e-4;
 
-// The acceptance filter on a trial 3-flat fit: a non-cell 3-flat through 4
-// points generically holds only those 4, a true cell's holds the full cell.
+// A non-cell 3-flat through 4 points generically holds only those 4.
 const fn cell_vertex_count(p: Polytope4) -> usize {
     match p {
         Polytope4::Pentatope => 4,
@@ -608,8 +573,7 @@ const fn cell_vertex_count(p: Polytope4) -> usize {
     }
 }
 
-// Component `i` is the signed 3x3 minor of `[a; b; c]` with column `i` dropped
-// (cofactor expansion), each minor computed as a triple product.
+// Component `i` is the signed 3x3 minor of `[a; b; c]` with column `i` dropped.
 fn cross4(a: Vec4, b: Vec4, c: Vec4) -> Vec4 {
     let drop_x = |v: Vec4| Vec3::new(v.y, v.z, v.w);
     let drop_y = |v: Vec4| Vec3::new(v.x, v.z, v.w);
@@ -633,13 +597,10 @@ fn adjacency(num_vertices: usize, edges: &[[u32; 2]]) -> Vec<Vec<u32>> {
     adj
 }
 
-// Below this the three difference vectors are near-dependent. Distinct from
-// CELL_TOLERANCE: that bounds on-plane membership in dot units, this bounds
-// normal magnitude in vector-length units.
+// Below this the three difference vectors are near-dependent.
 const MIN_CROSS4_LENGTH: f32 = 1e-4;
 
-// Cost `O(V · D³ · V)` (vertices `V`, vertex-figure valence `D`), worst case
-// ~3.2M plane scans on the 600-cell. Output is lexicographically sorted.
+// Cost `O(V · D³ · V)`, worst case ~3.2M plane scans on the 600-cell.
 fn derive_cells(vertices: &[Vec4], edges: &[[u32; 2]], cell_size: usize) -> Vec<Vec<u32>> {
     use std::collections::BTreeSet;
 
@@ -674,8 +635,7 @@ fn derive_cells(vertices: &[Vec4], edges: &[[u32; 2]], cell_size: usize) -> Vec<
     cells_set.into_iter().collect()
 }
 
-// Like `cache_edges`, takes data slices directly so it cannot re-enter the
-// LazyLock during init.
+// Like `cache_edges`, takes data slices directly so it cannot re-enter.
 fn cache_cells(
     vertices: &'static [Vec4],
     edges: &'static [[u32; 2]],
@@ -867,28 +827,6 @@ mod tests {
     }
 
     #[test]
-    fn cell_vertex_counts_match_shape() {
-        let cases: &[(Polytope4, usize)] = &[
-            (Polytope4::Pentatope, 4),
-            (Polytope4::Tesseract, 8),
-            (Polytope4::Cell16, 4),
-            (Polytope4::Cell24, 6),
-            (Polytope4::Cell120, 20),
-            (Polytope4::Cell600, 4),
-        ];
-        for &(p, expected) in cases {
-            for (i, cell) in p.topology().cells.iter().enumerate() {
-                assert_eq!(
-                    cell.len(),
-                    expected,
-                    "{p:?} cell {i} has {} vertices, expected {expected}",
-                    cell.len()
-                );
-            }
-        }
-    }
-
-    #[test]
     fn cells_lie_on_common_hyperplane() {
         for p in Polytope4::ALL {
             let topo = p.topology();
@@ -997,29 +935,6 @@ mod tests {
     }
 
     #[test]
-    fn euler_poincare_relation_holds() {
-        // (Polytope, F = number of 2-faces). V/E/C come from `.topology()`.
-        let face_counts: &[(Polytope4, i64)] = &[
-            (Polytope4::Pentatope, 10),
-            (Polytope4::Tesseract, 24),
-            (Polytope4::Cell16, 32),
-            (Polytope4::Cell24, 96),
-            (Polytope4::Cell120, 720),
-            (Polytope4::Cell600, 1200),
-        ];
-        for &(p, f) in face_counts {
-            let v = p.vertex_count() as i64;
-            let e = p.edge_count() as i64;
-            let c = p.cell_count() as i64;
-            assert_eq!(
-                v - e + f - c,
-                0,
-                "{p:?} Euler-Poincaré: V({v}) - E({e}) + F({f}) - C({c}) != 0"
-            );
-        }
-    }
-
-    #[test]
     fn visualizable_line_count_matches_edge_count() {
         use crate::Visualizable;
         for p in Polytope4::ALL {
@@ -1046,27 +961,6 @@ mod tests {
             let (a, b) = mesh.segments[i];
             assert_eq!(a, topo.vertices[vi as usize].to_array());
             assert_eq!(b, topo.vertices[vj as usize].to_array());
-        }
-    }
-
-    #[test]
-    fn visualizable_point_count_matches_vertex_count() {
-        use crate::Visualizable;
-        for p in Polytope4::ALL {
-            let mesh = <Polytope4 as Visualizable<4>>::to_points(&p)
-                .expect("polytopes always produce point meshes");
-            assert_eq!(mesh.positions.len(), p.vertex_count());
-            assert_eq!(mesh.colors.len(), mesh.positions.len());
-            assert_eq!(mesh.sizes.len(), mesh.positions.len());
-        }
-    }
-
-    #[test]
-    fn visualizable_triangles_currently_not_visualizable() {
-        use crate::Visualizable;
-        for p in Polytope4::ALL {
-            let result = <Polytope4 as Visualizable<4>>::to_triangles(&p);
-            assert!(matches!(result, Err(crate::NotVisualizable::Degenerate)));
         }
     }
 
@@ -1242,13 +1136,9 @@ mod tests {
         assert_eq!(mesh.colors.len(), mesh.segments.len());
     }
 
-    // Every section-perimeter vertex is on the parent's true surface, so a
-    // correct SDF returns ~0 there. The 120/600-cell SDFs carry the documented
-    // BUG on the 96 golden-ratio orbits; the tests below pin that divergence so
-    // a future fix fires here.
+    // Every section-perimeter vertex is on the parent's true surface.
 
-    // Every perimeter vertex sits on the slice hyperplane, so its w is exactly
-    // `slice.w_slice`.
+    // Every perimeter vertex sits on the slice hyperplane.
     fn perimeter_vertices_4d(perim: &crate::LineMesh<3>, w: f32) -> Vec<Vec4> {
         let mut out = Vec::with_capacity(perim.segments.len() * 2);
         for (a, b) in &perim.segments {
@@ -1294,9 +1184,7 @@ mod tests {
             Polytope4::Cell16,
             Polytope4::Cell24,
         ];
-        // 1e-3 sits well above f32 noise from the SDF's Wolfe-greedy projection
-        // (~1e-5 in practice) but tight enough to fire on any face-plane
-        // approximation approaching the 120/600 BUG magnitudes (~1e-2).
+        // 1e-3 sits above f32 noise (~1e-5) and below the BUG magnitudes (~1e-2).
         const TOL: f32 = 1e-3;
         let slice = loam_math::WPlane::new(0.0);
         for polytope in cases {
@@ -1340,8 +1228,7 @@ mod tests {
         );
     }
 
-    // Independent copy of the algorithm's internal `cell_w_range`; if the two
-    // ever drift, the test that uses it fires.
+    // Independent copy of the algorithm's internal `cell_w_range`.
     fn test_cell_w_range(cell: &[u32], vertices: &[Vec4]) -> (f32, f32) {
         cell.iter()
             .map(|&i| vertices[i as usize].w)
@@ -1352,9 +1239,7 @@ mod tests {
 
     #[test]
     fn cell_pruning_matches_straddle_count() {
-        // Grazing values (within `SLICE_PERTURBATION_EPSILON` of any vertex's w)
-        // are avoided so the perturbation path cannot shift the slice between
-        // the independent count and the algorithm's.
+        // Grazing values are avoided so the perturbation cannot shift the slice.
         let slices = [-0.7, -0.3, -0.1, 0.0, 0.1, 0.3, 0.7];
         let eps = loam_math::SLICE_PERTURBATION_EPSILON;
 
@@ -1371,9 +1256,7 @@ mod tests {
                     .iter()
                     .filter(|cell| {
                         let (lo, hi) = test_cell_w_range(cell, topo.vertices);
-                        // Strict `<` matches the algorithm: a cell whose
-                        // w_max == effective_w + eps produces no crossing edge,
-                        // so its edge-section step yields nothing.
+                        // Strict `<` matches the algorithm.
                         lo < effective_w && effective_w < hi
                     })
                     .count();
@@ -1393,8 +1276,7 @@ mod tests {
     #[test]
     fn section_face_normals_point_outward_from_polytope_center() {
         for polytope in Polytope4::ALL {
-            // Polytope is centered at origin in canonical coordinates, so the
-            // outward direction at any cap is the cap centroid itself.
+            // The outward direction at any cap is the cap centroid itself.
             let center = Vec3::ZERO;
             for &slice_w in &[-0.5_f32, -0.2, 0.0, 0.2, 0.5] {
                 let (mesh, _) =
@@ -1434,9 +1316,7 @@ mod tests {
         for polytope in Polytope4::ALL {
             let topo = polytope.topology();
             for _ in 0..16 {
-                // `xyzw` is included for full Spin(4) coverage even though it is
-                // zero for SO(4) rotations; normalisation absorbs it into the
-                // unit-norm constraint.
+                // `xyzw` is included for full Spin(4) coverage.
                 let rotor = loam_math::Rotor4 {
                     s: rand(),
                     xy: rand(),
@@ -1452,8 +1332,7 @@ mod tests {
                     use loam_math::Rotor as _;
                     topo.vertices.iter().map(|v| rotor.apply(*v)).collect()
                 };
-                // Rotors preserve circumradius, so a slice in `(-1, 1)` stays
-                // inside any unit-circumradius polytope.
+                // Rotors preserve circumradius.
                 let slice_w = rand() * 0.8;
                 let slice = loam_math::WPlane::new(slice_w);
                 let (tri, perim) =

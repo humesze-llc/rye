@@ -4,15 +4,11 @@ use crate::space::Space;
 use crate::EuclideanR4;
 
 /// Smallest `|dw|` for which [`SectionableSpace::edge_section`] returns an
-/// intersection; below it the edge is treated as parallel to the slice (whole
-/// edge or empty, handled by the caller). 10x above f32 roundoff (~1e-7) on a
-/// unit-circumradius `dw`.
+/// intersection. 10x above f32 roundoff (~1e-7) on a unit-circumradius `dw`.
 pub const EDGE_PARALLEL_EPSILON: f32 = 1e-6;
 
 /// Slice-perturbation epsilon: when a vertex's slice-axis coord sits this close
-/// to the slice, the cell-assembly caller shifts the slice by this amount. One
-/// shift kills three degeneracies: vertex on slice, edge in slice plane, slice
-/// grazes a face.
+/// to the slice, the cell-assembly caller shifts the slice by this amount.
 pub const SLICE_PERTURBATION_EPSILON: f32 = 1e-5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

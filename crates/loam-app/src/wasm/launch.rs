@@ -1,18 +1,10 @@
-//! Demos opt into click-to-start by marking the host element in `index.html`:
-//!
-//! ```html
-//! <div id="loam-canvas-host" data-mode="manual">
-//!   <canvas id="loam-canvas" width="1280" height="800"></canvas>
-//! </div>
-//! ```
+//! Demos opt into click-to-start by marking the host element in `index.html`.
 
 use anyhow::{anyhow, Context, Result};
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{HtmlButtonElement, HtmlStyleElement};
 
-// The blur reads the canvas underneath, so the worker's preview frame shows as
-// a softened thumbnail until the click.
 const LAUNCH_OVERLAY_CSS: &str = r#"
 /* Base: shared chrome (positioning, blur, font, transitions). The
    overlay is injected with no state class, so the chip is hidden and
@@ -79,17 +71,14 @@ const LAUNCH_OVERLAY_CSS: &str = r#"
 
 const OVERLAY_STYLE_ID: &str = "loam-launch-overlay-styles";
 
-/// Returns the button for the caller to wire; the `<style>` is idempotent, keyed
-/// on a fixed id, and an existing `button_id` element is reused. No state class:
-/// CSS shows only the blurred backdrop until the worker's `preview_ready` adds
-/// `.ready`.
+/// No state class: CSS shows only the blurred backdrop until the worker's
+/// `preview_ready` adds `.ready`.
 pub fn inject_launch_overlay(host_id: &str, button_id: &str) -> Result<HtmlButtonElement> {
     overlay_button(host_id, button_id, "loam-demo-launch", "Launch demo")
 }
 
 /// The paused-state affordance (`.ready.resume`: immediately clickable, a paused
-/// demo is warm). The launch flow removed the original button, so this usually
-/// creates a fresh element.
+/// demo is warm).
 pub fn show_resume_overlay(host_id: &str, button_id: &str) -> Result<HtmlButtonElement> {
     overlay_button(
         host_id,
@@ -99,8 +88,6 @@ pub fn show_resume_overlay(host_id: &str, button_id: &str) -> Result<HtmlButtonE
     )
 }
 
-// A reused element gets its class list overwritten, for launch to resume
-// transitions.
 fn overlay_button(
     host_id: &str,
     button_id: &str,
@@ -183,8 +170,6 @@ pub fn wait_for_launch(button_id: &str, on_click: impl FnOnce() + 'static) -> Re
     let button_for_click = button.clone();
 
     let cb = Closure::once(Box::new(move || {
-        // Remove the button before the closure so any RAF or event loop it spins
-        // up does not fight the DOM node.
         button_for_click.remove();
         on_click();
     }) as Box<dyn FnOnce()>);
@@ -199,8 +184,7 @@ pub fn wait_for_launch(button_id: &str, on_click: impl FnOnce() + 'static) -> Re
 
 /// `None` where `performance.memory.usedJSHeapSize` is absent: Chromium exposes
 /// it as a non-standard extension, Firefox and Safari do not, and `web-sys` does
-/// not surface it, hence `js_sys::Reflect`. V8 buckets the value to ~25-100 ms,
-/// fine for multi-MB GC jumps, not for single allocations.
+/// not surface it, hence `js_sys::Reflect`.
 pub fn js_heap_sampler() -> Option<u64> {
     let window = web_sys::window()?;
     let performance = window.performance()?;

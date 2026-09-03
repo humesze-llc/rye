@@ -1,7 +1,6 @@
 //! Pose is extrinsic: shapes are defined in a local frame and positioned by
 //! the caller's transform. [`Shape::Sphere`] and [`Shape::HyperSphere4D`] are
-//! the exceptions, carrying a `center` that SDF scenes use in place of a
-//! transform combinator and that physics ignores.
+//! the exceptions, carrying a `center` that physics ignores.
 
 pub mod isovolume;
 pub mod polytope;
@@ -19,21 +18,18 @@ pub enum Shape {
     Sphere {
         /// Geodesic center in the shape frame. Ignored by physics.
         center: Vec3,
-        /// Positive; a zero or negative radius is not rejected here and
-        /// yields a degenerate SDF and no contact manifold.
+        /// Positive; a zero or negative radius is not rejected here.
         radius: f32,
     },
 
     /// `{ p : dot(p, normal) − offset ≤ 0 }` is the solid side.
     HalfSpace {
-        /// Assumed unit: `dot(p, normal) - offset` is read directly as a
-        /// signed distance, which a non-unit normal rescales.
+        /// Assumed unit: `dot(p, normal) - offset` is read as a signed distance.
         normal: Vec3,
         offset: f32,
     },
 
-    /// Only meaningful on a static body (`inv_mass = 0`); a dynamic
-    /// half-space is not physically sensible.
+    /// Only meaningful on a static body (`inv_mass = 0`).
     HalfSpace4D {
         /// Assumed unit, as in [`Shape::HalfSpace`].
         normal: Vec4,
@@ -41,22 +37,17 @@ pub enum Shape {
     },
 
     Box3 {
-        /// Per-axis distance from the local origin to each face, so the box
-        /// spans `[-half_extents, half_extents]`.
+        /// The box spans `[-half_extents, half_extents]`.
         half_extents: Vec3,
     },
 
     Polygon2D {
-        /// Counter-clockwise boundary loop in the local frame. Convexity is a
-        /// precondition SAT cannot detect the violation of; fewer than three
-        /// vertices yields no contact at all rather than an error.
+        /// Counter-clockwise boundary loop in the local frame.
         vertices: Vec<Vec2>,
     },
 
     ConvexPolytope3D {
-        /// Unordered point set in the shape frame. The collider is its
-        /// convex hull, so a non-convex list silently collides as the hull
-        /// and interior points only cost support-function time.
+        /// Unordered point set in the shape frame; the collider is its hull.
         vertices: Vec<Vec3>,
     },
 
@@ -67,8 +58,7 @@ pub enum Shape {
     },
 
     HyperSphere4D {
-        /// Center in the shape frame; unlike [`Shape::Sphere`] this is the
-        /// pose, since `Scene4` has no transform combinator to carry it.
+        /// Center in the shape frame; unlike [`Shape::Sphere`] this is the pose.
         center: Vec4,
         /// Positive; same non-enforcement as [`Shape::Sphere`].
         radius: f32,
@@ -101,8 +91,7 @@ impl Shape {
     }
 }
 
-/// One variant per [`Shape`] variant, and [`Shape::kind`] is total, so a
-/// dispatch table indexed by this enum is exhaustive by construction.
+/// One variant per [`Shape`] variant, and [`Shape::kind`] is total.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ShapeKind {
     Sphere,

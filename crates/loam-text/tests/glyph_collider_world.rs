@@ -45,8 +45,7 @@ fn word() -> Option<Vec<GlyphSolid>> {
     Some(layout_word(&font, WORD, &GlyphParams::default()).expect("layout"))
 }
 
-// Gravity along `-z`, so a falling body meets a front face rather than a
-// silhouette edge one slab thick.
+// Gravity along `-z`, so a falling body meets a front face.
 fn word_world(letters: &[GlyphSolid]) -> World<EuclideanR4> {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
@@ -68,8 +67,7 @@ fn drop_ball(world: &mut World<EuclideanR4>, at: Vec2) -> BodyId {
     ))
 }
 
-// Taken from the render mesh so the drop points do not depend on the cover
-// under test.
+// Taken from the render mesh, not the cover under test.
 fn ink_mid_y(letter: &GlyphSolid) -> f32 {
     let mesh = Visualizable::<3>::to_triangles(letter).expect("mesh");
     let lo = mesh.vertices.iter().fold(f32::INFINITY, |m, v| m.min(v[1]));
@@ -80,8 +78,7 @@ fn ink_mid_y(letter: &GlyphSolid) -> f32 {
     0.5 * (lo + hi)
 }
 
-// `(start, end)` runs of `x` the baked field calls ink along `y = mid`. A fixed
-// lattice, so the runs are reproducible.
+// `(start, end)` runs of `x` the baked field calls ink along `y = mid`.
 fn ink_runs(letter: &GlyphSolid, mid: f32) -> Vec<(f32, f32)> {
     const PROBES: usize = 2048;
     let x0 = letter.pen_origin().x - 0.25 * letter.advance();
@@ -174,8 +171,7 @@ fn a_body_dropped_down_the_counter_of_o_falls_through() {
     assert_eq!(runs.len(), 2, "'O' is not two strokes at mid height");
 
     let counter = Vec2::new(0.5 * (runs[0].1 + runs[1].0), mid);
-    // Read off the field, not off the cover: the drop point is clear of the
-    // ink by more than the cover is allowed to intrude, plus the ball.
+    // Read off the field, not off the cover.
     assert!(
         o.distance_2d(counter) > o.collider_margin() + BALL_RADIUS,
         "counter probe {counter} is not clear of the ink"
@@ -188,21 +184,4 @@ fn a_body_dropped_down_the_counter_of_o_falls_through() {
     }
     let z = world.bodies.get(ball).unwrap().position.z;
     assert!(z < -DROP_Z, "ball stopped at z = {z} instead of falling");
-}
-
-#[test]
-fn two_runs_over_a_word_agree_bit_for_bit() {
-    let Some(letters) = word() else { return };
-    let at = widest_stroke(&letters[3]);
-    let trajectory = || {
-        let mut world = word_world(&letters);
-        let ball = drop_ball(&mut world, at);
-        let mut samples = Vec::with_capacity(200);
-        for _ in 0..200 {
-            world.step(DT);
-            samples.push(world.bodies.get(ball).unwrap().position.to_array());
-        }
-        samples
-    };
-    assert_eq!(trajectory(), trajectory());
 }

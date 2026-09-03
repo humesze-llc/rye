@@ -3,8 +3,7 @@
 use glam::Vec4;
 
 pub fn pentatope_vertices(r: f32) -> Vec<Vec4> {
-    // Regular tetrahedron in the `w = -r/4` hyperplane plus an apex at
-    // `(0, 0, 0, r)`, base circumradius `r·sqrt(15)/4` chosen for equal edges.
+    // Base circumradius `r·sqrt(15)/4` chosen for equal edges.
     let k = r;
     let base_w = -r * 0.25;
     let base_r = r * (15.0_f32).sqrt() / 4.0;
@@ -84,9 +83,7 @@ fn even_permutations_4<T: Copy>(arr: [T; 4]) -> [[T; 4]; 12] {
     ]
 }
 
-/// Vertex set at circumradius 1 (Wikipedia "600-cell"): 8 axial `(±1, 0, 0, 0)`,
-/// 16 `(±1/2, ±1/2, ±1/2, ±1/2)`, and 96 even permutations of
-/// `(0, ±1/2, ±φ/2, ±1/(2φ))`. Total 120.
+/// Vertex set at circumradius 1 (Wikipedia "600-cell").
 pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
     let mut v = Vec::with_capacity(120);
@@ -131,12 +128,7 @@ pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
     v
 }
 
-/// Vertex set at circumradius `2√2` before rescaling (Wikipedia "120-cell"):
-/// - 24: permutations of `(0, 0, ±2, ±2)`.
-/// - 64 each: `(±1, ±1, ±1, ±√5)`, `(±1/φ, ±1/φ, ±1/φ, ±φ²)`,
-///   `(±1/φ², ±φ, ±φ, ±φ)`, with the odd-one-out in any of 4 positions.
-/// - 96 each: even perms of `(0, ±1/φ², ±1, ±φ²)` and `(0, ±1/φ, ±φ, ±√5)`.
-/// - 192: even permutations of `(±1/φ, ±1, ±φ, ±2)`.
+/// Vertex set at circumradius `2√2` before rescaling (Wikipedia "120-cell").
 pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
     let phi2 = phi * phi;
@@ -160,8 +152,7 @@ pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
         }
     }
 
-    // `special` at one of 4 positions, `common` at the other 3, all signs
-    // independent: 4·16 = 64 vertices.
+    // `special` at one of 4 positions, `common` at the other 3: 4·16 = 64.
     let mut emit_one_special = |special: f32, common: f32| {
         for special_pos in 0..4 {
             for sm in 0..16u32 {
@@ -226,36 +217,28 @@ pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
     v
 }
 
-/// The 120-cell and 600-cell share this value by polar duality:
-/// `φ² / (2√2) = (3 + √5) / (4√2) ≈ 0.92562`.
+/// `φ² / (2√2) = (3 + √5) / (4√2) ≈ 0.92562`, shared by polar duality.
 pub fn icosian_inradius_unit() -> f32 {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
     phi * phi / (2.0 * 2.0_f32.sqrt())
 }
 
-/// `(normals, offset)` at unit circumradius; the normals are the dual's
-/// vertices. Inside iff `dot(n_i, p) <= offset` for all i.
-// BUG: dual-vertex normals are exact for the 24 axial + 16 tesseract-corner
-// orbits but only approximate for the 96 golden-ratio orbits, so the SDF
-// surface is a slightly-truncated 120-cell. Forward path: rasterized
-// cross-section faces replace the SDF for this polytope's surface.
+/// `(normals, offset)`: inside iff `dot(n_i, p) <= offset` for all i.
+// BUG: dual-vertex normals are only approximate for the 96 golden-ratio orbits,
+// so the SDF surface is a slightly-truncated 120-cell.
 pub fn cell120_face_planes() -> (Vec<Vec4>, f32) {
     (cell600_vertices(1.0), icosian_inradius_unit())
 }
 
 /// Same contract as [`cell120_face_planes`], with the roles swapped.
-// BUG: same approximation as [`cell120_face_planes`]. The true normals are the
-// 600 tetrahedral-cell centroids; the dual vertices diverge on the 96
-// golden-ratio orbits. Same rasterized-section forward path.
+// BUG: same approximation as [`cell120_face_planes`].
 pub fn cell600_face_planes() -> (Vec<Vec4>, f32) {
     (cell120_vertices(1.0), icosian_inradius_unit())
 }
 
 /// Exact signed Euclidean distance to a convex polytope of uniform-distance
 /// face hyperplanes (`dot(n_i, x) = inradius`, `n_i` unit), by Wolfe's greedy
-/// hyperplane projection: add the most-violated plane to the active set,
-/// project onto the intersection, repeat until no violations remain or the set
-/// reaches 4 (a vertex).
+/// hyperplane projection.
 pub fn polytope_sdf_wolfe(p: Vec4, face_normals: &[Vec4], inradius: f32) -> f32 {
     let mut max_d = f32::NEG_INFINITY;
     let mut active_idx = [0usize; 4];
@@ -301,8 +284,7 @@ pub fn polytope_sdf_wolfe(p: Vec4, face_normals: &[Vec4], inradius: f32) -> f32 
     (p - q).length()
 }
 
-// Lagrange multipliers: solves `G λ = b` with `G` the Gram matrix of the active
-// normals, closed-form for each `count` in `1..=4`.
+// Lagrange multipliers: solves `G λ = b` with `G` the Gram matrix.
 fn project_onto_active_planes(p: Vec4, active: &[Vec4; 4], count: usize, inradius: f32) -> Vec4 {
     let b = [
         active[0].dot(p) - inradius,
@@ -347,9 +329,7 @@ fn project_onto_active_planes(p: Vec4, active: &[Vec4; 4], count: usize, inradiu
             p - l0 * active[0] - l1 * active[1] - l2 * active[2]
         }
         4 => {
-            // The 4-plane intersection is a single vertex q = M⁻¹·inradius·1 with
-            // M.row(i) = active[i]. glam::Mat4 is column-major, so transpose at
-            // build: column j holds component j of each active normal.
+            // glam::Mat4 is column-major, so transpose at build.
             let m = glam::Mat4::from_cols(
                 Vec4::new(active[0].x, active[1].x, active[2].x, active[3].x),
                 Vec4::new(active[0].y, active[1].y, active[2].y, active[3].y),

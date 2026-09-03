@@ -1,7 +1,6 @@
 //! A baked collider grid evaluates the scene SDF once per cell, so the
 //! evaluators must never touch the heap. Pinned with a counting global
-//! allocator, which is process-wide and therefore lives in its own test binary
-//! with exactly one test in it.
+//! allocator, which is process-wide and lives in its own test binary.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -48,8 +47,7 @@ fn evaluating_a_scene_never_touches_the_heap() {
             .subtract(SceneNode4::hypersphere(Vec4::new(0.3, 0.1, 0.0, 0.1), 0.2)),
     );
 
-    // Warm every lazily initialised path (formatting, TLS) before arming the
-    // counter, so what it observes is only the evaluation loop.
+    // Warm every lazily initialised path (formatting, TLS) before arming the counter.
     let mut checksum = scene.eval(&EuclideanR3, Vec3::ZERO)
         + scene.eval(&HyperbolicH3, Vec3::ZERO)
         + scene4.eval(Vec3::ZERO, 0.0, true);

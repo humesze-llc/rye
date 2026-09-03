@@ -89,10 +89,9 @@ impl IsometryGroup for EuclideanR4 {
 
     fn iso_compose(&self, a: Iso4Flat, b: Iso4Flat) -> Iso4Flat {
         // `(a ∘ b)(p) = a.apply(b.apply(p))`. For Rotor4 the multiplication convention is
-        // "left operand applied first" (verified by
-        // `rotor4_composition_matches_sequential_apply`), so the composed rotor that applies
-        // `b_rot` then `a_rot` is `b.rotation · a.rotation`, opposite to `Quat`'s convention,
-        // which is why this differs from `Iso3::compose`.
+        // "left operand applied first", so the composed rotor that applies `b_rot` then
+        // `a_rot` is `b.rotation · a.rotation`, opposite to `Quat`'s convention, which is
+        // why this differs from `Iso3::compose`.
         Iso4Flat {
             rotation: b.rotation * a.rotation,
             translation: a.rotation.apply(b.translation) + a.translation,

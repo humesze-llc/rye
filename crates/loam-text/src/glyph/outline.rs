@@ -1,24 +1,18 @@
 //! `ab_glyph` hands back a flat `Vec<OutlineCurve>` with no contour separators:
 //! contours are delimited implicitly by a curve whose start point does not
-//! continue the previous curve's end, and each is explicitly closed by a final
-//! `Line` back to its move-to point.
+//! continue the previous curve's end.
 
 use ab_glyph::{OutlineCurve, Point};
 use glam::Vec2;
 
-// Capped because the subdivision count grows with curve size over tolerance,
-// and a pathological font can hand back an arbitrarily large control polygon.
+// A pathological font can hand back an arbitrarily large control polygon.
 const MAX_SUBDIVISIONS: u32 = 64;
 
-// Points closer than this (in em) are the same point. Font outlines routinely
-// repeat a vertex where two segments meet and where the closing line lands on
-// the move-to point; both produce zero-length segments, which have no
-// well-defined direction for the winding-number sign test in `super::field`.
+// Zero-length segments have no direction for the winding test in `super::field`.
 const COINCIDENT_POINT_EM: f32 = 1.0e-6;
 
-/// Y-up, baseline at `y = 0`, one em spanning 1.0. The closing edge from the
-/// last point back to the first is implicit, so `points` never repeats the
-/// start.
+/// Y-up, baseline at `y = 0`, one em spanning 1.0. The closing edge is
+/// implicit, so `points` never repeats the start.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Contour {
     pub points: Vec<Vec2>,
@@ -97,24 +91,11 @@ fn flatten_into(curve: &OutlineCurve, tolerance: f32, out: &mut Vec<Vec2>) {
     }
 }
 
-// Bounds on the distance from a Bezier segment to its own chord, as multiples
-// of the control points' second differences. This is chord distance, not the
-// control-polygon distance the usual `N_inf(n)` constants bound; a chord is
-// what flattening actually substitutes for the curve.
-//
-// Quadratic: `B(t) - chord(t) = 2t(1-t)(P1 - (P0 + P2)/2)`, so the maximum is
-// `|P0 - 2P1 + P2| / 4`, attained at `t = 1/2`. Exact, not an estimate.
-//
-// Cubic: the same expansion gives
-// `B(t) - chord(t) = t(1-t)[(t-2)a - (1+t)b]` with `a = P0 - 2P1 + P2` and
-// `b = P1 - 2P2 + P3`. Both `t(1-t)(2-t)` and `t(1-t)(1+t)` peak at
-// `0.38490...` (at `t = 1 -+ 1/sqrt(3)`), so `0.385 (|a| + |b|)` bounds it.
+// Bounds on the distance from a Bezier segment to its own chord.
 const QUAD_CHORD_BOUND: f32 = 0.25;
 const CUBIC_CHORD_BOUND: f32 = 0.385;
 
-// Splitting into `n` uniform pieces scales the control-point second differences
-// by `1/n^2`, so the deviation bound scales the same way and
-// `n = ceil(sqrt(deviation / tolerance))` suffices.
+// Splitting into `n` uniform pieces scales the deviation bound by `1/n^2`.
 fn subdivisions(deviation: f32, tolerance: f32) -> u32 {
     if tolerance <= 0.0 || tolerance.is_nan() || deviation <= tolerance {
         return 1;
@@ -170,8 +151,7 @@ mod tests {
         for i in 0..4 {
             curves.push(OutlineCurve::Line(corners[i], corners[(i + 1) % 4]));
         }
-        // ab_glyph's builder always emits the explicit closing line, even when
-        // it lands on a point already present.
+        // ab_glyph's builder always emits the explicit closing line.
         curves.push(OutlineCurve::Line(corners[0], corners[0]));
         curves
     }

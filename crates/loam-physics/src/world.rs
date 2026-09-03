@@ -87,9 +87,7 @@ impl OrderPolicy {
 
 // Durstenfeld's in-place Fisher-Yates shuffle (Fisher and Yates 1938, table
 // XXXIII; Durstenfeld 1964, CACM 7(7):420) driven by xorshift64 (Marsaglia
-// 2003, "Xorshift RNGs", J. Stat. Soft. 8(14), the 13/7/17 triple). Modulo
-// bias is accepted: the requirement is a reproducible permutation reportable
-// by seed, not a uniform one.
+// 2003, "Xorshift RNGs", J. Stat. Soft. 8(14), the 13/7/17 triple).
 fn shuffle<T>(units: &mut [T], seed: u64) {
     // xorshift64 is absorbing at zero, so a zero seed must not reach it.
     let mut state = seed | 1;
@@ -104,13 +102,9 @@ fn shuffle<T>(units: &mut [T], seed: u64) {
 const STALE_CONSTRAINT_KEY: &str = "constraint buffer outlived its manifold";
 const STALE_MANIFOLD_BODY: &str = "manifold key names a body that is gone";
 
-// Relative widening applied to each sweep interval. The cull rests on
-// `|d(anchor, a) − d(anchor, b)| ≤ d(a, b)`, the triangle inequality for the
-// Riemannian distance function (do Carmo 1992, *Riemannian Geometry*, ch. 7,
-// prop. 3.6), which holds exactly in R but not in f32: each of the three
-// distances carries a few ulps of error, so a pair within an ulp of tangency
-// could be culled and the emitted set would stop being a function of the body
-// set alone. Four eps per side covers all three error terms.
+// The cull rests on `|d(anchor, a) − d(anchor, b)| ≤ d(a, b)`, the triangle
+// inequality for the Riemannian distance function (do Carmo 1992, *Riemannian
+// Geometry*, ch. 7, prop. 3.6).
 const BROADPHASE_TRIANGLE_SLACK: f32 = 4.0 * f32::EPSILON;
 
 #[derive(Clone, Copy)]
@@ -127,7 +121,7 @@ struct RadialInterval {
 
 // Narrowphases pose local geometry as `rotation · v + position`, and a
 // rotation preserves norms, so the largest local vertex norm bounds the body at
-// any orientation. `center` is ignored: the body position is the centre.
+// any orientation.
 fn bounding_radius(collider: &Collider) -> f32 {
     match collider {
         Collider::Sphere { radius, .. } | Collider::HyperSphere4D { radius, .. } => *radius,
@@ -757,11 +751,7 @@ fn split_two_mut<T>(slice: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
     }
 }
 
-// `jn ≥ 0` holds on exit unconditionally; Coulomb's `jt ≤ μ·jn` does not. The
-// tangent solve returns before its clamp on an underflowing tangential velocity
-// or a degenerate tangent mass, leaving a `jt` an earlier iteration accumulated
-// above a `jn` the normal solve has since shrunk. A later sliding iteration
-// pulls `jt` back in the accumulator only, never as an impulse.
+// `jn ≥ 0` holds on exit unconditionally; Coulomb's `jt ≤ μ·jn` does not.
 fn solve_normal_then_tangent<S>(
     space: &S,
     a: &mut RigidBody<S>,
@@ -782,8 +772,6 @@ fn solve_normal_then_tangent<S>(
     let k_n = space.effective_mass_inv(a, b, cp.world_point, cp.normal);
 
     if k_n > 0.0 {
-        // Target post-impulse v_n is `−velocity_bias`, clamped so accumulated
-        // normal impulse stays ≥ 0.
         let dj = -(v_n + cp.velocity_bias) / k_n;
         let new_acc = (cp.normal_impulse + dj).max(0.0);
         let actual = new_acc - cp.normal_impulse;
@@ -1786,8 +1774,7 @@ mod tests {
 
             clear_warm_start(&mut cold_converged);
             clear_warm_start(&mut cold_default);
-            // The reference solution, not another partial solve: raising this
-            // to 4000 moves neither assert below.
+            // The reference solution, not another partial solve.
             cold_converged.pgs_iters = 400;
 
             warm.step(STACK_DT);
@@ -1799,8 +1786,7 @@ mod tests {
             let cold_gap = max_velocity_gap(&velocities(&cold_default), &converged);
 
             // Gravity alone contributes 0.04 m/s per 1/240 s step, so 1e-5 is
-            // a tight fraction of the quantity under test and three orders
-            // below the cold-start residual it distinguishes itself from.
+            // a tight fraction of the quantity under test.
             assert!(
                 warm_gap < 1e-5,
                 "warm-started step diverged from the converged solve by {warm_gap} m/s"
@@ -2117,8 +2103,7 @@ mod tests {
     }
 
     // Boxes rather than spheres because the box pair runs GJK + EPA, whose
-    // result depends on which hull is the minuend. The sphere path is
-    // antisymmetric under a swap and could not tell the two orders apart.
+    // result depends on which hull is the minuend.
     fn stacked_pair_world(doomed_first: bool) -> (World<EuclideanR3>, BodyId, BodyId, BodyId) {
         const LOWER_HALF_EXTENT: f32 = 0.5;
         const UPPER_HALF_EXTENT: f32 = 0.35;
@@ -3061,15 +3046,11 @@ mod tests {
         pairs.sort_unstable();
     }
 
-    // The step tests a body only where the integrator left it, and only a
-    // sample on the near side of the slab's midplane escapes back the way the
-    // body came: past the midplane the minimum-translation vector points
-    // onward. The reach is therefore geometric, `wall_half_thickness +
-    // body_radius` head-on, and no impulse magnitude, iteration count, or
-    // Baumgarte term moves it. More reach needs substepping, speculative
-    // contacts (Catto 2013, GDC, "Continuous Collision"), or conservative
-    // advancement (Redon, Kheddar, Coquillart 2002, Eurographics 21(3),
-    // sec. 4).
+    // The reach is geometric, `wall_half_thickness + body_radius` head-on, and
+    // no impulse magnitude, iteration count, or Baumgarte term moves it. More
+    // reach needs substepping, speculative contacts (Catto 2013, GDC,
+    // "Continuous Collision"), or conservative advancement (Redon, Kheddar,
+    // Coquillart 2002, Eurographics 21(3), sec. 4).
     mod tunneling {
         use glam::{Vec2, Vec3, Vec4};
         use loam_math::{EuclideanR2, EuclideanR3, EuclideanR4};
@@ -3104,8 +3085,6 @@ mod tests {
         const RECORDED_R3: f32 = 0.150;
         const RECORDED_R4: f32 = 0.150;
 
-        // The R⁴ depth whose EPA normal used to point through the wall, in
-        // launch-axis coordinates with the slab spanning `|x| ≤ 0.05`.
         const R4_TRAP_DEPTH: f32 = -0.090;
 
         fn slab_vertices_r4(half: Vec4) -> Vec<Vec4> {
@@ -3230,8 +3209,7 @@ mod tests {
         }
 
         // Scans upward and stops at the first failure, so the answer has
-        // nothing tunneling under it rather than being an isolated success
-        // above a failure.
+        // nothing tunneling under it.
         fn max_resolved_displacement(fire: impl Fn(f32, f32) -> f32) -> f32 {
             let mut resolved = 0.0;
             for k in 0.. {
@@ -3287,8 +3265,6 @@ mod tests {
 
         #[test]
         fn r4_contact_normal_leaves_through_the_near_face_at_every_depth() {
-            // Three depths where R4's EPA once reported a normal pointing
-            // through the wall. A negative exit is the near face.
             for depth in [R4_TRAP_DEPTH - 0.002, R4_TRAP_DEPTH, R4_TRAP_DEPTH + 0.002] {
                 let left = released_at_rest_r4(depth);
                 assert!(left < 0.0, "R4 drove a body at {depth} toward the FAR face, leaving at {left}: the contact normal points through the wall again");

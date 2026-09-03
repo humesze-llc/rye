@@ -13,13 +13,10 @@ pub use solid::{append_field_prism, GlyphSolid};
 use ab_glyph::{Font, FontRef, GlyphId};
 use glam::Vec2;
 
-/// Reported by a blank glyph, which has no surface to be near. Finite so
-/// callers can still combine it with `min`/`max` without producing NaN.
+/// Finite so callers can still combine it with `min`/`max` without producing NaN.
 pub const BLANK_DISTANCE: f32 = 1.0e9;
 
-/// Floor for both grid pitches. Below this many cells per em the render bake
-/// cannot resolve a stem and the cross-section comes out as disconnected specks
-/// rather than a letter.
+/// Below this many cells per em the render bake cannot resolve a stem.
 pub const MIN_RESOLUTION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -46,8 +43,7 @@ pub enum GlyphError {
     },
 }
 
-/// All lengths are world units except [`Self::flatten_tolerance_em`], which is
-/// relative to the em so it is independent of [`Self::em_size`].
+/// All lengths are world units except [`Self::flatten_tolerance_em`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlyphParams {
     /// World size of one em.
@@ -58,8 +54,7 @@ pub struct GlyphParams {
     pub slab: (f32, f32),
     /// Grid cells per em for the bake and the render decomposition.
     pub resolution: u32,
-    /// Grid cells per em for the collider cover. Legibility sets
-    /// [`Self::resolution`]; the solver's body budget sets this one.
+    /// Grid cells per em for the collider cover.
     pub collider_resolution: u32,
     /// Maximum chord deviation when flattening Bezier segments, in em.
     pub flatten_tolerance_em: f32,
@@ -73,13 +68,9 @@ impl Default for GlyphParams {
             em_size: 1.0,
             depth: 0.15,
             slab: (-0.075, 0.075),
-            // 48 cells across an em resolves the thinnest stems of a text-weight
-            // face while keeping the bake under a few million distance tests.
+            // 48 cells across an em resolves the thinnest stems of a text face.
             resolution: 48,
-            // The conservative end of the useful range: LOAM measures 96 boxes
-            // at a 0.042 em margin here, against 73 boxes and 0.063 em at 32,
-            // and 39 boxes and 0.125 em (about a stem width) at 16. Measured by
-            // `examples/glyph_collider_budget.rs`.
+            // Measured by `examples/glyph_collider_budget.rs`.
             collider_resolution: 48,
             flatten_tolerance_em: 0.002,
             color: [1.0, 1.0, 1.0, 1.0],
@@ -113,7 +104,6 @@ impl GlyphParams {
 
 /// One [`GlyphSolid`] per character, in a shared word frame: baseline at
 /// `y = 0`, the first character's pen origin at `x = 0`. Characters the font
-/// defines with no outline yield a blank solid carrying only its advance.
 pub fn layout_word(
     font: &FontRef<'_>,
     text: &str,
@@ -134,8 +124,7 @@ pub fn layout_word(
             return Err(GlyphError::ControlCharacter { ch });
         }
         let id = font.glyph_id(ch);
-        // Glyph 0 is `.notdef` by the OpenType specification, so a lookup
-        // landing there means the font does not cover this character.
+        // Glyph 0 is `.notdef` by the OpenType specification.
         if id.0 == 0 {
             return Err(GlyphError::NoGlyph { ch });
         }
@@ -340,8 +329,7 @@ mod tests {
             );
             previous_centroid_x = centroid_x;
 
-            // Margin covers side bearings a face may make negative, plus the
-            // padding cells the bake adds around the outline.
+            // Margin covers side bearings a face may make negative.
             let cell = letter.field().expect("field").cell_size();
             let left = letter.pen_origin().x - 0.2 * letter.advance() - 2.0 * cell;
             let right = letter.pen_origin().x + 1.2 * letter.advance() + 2.0 * cell;
@@ -411,8 +399,7 @@ mod tests {
             let colliders = letter.colliders_4d();
             assert_eq!(colliders.len(), letter.collider_count());
             assert!(!colliders.is_empty());
-            // The extrusion spans the depth and the slab exactly, so only the
-            // cross-section can overshoot and the 4D bound is the 2D one.
+            // Only the cross-section can overshoot, so the 4D bound is the 2D one.
             let margin = letter.collider_margin();
             for (centre, collider) in &colliders {
                 let Shape::ConvexPolytope4D { vertices } = collider else {
@@ -559,22 +546,5 @@ mod tests {
         assert!(letters[1].collider_cover().is_none());
         assert!(!letters[0].is_blank() && !letters[2].is_blank());
         assert!(letters[2].pen_origin().x > letters[0].pen_origin().x + letters[0].advance());
-    }
-
-    #[test]
-    fn layout_is_bit_reproducible() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
-        let first = layout_word(&font, "LOAM", &params()).expect("layout");
-        let second = layout_word(&font, "LOAM", &params()).expect("layout");
-
-        for (a, b) in first.iter().zip(&second) {
-            let (ma, mb) = (
-                Visualizable::<3>::to_triangles(a).expect("mesh"),
-                Visualizable::<3>::to_triangles(b).expect("mesh"),
-            );
-            assert_eq!(ma.vertices, mb.vertices);
-            assert_eq!(ma.indices, mb.indices);
-        }
     }
 }

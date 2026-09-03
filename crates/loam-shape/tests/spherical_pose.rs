@@ -1,10 +1,4 @@
 //! `SphericalS3Embedded` isometry contracts, exercised against real polychora.
-//!
-//! These pin `Space`, not a demo. They lived in the playground's `s3` scene
-//! until that scene was deleted on 2026-08-28, which is the wrong home for a
-//! math contract: the scene could go, and did, while the guarantees it happened
-//! to check are the engine's. They sit in loam-shape because they need both
-//! `Polytope4` and `loam_math`, and loam-math cannot depend on loam-shape.
 
 use glam::{Mat4, Vec4};
 use loam_math::{
@@ -14,14 +8,12 @@ use loam_shape::polytope::Polytope4;
 
 const TEST_ANGLE: f32 = 0.7;
 
-/// Equal angles in two orthogonal planes: the isoclinic (Clifford) generator,
-/// whose exponential translates every point of S³ the same distance.
+/// Equal angles in two orthogonal planes: the isoclinic (Clifford) generator.
 fn clifford_generator(theta: f32) -> Bivector4 {
     Bivector4::new(theta, 0.0, 0.0, 0.0, 0.0, theta)
 }
 
-/// `Rotor4::to_mat4` is column-major to match glam, so `Iso4`'s SO(4) matrix
-/// takes it verbatim.
+/// `Rotor4::to_mat4` is column-major to match glam.
 fn iso_from_rotor(rotor: Rotor4) -> Iso4 {
     Iso4 {
         matrix: Mat4::from_cols_array_2d(&rotor.to_mat4()),
@@ -109,8 +101,7 @@ fn posed_vertices_stay_on_the_unit_three_sphere_at_every_angle() {
 
 #[test]
 fn the_pose_preserves_every_pairwise_separation() {
-    // Antipodal pairs sit on the cut locus, where `distance` is stable but its
-    // gradient is not; the inner-product check above still binds them.
+    // Antipodal pairs sit on the cut locus.
     const CUT_LOCUS_MARGIN: f32 = 0.05;
     let vertices = Polytope4::Cell24.topology().vertices;
     let posed = posed_at(Polytope4::Cell24, TEST_ANGLE);

@@ -2,7 +2,6 @@
 //! included by path and driven against a real `InputState`.
 
 #[path = "../src/wasm/input_queue.rs"]
-// Message variants this test has no reason to construct.
 #[allow(dead_code)]
 mod input_queue;
 

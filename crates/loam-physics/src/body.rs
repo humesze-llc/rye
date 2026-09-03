@@ -370,7 +370,6 @@ mod tests {
         );
     }
 
-    // Powers of two, so every expected value is exact in f32.
     fn body_r3(position: Vec3, mass: f32, inertia: f32) -> RigidBody<EuclideanR3> {
         RigidBody::new(
             position,

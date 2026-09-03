@@ -1,8 +1,6 @@
 //! Addresses are positional, so a [`NodePath`] names a position and not an
 //! identity; whoever holds one across an [`SceneEdit::Insert`] or
 //! [`SceneEdit::Remove`] re-derives it from [`SceneEdit::focus_after`].
-//! [`apply`] accepts only what [`Scene::from_ron`] would, through the same
-//! [`crate::load`] predicates, so an edited tree is always emittable.
 
 use std::fmt;
 use std::str::FromStr;
@@ -14,14 +12,10 @@ use thiserror::Error;
 use crate::load::{check_blend_radius, check_leaf};
 use crate::scene::{Scene, SceneNode};
 
-/// Space units. Wide enough to read as a blend at the scale of the unit-ish
-/// primitives an editor inserts.
+/// Space units.
 pub const DEFAULT_BLEND_RADIUS: f32 = 0.15;
 
-// Below this the three components are at f32 noise scale relative to each
-// other, so the direction they encode is not a direction; `dot(p, n) - d` would
-// also stop being a distance, since that formula is a signed distance only for
-// unit `n`.
+// `dot(p, n) - d` is a signed distance only for unit `n`.
 const MIN_NORMAL_LENGTH: f32 = 1e-6;
 
 /// The child index taken at each step from the root. Every interior
@@ -136,9 +130,7 @@ impl Combinator {
     }
 }
 
-/// The vertex-list shapes are absent on purpose: they carry no scalar parameter
-/// to author and their SDF is the sentinel, so inserting one would add an
-/// invisible node with nothing to edit.
+/// The vertex-list shapes are absent on purpose: their SDF is the sentinel.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LeafKind {
     Sphere,
@@ -157,8 +149,7 @@ impl LeafKind {
         }
     }
 
-    /// Sized against the unit-ish scale the march kernel's step thresholds
-    /// assume.
+    /// Sized against the unit-ish scale the march kernel's step thresholds assume.
     pub fn shape(self) -> Shape {
         match self {
             LeafKind::Sphere => Shape::sphere_at(Vec3::ZERO, 0.25),
@@ -241,9 +232,7 @@ impl fmt::Display for EditValue {
             if i > 0 {
                 f.write_str(" ")?;
             }
-            // `Debug`, not `Display`: shortest round-trip in both, but only
-            // `Debug` keeps a point or an exponent, which is what makes the
-            // text re-parse as the same f32 rather than as an integer.
+            // `Debug`, not `Display`: only `Debug` keeps a point or an exponent.
             write!(f, "{c:?}")?;
         }
         Ok(())
@@ -257,8 +246,7 @@ pub enum SceneEdit {
         param: Param,
         value: EditValue,
     },
-    /// Replaces the node at `path` with `combinator(that node, new leaf)`: the
-    /// subtree already there becomes the left child, the new leaf the right.
+    /// Replaces the node at `path` with `combinator(that node, new leaf)`.
     Insert {
         path: NodePath,
         combinator: Combinator,
@@ -277,8 +265,7 @@ impl SceneEdit {
         }
     }
 
-    /// Where this edit's node lives once applied. A selection follows this
-    /// rather than trying to hold a path across a structural change.
+    /// Where this edit's node lives once applied.
     pub fn focus_after(&self) -> NodePath {
         match self {
             SceneEdit::Set { path, .. } => path.clone(),
@@ -361,9 +348,8 @@ pub enum EditError {
     Syntax(String),
 }
 
-/// Returns whether the tree actually changed, so a caller that recompiles a
-/// shader per change does not pay for a set to the value already held. The
-/// comparison is on bits, because the emitter prints the sign of a zero.
+/// Returns whether the tree actually changed. The comparison is on bits,
+/// because the emitter prints the sign of a zero.
 pub fn apply(scene: &mut Scene, edit: &SceneEdit) -> Result<bool, EditError> {
     match edit {
         SceneEdit::Set { path, param, value } => {
@@ -380,9 +366,6 @@ pub fn apply(scene: &mut Scene, edit: &SceneEdit) -> Result<bool, EditError> {
                 .ok_or_else(|| EditError::NoSuchNode(path.clone()))?;
             let shape = leaf.shape();
             check_leaf(&shape).map_err(EditError::Rejected)?;
-            // Cloned rather than swapped out through a placeholder, which would
-            // be a second tree state an emitter could observe if this ever grew
-            // a fallible step.
             *node = combinator.combine(node.clone(), SceneNode::Leaf(shape));
             Ok(true)
         }
@@ -401,8 +384,7 @@ pub fn apply(scene: &mut Scene, edit: &SceneEdit) -> Result<bool, EditError> {
     }
 }
 
-/// In panel order. Empty for the vertex-list leaves, whose SDF is the sentinel,
-/// and for the boolean combinators, which carry no constant.
+/// In panel order.
 pub fn parameters(node: &SceneNode) -> Vec<(Param, EditValue)> {
     match node {
         SceneNode::Leaf(Shape::Sphere { center, radius }) => vec![
@@ -443,8 +425,7 @@ pub fn label(node: &SceneNode) -> &'static str {
     }
 }
 
-/// Pre-order. One path buffer is pushed and popped through the whole walk, so a
-/// full traversal allocates once however deep the tree.
+/// Pre-order. A full traversal allocates once however deep the tree.
 pub fn for_each_node(root: &SceneNode, mut visit: impl FnMut(&NodePath, &SceneNode)) {
     fn walk(node: &SceneNode, path: &mut NodePath, visit: &mut impl FnMut(&NodePath, &SceneNode)) {
         visit(path, node);
@@ -1054,8 +1035,7 @@ mod tests {
                 ));
             }
         }
-        // Zero and negative blend radii are finite and still unemittable: the
-        // smooth minimum divides by `k`.
+        // Zero and negative blend radii are finite and still unemittable.
         for k in [0.0_f32, -0.1] {
             assert!(matches!(
                 apply(
@@ -1082,8 +1062,7 @@ mod tests {
             Vec3::new(1e-3, 0.0, 0.0),
             Vec3::new(3.0, -4.0, 12.0),
         ] {
-            // Not asserted as a change: the first raw normal here normalizes to
-            // the one the fixture already carries, so it is a no-op.
+            // The first raw normal here normalizes to the one the fixture carries.
             assert!(apply(
                 &mut scene,
                 &SceneEdit::Set {

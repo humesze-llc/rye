@@ -23,8 +23,7 @@ fn draw_hud_frame(
     Ok(())
 }
 
-// Panics naming the paths it probed rather than returning: libtest reports an
-// early return as a pass, which would leave the test green asserting nothing.
+// libtest reports an early return as a pass.
 fn system_font() -> Vec<u8> {
     const CANDIDATES: &[&str] = &[
         r"C:\Windows\Fonts\arial.ttf",

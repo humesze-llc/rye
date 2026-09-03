@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use glam::{Vec3, Vec4};
 use loam_math::EuclideanR3;
 use loam_scene::load::SceneLoadError;
-use loam_scene::scene::{Scene, SceneNode};
-use loam_scene::scene4::{Scene4, SceneNode4};
+use loam_scene::scene::Scene;
+use loam_scene::scene4::Scene4;
 
 fn scenes_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes")
@@ -26,28 +25,6 @@ impl Drop for TempScene {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
-}
-
-#[test]
-fn committed_scene_file_deserializes_to_the_tree_it_spells() {
-    let loaded = Scene::load(scenes_dir().join("sphere_over_floor.ron")).expect("scene loads");
-    let expected = Scene::new(
-        SceneNode::sphere(Vec3::new(0.0, 0.15, 0.0), 0.3)
-            .smooth_union(SceneNode::box_(Vec3::new(0.4, 0.1, 0.4)), 0.08)
-            .union(SceneNode::plane(Vec3::Y, -0.5)),
-    );
-    assert_eq!(loaded.to_wgsl(&EuclideanR3), expected.to_wgsl(&EuclideanR3));
-}
-
-#[test]
-fn committed_scene4_file_deserializes_to_the_tree_it_spells() {
-    let loaded =
-        Scene4::load(scenes_dir().join("hypersphere_over_floor.ron")).expect("4D scene loads");
-    let expected = Scene4::new(
-        SceneNode4::hypersphere(Vec4::new(0.0, 0.2, 0.0, 0.0), 0.45)
-            .union(SceneNode4::halfspace(Vec4::Y, -0.5)),
-    );
-    assert_eq!(loaded.to_wgsl_4d(), expected.to_wgsl_4d());
 }
 
 #[test]

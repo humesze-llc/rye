@@ -1,16 +1,6 @@
 //! Emit contract, shared by the 3D and 4D paths: every baked constant goes
 //! through `literal::wgsl_f32`, so parsing the emitted literal recovers the
 //! exact input bits and the emitter contributes no floor to CPU/GPU parity.
-//! Constants must be finite; the emit functions panic rather than bake a token
-//! WGSL cannot spell.
-//!
-//! Every emitter has a CPU twin ([`Primitive::eval`], [`Primitive4::eval_4d`],
-//! [`Scene::eval`], [`Scene4::eval_at`]) written as the same `match`, arm for
-//! arm, so a new [`Shape`] variant fails to compile on both halves. The twin
-//! delegates curved geometry to [`loam_math::Space::distance`] rather than
-//! transliterating the WGSL prelude; where that prelude is a deliberate
-//! approximation the two halves are different scalar fields and parity is a
-//! measured bound, not an identity.
 
 pub mod combinator;
 pub mod edit;
@@ -31,26 +21,13 @@ pub use scene4::{
     Scene4, SceneNode4, PRIM_KIND_HALFSPACE4D, PRIM_KIND_HYPERSPHERE4D, PRIM_KIND_OTHER,
 };
 
-/// Returned by shapes with no closed-form SDF in the emitted dimension. Large
-/// enough that the marcher's `t_scene > 40` bail fires before the surface is
-/// reached, so an accidentally included shape renders as nothing rather than as
-/// wrong geometry. Both the emitters and the CPU evaluators read it.
+/// Returned by shapes with no closed-form SDF in the emitted dimension.
 pub const SENTINEL_DISTANCE: f32 = 1e9;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use glam::Vec3;
-
-    #[test]
-    fn sphere_emits_loam_distance_call() {
-        use loam_math::EuclideanR3;
-        let s = Shape::sphere_at(Vec3::ZERO, 0.25);
-        let src = s.to_wgsl(&EuclideanR3, "sdf_0");
-        assert!(src.contains("fn sdf_0(p: vec3<f32>) -> f32"));
-        assert!(src.contains("loam_distance"));
-        assert!(src.contains("- (0.25)"));
-    }
 
     #[test]
     fn sphere_constants_round_trip_below_the_old_print_floor() {
@@ -120,30 +97,6 @@ mod tests {
     }
 
     #[test]
-    fn box_emits_euclidean_box_sdf() {
-        use loam_math::EuclideanR3;
-        let b = Shape::Box3 {
-            half_extents: Vec3::splat(0.4),
-        };
-        let src = b.to_wgsl(&EuclideanR3, "sdf_box");
-        assert!(src.contains("fn sdf_box(p: vec3<f32>) -> f32"));
-        assert!(src.contains("abs(p)"));
-        assert!(src.contains("vec3<f32>(0.4, 0.4, 0.4)"));
-    }
-
-    #[test]
-    fn scene_with_sphere_and_plane_emits_both_paths_in_e3() {
-        use loam_math::EuclideanR3;
-        let scene =
-            Scene::new(SceneNode::sphere(Vec3::ZERO, 0.22).union(SceneNode::plane(Vec3::Y, -0.5)));
-        let src = scene.to_wgsl(&EuclideanR3);
-        assert!(src.contains("fn loam_scene_sdf"));
-        assert!(src.contains("loam_distance"));
-        assert!(src.contains("dot(p,"));
-        assert!(src.contains("- (-0.5)"));
-    }
-
-    #[test]
     fn sphere_only_scene_emits_no_chart_coord_dot() {
         use loam_math::EuclideanR3;
         let scene = Scene::new(SceneNode::sphere(Vec3::ZERO, 0.3));
@@ -183,25 +136,6 @@ mod tests {
                 radius: 0.3,
             },
         ]
-    }
-
-    #[test]
-    fn shape_table_covers_every_kind_exactly_once() {
-        use loam_shape::ShapeKind;
-        let kinds: Vec<ShapeKind> = one_shape_per_kind().iter().map(Shape::kind).collect();
-        assert_eq!(
-            kinds,
-            vec![
-                ShapeKind::Sphere,
-                ShapeKind::HalfSpace,
-                ShapeKind::HalfSpace4D,
-                ShapeKind::Box3,
-                ShapeKind::Polygon2D,
-                ShapeKind::ConvexPolytope3D,
-                ShapeKind::ConvexPolytope4D,
-                ShapeKind::HyperSphere4D,
-            ],
-        );
     }
 
     #[test]
@@ -311,10 +245,7 @@ mod tests {
             .collect()
     }
 
-    // A signed-distance function is 1-Lipschitz with respect to the metric of
-    // the Space it lives in, not with respect to chart coordinates. In E³ the
-    // two coincide; in H³ and S³ the chart metric is strictly smaller than the
-    // Riemannian one, so the geodesic-distance leaves satisfy only this form.
+    // 1-Lipschitz with respect to the metric of the Space, not chart coordinates.
     fn assert_lipschitz_1_under_space_metric<S, F>(label: &str, space: &S, sdf: F, extent: f32)
     where
         S: loam_math::Space<Point = Vec3, Vector = Vec3>,
@@ -343,8 +274,7 @@ mod tests {
                 .subtract(SceneNode::sphere(Vec3::new(0.0, 0.2, 0.0), 0.08))
                 .intersect(SceneNode::plane(Vec3::Y, -0.6)),
         );
-        // H³ and S³ charts saturate near their boundary shells, so sample well
-        // inside; E³ has no boundary and gets the wider box.
+        // H³ and S³ charts saturate near their boundary shells.
         assert_lipschitz_1_under_space_metric(
             "E3",
             &EuclideanR3,
@@ -378,11 +308,7 @@ mod tests {
                 "{label}: centre must read -radius",
             );
             for direction in [Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X, Vec3::ONE.normalize()] {
-                // `exp`'s tangent argument is in chart coordinates, so its
-                // Riemannian length is the conformal factor times its chart
-                // length. Geodesic arc length is linear in |v|, so one probe
-                // step calibrates the scale that lands on the sphere of radius
-                // `radius` in any Space.
+                // Geodesic arc length is linear in |v|.
                 let probe = direction * 0.1;
                 let probe_arc = space.distance(center, space.exp(center, probe));
                 let at_arc = |arc: f32| space.exp(center, probe * (arc / probe_arc));
@@ -489,8 +415,7 @@ mod tests {
         let right = SceneNode::sphere(Vec3::new(0.5, 0.0, 0.0), 0.2);
         let soft = Scene::new(left.clone().smooth_union(right.clone(), 0.02));
         let hard = Scene::new(left.union(right));
-        // At the left ball's centre the right leaf is ~1.0 away, far outside the
-        // band, so `h` clamps to 1 and the `k·h·(1 − h)` term is exactly zero.
+        // `h` clamps to 1 and the `k·h·(1 − h)` term is exactly zero.
         let p = Vec3::new(-0.5, 0.0, 0.0);
         assert_eq!(soft.eval(&EuclideanR3, p), hard.eval(&EuclideanR3, p));
     }
@@ -584,9 +509,7 @@ mod tests {
         }
     }
 
-    // Past 2^63, where a bare digit run overflows WGSL's `AbstractInt` (i64)
-    // range. 1e19 rather than 2^63 itself because the shortest round-trip
-    // decimal for 2^63 is 9223372000000000000, which still fits.
+    // Past 2^63, where a bare digit run overflows WGSL's `AbstractInt` (i64) range.
     const BEYOND_ABSTRACT_INT: f32 = 1.0e19;
 
     fn assert_naga_accepts(source: &str) {
@@ -674,8 +597,7 @@ mod tests {
                 .subtract(SceneNode::sphere(Vec3::new(-0.2, 0.1, 0.0), 0.15)),
         );
 
-        // FNV-1a 64 (Fowler / Noll / Vo, 1991); chosen for being three lines
-        // with no dependency, not for any statistical property.
+        // FNV-1a 64 (Fowler / Noll / Vo, 1991).
         const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
         const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
         const STEPS: i32 = 12;

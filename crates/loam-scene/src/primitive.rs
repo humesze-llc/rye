@@ -1,10 +1,6 @@
-//! - [`Shape::Box3`]: honest in E³; chart-coord in H³/S³, accepted because no
-//!   closed-form geodesic-box SDF exists.
+//! - [`Shape::Box3`]: honest in E³; chart-coord in H³/S³.
 //! - [`Shape::HalfSpace`]: chart-coord `dot(p, n) − offset` only in flat Spaces
-//!   (gated by `Space::is_chart_flat`). Curved Spaces draw the chart plane, not
-//!   the geodesic plane, so they sentinel until a closed-form geodesic-plane
-//!   SDF lands (artanh-of-Möbius in H³, chord-distance to a great hyperplane in
-//!   S³).
+//!   (gated by `Space::is_chart_flat`).
 
 use glam::Vec3;
 use loam_math::{Space, WgslSpace};
@@ -15,9 +11,6 @@ use crate::SENTINEL_DISTANCE;
 
 /// [`Self::to_wgsl`] emits `fn {name}(p: vec3<f32>) -> f32`; [`Self::eval`] is
 /// the CPU twin of that body.
-/// Implementations use only `loam_*` Space-prelude functions on the GPU and
-/// only [`Space`] methods on the CPU, never raw chart-coord arithmetic, except
-/// when the Space self-reports flat via [`Space::is_chart_flat`].
 pub trait Primitive {
     fn to_wgsl<S: WgslSpace>(&self, space: &S, name: &str) -> String;
 
@@ -74,9 +67,7 @@ impl Primitive for Shape {
         match self {
             Shape::Sphere { center, radius } => space.distance(p, *center) - *radius,
 
-            // Quilez 2013, "distance functions", exact box SDF. Operand order
-            // matches the emitted `length(max(q, 0)) + min(max(q.x, max(q.y,
-            // q.z)), 0)`.
+            // Quilez 2013, "distance functions", exact box SDF.
             Shape::Box3 { half_extents } => {
                 let q = p.abs() - *half_extents;
                 q.max(Vec3::ZERO).length() + q.x.max(q.y.max(q.z)).min(0.0)

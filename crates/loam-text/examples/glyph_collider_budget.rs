@@ -37,8 +37,7 @@ fn system_font() -> Option<Vec<u8>> {
         })
 }
 
-// Xorshift64 (Marsaglia, 2003, "Xorshift RNGs", the 13/7/17 triple), so the
-// drop pattern is seeded and the timing is reproducible.
+// Xorshift64 (Marsaglia, 2003, "Xorshift RNGs", the 13/7/17 triple).
 struct Xorshift64(u64);
 
 impl Xorshift64 {
@@ -121,8 +120,7 @@ fn main() {
     );
 }
 
-// The first `sides` vertices of the 4D prism are the ring itself, in order, so
-// the shoelace formula reads straight off them.
+// The first `sides` vertices of the 4D prism are the ring itself, in order.
 fn hull_area(letter: &GlyphSolid) -> f32 {
     let Some((_, Shape::ConvexPolytope4D { vertices })) = letter.rigid_hull_4d() else {
         return 0.0;
@@ -142,8 +140,7 @@ fn hull_area(letter: &GlyphSolid) -> f32 {
 fn time_word(letters: &[GlyphSolid]) -> (usize, f64) {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
-    // Along -z, so the spheres land on the letters' front faces rather than
-    // edge-on.
+    // Along -z, so the spheres land on the letters' front faces.
     world.push_field(Box::new(Gravity::new(Vec4::new(0.0, 0.0, -9.8, 0.0))));
 
     for letter in letters {

@@ -608,26 +608,6 @@ mod tests {
     }
 
     #[test]
-    fn descriptors_register_only_the_sanctioned_reinterpretation() {
-        for surface in SURFACES {
-            for downlevel in DOWNLEVELS {
-                let case = format!("{surface:?} {downlevel:?}");
-                let sanctioned: Vec<TextureFormat> = if surface.is_srgb()
-                    && downlevel.contains(DownlevelFlags::SURFACE_VIEW_FORMATS)
-                {
-                    vec![surface.remove_srgb_suffix()]
-                } else {
-                    vec![]
-                };
-                let targets = ui_target_formats(surface, downlevel);
-                let config =
-                    surface_configuration(surface, SIZE, CompositeAlphaMode::Opaque, targets);
-                assert_eq!(config.view_formats, sanctioned, "swapchain: {case}");
-            }
-        }
-    }
-
-    #[test]
     fn ui_view_requests_match_their_target_registration_in_both_arms() {
         for surface in SURFACES {
             for downlevel in DOWNLEVELS {

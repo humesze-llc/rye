@@ -4,7 +4,7 @@
 
 A Rust game engine where the geometry of the world is a parameter the game picks. A scene names its space, and rendering, physics, and input run in that space. Flat 4D is the space the demos use today; curved and glued spaces sit behind the same trait.
 
-The animation above is a simulation. The letters are 4D solids, the shapes that knock them over are rigid bodies under 4D gravity, and the ending is the 3D slice sweeping along the fourth axis. It is recorded from the `hero` crate in this repo.
+The animation above is a simulation. The letters are 4D solids, the shapes that knock them over are rigid bodies under 4D gravity, and the ending is the 3D slice sweeping along the fourth axis. The `hero` crate in this repo records it.
 
 [![CI](https://github.com/throgsoft/loam/actions/workflows/ci.yml/badge.svg)](https://github.com/throgsoft/loam/actions/workflows/ci.yml)
 
@@ -33,7 +33,7 @@ The toybox drops the same solids onto a floor under 4D gravity. Click a shape to
 - One `Space` trait, nine geometries: Euclidean R², R³, R⁴; hyperbolic H³; spherical S³ in two charts; a flat 3-torus and a lens space that carry their own gluings; and a variable-curvature blend kept for tests.
 - 4D rigid bodies: rotors and bivectors for orientation and spin, GJK and EPA collision in R⁴, persistent contacts, an impulse solver.
 - Two ways to draw the same 4D scene: exact cross-sections and edge graphs through a rasterizer, or signed-distance fields through a raymarcher.
-- An app shell that runs on native and in the browser, with a scene registry, a console, per-section frame tracing, and, on native, capture to PNG, GIF, or APNG.
+- An app shell for native and browser builds: a scene registry, a console, per-section frame timing, and on native a capture path to PNG, GIF, or APNG.
 
 Rustdoc for every crate: [throgsoft.github.io/loam](https://throgsoft.github.io/loam/). Start with the `loam` crate for how the pieces fit.
 

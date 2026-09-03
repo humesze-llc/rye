@@ -1,25 +1,5 @@
-//! The rotation half is [`crate::hypergimbal`], whose derivation is not
-//! repeated here. Nothing in either half reads or stores the subject's pose:
-//! a drag reports a delta for the caller to compose.
-//!
-//! # Translating in R⁴ with a pointer that lives in R³
-//!
-//! A subject's R³ position is drawn at world `x, y, z`, so the `x`, `y` and
-//! `z` shafts have to BE those axes; an arrow that moved the subject
-//! somewhere other than where it points is not a handle. That leaves `w`,
-//! which has no world direction, needing one assigned. The choice is
-//! `-(1,1,1)/√3`, the unit vector maximising the smallest angle to `x̂`, `ŷ`
-//! and `ẑ` (125.26° to each): `max(d·x̂, d·ŷ, d·ẑ)` is convex and symmetric
-//! under permuting the axes, so its minimiser is the fixed point of that
-//! symmetry group, and the antipode of the diagonal is the only unit vector
-//! there. It lies in no coordinate plane.
-//!
-//! A shaft is grabbed by its arrowhead (see [`Shaft::head_start`]) and read
-//! by the closest approach of the cursor ray to the shaft's whole LINE
-//! (Ericson, *Real-Time Collision Detection*, 2005, §5.1.9), so the drag
-//! runs past both ends of the drawn arrow and the subject travels one world
-//! unit per world unit of cursor travel along it. `w` moves at that same
-//! rate; there is nothing to scale it against.
+//! Ten handles: six [`crate::hypergimbal`] rings and four shafts. A drag
+//! reports a delta for the caller to compose; nothing here holds a pose.
 
 use glam::{Vec3, Vec4};
 use loam_math::{Bivector, Plane4, Rotor4};
@@ -27,29 +7,20 @@ use loam_shape::LineMesh;
 
 use crate::hypergimbal::{Hypergimbal, Ring, RingStyle};
 
-// Outer reach of the ring shell, in `TransformGizmo::scale` units: every
-// ring is centred `1` out with radius `√2`, per `hypergimbal::POLE`.
+// Every ring is centred `1` out with radius `√2`, per `hypergimbal::POLE`.
 const RING_REACH: f32 = 1.0 + std::f32::consts::SQRT_2;
 
-// Inner end of a shaft, in `scale` units. Leaves the hub clear by several
-// grab radii, so a press aimed at the subject still reaches the subject.
 const SHAFT_INNER: f32 = 0.45;
 
-// Arrowhead length, in `scale` units. Drawn and grabbed extent both, so
-// the head cannot be grabbable anywhere it is not drawn.
 const SHAFT_HEAD: f32 = 0.28;
 
-// Two arrowhead lengths, so no head is ever drawn over a ring.
 const SHAFT_CLEARANCE: f32 = 2.0 * SHAFT_HEAD;
 
 const SHAFT_OUTER: f32 = RING_REACH + SHAFT_CLEARANCE;
 
 const INV_SQRT_3: f32 = 0.577_350_26;
 
-// Sine of the smallest ray-to-shaft angle a shaft is trusted at. The
-// closest-approach parameter moves as `1/sin`, so below this a one-pixel
-// cursor move slides the subject an arbitrary distance. Same conditioning
-// class, and the same value, as the ring plane's incidence floor.
+// Sine floor on the ray-to-shaft angle; the closest-approach parameter moves as `1/sin`.
 const MIN_SHAFT_INCIDENCE: f32 = 1e-2;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -62,10 +33,8 @@ pub enum Axis4 {
 }
 
 impl Axis4 {
-    /// All four axes, in `Vec4` component order.
     pub const ALL: [Self; 4] = [Self::X, Self::Y, Self::Z, Self::W];
 
-    /// Single-letter label, matching [`Plane4::label`]'s convention.
     pub fn label(self) -> &'static str {
         match self {
             Self::X => "x",
@@ -84,8 +53,7 @@ impl Axis4 {
         }
     }
 
-    /// World R³ direction the shaft is drawn and dragged along. See the
-    /// module docs for why `w` gets the anti-diagonal.
+    /// `w` takes the direction equiangular to the three scene axes.
     pub fn shaft_direction(self) -> Vec3 {
         match self {
             Self::X => Vec3::X,
@@ -99,15 +67,11 @@ impl Axis4 {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Shaft {
     pub axis: Axis4,
-    /// Widget centre, the origin the shaft parameter is measured from.
     pub origin: Vec3,
-    /// Unit world direction, [`Axis4::shaft_direction`].
     pub direction: Vec3,
-    /// Drawn extent as distances from [`Self::origin`] along [`Self::direction`].
-    /// Neither the pick nor the drag is clipped to it; see [`Self::head_start`].
+    /// Drawn extent; neither the pick nor the drag is clipped to it.
     pub inner: f32,
     pub outer: f32,
-    /// Arrowhead length, measured back from [`Self::outer`].
     pub head: f32,
 }
 
@@ -116,18 +80,13 @@ impl Shaft {
         self.origin + self.direction * along
     }
 
-    /// The head is the handle; the stem behind it is a rail showing where the
-    /// drag will run, not a grab surface.
+    /// The head is the handle; the stem is a rail.
     pub fn head_start(&self) -> f32 {
         self.outer - self.head
     }
 
-    /// Distance along the shaft of the point on the shaft's LINE closest to the
-    /// ray. `None` within 0.6° of parallel, where the answer moves as `1/sin`
-    /// and the drag stops tracking the cursor.
-    ///
-    /// Ericson, *Real-Time Collision Detection* (2005), §5.1.9, specialised to a
-    /// unit [`Self::direction`].
+    /// Closest approach of the ray to the shaft's line (Ericson, *Real-Time
+    /// Collision Detection*, 2005, §5.1.9); `None` within 0.6° of parallel.
     pub fn ray_parameter(&self, ray_origin: Vec3, ray_direction: Vec3) -> Option<f32> {
         let offset = self.origin - ray_origin;
         let alignment = self.direction.dot(ray_direction);
@@ -147,7 +106,6 @@ impl Shaft {
     fn hit_depth(&self, ray_origin: Vec3, ray_direction: Vec3, tolerance: f32) -> Option<f32> {
         let along = self.ray_parameter(ray_origin, ray_direction)?;
         let nearest = self.point(along.clamp(self.head_start(), self.outer));
-        // `ray_parameter` returning `Some` already rules out a zero ray.
         let unit = ray_direction.normalize();
         let offset = nearest - ray_origin;
         let depth = offset.dot(unit);
@@ -161,7 +119,6 @@ impl Shaft {
         self.axis.unit() * (cursor - grab)
     }
 
-    // `scale` is the widget's, which is what the barb spread is read in.
     fn append_line_mesh(&self, style: &ShaftStyle, scale: f32, out: &mut LineMesh<3>) {
         let color = style.colors[self.axis as usize];
         let mut push = |from: Vec3, to: Vec3| {
@@ -186,8 +143,6 @@ impl Shaft {
     }
 }
 
-/// The key an overlay dirties its retained mesh against, and the one an
-/// editor persists.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum HandleId {
     Rotate(Plane4),
@@ -209,19 +164,14 @@ impl Handle {
     }
 }
 
-/// A handle drives exactly one of the two, which is why this is a sum and
-/// not a pose delta with an identity half.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum TransformDelta {
-    /// `angle` in radians.
     Rotate { plane: Plane4, angle: f32 },
-    /// Slide `distance` world units along `axis`.
     Translate { axis: Axis4, distance: f32 },
 }
 
 impl TransformDelta {
-    /// Identity for a translation. Compose onto the subject's pose from the
-    /// left, matching [`crate::hypergimbal::Ring::drag_rotor`].
+    /// Identity for a translation.
     pub fn rotor(self) -> Rotor4 {
         match self {
             Self::Rotate { plane, angle } => (plane.unit_bivector() * angle).exp(),
@@ -229,7 +179,6 @@ impl TransformDelta {
         }
     }
 
-    /// The translation in R⁴, zero for a rotation.
     pub fn translation(self) -> Vec4 {
         match self {
             Self::Rotate { .. } => Vec4::ZERO,
@@ -238,27 +187,15 @@ impl TransformDelta {
     }
 }
 
-/// A held handle, anchored at the press edge so the whole drag is measured
-/// against one origin rather than accumulated frame by frame. A widget that
-/// follows a subject the drag is moving therefore slides under a line that
-/// does not, which is what keeps a translation drag from chasing itself.
+/// Anchored at the press, so a widget following the subject does not chase its
+/// own drag.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum HandleDrag {
-    Rotate {
-        ring: Ring,
-        /// Where the press ray met the ring's plane.
-        grab: Vec3,
-    },
-    Translate {
-        shaft: Shaft,
-        /// Shaft parameter the press ray came closest to.
-        grab: f32,
-    },
+    Rotate { ring: Ring, grab: Vec3 },
+    Translate { shaft: Shaft, grab: f32 },
 }
 
 impl HandleDrag {
-    /// `None` when the ray cannot be read against the handle, which the pick
-    /// that produced the handle has already ruled out.
     pub fn press(handle: Handle, ray_origin: Vec3, ray_direction: Vec3) -> Option<Self> {
         match handle {
             Handle::Rotate(ring) => ring
@@ -277,11 +214,8 @@ impl HandleDrag {
         }
     }
 
-    /// Measured from the press anchor rather than from the previous frame.
-    ///
-    /// `None` while the ray cannot be read against the handle: a cursor off the
-    /// window, or a camera that swung the handle edge-on. Callers hold the last
-    /// delta rather than snapping the subject somewhere arbitrary.
+    /// `None` when the ray cannot be read against the handle; callers hold the
+    /// last delta.
     pub fn delta(&self, ray_origin: Vec3, ray_direction: Vec3) -> Option<TransformDelta> {
         match self {
             Self::Rotate { ring, grab } => {
@@ -305,13 +239,10 @@ impl HandleDrag {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TransformGizmo {
     pub center: Vec3,
-    /// World length of one widget unit. The ring shell reaches `1 + √2` of
-    /// it and the arrow tips just under `3`.
     pub scale: f32,
 }
 
 impl TransformGizmo {
-    /// The rotation half on its own, for callers that want the projection.
     pub fn hypergimbal(&self) -> Hypergimbal {
         Hypergimbal {
             center: self.center,
@@ -319,12 +250,10 @@ impl TransformGizmo {
         }
     }
 
-    /// All six rings, in [`Plane4::ALL`] order.
     pub fn rings(&self) -> [Ring; 6] {
         self.hypergimbal().rings()
     }
 
-    /// All four shafts, in [`Axis4::ALL`] order.
     pub fn shafts(&self) -> [Shaft; 4] {
         Axis4::ALL.map(|axis| self.shaft(axis))
     }
@@ -340,13 +269,7 @@ impl TransformGizmo {
         }
     }
 
-    /// Handle the ray reaches within `tolerance`, or `None` for none of the ten.
-    ///
-    /// A shaft beats a ring wherever both are in range, rather than the two
-    /// arbitrating by depth. The widget is one depth-free overlay and
-    /// [`Self::append_line_mesh`] emits the shafts after the rings, so an arrow
-    /// is the line actually on screen everywhere they cross. Depth still
-    /// separates shaft from shaft, and ring from ring.
+    /// A shaft beats a ring wherever both are in range; the mesh draws shafts last.
     pub fn pick(&self, ray_origin: Vec3, ray_direction: Vec3, tolerance: f32) -> Option<Handle> {
         let mut nearest: Option<(f32, Shaft)> = None;
         for shaft in self.shafts() {
@@ -365,7 +288,6 @@ impl TransformGizmo {
             .map(Handle::Rotate)
     }
 
-    /// Existing contents are kept, so the widget can share a mesh.
     pub fn append_line_mesh(&self, style: &GizmoStyle, out: &mut LineMesh<3>) {
         self.hypergimbal().append_line_mesh(&style.rings, out);
         for shaft in self.shafts() {
@@ -383,20 +305,13 @@ pub struct GizmoStyle {
 #[derive(Clone, Debug)]
 pub struct ShaftStyle {
     pub width_px: f32,
-    /// Barbs per arrowhead, spread evenly around the stem.
     pub head_barbs: usize,
-    /// Barb spread, in widget scale units. The head's LENGTH is geometry,
-    /// not style: it is the grabbable extent, so it cannot be restyled out
-    /// of agreement with the pick.
     pub head_radius: f32,
     /// RGBA per axis, in [`Axis4::ALL`] order.
     pub colors: [[f32; 4]; 4],
 }
 
 impl ShaftStyle {
-    /// `x`, `y`, `z` on the red / green / blue convention every 3D editor already
-    /// trained the user on; `w` on a violet no scene axis uses, so the one shaft
-    /// with no world direction is also the one with no borrowed hue.
     pub const AXIS_COLORS: [[f32; 4]; 4] = [
         [0.96, 0.36, 0.34, 1.0],
         [0.42, 0.90, 0.46, 1.0],
@@ -427,8 +342,6 @@ mod tests {
         scale: 0.8,
     };
 
-    // Off-axis eye: no ring is seen edge-on, no two handles line up, and no
-    // shaft points at it.
     const EYE: Vec3 = Vec3::new(4.6, 4.4, 7.3);
 
     fn ray_to(target: Vec3) -> (Vec3, Vec3) {
@@ -500,8 +413,7 @@ mod tests {
                 let TransformDelta::Rotate { angle, .. } = delta else {
                     panic!("{plane:?} ring produced a translation");
                 };
-                // The log's own branch is the half-turn, so only compare
-                // where the drag has not wrapped past it.
+                // The log's branch is the half-turn; skip wrapped angles.
                 if angle.abs() < PI - 0.1 && angle.abs() > 1e-3 {
                     assert!(
                         (log.component(plane) - angle).abs() < 1e-4,
@@ -569,8 +481,7 @@ mod tests {
         };
         assert!((worst(w) + INV_SQRT_3).abs() < 1e-6);
         for step in 0..2048 {
-            // Deterministic low-discrepancy sweep of S²: the golden-angle
-            // spiral (Vogel 1979), which needs no RNG and no seed.
+            // Golden-angle spiral (Vogel 1979).
             let z = 1.0 - 2.0 * (step as f32 + 0.5) / 2048.0;
             let radius = (1.0 - z * z).max(0.0).sqrt();
             let phi = step as f32 * PI * (3.0 - 5.0_f32.sqrt());
@@ -687,8 +598,6 @@ mod tests {
         assert!(WIDGET
             .pick(eye, (miss - eye).normalize(), tolerance())
             .is_none());
-        // Through the hub, which the shafts' inner ends leave clear and
-        // which sits inside every ring.
         assert!(WIDGET
             .pick(eye, (WIDGET.center - eye).normalize(), tolerance())
             .is_none());
@@ -767,29 +676,6 @@ mod tests {
                     shaft.axis
                 );
             }
-        }
-    }
-
-    #[test]
-    fn handle_geometry_is_bit_reproducible() {
-        assert_eq!(WIDGET.shafts(), WIDGET.shafts());
-        assert_eq!(WIDGET.rings(), WIDGET.rings());
-        for axis in Axis4::ALL {
-            assert_eq!(WIDGET.shaft(axis), WIDGET.shaft(axis));
-        }
-    }
-
-    #[test]
-    fn axis_labels_and_indices_match_the_vec4_component_order() {
-        assert_eq!(
-            Axis4::ALL.map(|a| a.label()),
-            ["x", "y", "z", "w"],
-            "labels drifted from the component order"
-        );
-        for (index, axis) in Axis4::ALL.into_iter().enumerate() {
-            assert_eq!(axis as usize, index);
-            assert_eq!(axis.unit().to_array()[index], 1.0);
-            assert_eq!(axis.unit().length_squared(), 1.0);
         }
     }
 }

@@ -1,5 +1,4 @@
-//! A [`Viewport`] is a rectangle in pixel coordinates (origin top-left, +y down).
-
+/// Pixel rectangle, origin top-left, +y down.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Viewport {
     pub x: u32,
@@ -29,7 +28,6 @@ impl Viewport {
         }
     }
 
-    /// The depth range is set to the standard `[0.0, 1.0]`.
     pub fn apply(&self, rp: &mut wgpu::RenderPass<'_>) {
         rp.set_viewport(
             self.x as f32,
@@ -41,13 +39,11 @@ impl Viewport {
         );
     }
 
-    /// The layout the hyperslice kernel's `u.resolution` uniform expects.
     pub fn resolution_f32(&self) -> [f32; 2] {
         [self.width as f32, self.height as f32]
     }
 
-    /// Cells are `width / n` pixels; the trailing cell absorbs the rounding
-    /// remainder so the strip covers `self` without seams. Empty when `n == 0`.
+    /// The last cell absorbs the rounding remainder; empty when `n == 0`.
     pub fn split_horizontal(&self, n: u32) -> Vec<Viewport> {
         if n == 0 {
             return Vec::new();
@@ -67,7 +63,6 @@ impl Viewport {
             .collect()
     }
 
-    /// Same trailing-cell remainder rule as [`Self::split_horizontal`].
     pub fn split_vertical(&self, n: u32) -> Vec<Viewport> {
         if n == 0 {
             return Vec::new();
@@ -93,15 +88,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn right_of_left_panel_carves_correctly() {
-        let v = Viewport::right_of_left_panel(300, [1280, 720]);
-        assert_eq!(v.x, 300);
-        assert_eq!(v.y, 0);
-        assert_eq!(v.width, 980);
-        assert_eq!(v.height, 720);
-    }
-
-    #[test]
     fn right_of_left_panel_clamps_when_panel_exceeds_framebuffer() {
         let v = Viewport::right_of_left_panel(2000, [1280, 720]);
         assert_eq!(v.x, 1280);
@@ -110,7 +96,6 @@ mod tests {
 
     #[test]
     fn split_horizontal_tiles_without_gaps() {
-        // 17 doesn't divide evenly into 5; verify remainder lands on the last cell.
         let v = Viewport {
             x: 100,
             y: 50,

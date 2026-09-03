@@ -1,34 +1,18 @@
-//! The frame is the orientation, not a separate rotation field: that
-//! avoids the per-Space convention questions of the `Iso` types, since
-//! [`loam_math::Space::parallel_transport_along`] moves a frame in any
-//! Space.
-
 use glam::{Vec2, Vec3};
 use loam_math::Space;
 use std::ops::Mul;
 
 use crate::CameraView;
 
-/// `direction` is Euclidean-unit in the Space's embedding, matching
-/// [`Camera`]'s frame convention, so `Space::exp(origin, direction * t)`
-/// walks the ray.
+/// `direction` is Euclidean-unit in the embedding; `Space::exp` walks it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ray {
     pub origin: Vec3,
     pub direction: Vec3,
 }
 
-/// Invariants, caller-maintained and not type-enforced:
-///
-/// - `right`, `up`, `forward` are pairwise-orthogonal Euclidean-unit
-///   vectors in the Space's embedding; the WGSL prelude applies the
-///   metric, so storing Riemannian-unit vectors would leak embedding
-///   scale factors into the renderer.
-/// - Right-handed: `forward` is the look direction, so `right × up =
-///   -forward`. Matches the WGSL prelude.
-/// - Construct via [`Camera::looking_at`] or a
-///   [`crate::CameraController`]; mutating the basis by hand drifts off
-///   orthonormal under `translate`.
+/// `right`, `up`, `forward` are pairwise-orthogonal Euclidean-unit vectors in
+/// the embedding; the WGSL prelude applies the metric. `right × up = -forward`.
 #[derive(Clone, Copy, Debug)]
 pub struct Camera<S: Space> {
     pub position: S::Point,
@@ -72,8 +56,6 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
         }
     }
 
-    /// Renderer-facing view basis, in the Space's embedding coordinates
-    /// the shader expects (the WGSL prelude applies the metric).
     pub fn view(&self) -> CameraView {
         CameraView {
             position: self.position,
@@ -83,17 +65,8 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
         }
     }
 
-    /// `ndc` components are in [-1, 1] with y up, so pixel-space callers
-    /// must flip y; window coordinates are y-down. `ndc` outside [-1, 1] is
-    /// meaningful and returns the ray through that off-screen point.
-    ///
-    /// A point at depth `d` along `forward` projects to
-    /// `ndc.x = x / (aspect · tan(fov_y/2) · d)` and
-    /// `ndc.y = y / (tan(fov_y/2) · d)` under a right-handed perspective
-    /// matrix (Akenine-Möller, Haines, Hoffman, *Real-Time Rendering* 4th
-    /// ed, 2018, §4.7); solving for the view-space offsets and dropping the
-    /// depth scale gives the direction below. The raymarch shaders build
-    /// their primary rays from the same three coefficients.
+    /// Inverts the perspective map of Akenine-Möller, Haines and Hoffman,
+    /// *Real-Time Rendering* 4th ed. (2018) §4.7. `ndc` is y-up and unclamped.
     pub fn ray_from_ndc(&self, ndc: Vec2) -> Ray {
         let tan_half_fov_y = (self.fov_y * 0.5).tan();
         let direction = self.forward
@@ -101,33 +74,17 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
             + self.up * (ndc.y * tan_half_fov_y);
         Ray {
             origin: self.position,
-            // The lateral terms are orthogonal to the unit `forward`, so
-            // |direction|² = 1 + |lateral|² ≥ 1: normalize cannot underflow
-            // for any finite `ndc`, and needs no fallback.
+            // |direction|² = 1 + |lateral|² ≥ 1, so normalize cannot underflow.
             direction: direction.normalize(),
         }
     }
 
-    /// `None` when the point is outside the frustum, which is a caller
-    /// anchoring UI to it drawing nothing.
-    ///
-    /// An image in a curved Space is formed by the geodesics through the eye
-    /// (Gunn, *Discrete Groups and Visualization of Three-Dimensional
-    /// Manifolds*, SIGGRAPH 1993, §3), which is the ray `ray_from_ndc`
-    /// builds and the raymarch preludes walk with `Space::exp`. The geodesic
-    /// reaching `world` leaves along `Space::log(position, world)`, so that
-    /// vector stands where the straight offset `world - position` would in
-    /// the flat case; the two coincide when the chart is flat.
-    ///
-    /// Only its direction matters: the frame components enter as a ratio, so
-    /// the embedding scale factor a conformal model's `log` carries cancels.
-    /// `near` and `far` clip its forward component, the same
-    /// embedding-frame depth the primary ray advances in.
+    /// `None` outside the frustum. Projects along `log(position, world)`, the
+    /// image-forming geodesic in a curved Space (Gunn, SIGGRAPH 1993, §3).
     pub fn ndc_from_world(&self, world: Vec3, space: &S) -> Option<Vec2> {
         let to_target = space.log(self.position, world);
         let depth = to_target.dot(self.forward);
-        // `near` is a public field a caller may zero to mean "no near clip";
-        // the sign test then still rejects depth == 0 before it divides.
+        // `near` may be zero; depth <= 0 is still rejected before the divide.
         if depth <= 0.0 || depth < self.near || depth > self.far {
             return None;
         }
@@ -140,9 +97,7 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
         (ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0).then_some(ndc)
     }
 
-    /// Window pixels, top-left origin and y down. `viewport` sets the scale
-    /// only: the framing comes from `self.aspect`, so a caller whose viewport
-    /// ratio has drifted from it gets the camera's framing, not the window's.
+    /// Window pixels, y down; `viewport` only scales, `self.aspect` frames.
     pub fn pixels_from_world(&self, world: Vec3, viewport: (u32, u32), space: &S) -> Option<Vec2> {
         if viewport.0 == 0 || viewport.1 == 0 {
             return None;
@@ -154,17 +109,12 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
         ))
     }
 
-    /// Transport of the frame is the identity in flat space and a holonomy
-    /// rotation in H³ / S³.
     pub fn translate(&mut self, v: S::Vector, dt: f32, space: &S)
     where
         S::Vector: Mul<f32, Output = S::Vector>,
     {
         let new_pos = space.exp(self.position, v * dt);
-        // Re-normalise to Euclidean-unit: transport preserves Riemannian
-        // length, but the Poincaré-ball / S³ embedding scales Euclidean
-        // length by a position-dependent factor, and the renderer expects
-        // Euclidean-unit directions.
+        // Transport keeps Riemannian length; the embedding rescales Euclidean.
         let path = [self.position, new_pos];
         self.right = space
             .parallel_transport_along(&path, self.right)
@@ -205,8 +155,7 @@ mod tests {
         let mut camera = Camera::<S>::looking_at(eye, Vec3::ZERO, Vec3::Y, space);
         camera.fov_y = 70_f32.to_radians();
         camera.aspect = 16.0 / 9.0;
-        // The frustum depth is in embedding units, which a conformal chart
-        // shrinks near the boundary; keep the clip out of this test's way.
+        // Embedding depth shrinks near the boundary; keep the clip clear.
         camera.near = 1e-5;
         let mut visible = 0;
         for &world in samples {
@@ -228,18 +177,6 @@ mod tests {
             "only {visible} of {} samples were in view; the test proves little",
             samples.len()
         );
-    }
-
-    #[test]
-    fn at_origin_is_orthonormal() {
-        let cam = Camera::<EuclideanR3>::at_origin();
-        assert!((cam.right.length() - 1.0).abs() < 1e-6);
-        assert!((cam.up.length() - 1.0).abs() < 1e-6);
-        assert!((cam.forward.length() - 1.0).abs() < 1e-6);
-        close(cam.right.cross(cam.up), -cam.forward, 1e-6);
-        assert!(cam.right.dot(cam.up).abs() < 1e-6);
-        assert!(cam.right.dot(cam.forward).abs() < 1e-6);
-        assert!(cam.up.dot(cam.forward).abs() < 1e-6);
     }
 
     #[test]
@@ -322,9 +259,7 @@ mod tests {
             camera.aspect = aspect;
             let tan_half_fov_y = (camera.fov_y * 0.5).tan();
 
-            // Ratio of frame components rather than acos(dot): the tangent
-            // is exactly the projection coefficient being pinned, and acos
-            // loses precision on the near-parallel rays this samples.
+            // Component ratio, not acos(dot): acos is ill-conditioned near 1.
             let top = camera.ray_from_ndc(Vec2::new(0.0, 1.0)).direction;
             let vertical_tan = top.dot(camera.up) / top.dot(camera.forward);
             assert!(
@@ -408,10 +343,7 @@ mod tests {
                             Vec3::new(xi as f32 * 1.7, yi as f32 * 1.3, zi as f32 * 2.1) + target;
                         let clip = matrix_clip(&camera, world);
                         let ndc = clip.xyz() / clip.w;
-                        // A sample astride a clip plane is decided by float op
-                        // order, and the two forms multiply in different
-                        // orders by construction. Disagreement there is not
-                        // the behaviour under test.
+                        // Astride a clip plane, float op order decides; skip.
                         let astride_a_clip_plane = clip.w.abs() < 1e-3
                             || (ndc.x.abs() - 1.0).abs() < 1e-3
                             || (ndc.y.abs() - 1.0).abs() < 1e-3

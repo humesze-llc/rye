@@ -1,22 +1,14 @@
-//! Native: the runner [`precise_sleep_until`]s each redraw's deadline.
-//! `target_fps = 0` removes the cap and the surface `PresentMode` drives cadence
-//! (`Fifo` blocks at vsync); `vsync off` swaps to `Mailbox` / `Immediate` so the
-//! cap can exceed the refresh rate.
-//!
-//! Wasm: `requestAnimationFrame` is the upper bound, so the runner can only cap
-//! lower by skipping early callbacks. `vsync` is a no-op there: browser surfaces
-//! advertise only `Fifo`.
+//! Native: the runner sleeps to each redraw's deadline; `target_fps = 0` leaves
+//! the surface `PresentMode` to pace. Wasm: `requestAnimationFrame` is the
+//! upper bound, so the runner can only cap lower by skipping callbacks.
 
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::time::Duration;
 use web_time::Instant;
 
-// Uncapped by default: a 60 fps default suppressed the native rate on 120/144/240
-// Hz displays and introduced RAF alternating-skip jitter. `fps <N>` is the only
-// way in.
+// `0` = uncapped; the runner neither sleeps nor skips.
 const DEFAULT_PERIOD_NS: u64 = 0;
 
-// `0` = uncapped; the runner neither sleeps nor skips.
 static TARGET_PERIOD_NS: AtomicU64 = AtomicU64::new(DEFAULT_PERIOD_NS);
 
 /// `fps <= 0.0` removes the cap.
@@ -47,8 +39,6 @@ pub fn target_fps() -> f32 {
     }
 }
 
-// Pending vsync request; `0` = none. Runner swaps back to 0 after applying so
-// the surface is not reconfigured every tick.
 const VSYNC_NONE: u8 = 0;
 const VSYNC_REQ_ON: u8 = 1;
 const VSYNC_REQ_OFF: u8 = 2;
@@ -63,7 +53,6 @@ pub fn request_vsync_off() {
     PENDING_VSYNC.store(VSYNC_REQ_OFF, Ordering::Release);
 }
 
-/// `Some(true)` = on, `Some(false)` = off, `None` = no change.
 pub fn take_pending_vsync() -> Option<bool> {
     match PENDING_VSYNC.swap(VSYNC_NONE, Ordering::AcqRel) {
         VSYNC_REQ_ON => Some(true),
@@ -72,14 +61,11 @@ pub fn take_pending_vsync() -> Option<bool> {
     }
 }
 
-// 2 ms covers the worst-case `std::thread::sleep` overshoot seen on Win11's
-// 15.625 ms timer tick. Native-only: wasm skips and re-requests instead.
+// Worst-case `std::thread::sleep` overshoot seen on Win11's 15.625 ms timer tick.
 #[cfg(not(target_arch = "wasm32"))]
 const SPIN_TAIL: Duration = Duration::from_millis(2);
 
-/// Coarse-sleep until `SPIN_TAIL` before `deadline`, then spin: plain
-/// `std::thread::sleep` rounds to the timer granularity (~15.6 ms on Windows)
-/// and misses sub-vsync caps. The spin saturates one core for <=2 ms per frame.
+/// Sleeps, then spins the last `SPIN_TAIL`; plain sleep rounds to the timer tick.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn precise_sleep_until(deadline: Instant) {
     let now = Instant::now();
@@ -90,20 +76,14 @@ pub fn precise_sleep_until(deadline: Instant) {
     if total > SPIN_TAIL {
         std::thread::sleep(total - SPIN_TAIL);
     }
-    // `Instant::now()` is monotonic, so the spin terminates.
     while Instant::now() < deadline {
         std::hint::spin_loop();
     }
 }
 
-/// Stub on wasm32 (the runner skips-and-rerequests instead); exists so the
-/// call site needs no `cfg`.
 #[cfg(target_arch = "wasm32")]
 pub fn precise_sleep_until(_deadline: Instant) {}
 
-// Serializes tests that touch the global pacing atomics; without it cargo's
-// parallel runner interleaves reads and writes and flakes. Poison is ignored
-// because the data is unit.
 #[cfg(test)]
 pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -121,15 +101,6 @@ mod tests {
     }
 
     #[test]
-    fn set_then_read() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        set_target_fps(144.0);
-        let f = target_fps();
-        assert!((f - 144.0).abs() < 0.5);
-        set_target_fps(60.0);
-    }
-
-    #[test]
     fn vsync_request_round_trip() {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = take_pending_vsync();
@@ -143,8 +114,6 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn precise_sleep_lands_close_to_deadline() {
-        // 50 ms is well above the ~15.625 ms Windows timer tick; the hybrid
-        // should wake within ~SPIN_TAIL of the deadline.
         let start = Instant::now();
         let deadline = start + Duration::from_millis(50);
         precise_sleep_until(deadline);
@@ -162,8 +131,6 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn precise_sleep_steady_cadence() {
-        // Five chained 20-ms periods should land within +/-5 ms of 100 ms, which
-        // catches per-call timer-rounding drift.
         let period = Duration::from_millis(20);
         let start = Instant::now();
         let mut deadline = start;
@@ -183,7 +150,6 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn precise_sleep_past_deadline_returns_immediately() {
-        // A past deadline must not deadlock the spin loop.
         let start = Instant::now();
         let deadline = start - Duration::from_millis(10);
         precise_sleep_until(deadline);

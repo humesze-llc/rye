@@ -1,7 +1,5 @@
 use glam::Vec3;
 
-/// Maps a direction to the shape's farthest point along it, in world
-/// coordinates.
 pub trait SupportFn {
     fn support(&self, direction: Vec3) -> Vec3;
 }
@@ -25,7 +23,6 @@ impl<'a> SupportFn for ConvexHull<'a> {
     }
 }
 
-/// Support is `center + radius·normalize(direction)`.
 pub struct Sphere {
     pub center: Vec3,
     pub radius: f32,
@@ -38,8 +35,7 @@ impl SupportFn for Sphere {
     }
 }
 
-/// `sa` and `sb` are the contributing points on each shape, cached because EPA
-/// reconstructs contact positions from them.
+/// `sa` and `sb` are the contributing support points on A and B.
 #[derive(Clone, Copy, Debug)]
 pub struct MinkowskiPoint {
     pub point: Vec3,
@@ -106,8 +102,6 @@ pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
             return GjkResult::Intersecting { simplex };
         }
         if new_dir.length_squared() < GJK_EPS {
-            // Origin on a boundary feature, or the simplex collapsed. EPA
-            // takes only a full tetrahedron, never a degenerate simplex.
             if n >= 4 {
                 return GjkResult::Intersecting { simplex };
             }
@@ -116,13 +110,10 @@ pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
         dir = new_dir;
     }
 
-    // Cap hit without convergence, which is almost always thrashing at a
-    // tangent boundary. Reported as Separated rather than fed to EPA.
     GjkResult::Separated
 }
 
-// Returns `true` iff the simplex encloses the origin. On entry `simplex[0..n]`
-// has the newest point at `n-1`; on exit `simplex[0..new_n]` holds survivors.
+// Newest point at `n-1` on entry; `simplex[0..new_n]` holds survivors on exit.
 fn do_simplex(simplex: &mut [MinkowskiPoint; 4], n: usize) -> (bool, usize, Vec3) {
     match n {
         2 => do_line(simplex),
@@ -132,7 +123,7 @@ fn do_simplex(simplex: &mut [MinkowskiPoint; 4], n: usize) -> (bool, usize, Vec3
     }
 }
 
-// [b, a] with `a` newest. Past B is impossible since `a` was chosen along `-b`.
+// [b, a] with `a` newest.
 fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let a = simplex[1].point;
     let b = simplex[0].point;
@@ -142,7 +133,6 @@ fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     if ab.dot(ao) > 0.0 {
         let dir = triple_product(ab, ao, ab);
         if dir.length_squared() < 1e-10 {
-            // Origin on line AB: any perpendicular escapes the degeneracy.
             (false, 2, any_perpendicular(ab))
         } else {
             (false, 2, dir)
@@ -153,8 +143,7 @@ fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     }
 }
 
-// Crosses with the cardinal axis `v` is least aligned with, to avoid a
-// near-zero cross product.
+// The axis `v` is least aligned with keeps the cross product away from zero.
 fn any_perpendicular(v: Vec3) -> Vec3 {
     if v.x.abs() <= v.y.abs() && v.x.abs() <= v.z.abs() {
         v.cross(Vec3::X)
@@ -171,8 +160,7 @@ fn fall_back_to_ab(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     do_line(simplex)
 }
 
-// [c, b, a] with `a` newest. The origin is in a vertex, edge, or face Voronoi
-// region, above or below the triangle plane.
+// [c, b, a] with `a` newest.
 fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let a = simplex[2].point;
     let b = simplex[1].point;
@@ -197,18 +185,15 @@ fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     }
 
     if abc.dot(ao) > 0.0 {
-        // Origin above: keep winding, search +abc.
         (false, 3, abc)
     } else {
-        // Origin below: flip winding (swap b, c), search -abc.
         simplex.swap(0, 1);
         (false, 3, -abc)
     }
 }
 
-// [d, c, b, a] with `a` newest. The textbook winding invariant does not hold
-// here (`do_triangle`'s swap branch breaks it), so each face normal is oriented
-// away from the opposite vertex instead, which is always outward.
+// [d, c, b, a] with `a` newest; face normals orient away from the opposite
+// vertex, not by winding, since `do_triangle`'s swap branch breaks it.
 fn do_tetrahedron(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let a = simplex[3].point;
     let b = simplex[2].point;
@@ -220,40 +205,34 @@ fn do_tetrahedron(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let ad = d - a;
     let ao = -a;
 
-    // Outward normal of face ABC (adjacent to a, opposite d).
     let mut abc = ab.cross(ac);
     if abc.dot(ad) > 0.0 {
         abc = -abc;
     }
-    // Outward normal of face ACD (adjacent to a, opposite b).
     let mut acd = ac.cross(ad);
     if acd.dot(ab) > 0.0 {
         acd = -acd;
     }
-    // Outward normal of face ADB (adjacent to a, opposite c).
     let mut adb = ad.cross(ab);
     if adb.dot(ac) > 0.0 {
         adb = -adb;
     }
 
     if abc.dot(ao) > 0.0 {
-        // Drop D, recurse on triangle [C, B, A].
         simplex[0] = simplex[1];
         simplex[1] = simplex[2];
         simplex[2] = simplex[3];
         return do_triangle(simplex);
     }
     if acd.dot(ao) > 0.0 {
-        // Drop B, recurse on triangle [D, C, A].
         simplex[2] = simplex[3];
         return do_triangle(simplex);
     }
     if adb.dot(ao) > 0.0 {
-        // Drop C, recurse on triangle [B, D, A].
         let d_point = simplex[0];
-        simplex[0] = simplex[2]; // B -> [0]
-        simplex[1] = d_point; // D -> [1]
-        simplex[2] = simplex[3]; // A -> [2]
+        simplex[0] = simplex[2];
+        simplex[1] = d_point;
+        simplex[2] = simplex[3];
         return do_triangle(simplex);
     }
 
@@ -335,11 +314,7 @@ mod tests {
 
     #[test]
     fn sphere_vs_sphere_matches_distance_test() {
-        for &(ax, bx, overlap) in &[
-            (0.0, 3.0, false), // 3 apart, radii 1 each -> gap of 1
-            (0.0, 1.5, true),  // 1.5 apart, radii 1 each -> overlap
-            (0.0, 2.0, true),  // exactly touching
-        ] {
+        for &(ax, bx, overlap) in &[(0.0, 3.0, false), (0.0, 1.5, true), (0.0, 2.0, true)] {
             let a = Sphere {
                 center: Vec3::new(ax, 0.0, 0.0),
                 radius: 1.0,
@@ -359,9 +334,7 @@ mod tests {
 
     #[test]
     fn box_vs_sphere_corner_contact() {
-        // Unit box with corner at (1,1,1). A sphere at (1+d, 1+d, 1+d) reaches
-        // the corner when `d·√3 ≤ r`, so r = 0.5 puts the threshold at
-        // d ≈ 0.2887.
+        // The corner (1,1,1) is reached when `d·√3 ≤ 0.5`, i.e. d ≤ 0.2887.
         let vb = box_vertices(Vec3::ZERO, Vec3::ONE);
         let b = ConvexHull { vertices: &vb };
 
@@ -386,9 +359,7 @@ mod tests {
 
     #[test]
     fn rotated_boxes_separate_as_axes_allow() {
-        // Two unit boxes, one rotated 45° about Z: x ∈ [-1, 1] against the
-        // diamond's ±√2 ≈ ±1.414. They separate at centre distance 2.5 and
-        // barely overlap at 2.2.
+        // The 45° box spans ±√2 on x, so the pair separates at 2.5, overlaps at 2.2.
         use glam::Quat;
         let va = box_vertices(Vec3::ZERO, Vec3::ONE);
         let rot = Quat::from_rotation_z(std::f32::consts::FRAC_PI_4);

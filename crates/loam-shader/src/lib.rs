@@ -6,7 +6,5 @@ mod db;
 
 pub use db::{validate_wgsl, ShaderDb, ShaderId, ShaderOwner, WgslValidationError};
 
-/// Defines `loam_safe_normalize`, `loam_march_geodesic`, `loam_estimate_normal`.
-/// Assembled between the scene SDF and user shading by
-/// [`ShaderDb::load_geodesic_scene`].
+/// Assembled between the scene SDF and user shading by [`ShaderDb::load_geodesic_scene`].
 pub const GEODESIC_MARCH_KERNEL: &str = include_str!("kernel.wgsl");

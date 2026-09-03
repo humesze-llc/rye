@@ -1,9 +1,6 @@
-//! Recording is thread-local and a worker thread's buffer dies with the
-//! thread, so [`take_worker_trace`] and [`merge_worker_trace`] move a
-//! worker's sections onto the thread that owns the frame.
-//! [`crate::jobs::JobPool::run_stage`] calls the pair at its join barrier, in
-//! ascending partition index, so a frame's section list is a function of the
-//! partition and not of which worker finished first.
+//! Recording is thread-local, so [`take_worker_trace`] and
+//! [`merge_worker_trace`] move a worker's sections onto the frame's thread;
+//! [`crate::jobs::JobPool::run_stage`] calls them in ascending partition index.
 
 #[cfg(feature = "frame-trace")]
 use std::cell::RefCell;
@@ -19,17 +16,12 @@ pub struct Section {
     pub elapsed: Duration,
 }
 
-/// `heap_delta_bytes` is signed JS heap growth this frame; only populated when a
-/// host registers a [`HeapSampler`] via [`set_heap_sampler`] AND the runtime
-/// exposes the API (Chrome/Edge yes, Firefox/native `None`). Negative means a GC
-/// reclaimed heap mid-frame.
-///
-/// `allocs` is the per-frame [`crate::alloc::CountingAllocator`] delta; only
-/// populated when a demo installs that allocator as its `#[global_allocator]`.
 #[derive(Clone, Debug, Default)]
 pub struct FrameTrace {
     pub sections: Vec<Section>,
+    /// `None` without a [`HeapSampler`].
     pub heap_delta_bytes: Option<i64>,
+    /// `None` without a [`crate::alloc::CountingAllocator`] installed.
     pub allocs: Option<crate::alloc::AllocDelta>,
 }
 
@@ -39,7 +31,7 @@ impl FrameTrace {
     }
 }
 
-/// 120 frames is two seconds at 60fps; footprint stays under ~10 KB.
+/// Two seconds at 60 fps.
 pub const DEFAULT_CAPACITY: usize = 120;
 
 #[cfg(feature = "frame-trace")]
@@ -58,9 +50,7 @@ impl Tracer {
     }
 }
 
-/// Bytes. On wasm32 + Chromium the host wires this to
-/// `performance.memory.usedJSHeapSize`; elsewhere no sampler is set and
-/// `heap_delta_bytes` stays `None`.
+/// Bytes; on wasm32 + Chromium, `performance.memory.usedJSHeapSize`.
 pub type HeapSampler = fn() -> Option<u64>;
 
 #[cfg(feature = "frame-trace")]
@@ -74,15 +64,13 @@ thread_local! {
     static HEAP_SAMPLER: std::cell::Cell<Option<HeapSampler>> = const { std::cell::Cell::new(None) };
     static MAX_EVER: RefCell<std::collections::HashMap<&'static str, Duration>> =
         RefCell::new(std::collections::HashMap::new());
-    // 250ms is "user-perceptible freeze"; below it, routine GC stalls and
-    // wireframe rebuilds (50-150ms) drown the log.
+    // 250 ms is a user-perceptible freeze.
     static SPIKE_THRESHOLD: std::cell::Cell<Duration> =
         const { std::cell::Cell::new(Duration::from_millis(250)) };
     static FRAME_COUNTER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Not safe to hold across `await`: the tracer is thread-local and borrowed
-/// mutably during drop.
+/// Not safe to hold across `await`: the tracer is thread-local.
 #[cfg(feature = "frame-trace")]
 #[must_use = "Scope records on drop; binding it to `_` would record immediately"]
 pub struct Scope {
@@ -95,8 +83,6 @@ impl Drop for Scope {
     fn drop(&mut self) {
         let elapsed = self.start.elapsed();
         let name = self.name;
-        // try_borrow_mut: a scope dropping while `end_frame` rotates the buffer
-        // loses its sample rather than panicking inside a `Drop`.
         CURRENT_SECTIONS.with(|s| {
             if let Ok(mut s) = s.try_borrow_mut() {
                 s.push(Section { name, elapsed });
@@ -105,8 +91,6 @@ impl Drop for Scope {
     }
 }
 
-/// Bind the guard to a real name (`let _s = scope("foo")`); binding to `_`
-/// drops it immediately and records zero.
 #[cfg(feature = "frame-trace")]
 #[inline]
 pub fn scope(name: &'static str) -> Scope {
@@ -121,7 +105,6 @@ pub fn set_heap_sampler(sampler: HeapSampler) {
     HEAP_SAMPLER.with(|s| s.set(Some(sampler)));
 }
 
-/// Pairs with [`end_frame`], which computes the `idle` section from it.
 #[cfg(feature = "frame-trace")]
 pub fn begin_frame() {
     CURRENT_FRAME_START.with(|c| c.set(Some(Instant::now())));
@@ -130,10 +113,7 @@ pub fn begin_frame() {
     CURRENT_FRAME_ALLOC_START.with(|c| c.set(crate::alloc::current_snapshot()));
 }
 
-/// Records two synthetic sections beyond the explicit scopes, neither on the
-/// first frame after startup: `between-frames`, the wall clock between
-/// successive `end_frame` calls, and `idle`, the gap from the last
-/// `end_frame` to this frame's `begin_frame`.
+/// Adds the synthetic `between-frames` and `idle` sections after the first frame.
 #[cfg(feature = "frame-trace")]
 pub fn end_frame() {
     let now = Instant::now();
@@ -183,9 +163,7 @@ pub fn end_frame() {
         }
     }
 
-    // Owning the sections here keeps MAX_EVER, TRACER and the warn loop from
-    // ever nesting their borrows, which is what a re-entrant tracing subscriber
-    // would deadlock on.
+    // Borrows must not nest: a re-entrant tracing subscriber would deadlock.
     let mut over_threshold: Vec<(&'static str, Duration)> = Vec::new();
     MAX_EVER.with(|m| {
         let mut m = m.borrow_mut();
@@ -244,14 +222,13 @@ pub fn set_capacity(capacity: usize) {
     });
 }
 
-/// Oldest-to-newest. Allocates; for the display path, not the hot path.
+/// Oldest to newest; allocates.
 #[cfg(feature = "frame-trace")]
 pub fn history() -> Vec<FrameTrace> {
     TRACER.with(|t| t.borrow().history.iter().cloned().collect())
 }
 
-/// `f` must NOT call [`end_frame`] or [`set_capacity`] while the borrow is held;
-/// that deadlocks the `RefCell`.
+/// `f` must not call [`end_frame`] or [`set_capacity`]; the borrow is held.
 #[cfg(feature = "frame-trace")]
 pub fn with_history<R>(f: impl FnOnce(&std::collections::VecDeque<FrameTrace>) -> R) -> R {
     TRACER.with(|t| f(&t.borrow().history))
@@ -262,8 +239,7 @@ pub fn last_frame() -> Option<FrameTrace> {
     TRACER.with(|t| t.borrow().history.back().cloned())
 }
 
-/// Since startup or the last [`clear_max_ever`]. `Duration::ZERO` for a
-/// name never seen.
+/// `Duration::ZERO` for a name never seen.
 #[cfg(feature = "frame-trace")]
 pub fn max_ever(name: &'static str) -> Duration {
     MAX_EVER.with(|m| m.borrow().get(name).copied().unwrap_or(Duration::ZERO))
@@ -280,23 +256,18 @@ pub fn all_max_ever() -> Vec<(&'static str, Duration)> {
     })
 }
 
-/// Does not touch the rolling window.
 #[cfg(feature = "frame-trace")]
 pub fn clear_max_ever() {
     MAX_EVER.with(|m| m.borrow_mut().clear());
 }
 
-/// `end_frame` logs a spike `tracing::warn!` above this. `Duration::MAX`
-/// disables it.
+/// `Duration::MAX` disables the spike warning.
 #[cfg(feature = "frame-trace")]
 pub fn set_spike_threshold(threshold: Duration) {
     SPIKE_THRESHOLD.with(|c| c.set(threshold));
 }
 
-/// For a section produced outside the `scope` lifecycle (GPU timer path: a
-/// timestamp delta arriving via `map_async`). A late timestamp (1-2 frames)
-/// attributes to whatever frame is current, which the rolling-window
-/// aggregate absorbs.
+/// A late sample attributes to whatever frame is current.
 #[cfg(feature = "frame-trace")]
 pub fn record_external(name: &'static str, elapsed: Duration) {
     CURRENT_SECTIONS.with(|s| {
@@ -313,16 +284,12 @@ pub fn record_external(_name: &'static str, _elapsed: Duration) {}
 #[derive(Debug, Default)]
 pub struct WorkerTrace(Vec<Section>);
 
-/// Calling this on the thread that owns the frame steals that frame's own
-/// sections instead.
+/// On the frame's own thread this steals the frame's sections.
 #[cfg(feature = "frame-trace")]
 pub fn take_worker_trace() -> WorkerTrace {
     CURRENT_SECTIONS.with(|s| WorkerTrace(std::mem::take(&mut *s.borrow_mut())))
 }
 
-/// Ordering is the caller's responsibility and is what makes the merge
-/// deterministic: [`crate::jobs::JobPool::run_stage`] calls this in ascending
-/// partition index, never in completion order.
 #[cfg(feature = "frame-trace")]
 pub fn merge_worker_trace(trace: WorkerTrace) {
     CURRENT_SECTIONS.with(|s| s.borrow_mut().extend(trace.0));
@@ -455,24 +422,20 @@ mod tests {
 
     #[test]
     fn scope_records_elapsed_on_drop() {
-        end_frame(); // discard any pre-existing in-flight frame
-        let _ = history();
+        end_frame();
 
         {
             let _s = scope("test-a");
             sleep(Duration::from_millis(1));
         }
-        let pre_frame = last_frame();
         end_frame();
         let post_frame = last_frame().expect("end_frame should produce a frame");
 
-        let _ = pre_frame;
         let sections = &post_frame.sections;
-        assert!(
-            sections.iter().any(|s| s.name == "test-a"),
-            "expected 'test-a' in {sections:?}"
-        );
-        let test_a = sections.iter().find(|s| s.name == "test-a").unwrap();
+        let test_a = sections
+            .iter()
+            .find(|s| s.name == "test-a")
+            .unwrap_or_else(|| panic!("expected 'test-a' in {sections:?}"));
         assert!(
             test_a.elapsed >= Duration::from_millis(1),
             "scope elapsed should be >= sleep duration, got {:?}",
@@ -495,15 +458,14 @@ mod tests {
     #[test]
     fn heap_sampler_populates_delta_on_completed_frame() {
         use std::sync::atomic::{AtomicU64, Ordering};
-        // Synthetic strictly-increasing sampler; begin + end each call it once,
-        // so the delta equals the per-call increment.
+        // begin and end each sample once, so the delta is one increment.
         static FAKE_HEAP: AtomicU64 = AtomicU64::new(1_000_000);
         fn fake_sampler() -> Option<u64> {
             Some(FAKE_HEAP.fetch_add(4096, Ordering::SeqCst) + 4096)
         }
         FAKE_HEAP.store(1_000_000, Ordering::SeqCst);
         set_heap_sampler(fake_sampler);
-        end_frame(); // discard any pre-existing in-flight frame
+        end_frame();
         begin_frame();
         end_frame();
         let frame = last_frame().expect("end_frame should produce a frame");
@@ -515,7 +477,7 @@ mod tests {
 
     #[test]
     fn merged_worker_traces_land_in_merge_order_and_the_take_empties_the_source() {
-        end_frame(); // discard any pre-existing in-flight frame
+        end_frame();
 
         {
             let _s = scope("recorded-first");
@@ -535,9 +497,6 @@ mod tests {
         {
             let _s = scope("local");
         }
-        // Merged against the order they were recorded in: the frame has to
-        // follow the merge calls, which is the whole basis of the pool's
-        // ascending-partition join.
         merge_worker_trace(second);
         merge_worker_trace(first);
         end_frame();

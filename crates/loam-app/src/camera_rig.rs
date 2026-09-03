@@ -1,9 +1,3 @@
-//! The camera a scene drives, and the `camera` verb that switches it.
-//!
-//! Shared because every scene has the same two cameras and the same question
-//! to answer about them, and a scene inventing its own answer is a scene whose
-//! camera behaves differently for no reason a viewer can see.
-
 use anyhow::{anyhow, Result};
 use loam_egui::Console;
 
@@ -42,8 +36,6 @@ impl CameraRig {
     }
 }
 
-/// Registers `camera` on a scene console. `reach` names where the scene keeps
-/// its [`CameraRig`], the same lens shape the ground and floor verbs use.
 pub fn register_camera_command<Ctx: 'static>(
     console: &mut Console<Ctx>,
     reach: fn(&mut Ctx) -> &mut CameraRig,

@@ -23,24 +23,19 @@ impl Args {
                 parse_query_into(&hash, &mut map);
             }
         }
-        // Workers have no `window`; the init message forwards the page query.
         QUERY_OVERRIDE.with(|q| {
             if let Some((search, hash)) = q.borrow().as_ref() {
                 parse_query_into(search, &mut map);
                 parse_query_into(hash, &mut map);
             }
         });
-        // `?key` with no `=` is dropped by parse_query_into, so the query
-        // surface has no bare-flag form to record.
         Self {
             map,
             bare_flags: Vec::new(),
         }
     }
 
-    /// Non-`--key=value` arguments are ignored rather than errored: a parent
-    /// harness may add positionals. A bare `--key` is kept for
-    /// [`Args::has_bare_flag`].
+    /// Positionals are ignored; a bare `--key` is kept for [`Args::has_bare_flag`].
     pub fn from_argv<I, S>(argv: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -79,9 +74,7 @@ impl Args {
         }
     }
 
-    /// The value such a flag meant to carry stays a positional and is dropped, so
-    /// a caller that requires the key can diagnose the syntax instead of silently
-    /// taking its default. Always false on wasm32.
+    /// Always false on wasm32: the query surface has no bare form.
     pub fn has_bare_flag(&self, key: &str) -> bool {
         self.bare_flags.iter().any(|flag| flag == key)
     }
@@ -90,8 +83,6 @@ impl Args {
         self.map.get(key).map(String::as_str)
     }
 
-    /// `None` when the key is missing or the value failed to parse; `get`
-    /// distinguishes the two.
     pub fn parse<T: std::str::FromStr>(&self, key: &str) -> Option<T> {
         self.get(key)?.parse().ok()
     }
@@ -123,8 +114,6 @@ pub fn set_query_override(search: String, hash: String) {
     QUERY_OVERRIDE.with(|q| *q.borrow_mut() = Some((search, hash)));
 }
 
-// Repeated keys resolve last-write-wins, which is what makes the caller's
-// search-then-hash order mean "hash wins".
 #[cfg(any(target_arch = "wasm32", test))]
 fn parse_query_into(raw: &str, map: &mut HashMap<String, String>) {
     let trimmed = raw.trim_start_matches(['?', '#']);
@@ -134,8 +123,6 @@ fn parse_query_into(raw: &str, map: &mut HashMap<String, String>) {
     for pair in trimmed.split('&') {
         if let Some((k, v)) = pair.split_once('=') {
             if !k.is_empty() {
-                // Only `+` to space; a full percent-decode costs an extra
-                // wasm-bindgen call per key and values are ASCII identifiers.
                 let value = v.replace('+', " ");
                 map.insert(k.to_string(), value);
             }
@@ -171,11 +158,8 @@ mod tests {
         assert_eq!(args.get("state"), Some("a=b"));
         assert_eq!(args.get("a"), Some("1=2=3"));
         assert_eq!(args.get("eq"), Some("="));
-        // Base64 padding is the value shape that reaches a command line with a
-        // trailing '=' and no encoding to hide it.
         assert_eq!(args.get("t"), Some("abc=="));
 
-        // Splitting on the last '=' instead would mint these keys.
         assert_eq!(args.get("state=a"), None);
         assert_eq!(args.get("eq="), None);
         assert!(!args.has_bare_flag("state=a=b"));
@@ -184,8 +168,6 @@ mod tests {
     #[test]
     fn a_bare_flag_is_recorded_and_its_value_is_not_absorbed() {
         let args = Args::from_argv(["--shapes", "5-cell,8-cell", "--seed=42"]);
-        // The value the user meant to attach is gone, so a missing key alone
-        // cannot be read as "the user asked for nothing".
         assert_eq!(args.get("shapes"), None);
         assert!(args.has_bare_flag("shapes"));
 
@@ -205,8 +187,6 @@ mod tests {
         assert!(args.get_many("missing").is_empty());
     }
 
-    // Fold fragments into one map in caller order (search, then hash) and sort,
-    // so the assertions below can be exact rather than key-by-key.
     fn parse_all(fragments: &[&str]) -> Vec<(String, String)> {
         let mut map = HashMap::new();
         for fragment in fragments {
@@ -239,7 +219,6 @@ mod tests {
         assert_eq!(parse_all(&["?"]), pairs(&[]));
         assert_eq!(parse_all(&[""]), pairs(&[]));
 
-        // A malformed segment must not swallow its well-formed neighbours.
         assert_eq!(parse_all(&["?flag&=1&a=2"]), pairs(&[("a", "2")]));
     }
 
@@ -255,7 +234,6 @@ mod tests {
     fn query_repeated_keys_resolve_last_write_wins_within_and_across_fragments() {
         assert_eq!(parse_all(&["?a=1&a=2&a=3"]), pairs(&[("a", "3")]));
 
-        // Caller order is search then hash, so the hash value must survive.
         assert_eq!(
             parse_all(&["?a=search&b=only-search", "#a=hash"]),
             pairs(&[("a", "hash"), ("b", "only-search")])
@@ -268,8 +246,6 @@ mod tests {
         assert_eq!(parse_all(&["?a=1=2=3"]), pairs(&[("a", "1=2=3")]));
         assert_eq!(parse_all(&["?eq=="]), pairs(&[("eq", "=")]));
 
-        // Base64 padding is the value shape that reaches a share link with a
-        // trailing '=' and no percent-encoding to hide it.
         assert_eq!(parse_all(&["?t=abc=="]), pairs(&[("t", "abc==")]));
         assert_eq!(parse_all(&["?t=YQ="]), pairs(&[("t", "YQ=")]));
 

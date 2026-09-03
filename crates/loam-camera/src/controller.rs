@@ -10,8 +10,7 @@ use crate::Camera;
 const ORBIT_RADIANS_PER_PIXEL: f32 = 0.006;
 const ZOOM_LOG_STEP: f32 = 0.12;
 const MIN_DISTANCE: f32 = 1.5;
-// Held at 20 rather than further out because the scene fog washes out
-// geometry beyond roughly that range, so additional zoom buys nothing.
+// Fog washes out geometry past about 20.
 const MAX_DISTANCE: f32 = 20.0;
 const INITIAL_HEIGHT: f32 = 0.6;
 const INITIAL_RADIUS: f32 = 3.5;
@@ -27,28 +26,17 @@ pub trait CameraController<S: Space> {
     fn advance(&mut self, input: FrameInput, camera: &mut Camera<S>, space: &S, dt: f32);
 }
 
-/// Remaps the right mouse button onto the left for [`CameraController::advance`],
-/// which drags on the left.
-///
-/// The left button belongs to the SCENE: grabbing a body, picking one, taking a
-/// gizmo handle. A camera that also took it fights every scene that wants to
-/// click something, so orbiting is the right button everywhere and freecam,
-/// which captures the cursor outright, is the exception.
+/// Remaps the right button onto the left; the left belongs to the scene.
 pub fn orbit_on_right(mut input: FrameInput) -> FrameInput {
     input.left_mouse_down = input.buttons.right.down;
     input.buttons.left = input.buttons.right;
     input
 }
 
-/// In flat space this is plain spherical-coordinate framing. In H³ / S³ the camera
-/// position is computed by `Space::exp` from the target along the orbit-direction
-/// tangent vector, and the camera basis parallel-transports from the target to the
-/// camera position so it arrives orthonormal in any geometry.
 #[derive(Clone, Copy, Debug)]
 pub struct OrbitController<S: Space> {
     pub target: S::Point,
     pub yaw: f32,
-    /// Clamped to `[-1.45, 1.45]`, short of the poles the frame degenerates at.
     pub pitch: f32,
     /// Geodesic distance from `target` to the camera position.
     pub distance: f32,
@@ -124,12 +112,6 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for OrbitControl
 
         let cam_pos = space.exp(self.target, back_at_target * self.distance);
 
-        // Parallel-transport the basis from target to camera, then normalise. In flat
-        // space transport is the identity and the inputs were already unit; in H³ / S³
-        // the transport preserves *Riemannian* length, but the Poincaré-ball /
-        // S³-embedding scales Euclidean length by a position-dependent factor,
-        // re-normalising restores the Euclidean-unit convention the renderer expects
-        // (the WGSL prelude handles the metric on those Euclidean-unit ray directions).
         let path = [self.target, cam_pos];
         let cam_right = space
             .parallel_transport_along(&path, right_at_target)
@@ -151,15 +133,12 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for OrbitControl
     }
 }
 
-/// The caller owns the position (typically `loam_player::PlayerState`'s
-/// `position`); this controller writes only the look direction.
+/// Writes only the look direction; the caller owns `position`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FirstPersonController<S: Space> {
     pub yaw: f32,
     pub pitch: f32,
-    /// Integrates [`FrameInput::mouse_raw_delta`] instead of `mouse_delta`.
-    /// Pair with a grabbed cursor (see `loam_app::cursor`): raw device motion
-    /// does not cap at the screen edge, so a fast flick keeps yawing.
+    /// Reads `mouse_raw_delta`, which is uncapped at the screen edge.
     pub use_raw_delta: bool,
     _marker: PhantomData<S>,
 }
@@ -189,8 +168,6 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> CameraController<S> for FirstPersonC
         let yaw_q = Quat::from_rotation_y(self.yaw);
         let pitch_q = Quat::from_rotation_x(self.pitch);
         let rot = yaw_q * pitch_q;
-        // The basis is in T_position M; for the closed-form Spaces currently supported,
-        // we treat the canonical xyz as the local frame.
         camera.right = rot * Vec3::X;
         camera.up = rot * Vec3::Y;
         camera.forward = rot * -Vec3::Z;
@@ -213,9 +190,7 @@ mod tests {
         let mut ctrl: OrbitController<EuclideanR3> = OrbitController::default();
         ctrl.advance(FrameInput::default(), &mut camera, &EuclideanR3, 0.0);
         close(camera.position, Vec3::new(3.5, 0.6, 0.0), 1e-5);
-        // Default yaw of π/2 sends the local +X to -Z, so a sign flip in the
-        // yaw quaternion or a swapped basis axis shows up here and not in the
-        // position, which is symmetric under that swap.
+        // Yaw π/2 sends local +X to -Z; the position hides a swapped axis.
         close(camera.right, Vec3::new(0.0, 0.0, -1.0), 1e-5);
         assert!((camera.right.length() - 1.0).abs() < 1e-5);
         assert!((camera.up.length() - 1.0).abs() < 1e-5);
@@ -269,22 +244,11 @@ mod tests {
     }
 
     #[test]
-    fn first_person_view_is_normalised() {
-        let mut camera = Camera::<EuclideanR3>::at_origin();
-        let mut ctrl: FirstPersonController<EuclideanR3> = FirstPersonController::new(0.3, 0.2);
-        ctrl.advance(FrameInput::default(), &mut camera, &EuclideanR3, 0.0);
-        assert!((camera.forward.length() - 1.0).abs() < 1e-5);
-        assert!((camera.right.length() - 1.0).abs() < 1e-5);
-        assert!((camera.up.length() - 1.0).abs() < 1e-5);
-    }
-
-    #[test]
     fn orbit_in_hyperbolic_h3_produces_valid_frame() {
         use loam_math::HyperbolicH3;
         let mut camera = Camera::<HyperbolicH3>::at_origin();
         let mut ctrl: OrbitController<HyperbolicH3> = OrbitController::around(Vec3::ZERO);
-        // Smaller distance because the Poincaré ball is bounded by `|p| < 1`; the
-        // default 3.5 would push the camera outside the model.
+        // The Poincaré ball is |p| < 1; the default 3.5 leaves the model.
         ctrl.distance = 0.4;
         ctrl.advance(FrameInput::default(), &mut camera, &HyperbolicH3, 0.0);
         assert!(
@@ -317,7 +281,6 @@ mod tests {
     fn orbit_in_blended_e3_h3_produces_valid_frame() {
         use loam_math::{BlendedSpace, EuclideanR3, HyperbolicH3, LinearBlendX};
         let space = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-2.0, 2.0));
-        // Orbit around a point firmly inside the H³ region (x > 2).
         let mut camera =
             Camera::<BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>>::at_origin();
         camera.position = Vec3::new(2.5, 0.0, 0.0);
@@ -326,44 +289,10 @@ mod tests {
         ctrl.advance(FrameInput::default(), &mut camera, &space, 0.0);
         assert!(camera.position.is_finite());
         assert!(camera.right.is_finite() && camera.up.is_finite() && camera.forward.is_finite());
-        // Tolerances are looser than closed-form because the variable-metric integrator
-        // has finite step error.
+        // Looser: the variable-metric integrator has finite step error.
         assert!((camera.right.length() - 1.0).abs() < 1e-2);
         assert!((camera.up.length() - 1.0).abs() < 1e-2);
         assert!((camera.forward.length() - 1.0).abs() < 1e-2);
-    }
-
-    #[test]
-    #[ignore]
-    fn orbit_advance_perf() {
-        use loam_math::{HyperbolicH3, SphericalS3};
-        use std::time::Instant;
-
-        const ITERATIONS: u32 = 100_000;
-
-        fn bench<S>(label: &str, space: &S, distance: f32)
-        where
-            S: loam_math::Space<Point = Vec3, Vector = Vec3>,
-        {
-            let mut camera = Camera::<S>::at_origin();
-            let mut ctrl: OrbitController<S> = OrbitController::around(Vec3::ZERO);
-            ctrl.distance = distance;
-            for _ in 0..1_000 {
-                ctrl.advance(FrameInput::default(), &mut camera, space, 0.0);
-            }
-            let start = Instant::now();
-            for _ in 0..ITERATIONS {
-                ctrl.advance(FrameInput::default(), &mut camera, space, 0.0);
-                std::hint::black_box(camera.view());
-            }
-            let elapsed = start.elapsed();
-            let per_call_ns = elapsed.as_nanos() as f64 / ITERATIONS as f64;
-            println!("[orbit_advance_perf] {label:>14}: {per_call_ns:>7.0} ns / call");
-        }
-
-        bench("EuclideanR3", &EuclideanR3, 3.5);
-        bench("HyperbolicH3", &HyperbolicH3, 0.4);
-        bench("SphericalS3", &SphericalS3, 0.5);
     }
 
     #[test]

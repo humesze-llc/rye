@@ -1,24 +1,10 @@
-//! What a multisample resolve does to sRGB-encoded samples, and why the scene
-//! resolve may not borrow the UI pass's non-sRGB twin.
-//!
-//! Both arms fill a 4x attachment identically, one dark sample and three
-//! bright, and resolve it into a single-sampled target through views naming
-//! that attachment's own format. 0 and 1 are fixed points of the sRGB transfer
-//! function, so the stored bytes are the same whichever format wrote them; the
-//! resolved byte is not. An sRGB view resolves the linearized samples and lands
-//! on the mean the shader meant; the non-sRGB twin averages the encoded bytes
-//! and lands ~34 code points darker, on every antialiased edge in the frame.
-//!
-//! The resolve rides an otherwise empty pass, which is the shape
-//! `RenderDevice::resolve_scene_to_swap` uses: `App::record` owns the scene
-//! passes, so the runner cannot attach the resolve to the last of them.
-//!
-//! The `gpu_probe` suffix is what CI's software-adapter job selects on.
+//! A 4x attachment with one dark and three bright samples, resolved through a
+//! view of its own format: an sRGB view averages linearized samples; a non-sRGB
+//! view averages encoded bytes and lands ~34 code points darker.
 
 use wgpu::*;
 
-// Square side in texels. 64 * 4 bytes hits `COPY_BYTES_PER_ROW_ALIGNMENT`
-// exactly, so the readback needs no row unpadding.
+// 64 * 4 bytes per row meets `COPY_BYTES_PER_ROW_ALIGNMENT`, so no row unpadding.
 const SIZE: u32 = 64;
 
 const SAMPLES: u32 = 4;
@@ -29,15 +15,13 @@ const BRIGHT_SAMPLE_MASK: u64 = 0b1110;
 // Linear mean of the four samples: three at 1.0, one at 0.0.
 const LINEAR_MEAN: f64 = 0.75;
 
-// Mean of the four stored bytes, which is what a resolve through a non-sRGB
-// view produces: (0 + 3*255) / 4.
+// (0 + 3 * 255) / 4.
 const ENCODED_MEAN_BYTE: u8 = 191;
 
 // Slack for the encode-average-encode round trip through 8-bit storage.
 const TOLERANCE: u8 = 2;
 
-// IEC 61966-2-1 linear -> sRGB. Restated here so the expectation is a closed
-// form rather than a second reading of whatever the hardware did.
+// IEC 61966-2-1 linear -> sRGB.
 fn linear_to_srgb(c: f64) -> f64 {
     if c <= 0.003_130_8 {
         12.92 * c
@@ -50,8 +34,6 @@ fn encoded_byte(linear: f64) -> u8 {
     (linear_to_srgb(linear) * 255.0).round() as u8
 }
 
-// Raw bytes of the resolved single-sampled texture, no format
-// interpretation. `format` is the attachment pair's, and both views name it.
 fn resolve_through(format: TextureFormat) -> Vec<u8> {
     let instance = Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions {
@@ -101,8 +83,6 @@ fn resolve_through(format: TextureFormat) -> Vec<u8> {
                 depth_slice: None,
                 resolve_target: None,
                 ops: Operations {
-                    // Linear 0 on an sRGB target and 0 on a linear one: the
-                    // transfer function fixes both endpoints.
                     load: LoadOp::Clear(Color::BLACK),
                     store: StoreOp::Store,
                 },
@@ -157,8 +137,7 @@ fn create_target(
     })
 }
 
-// Fullscreen triangle writing 1.0 into the samples `BRIGHT_SAMPLE_MASK`
-// selects, so the pixel's samples disagree with no geometric edge involved.
+// Writes 1.0 into the samples `BRIGHT_SAMPLE_MASK` selects.
 fn bright_pipeline(device: &Device, format: TextureFormat) -> RenderPipeline {
     let shader = device.create_shader_module(ShaderModuleDescriptor {
         label: Some("msaa-resolve-encoding"),
@@ -261,8 +240,6 @@ fn read_back(device: &Device, queue: &Queue, texture: &Texture) -> Vec<u8> {
     data
 }
 
-// Every texel, so a resolve that covered part of the target fails here rather
-// than passing on a lucky sample. Grey, so channel order does not enter.
 fn assert_every_texel(pixels: &[u8], grey: u8, what: &str) {
     for (index, texel) in pixels.chunks_exact(4).enumerate() {
         for channel in 0..3 {

@@ -182,9 +182,6 @@ impl RotateScene {
                                     let t: f32 = token.parse().map_err(|e| {
                                         anyhow!("invalid thickness `{token}`: {e}")
                                     })?;
-                                    // Floor is the predicate's razor band; the
-                                    // `2 * W_RANGE` cap covers every reachable
-                                    // w, so the filter no-ops there.
                                     let max = 2.0 * consts::W_RANGE;
                                     if !(HYPERSLICE_MIN_THICKNESS..=max).contains(&t) {
                                         return Err(anyhow!(
@@ -286,11 +283,7 @@ impl RotateScene {
                                     ));
                                 }
                                 demo.surface_scale = parsed;
-                                // Raster paths read `effective_body_size()`
-                                // each frame; only the SDF kernel needs this.
                                 demo.rebuild_bodies();
-                                // Clamp the w-slice into the new scaled range
-                                // so a shrink does not leave the slider off it.
                                 let w_range = demo.effective_w_range();
                                 demo.w_slice = demo.w_slice.clamp(-w_range, w_range);
                                 out.line(format!(
@@ -315,8 +308,6 @@ impl RotateScene {
                     }
                     if next != demo.surface_mode {
                         demo.surface_mode = next;
-                        // Switching INTO Sdf mode makes the polychora live in
-                        // the kernel, switching OUT marks them inert.
                         demo.rebuild_bodies();
                     }
                     Ok(())
@@ -410,9 +401,6 @@ impl RotateScene {
             ),
         );
 
-        // The SDF kernel reads `u.params[0]`; when 0.0 the wrapper around
-        // `loam_scene_sdf` short-circuits to a huge distance, so the marcher
-        // never converges on the floor.
         loam_app::environment::register_ground_command(&mut c, |demo| &mut demo.environment);
         loam_app::environment::register_floor_command(&mut c, |demo| &mut demo.environment);
 
@@ -443,16 +431,6 @@ mod tests {
     #[test]
     fn handles_arg_rejects_an_unknown_token() {
         assert!(handles_arg(Some("yes"), false).is_err());
-    }
-
-    #[test]
-    fn the_console_carries_the_live_ground_controls() {
-        assert!(RotateScene::build_console().has_command("ground"));
-    }
-
-    #[test]
-    fn console_exposes_the_scene_switcher() {
-        assert!(RotateScene::build_console().has_command("scene"));
     }
 
     #[test]

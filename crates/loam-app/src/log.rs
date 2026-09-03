@@ -25,8 +25,6 @@ const BUFFER_CAP: usize = 2000;
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static BUFFER: Mutex<VecDeque<HistoryLine>> = Mutex::new(VecDeque::new());
 
-// Global static, not a `Runner` field, because the console closure cannot reach
-// the runner. Cursor-moves are filtered as noise.
 static EVENTS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn events_enabled() -> bool {
@@ -57,8 +55,6 @@ pub fn toggle() -> bool {
     new
 }
 
-/// Disabled returns empty without draining, so newly-enabled mirroring still
-/// shows recent history.
 pub fn drain() -> Vec<HistoryLine> {
     if !enabled() {
         return Vec::new();
@@ -76,8 +72,6 @@ pub fn pump_into<Ctx: 'static>(console: &mut Console<Ctx>) {
     }
 }
 
-/// The two directions use different transports (tracing in, raw `console.log`
-/// out) to avoid a scrollback -> tracing -> scrollback feedback loop.
 pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
     console.register(
         cmd(
@@ -164,10 +158,6 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
     );
 }
 
-// Native-only: wasm32 routes events through `tracing-wasm` and never installs
-// this layer, so gating the items keeps the wasm build warning-free.
-
-/// Always captures; the mirror is gated by [`ENABLED`].
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct ConsoleLayer;
 
@@ -210,8 +200,6 @@ fn push(line: HistoryLine) {
     }
 }
 
-// Splits an event's `message` field from its other key=value fields into a
-// one-line scrollback row.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 struct FieldVisitor {

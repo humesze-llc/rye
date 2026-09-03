@@ -1,8 +1,5 @@
-//! Every geometric threshold here is a dimensionless coefficient times the
-//! caller's `scale` raised to the homogeneity degree of the quantity it guards,
-//! so depth and normal are equivariant under a uniform scaling of both bodies;
-//! the contact point is not, for the reason
-//! [`super::epa_r4`][mod@super::epa_r4] gives.
+//! Every threshold is a coefficient times `scale` to the homogeneity degree of
+//! the quantity it guards, so depth and normal are scale-equivariant.
 
 use glam::Vec3;
 
@@ -12,49 +9,19 @@ const EPA_MAX_ITERATIONS: u32 = 48;
 // A well-formed EPA finishes with under 30 vertices; past this is a stall.
 const EPA_MAX_VERTICES: usize = 96;
 
-// Support gap at which the expansion has reached the boundary, per unit of
-// `scale`. Degree 1: the compared quantity is the distance between two planes
-// with the same unit normal. Held absolute it buys a fixed number of world
-// units of depth accuracy rather than a fixed number of digits.
+// Support gap per unit of `scale` at which expansion stops. Degree 1.
 const EPA_TOLERANCE: f32 = 1e-4;
 
-// Band around a face plane, per unit of `scale`, in which a support point
-// counts as lying on it, so `expand` retires the face. A facet of a Minkowski
-// difference is generally not a simplex: the difference body of two boxes has
-// square facets, each tiled by at least two coplanar triangles, and a support
-// point lands exactly on their shared plane. Retiring one tile while keeping
-// its neighbour makes the surface non-convex and later iterations resolve
-// against interior faces. Sibling of `epa_r4::FACE_COPLANAR_EPS`.
-//
-// Degree 1: a distance along a unit normal. Over 11160 axis-aligned box pairs
-// spanning scales 0.02 to 10 the band that resolves every one against a real
-// facet is `[3e-7, 1e-4]` absolute; the floor is where f32 stops resolving a
-// dot product's plane residual, the ceiling is `EPA_TOLERANCE`. 1e-5 sits near
-// the logarithmic centre and keeps that clearance at every size.
-//
-// Below the floor is worse than zero. `add_or_remove_edge` cancels horizon
-// edges by winding, so retiring part of a coplanar band leaves edges with no
-// reverse, the horizon stops being a disc, and each iteration stitches more
-// faces than it removed: peak faces at 1e-7 is 5368 against 180 at zero, and
-// at 1e-8 the wrong-contact count rises from 21 to 28.
+// Band per unit of `scale` in which a support point retires a face. Degree 1.
 const FACE_COPLANAR_EPS: f32 = 1e-5;
 
-// Floor on `|(b−a) × (c−a)|`, per `scale` squared, below which a face has no
-// usable normal direction and one is fabricated. Degree 2: the cross product
-// of two edge vectors is an area.
+// Floor on `|(b−a) × (c−a)|` per `scale`². Degree 2.
 const FACE_DEGENERATE_CROSS: f32 = 1e-8;
 
-// Floor on the seed tetrahedron's `|(p1−p0)·((p2−p0)×(p3−p0))|`, per `scale`
-// cubed, below which the seed is coplanar and has no interior to orient faces
-// against. Degree 3: a scalar triple product is a volume, so it loses three
-// decades of headroom per decade of shrinkage. Held absolute it rejected 1040
-// of 1208 axis-aligned box pairs at half-extent 0.02.
+// Floor on the seed's scalar triple product per `scale`³. Degree 3.
 const SEED_DEGENERATE_VOLUME: f32 = 1e-8;
 
-// Floor on the Gram determinant of a face's two edge vectors, per `scale` to
-// the fourth, below which the barycentric solve has no pivot and falls back to
-// the first vertex. Degree 4: `d00·d11 − d01²` is a product of two inner
-// products.
+// Floor on a face's edge Gram determinant per `scale`⁴. Degree 4.
 const BARYCENTRIC_SINGULAR_EPS: f32 = 1e-12;
 
 #[derive(Clone, Copy)]
@@ -78,9 +45,8 @@ impl Thresholds {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ContactInfo {
-    /// Unit, world, from A toward B, per the `Contact::normal` convention.
+    /// Unit, world, from A toward B.
     pub normal: Vec3,
-    /// Overlap depth along `normal`.
     pub penetration: f32,
     /// Midpoint of the closest features on A and B, in world space.
     pub point: Vec3,
@@ -88,9 +54,8 @@ pub struct ContactInfo {
 
 #[derive(Clone, Copy, Debug)]
 struct Face {
-    /// Indices into `Polytope::vertices`, wound so `normal` points outward.
+    /// Wound so `normal` points outward.
     v: [usize; 3],
-    /// Unit outward normal.
     normal: Vec3,
     /// Origin to face plane, always ≥ 0.
     distance: f32,
@@ -99,9 +64,7 @@ struct Face {
 struct Polytope {
     vertices: Vec<MinkowskiPoint>,
     faces: Vec<Face>,
-    /// Seed-tetrahedron centroid, which stays interior under every convex
-    /// expansion. An arbitrary old vertex can sit on a new face's plane and
-    /// flip its orientation.
+    /// Seed centroid; stays interior under every convex expansion.
     interior: glam::Vec3,
     thresholds: Thresholds,
 }
@@ -201,7 +164,6 @@ fn build_face_vs_point(
         ([a, b, c], normal)
     };
 
-    // Clamp at zero for noise near the origin-on-boundary case.
     let raw_distance = outward_normal.dot(verts[v_order[0]].point);
     let distance = raw_distance.max(0.0);
     Face {
@@ -211,9 +173,7 @@ fn build_face_vs_point(
     }
 }
 
-// Two removed faces sharing an edge store it as `(a, b)` and `(b, a)`, so
-// finding the reverse cancels both. Survivors keep the winding that gives
-// outward normals when stitched to the new vertex.
+// A shared edge appears as `(a, b)` and `(b, a)`; the reverse cancels both.
 fn add_or_remove_edge(horizon: &mut Vec<(usize, usize)>, a: usize, b: usize) {
     if let Some(pos) = horizon.iter().position(|&e| e == (b, a)) {
         horizon.swap_remove(pos);
@@ -222,7 +182,6 @@ fn add_or_remove_edge(horizon: &mut Vec<(usize, usize)>, a: usize, b: usize) {
     }
 }
 
-// Returns `(u, v, w)` with `u·a + v·b + w·c` the projection of `p`.
 fn barycentric(a: Vec3, b: Vec3, c: Vec3, p: Vec3, gram_floor: f32) -> (f32, f32, f32) {
     let v0 = b - a;
     let v1 = c - a;
@@ -242,10 +201,8 @@ fn barycentric(a: Vec3, b: Vec3, c: Vec3, p: Vec3, gram_floor: f32) -> (f32, f32
     (u, v, w)
 }
 
-/// `initial_simplex` is GJK's terminating tetrahedron. `scale` is the
-/// characteristic length of the Minkowski difference: the caller owes the sum
-/// of the two bounding radii, and a `scale` that does not track the geometry
-/// narrows or widens all five thresholds at once.
+/// `scale` is the characteristic length of the Minkowski difference: the sum
+/// of the two bounding radii.
 pub fn epa<A: SupportFn, B: SupportFn>(
     a: &A,
     b: &B,
@@ -256,8 +213,7 @@ pub fn epa<A: SupportFn, B: SupportFn>(
     contact_from_face(&polytope, face)
 }
 
-// `None` for a zero-volume seed, a non-finite support, or a polytope a
-// degenerate expansion collapsed.
+// `None` for a degenerate seed, a non-finite support, or a collapsed polytope.
 fn expand_to_boundary<A: SupportFn, B: SupportFn>(
     a: &A,
     b: &B,
@@ -361,7 +317,6 @@ mod tests {
         }
     }
 
-    // The term `epa`'s `scale` contract asks a box to contribute.
     fn box_radius(half: f32) -> f32 {
         half * 3.0_f32.sqrt()
     }
@@ -391,7 +346,7 @@ mod tests {
 
     #[test]
     fn box_box_axis_aligned_overlap_penetration_matches_axis() {
-        // Unit boxes offset by 1.5 along X -> 0.5 overlap along +X.
+        // Unit boxes offset 1.5 along x overlap by 0.5.
         let va = box_vertices(Vec3::ZERO, Vec3::ONE);
         let vb = box_vertices(Vec3::new(1.5, 0.0, 0.0), Vec3::ONE);
         let a = ConvexHull { vertices: &va };
@@ -408,8 +363,7 @@ mod tests {
 
     #[test]
     fn sphere_box_corner_penetration_points_outward() {
-        // Sphere at (1.2,1.2,1.2), r=0.5 vs box corner (1,1,1): corner-centre
-        // distance √(3·0.04) ≈ 0.346, so penetration ≈ 0.154.
+        // Corner-centre distance √(3·0.04) ≈ 0.346, so penetration ≈ 0.154.
         let vb = box_vertices(Vec3::ZERO, Vec3::ONE);
         let b = ConvexHull { vertices: &vb };
         let s = Sphere {
@@ -417,7 +371,6 @@ mod tests {
             radius: 0.5,
         };
 
-        // Box as A, sphere as B so normal A->B points toward (1,1,1)/√3.
         let info = run(&b, &s, Vec3::new(1.0, 1.0, 1.0), box_radius(1.0) + 0.5);
         let expected = Vec3::new(1.0, 1.0, 1.0).normalize();
         assert!(
@@ -439,9 +392,7 @@ mod tests {
         })
     }
 
-    // Base triangle around the origin plus an apex at height `h`, so
-    // `|det| = 4·h` against a volume floor of
-    // `SEED_DEGENERATE_VOLUME·SPHERE_PAIR_SCALE³` = 8e-8.
+    // `|det| = 4·h` against a floor of `SEED_DEGENERATE_VOLUME·SPHERE_PAIR_SCALE³` = 8e-8.
     fn seed_of_height(h: f32) -> [MinkowskiPoint; 4] {
         seed([
             Vec3::new(-1.0, -1.0, 0.0),

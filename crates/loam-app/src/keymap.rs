@@ -1,17 +1,11 @@
-//! Two tables, not one: the receiver libraries each have their own key enum
-//! (`winit::keyboard::KeyCode`, `egui::Key`), overlapping in coverage but
-//! diverging in naming (`winit::KeyCode::KeyA` vs `egui::Key::A`), so a shared
-//! table would lose information.
-//!
-//! Coverage is partial. Unmapped codes return `None` and the caller drops the
-//! event silently.
+//! Two tables because winit and egui name keys differently. Unmapped codes
+//! return `None` and the caller drops the event.
 
 use loam_egui::egui;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
-/// DOM convention: 0=primary, 1=middle, 2=secondary, 3=back, 4=forward.
-/// Anything else lands in `MouseButton::Other(button as u16)`.
+/// `button` is `MouseEvent.button` per the DOM spec.
 pub fn mouse_button_winit(button: u8) -> MouseButton {
     match button {
         0 => MouseButton::Left,
@@ -23,8 +17,7 @@ pub fn mouse_button_winit(button: u8) -> MouseButton {
     }
 }
 
-/// `None` for buttons egui does not model. Egui's `Extra1` / `Extra2` cover the
-/// browser's back and forward buttons.
+/// `None` for buttons egui does not model.
 pub fn mouse_button_egui(button: u8) -> Option<egui::PointerButton> {
     match button {
         0 => Some(egui::PointerButton::Primary),
@@ -36,7 +29,6 @@ pub fn mouse_button_egui(button: u8) -> Option<egui::PointerButton> {
     }
 }
 
-/// `None` for unmapped codes; the caller drops the event silently.
 pub fn keycode_winit(code: &str) -> Option<KeyCode> {
     if let Some(k) = letter_winit(code) {
         return Some(k);

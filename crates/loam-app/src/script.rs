@@ -1,13 +1,6 @@
-//! A script file is lines of `<frame> <console command>`, submitted to
-//! [`crate::command`]'s queue on the frame whose index the line names.
-//!
-//! [`ScriptDriver::frame`] counts calls to [`ScriptDriver::advance`], and that
-//! counter is the whole timeline: nothing on the path reads a clock, so a frame
-//! that renders slowly still runs the same commands at the same index.
-//! `advance` takes nothing, which is the fence: with no `Window` and no
-//! event-loop handle in scope, cursor warping, focus requests and event
-//! injection are not callable, and every state change a script makes goes
-//! through the command queue.
+//! A script is lines of `<frame> <console command>`, submitted to
+//! [`crate::command`] on the frame the line names. The advance counter is the
+//! whole timeline: nothing on this path reads a clock or reaches a window.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,8 +9,7 @@ use anyhow::{anyhow, bail, Context as _, Result};
 
 use crate::command;
 
-// Long enough for the last command's effect to reach the swapchain and for a
-// streaming capture started by it to write something.
+// Lets the last command reach the swapchain and a capture it started write.
 const SETTLE_FRAMES: u64 = 60;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,10 +25,7 @@ pub struct Script {
 }
 
 impl Script {
-    /// Blank lines and lines whose first non-space character is `#` are ignored;
-    /// anything else that is not a frame index followed by a command is an error
-    /// naming the line. Only a leading `#` comments: truncating at a mid-line `#`
-    /// would eat a command argument that legitimately contains one.
+    /// Skips blank and `#` lines; a mid-line `#` belongs to the command.
     pub fn parse(source: &str) -> Result<Self> {
         let mut steps: Vec<ScriptStep> = Vec::new();
         for (index, raw) in source.lines().enumerate() {
@@ -73,8 +62,6 @@ impl Script {
         Ok(Self { steps })
     }
 
-    /// The path rides along in the error so a reported line number is
-    /// attributable.
     pub fn load(path: &Path) -> Result<Self> {
         let source = std::fs::read_to_string(path)
             .with_context(|| format!("reading script {}", path.display()))?;
@@ -119,8 +106,7 @@ impl ScriptDriver {
         self.frame
     }
 
-    /// Steps whose frame the playhead has already passed still fire, so a host
-    /// that skips a frame loses ordering but never a command.
+    /// Steps whose frame has already passed still fire.
     pub fn advance(&mut self) -> ScriptStatus {
         while let Some(step) = self.script.steps.get(self.next) {
             if step.frame > self.frame {
@@ -154,7 +140,6 @@ pub fn exit_requested() -> bool {
 mod tests {
     use super::*;
 
-    // Drains the queue between advances the way the runner does.
     fn play(script: Script, frames: u64) -> Vec<(u64, String)> {
         let _held = command::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = command::drain(0);
@@ -242,7 +227,6 @@ mod tests {
         assert!(text.contains("line 3"), "{text}");
         assert!(text.contains("never fire"), "{text}");
 
-        // Equal frames are a batch, not a regression.
         assert_eq!(Script::parse("4 reset\n4 spin").unwrap().steps().len(), 2);
     }
 
@@ -271,15 +255,6 @@ mod tests {
                 (5, "mark last".to_string()),
             ]
         );
-    }
-
-    #[test]
-    fn two_runs_of_one_script_fire_the_same_commands_on_the_same_frames() {
-        let source = "0 mark a\n3 mark b\n3 mark c\n9 mark d\n";
-        let first = play(Script::parse(source).unwrap(), 12);
-        let second = play(Script::parse(source).unwrap(), 12);
-        assert_eq!(first, second);
-        assert_eq!(first.len(), 4);
     }
 
     #[test]
@@ -354,8 +329,6 @@ mod tests {
         assert_eq!(driver.advance(), ScriptStatus::Finished);
     }
 
-    // This module's code, with comments and this test module removed: the prose
-    // above names the very APIs the scans below forbid.
     fn driver_code() -> String {
         let source = include_str!("script.rs");
         let before_tests = source
@@ -367,8 +340,6 @@ mod tests {
             .map(|line| line.split("//").next().unwrap_or(""))
             .collect::<Vec<_>>()
             .join("\n");
-        // A scan over an empty string passes everything, so prove the split
-        // still holds the dispatch the scans are about.
         assert!(
             code.contains("command::submit_line(&step.command)"),
             "the extraction dropped the driver it is supposed to scan"

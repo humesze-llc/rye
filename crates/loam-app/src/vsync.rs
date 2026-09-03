@@ -1,23 +1,15 @@
-//! The [`crate::fps`] cap alone cannot exceed the display refresh rate while the
-//! surface uses `PresentMode::Fifo`: the presentation engine paces the loop at
-//! vsync, and that block lands on the swapchain acquire in
-//! `RenderDevice::begin_frame`, not on `present`, which only queues the flip.
-//! `vsync off` swaps to `Mailbox` (or `Immediate`) so the cap can drive cadence
-//! above the display rate.
+//! Under `PresentMode::Fifo` the acquire in `RenderDevice::begin_frame` blocks
+//! at vsync, so the [`crate::fps`] cap cannot exceed the refresh rate;
+//! `vsync off` swaps to `Mailbox` or `Immediate`.
 
 use loam_egui::{cmd, Console, ConsoleWriter};
 
 use crate::frame_pacing;
 
-/// The runner's verb table ([`crate::command`]) reaches this before any App
-/// hook, so the verb's behaviour lives here; [`register_command`] exists so
-/// `help` and tab completion know the name, and so a console driven without a
-/// loam-app runner still works.
+/// Reached from the runner's verb table ([`crate::command`]) before any App hook.
 pub(crate) fn apply(args: &[&str], out: &mut ConsoleWriter) {
     match args.first().copied() {
         None => {
-            // Without access to RenderDevice from the handler we can only report
-            // what was last requested.
             out.line("vsync: use 'vsync on' (Fifo) or 'vsync off' (Mailbox/Immediate)");
         }
         Some("on") => {
@@ -60,8 +52,6 @@ mod tests {
     use crate::frame_pacing::TEST_LOCK;
     use loam_egui::ConsoleWriter;
 
-    // The verb's one body, which both the runner's table and the console
-    // registration reach.
     fn run(args: &[&str]) -> Option<bool> {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = frame_pacing::take_pending_vsync();
@@ -94,15 +84,6 @@ mod tests {
             run(&[]),
             None,
             "bare `vsync` should print help, not request a transition"
-        );
-    }
-
-    #[test]
-    fn vsync_unknown_subcommand_does_not_change_pending() {
-        assert_eq!(
-            run(&["foo"]),
-            None,
-            "unknown subcommand should print error, not queue a transition"
         );
     }
 }

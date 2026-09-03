@@ -1,13 +1,8 @@
-//! The projection is Space-generic and lives in `loam-camera` so an editor
-//! can anchor to it without taking on egui; this is only the type adapter.
-
 use glam::Vec3;
 use loam_camera::Camera;
 use loam_math::Space;
 
-/// `viewport` is `(width, height)` in egui points, the units the returned
-/// position is in. `None` when the point is outside the frustum, so an
-/// anchored widget draws nothing.
+/// `viewport` in egui points; `None` outside the frustum.
 pub fn world_to_screen<S: Space<Point = Vec3, Vector = Vec3>>(
     camera: &Camera<S>,
     world: Vec3,

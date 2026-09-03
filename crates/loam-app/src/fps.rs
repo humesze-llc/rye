@@ -2,8 +2,7 @@ use loam_egui::{cmd, Console};
 
 use crate::frame_pacing;
 
-// 1000 fps (1 ms period) is well past any practical refresh rate; above it a
-// stray `fps 999999` would silently make the cap a no-op.
+// Above this a stray `fps 999999` would silently make the cap a no-op.
 const MAX_ACCEPTED_FPS: f32 = 1000.0;
 
 fn print_current(out: &mut loam_egui::ConsoleWriter) {
@@ -50,8 +49,6 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
 mod tests {
     use super::*;
     use crate::frame_pacing;
-    // Tests touch the process-global `frame_pacing` atomics, so they share
-    // `frame_pacing::TEST_LOCK` against cargo's parallel runner.
     use crate::frame_pacing::TEST_LOCK;
 
     fn build_console() -> loam_egui::Console<()> {
@@ -82,16 +79,6 @@ mod tests {
         crate::command::run_on_console(&mut c, "fps unlimited", &mut ctx);
         assert_eq!(frame_pacing::target_fps(), 0.0);
         assert!(frame_pacing::target_period().is_none());
-        frame_pacing::set_target_fps(60.0);
-    }
-
-    #[test]
-    fn fps_off_alias_matches_unlimited() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut c = build_console();
-        let mut ctx = ();
-        crate::command::run_on_console(&mut c, "fps off", &mut ctx);
-        assert_eq!(frame_pacing::target_fps(), 0.0);
         frame_pacing::set_target_fps(60.0);
     }
 

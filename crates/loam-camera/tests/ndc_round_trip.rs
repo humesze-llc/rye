@@ -22,9 +22,7 @@ fn ray_from_ndc_round_trips_through_pixels_from_world() {
         camera.fov_y = 47.0_f32.to_radians();
         camera.aspect = viewport_px.x / viewport_px.y;
 
-        // Sampling stops short of ±1: a ray through the exact frustum edge
-        // round-trips to |ndc| = 1 plus float error, which the projection
-        // rejects as off-screen.
+        // Short of ±1: the edge round-trips to |ndc| = 1 plus float error.
         for x_step in -3..=3 {
             for y_step in -3..=3 {
                 let ndc = Vec2::new(x_step as f32 * 0.3, y_step as f32 * 0.3);

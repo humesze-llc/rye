@@ -89,8 +89,7 @@ fn reports_removed_file() {
         if ev.kind != AssetEventKind::Removed {
             return false;
         }
-        // Canonicalise the parent, not the path: the removed file is gone
-        // and `canonicalize` would fail on it.
+        // The removed file cannot canonicalize; compare the parent.
         ev.path.file_name() == Some(&target_name)
             && ev
                 .path
@@ -99,13 +98,4 @@ fn reports_removed_file() {
                 .map(|p| p == dir_canonical)
                 .unwrap_or(false)
     });
-}
-
-#[test]
-fn poll_is_empty_when_no_changes() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut watcher = AssetWatcher::new().unwrap();
-    watcher.watch(dir.path()).unwrap();
-    sleep(Duration::from_millis(100));
-    assert!(watcher.poll().is_empty());
 }

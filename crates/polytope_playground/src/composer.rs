@@ -1,5 +1,3 @@
-//! There is one authored seq and it drives the whole row.
-
 use loam_app::egui;
 use loam_egui::{
     dnd::{
@@ -15,9 +13,7 @@ use crate::consts::{CARD_ITEM_SPACING_X, CONTROL_H, MINI_BUTTON_W};
 use crate::director::Playback;
 use crate::state::{render_plane_sum, DeferredAction, Demo, DragPayload, RotorTerm};
 
-// Degrees default; `rad` overrides. The `*` / `·` separator and outer parens
-// are optional. One expression per call; rotor multiplication across terms
-// lives in the seq.
+// Degrees unless `rad`; `*`, `·` and outer parens are optional.
 pub(crate) fn parse_formula_term(input: &str) -> Result<RotorTerm, String> {
     let normalized = input.trim().replace('·', "*").replace('°', "deg ");
     let s = normalized.trim();
@@ -180,9 +176,7 @@ impl Demo {
         self.render_composer_scrub_slider(ui);
     }
 
-    // Slider value is the projection of the row's `log(R)` onto unit
-    // `D = compose_omega()/|compose_omega()|`, in degrees; the perpendicular
-    // component is preserved on drag so other rotations stay put.
+    // A drag moves only the `log(R)` component along `compose_omega()`.
     pub(crate) fn render_composer_scrub_slider(&mut self, ui: &mut egui::Ui) {
         let omega = self.compose_omega();
         let mag_sq = omega.magnitude_squared();
@@ -204,11 +198,6 @@ impl Demo {
         let row_size = egui::vec2(avail, CONTROL_H);
         let row_layout = egui::Layout::left_to_right(egui::Align::Center);
 
-        // Bounded by SO(4)'s bi-invariant diameter, not by the double cover.
-        // `Rotor4::log` returns the minimal-norm generator, so |log| never
-        // exceeds pi*sqrt(2) and a projection onto a unit bivector cannot
-        // either. A wider range would let the drag write a rotor whose log
-        // reads back shorter, and the slider would snap on the next frame.
         let formatted = format!("f {proj_deg:>+6.1}°");
         ui.allocate_ui_with_layout(row_size, row_layout, |ui| {
             let interaction = slider_with_edit(
@@ -231,8 +220,7 @@ impl Demo {
         });
     }
 
-    // Mutations are gathered during rendering and applied at the end so the
-    // loop can borrow `self.seq` immutably in flight.
+    // Deferred so the loop can borrow `self.seq` immutably.
     pub(crate) fn render_composer_seq_cards(&mut self, ui: &mut egui::Ui) {
         let mut entry_moves: Vec<(usize, usize, usize)> = Vec::new();
         let mut remove_term: Option<usize> = None;
@@ -453,8 +441,7 @@ impl Demo {
                 }
             }
         }
-        // Sort by (source term, plane idx descending) so removals don't
-        // shift earlier indices.
+        // Descending plane index, so a removal cannot shift a later one.
         entry_moves.sort_by_key(|(from, idx, _)| (*from, std::cmp::Reverse(*idx)));
         for (from_t, idx, to_t) in entry_moves {
             if let Some(src) = self.seq.get_mut(from_t) {

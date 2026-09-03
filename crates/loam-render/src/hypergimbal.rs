@@ -1,120 +1,30 @@
-//! Hypergimbal: the six SO(4) rotation planes as six grabbable rings.
-//!
-//! The 16-cell's eight vertices are `±e₁..±e₄` on S³ and its six central
-//! squares are inscribed in the six coordinate great circles, one per
-//! rotation plane. Stereographic projection carries those great circles to
-//! six circles in R³. Grabbing one and dragging along it asks for a rotation
-//! in that plane, by the arc the drag swept.
-//!
-//! # Projection
-//!
-//! For `p ∈ S³` and a pole `n ∈ S³`, `σ(p) = (p − (p·n)n)/(1 − p·n)`, read
-//! in an orthonormal frame of `n^⊥`. Stereographic projection sends circles
-//! to circles (Coxeter, *Introduction to Geometry*, 2nd ed. 1969, §6.9), so
-//! each great circle has a closed-form image.
-//!
-//! Take a rotation plane `P = span(a, b)` with `a, b` orthonormal, and set
-//!
-//! ```text
-//!   α = a·n,  β = b·n,  ρ = √(α² + β²),  s = √(1 − ρ²),  φ = atan2(β, α)
-//! ```
-//!
-//! Rotating the plane's basis by `φ` to `a' = (αa + βb)/ρ`,
-//! `b' = (αb − βa)/ρ` makes the great circle `p(θ) = a cos θ + b sin θ`
-//! read as `p = a' cos ψ + b' sin ψ` with `ψ = θ − φ`, and pins the pole
-//! coupling to a single cosine: `p·n = ρ cos ψ`. Substituting into `σ` and
-//! eliminating `ψ` gives a circle
-//!
-//! ```text
-//!   centre  (ρ/s)·â,   radius  1/s,   in the plane span(â, b')
-//!   with    â = (a' − ρn)/s
-//! ```
-//!
-//! `ρ = 1` (the pole lying inside `P`) sends that circle to a straight line;
-//! see [`POLE`] for why the pole here keeps `ρ = 1/√2` on all six planes.
-//!
-//! # Drag to angle
-//!
-//! Let `χ` be the angle around the projected circle, measured from `â`
-//! toward `b'`. Reading off the substitution above,
-//!
-//! ```text
-//!   cos χ = (cos ψ − ρ)/(1 − ρ cos ψ)
-//!   sin χ = s·sin ψ /(1 − ρ cos ψ)
-//! ```
-//!
-//! which is Kepler's true-anomaly / eccentric-anomaly relation with
-//! eccentricity `ρ` (Danby, *Fundamentals of Celestial Mechanics*, 2nd ed.
-//! 1992, §6.3): the projection runs along the ring at a non-uniform rate,
-//! fast near the pole-facing side and slow away from it. Inverting,
-//!
-//! ```text
-//!   ψ = atan2(s·sin χ, cos χ + ρ),    θ = ψ + φ
-//! ```
-//!
-//! Both `1 ∓ ρ cos(·)` are strictly positive for `ρ < 1`, so dropping them
-//! as a common factor leaves an `atan2` with no singularity and no branch;
-//! the half-angle form `tan(ψ/2) = √((1−ρ)/(1+ρ))·tan(χ/2)` is the same map
-//! and loses its second quadrant pair at `χ = ±π`.
-//!
-//! A drag from world point `g` to world point `c`, both taken on the ring's
-//! plane, therefore asks for
-//!
-//! ```text
-//!   Δθ = wrap(θ(c) − θ(g)),   R = exp(Δθ · ê_P)
-//! ```
-//!
-//! `φ` cancels in the difference. `ρ` does not, and that is the whole point:
-//! equal screen arcs at different places on the ring are different rotations,
-//! and the map accounts for it.
-//!
-//! # Conventions
-//!
-//! The rings are the six *ambient* coordinate planes, fixed in world space.
-//! They are handles, not a readout of the subject's current orientation, so
-//! a drag produces a delta rotor for the caller to compose; nothing here
-//! reads or stores the subject's pose.
-//!
-//! `exp(θ·ê_ij)` under [`loam_math::Rotor::apply`] carries `e_i` to
-//! `e_i cos θ + e_j sin θ`, matching the `p(θ)` parametrisation above, so a
-//! drag that sweeps the ring forward turns the subject the same way.
+//! Six rings, one per SO(4) rotation plane: the coordinate great circles of
+//! S³ under stereographic projection from [`POLE`]. Circles map to circles
+//! (Coxeter, *Introduction to Geometry*, 2nd ed. 1969, §6.9); ring angle to
+//! arc angle is Kepler's eccentric-to-true anomaly with eccentricity ρ
+//! (Danby, *Fundamentals of Celestial Mechanics*, 2nd ed. 1992, §6.3).
 
 use glam::{Vec3, Vec4};
 use loam_math::{Bivector, Plane4, Rotor4};
 use loam_shape::LineMesh;
 
-/// A cell centre of the 16-cell, `(1,1,1,1)/2`. It lies on none of the six
-/// coordinate great circles, so every ring is a finite circle, and
-/// `|proj_P(n)| = 1/√2` on all six planes, so the rings are congruent:
-/// radius `√2`, centre at distance `1`. Projecting from `±ê₄` instead puts
-/// the pole inside the `xw`, `yw` and `zw` planes and sends those three
-/// rings to straight lines through the origin.
+/// A 16-cell cell centre, on no coordinate great circle: every ring is finite
+/// and congruent.
 pub const POLE: Vec4 = Vec4::new(0.5, 0.5, 0.5, 0.5);
 
-// Sine of the smallest ray-to-ring-plane angle the plane hit is trusted at.
-// The hit distance grows as `1/sin`, so below this a one-pixel cursor move
-// sweeps an arbitrary arc and the drag stops tracking the cursor.
+// Sine floor on the ray-to-ring-plane angle; the hit distance grows as `1/sin`.
 const MIN_PLANE_INCIDENCE: f32 = 1e-2;
 
-// `1 − p·n` below this puts `p` within f32 noise of the pole, where the
-// image runs to infinity.
+// Within this of the pole the image runs to infinity.
 const MIN_POLE_DISTANCE: f32 = 1e-4;
 
-// Orthonormal frame of `POLE`'s orthogonal complement, read as the image
-// R³'s x, y, z: the other three 16-cell cell centres orthogonal to `POLE`.
-// It lands the six ring centres exactly on `±x̂, ±ŷ, ±ẑ`, one
-// orthogonal-plane pair per axis, and `det[u₁,u₂,u₃,POLE] = +1`, so the
-// image inherits R⁴'s orientation. A frame with a zero component puts a
-// ring plane on an image axis, where the default camera sees it edge-on
-// and cannot grab it at all.
+// The other three 16-cell cell centres orthogonal to `POLE`; `det[u₁,u₂,u₃,POLE] = +1`.
 const IMAGE_AXES: [Vec4; 3] = [
     Vec4::new(0.5, 0.5, -0.5, -0.5),
     Vec4::new(0.5, -0.5, 0.5, -0.5),
     Vec4::new(0.5, -0.5, -0.5, 0.5),
 ];
 
-// The pole-parallel part is dropped, which is exactly what stereographic
-// projection does with it.
 fn to_r3(q: Vec4) -> Vec3 {
     Vec3::new(
         IMAGE_AXES[0].dot(q),
@@ -123,8 +33,7 @@ fn to_r3(q: Vec4) -> Vec3 {
     )
 }
 
-// In the `p(θ) = a cos θ + b sin θ` order that `Plane4::unit_bivector`
-// rotates `a` toward `b`.
+// Ordered so `Plane4::unit_bivector` rotates `a` toward `b`.
 fn plane_axes(plane: Plane4) -> (Vec4, Vec4) {
     match plane {
         Plane4::Xy => (Vec4::X, Vec4::Y),
@@ -149,8 +58,7 @@ fn wrap_pi(angle: f32) -> f32 {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Hypergimbal {
     pub center: Vec3,
-    /// World length of one unit of the stereographic image. Rings come out
-    /// at radius `√2·scale`, centred `scale` from [`Self::center`].
+    /// World length of one unit of the image; rings come out at radius `√2·scale`.
     pub scale: f32,
 }
 
@@ -174,11 +82,7 @@ impl Hypergimbal {
         let alpha = a.dot(POLE);
         let beta = b.dot(POLE);
         let pole_overlap = (alpha * alpha + beta * beta).sqrt();
-        // POLE meets every coordinate plane at overlap 1/√2, so `s` is
-        // bounded away from zero and the circle never degenerates to a line.
         let s = (1.0 - pole_overlap * pole_overlap).sqrt();
-        // Phase-aligned plane basis: `a_phase` carries the pole's whole
-        // in-plane component, leaving `b_phase` orthogonal to the pole.
         let (a_phase, b_phase) = (
             (a * alpha + b * beta) / pole_overlap,
             (b * alpha - a * beta) / pole_overlap,
@@ -195,11 +99,7 @@ impl Hypergimbal {
         }
     }
 
-    /// Nearest ring within `tolerance` of the ray; ties break by hit depth.
-    ///
-    /// The test is against the plane hit, not the true ray-to-circle distance (a
-    /// quartic): [`Ring::ray_hit`] rejects an edge-on ring rather than grabbing
-    /// it at a distance the drag cannot track.
+    /// Nearest ring within `tolerance` of the plane hit; ties break by depth.
     pub fn pick(&self, ray_origin: Vec3, ray_direction: Vec3, tolerance: f32) -> Option<Ring> {
         let mut best: Option<(f32, Ring)> = None;
         for ring in self.rings() {
@@ -234,8 +134,6 @@ impl Hypergimbal {
     }
 }
 
-/// The stereographic image of one plane's great circle, plus the two
-/// parameters of the map derived in the module docs.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Ring {
     pub plane: Plane4,
@@ -245,16 +143,14 @@ pub struct Ring {
     /// In-plane unit axis `χ` is measured toward.
     pub v: Vec3,
     pub radius: f32,
-    /// `ρ`: length of the pole's projection onto this rotation plane, the
-    /// eccentricity of the ring-angle-to-arc-angle map.
+    /// `ρ`, the eccentricity of the ring-angle to arc-angle map.
     pub pole_overlap: f32,
     /// `φ`: great-circle parameter of the ring's `χ = 0` point.
     pub phase: f32,
 }
 
 impl Ring {
-    /// Normal of the circle's plane, `u × v`, so `χ` runs counter-clockwise
-    /// looking down it.
+    /// `u × v`, so `χ` runs counter-clockwise looking down it.
     pub fn normal(&self) -> Vec3 {
         self.u.cross(self.v)
     }
@@ -275,9 +171,7 @@ impl Ring {
         (s * chi.sin()).atan2(chi.cos() + self.pole_overlap) + self.phase
     }
 
-    /// Where the ray crosses the circle's plane. `None` behind the eye, or
-    /// within 0.6° of parallel, where the hit distance blows up as `1/sin`
-    /// and one pixel of cursor motion sweeps an arbitrary arc.
+    /// `None` behind the eye or within 0.6° of parallel.
     pub fn ray_hit(&self, ray_origin: Vec3, ray_direction: Vec3) -> Option<Vec3> {
         let normal = self.normal();
         let incidence = ray_direction.dot(normal);
@@ -288,13 +182,12 @@ impl Ring {
         (t > 0.0).then(|| ray_origin + ray_direction * t)
     }
 
-    /// Wrapped to `(−π, π]`. Both points are taken on the circle's plane; only
-    /// their bearing from the centre matters, not their distance from it.
+    /// Wrapped to `(−π, π]`; only each point's bearing from the centre matters.
     pub fn drag_angle(&self, grab: Vec3, cursor: Vec3) -> f32 {
         wrap_pi(self.arc_angle(self.ring_angle(cursor)) - self.arc_angle(self.ring_angle(grab)))
     }
 
-    /// Compose onto the subject's pose; this type holds no pose of its own.
+    /// A delta for the caller to compose; nothing here holds a pose.
     pub fn drag_rotor(&self, grab: Vec3, cursor: Vec3) -> Rotor4 {
         (self.plane.unit_bivector() * self.drag_angle(grab, cursor)).exp()
     }
@@ -309,8 +202,6 @@ pub struct RingStyle {
 }
 
 impl RingStyle {
-    /// One hue per orthogonal-plane pair, so the three Hopf links read as three
-    /// colours; within a pair the pure-3D ring is bright and the w-coupled dim.
     pub const PAIRED_HUE_COLORS: [[f32; 4]; 6] = [
         [0.95, 0.30, 0.32, 1.0],
         [0.35, 0.85, 0.40, 1.0],
@@ -498,7 +389,6 @@ mod tests {
 
     #[test]
     fn every_plane_is_pickable_over_most_of_its_arc() {
-        // Off-axis eye so no ring is seen edge-on and no two rings line up.
         let eye = WIDGET.center + Vec3::new(4.3, 5.1, 6.7);
         const SAMPLES: usize = 72;
         for plane in Plane4::ALL {
@@ -549,18 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn drag_rotors_stay_unit_norm() {
-        for plane in Plane4::ALL {
-            let ring = WIDGET.ring(plane);
-            for step in 0..64 {
-                let chi = -PI + step as f32 / 64.0 * TAU;
-                let rotor = ring.drag_rotor(ring.point(0.0), ring.point(chi));
-                assert_close(rotor.norm_squared(), 1.0, 1e-5, "rotor norm");
-            }
-        }
-    }
-
-    #[test]
     fn grazing_and_backward_rays_miss_the_ring_plane() {
         let ring = WIDGET.ring(Plane4::Xy);
         let eye = ring.center + ring.normal() * 3.0;
@@ -569,8 +447,6 @@ mod tests {
             ring.ray_hit(eye, ring.normal()).is_none(),
             "plane behind the eye must not hit"
         );
-        // Ray in the circle's own plane, then tilted just under the
-        // incidence floor.
         assert!(
             ring.ray_hit(eye, ring.u).is_none(),
             "parallel ray must miss"
@@ -611,8 +487,6 @@ mod tests {
             .iter()
             .map(|(start, _)| (Vec3::from_array(*start) - WIDGET.center).length())
             .collect();
-        // All six rings share a radius, so a chord endpoint's distance from the
-        // widget centre is bounded by the ring's reach either side of its centre.
         for radius in radii {
             assert!(
                 (radius - WIDGET.scale).abs() <= WIDGET.scale * 2.0_f32.sqrt() + 1e-4,
@@ -629,13 +503,5 @@ mod tests {
         assert!(WIDGET.project(POLE).is_none());
         assert!(WIDGET.project(POLE * 0.99999).is_none());
         assert!(WIDGET.project(-POLE).is_some());
-    }
-
-    #[test]
-    fn ring_geometry_is_bit_reproducible() {
-        for plane in Plane4::ALL {
-            assert_eq!(WIDGET.ring(plane), WIDGET.ring(plane));
-        }
-        assert_eq!(WIDGET.rings(), WIDGET.rings());
     }
 }

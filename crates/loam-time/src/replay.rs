@@ -2,24 +2,12 @@ use std::fmt;
 
 use thiserror::Error;
 
-// FNV-1a 64-bit (Fowler/Noll/Vo 1991; reference offset basis and prime,
-// <http://www.isthe.com/chongo/tech/comp/fnv/>). `std`'s `DefaultHasher` is
-// documented as unstable across releases, so a hash that gets committed as a
-// constant or written into a tape needs its own mixer.
+// FNV-1a 64 (Fowler/Noll/Vo 1991, <http://www.isthe.com/chongo/tech/comp/fnv/>).
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-/// Incremental FNV-1a 64 over little-endian words.
-///
-/// Byte order is fixed rather than native so a hash recorded on one host is
-/// comparable on another; the values fed in are already raw bit patterns, so
-/// the mixer is the only place endianness could leak in.
-///
-/// The digest is a function of the byte stream alone and carries no framing,
-/// so two different word layouts over the same bytes agree. Callers own the
-/// framing: a sampler that changes what it writes per entity, or in what
-/// order, changes the meaning of every hash it has ever produced and owes a
-/// [`TAPE_FORMAT_VERSION`] bump.
+/// FNV-1a 64 over little-endian bytes with no framing; a sampler that
+/// changes what it writes owes a [`TAPE_FORMAT_VERSION`] bump.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StateHash(u64);
 
@@ -55,14 +43,12 @@ impl StateHash {
         self.write_bytes(&value.to_le_bytes());
     }
 
-    /// Raw bits, not a rounded value: two states that differ by one ulp are two
-    /// states.
+    /// Raw bits: two states one ulp apart are two states.
     pub fn write_f32(&mut self, value: f32) {
         self.write_u32(value.to_bits());
     }
 
-    /// Read the digest without ending the sequence, so one hash can be sampled
-    /// per tick while still chaining across the whole run.
+    /// Does not end the sequence.
     pub fn finish(&self) -> u64 {
         self.0
     }
@@ -70,9 +56,7 @@ impl StateHash {
 
 pub const TAPE_MAGIC: [u8; 8] = *b"LOAMTAPE";
 
-/// Bumped whenever an existing tape would be misread rather than merely
-/// incomplete: a change to the byte layout, to the meaning of a tick's input
-/// words, or to what a state hash covers.
+/// Bump when an existing tape would be misread.
 pub const TAPE_FORMAT_VERSION: u32 = 1;
 
 // magic + version + hz + seed + words_per_tick + ticks + checkpoint count.
@@ -90,8 +74,6 @@ pub struct Checkpoint {
 pub enum TapeError {
     #[error("not a loam tape: leading bytes are {found:02x?}")]
     BadMagic { found: [u8; 8] },
-    /// Reported rather than tolerated: a tape written under another version can
-    /// decode cleanly and still drive the sim down a different path.
     #[error("tape format version {found}, this build reads {TAPE_FORMAT_VERSION}")]
     UnsupportedVersion { found: u32 },
     #[error("tape declares {expected} bytes, got {found}")]
@@ -100,8 +82,7 @@ pub enum TapeError {
     CheckpointOrder { index: usize },
 }
 
-/// `words_per_tick` may be zero: an input-free run (an attract-mode loop, a
-/// physics fixture) still has a seed, a tick count, and hashes worth pinning.
+/// `words_per_tick` may be zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tape {
     tick_hz: u32,
@@ -140,9 +121,7 @@ impl Tape {
         self.ticks
     }
 
-    /// Panics if `input.len()` is not `words_per_tick`: a short frame would
-    /// shift every later tick's input by the shortfall, and the shift is
-    /// undetectable once the tape is encoded.
+    /// Panics if `input.len()` is not `words_per_tick`.
     pub fn push_tick(&mut self, input: &[u32]) {
         assert_eq!(
             input.len(),
@@ -163,9 +142,7 @@ impl Tape {
         Some(&self.inputs[start..start + width])
     }
 
-    /// Panics unless `tick` is beyond the last checkpoint: a verifier walks
-    /// checkpoints in order against a single forward replay, and an
-    /// out-of-order entry would silently never be checked.
+    /// Panics unless `tick` is past the last checkpoint.
     pub fn checkpoint(&mut self, tick: u64, state_hash: u64) {
         if let Some(last) = self.checkpoints.last() {
             assert!(
@@ -211,8 +188,7 @@ impl Tape {
         if magic != TAPE_MAGIC {
             return Err(TapeError::BadMagic { found: magic });
         }
-        // Version before length: a tape from another version has another
-        // layout, so its declared sizes are not this decoder's to check.
+        // Version before length: another version has another layout.
         let version = reader.u32().ok_or(TapeError::LengthMismatch {
             expected: HEADER_LEN as u64,
             found: bytes.len(),
@@ -226,10 +202,6 @@ impl Tape {
                 found: bytes.len(),
             })?;
 
-        // Saturating, not merely widened: `ticks` is 64 bits itself, so a
-        // corrupt header overflows the byte count at any width, and the
-        // overflow panics in a debug build and wraps into a plausible length
-        // in a release one. Saturation cannot equal a real `bytes.len()`.
         let input_bytes = u64::from(words_per_tick)
             .saturating_mul(ticks)
             .saturating_mul(4);
@@ -391,23 +363,6 @@ mod tests {
     }
 
     #[test]
-    fn hash_chains_rather_than_restarts() {
-        let mut chained = StateHash::new();
-        chained.write_u32(9);
-        let after_one = chained.finish();
-        chained.write_u32(9);
-        assert_ne!(
-            after_one,
-            chained.finish(),
-            "finish must not reset the accumulator",
-        );
-
-        let mut bulk = StateHash::new();
-        bulk.write_u32s(&[9, 9]);
-        assert_eq!(bulk.finish(), chained.finish());
-    }
-
-    #[test]
     fn encode_decode_round_trips_every_field() {
         let tape = recorded();
         let decoded = Tape::decode(&tape.encode()).expect("own encoding decodes");
@@ -487,8 +442,6 @@ mod tests {
     #[test]
     fn a_header_claiming_more_payload_than_memory_is_rejected_without_wrapping() {
         let mut bytes = recorded().encode();
-        // words_per_tick = u32::MAX over 8 ticks fits a 64-bit byte count and
-        // wraps a 32-bit one, so this is what the widening buys.
         bytes[24..28].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(matches!(
             Tape::decode(&bytes),

@@ -17,30 +17,14 @@ use crate::state::body_position;
 // Must match the app's fixed sim tick rate.
 const PHYSICS_DT: f32 = 1.0 / 60.0;
 
-// Density is unmodelled: a 5-cell hull masses the same as a 24-cell.
 const BODY_MASS: f32 = 1.0;
 
-// Fastest launch the R⁴ step resolves against a thin static wall: the recorded
-// `RECORDED_R4` bound from `loam_physics::world`'s tunneling gate, 0.150 per
-// step, spent at 90% because the record is a scanned floor at 0.0025
-// resolution rather than a two-sided pin. Nothing in this scene gives a body
-// speed since the throw gesture moved to the toybox, so this bounds the
-// fixtures below and nothing else.
+// 90% of `loam_physics::world`'s recorded 0.150 per-step tunneling bound.
 #[cfg(test)]
 pub(crate) const MAX_RESOLVED_SPEED: f32 = 0.9 * 0.150 / PHYSICS_DT;
 
-// Time constant of the velocity decay, in seconds. Zero-g and frictionless,
-// a body given velocity would otherwise never re-enter the exact-zero fixpoint
-// [`PlaygroundPhysics::at_rest`] tests for, so the step's skip would never
-// re-engage and the body would leave the chamber for good. Travel is bounded
-// by `speed · TAU`, which at [`MAX_RESOLVED_SPEED`] is 4.9 units: under the
-// width of a full eight-slot row, so nothing leaves the frame.
 const VELOCITY_DECAY_TAU: f32 = 0.6;
 
-// Speeds under which a decaying body is snapped to exact rest. Exponential
-// decay approaches zero without reaching it, and `at_rest` compares against
-// exact zero; these are the thresholds that close the gap. Sized well under
-// one pixel of motion per second at the demo's framing.
 const REST_SPEED: f32 = 0.02;
 const REST_ANGULAR_SPEED: f32 = 0.02;
 
@@ -50,8 +34,7 @@ pub(crate) fn ndc_from_pixels(pixels: Vec2, viewport: (u32, u32)) -> Vec2 {
     Vec2::new(2.0 * pixels.x / width - 1.0, 1.0 - 2.0 * pixels.y / height)
 }
 
-// `Rotor4` multiplies left-first (`apply(a * b, v) == apply(b, apply(a, v))`),
-// so the world-frame physics rotor is the right factor.
+// `Rotor4` multiplies left-first, so the world-frame physics rotor is the right factor.
 pub(crate) fn composed_rotor(spin: Rotor4, orientation: Rotor4) -> Rotor4 {
     spin * orientation
 }
@@ -63,15 +46,12 @@ pub(crate) struct BodyPose {
 }
 
 impl BodyPose {
-    // The R³ translation the raster paths apply AFTER projection, so a
-    // Perspective4D divide never scales the body's x-position.
+    // Applied after projection, so a Perspective4D divide never scales x.
     pub(crate) fn position_r3(&self) -> Vec3 {
         self.position.truncate()
     }
 
-    // The `w` offset moves the frame off the origin, so the body's vertices
-    // stop sharing a radius about it. No caller may read an endpoint's
-    // `length()` as its circumradius.
+    // Off-origin frame: no caller may read a vertex `length()` as the circumradius.
     pub(crate) fn body_local(&self, canonical: Vec4, size: f32) -> Vec4 {
         size * self.rotor.apply(canonical) + Vec4::W * self.position.w
     }
@@ -103,9 +83,7 @@ impl PlaygroundPhysics {
     }
 
     pub(crate) fn respawn(&mut self, slots: usize, radius: f32) {
-        // Despawn rather than replace the arena: a fresh arena restarts
-        // generations at 0, so a handle held across a respawn would alias
-        // whichever body lands in its slot next.
+        // A fresh arena restarts generations at 0 and would alias held handles.
         while let Some(last) = self.world.bodies.len().checked_sub(1) {
             let id = self.world.bodies.id_at(last);
             self.world.bodies.despawn(id);
@@ -119,9 +97,7 @@ impl PlaygroundPhysics {
         }
     }
 
-    // The slot's UI spin is BAKED into the hull's vertex list, because
-    // `PosedHull4` applies `body.orientation.rotation` alone. The
-    // spin's rim velocity stays unmodelled: 16% of MAX_RESOLVED_SPEED by default.
+    // The UI spin is baked into the hull: `PosedHull4` applies `orientation.rotation` alone.
     pub(crate) fn sync(&mut self, row: &[ShapeEntry], spins: &SlotSpins, size: f32) {
         if self.world.bodies.len() != row.len() {
             self.respawn(row.len(), size);
@@ -170,9 +146,7 @@ impl PlaygroundPhysics {
             .all(|b| b.velocity == Vec4::ZERO && b.angular_velocity.magnitude_squared() == 0.0)
     }
 
-    // The skip is load-bearing, not an optimization: `surface scale` past
-    // `BODY_X_SPACING / (2 · BODY_SIZE)` overlaps neighbouring bounding
-    // spheres, and solving that would push a row nobody threw off its layout.
+    // The at-rest skip is a contract: an overlapping layout is never pushed apart.
     pub(crate) fn step(&mut self, ticks: usize) {
         if self.at_rest() {
             return;
@@ -234,8 +208,7 @@ mod tests {
 
     const RADIUS: f32 = crate::consts::BODY_SIZE;
 
-    // Moment per unit mass at unit circumradius: half the mean radius squared
-    // that `regular_polytope4_inertia` documents for each solid.
+    // Moment per unit mass at unit circumradius.
     const HULL_SHAPES: [(Polytope4, f32); 6] = [
         (Polytope4::Pentatope, 1.0 / 12.0),
         (Polytope4::Tesseract, 1.0 / 6.0),
@@ -609,12 +582,7 @@ mod tests {
                 "{polytope:?} left the body it struck at |ω| = {peak}"
             );
         }
-        // Roundness costs lever arm. The 120-cell and 600-cell have 120 and
-        // 600 cells over the same circumradius, so a head-on hit lands much
-        // closer to the line of centres than it does on a 5-cell's corner, and
-        // the spin it can impart falls accordingly. This is the property that
-        // separates a hull from the ball it approaches, so it is worth pinning
-        // in the direction of the inequality rather than at a value.
+        // Roundness costs lever arm.
         let angular = peak_struck_spin(RaymarchShape::Polytope(Polytope4::Pentatope), spin);
         for round in [Polytope4::Cell120, Polytope4::Cell600] {
             let peak = peak_struck_spin(RaymarchShape::Polytope(round), spin);
@@ -804,8 +772,7 @@ mod tests {
     const RIGHT: Vec3 = Vec3::X;
     const UP: Vec3 = Vec3::Y;
 
-    // Impulse carrying `fraction` of [`MAX_RESOLVED_SPEED`] along `direction`.
-    // `m · speed · direction`, because `apply_impulse` divides by the same mass.
+    // `m · speed · direction`: `apply_impulse` divides by the same mass.
     fn flick(fraction: f32, direction: Vec3) -> Vec4 {
         (direction * (fraction * MAX_RESOLVED_SPEED * BODY_MASS)).extend(0.0)
     }
@@ -825,8 +792,7 @@ mod tests {
             (moved - layout).length()
         );
 
-        // 0.6 s time constant from MAX_RESOLVED_SPEED down to REST_SPEED needs
-        // ~3.7 s; ten seconds of ticks is comfortably past it.
+        // Decay from MAX_RESOLVED_SPEED to REST_SPEED takes ~3.7 s.
         physics.step(600);
         assert!(physics.at_rest(), "the throw never decayed back to rest");
         let settled = physics.pose(0, 1, Rotor4::IDENTITY).position;

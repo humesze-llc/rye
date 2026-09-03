@@ -29,14 +29,12 @@ impl<'a> FloatingPanelBuilder<'a> {
         self
     }
 
-    /// Height stays content-sized.
     pub fn default_width(mut self, width: f32) -> Self {
         self.default_width = width;
         self
     }
 
-    /// First display only; later frames respect any user drag. Defaults to
-    /// egui's automatic centre-of-screen placement.
+    /// First display only.
     pub fn default_pos(mut self, pos: Pos2) -> Self {
         self.default_pos = Some(pos);
         self
@@ -66,8 +64,7 @@ impl<'a> FloatingPanelBuilder<'a> {
     }
 }
 
-/// The helper clears `open` on close-X, and the closure runs only while
-/// `*open == true`, so the return is `None` when closed.
+/// `None` while closed; the close-X clears `open`.
 pub fn floating_panel<R>(
     ctx: &Context,
     id: &str,
@@ -97,20 +94,13 @@ pub fn floating_panel_builder<'a>(
     }
 }
 
-/// Stays open while toggles inside it are clicked, closing only on
-/// click-outside or `Esc`. `egui::menu_button` closes on every interactive
-/// click, which makes a multi-checkbox menu unusable.
-///
-/// A one-shot entry that should close on click calls
-/// `ui.memory_mut(|m| m.close_popup())` from inside the content closure.
+/// Closes only on click-outside or Esc, not on a click inside.
 pub fn sticky_menu<R>(
     ui: &mut Ui,
     label: &str,
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
     let response = ui.button(label);
-    // The `CloseOnClickOutside` override is the point; the default `CloseOnClick`
-    // collapses the dropdown when a checkbox inside is clicked.
     egui::Popup::menu(&response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(add_contents)
@@ -119,9 +109,7 @@ pub fn sticky_menu<R>(
 
 #[derive(Clone, Debug)]
 pub struct CalloutState {
-    /// Top-left of the callout window in screen pixels.
     pub window_pos: Pos2,
-    /// The title-bar X clears it; set it back to reopen.
     pub open: bool,
 }
 
@@ -134,8 +122,7 @@ impl CalloutState {
     }
 }
 
-/// The caller projects the 3D world anchor to `anchor_screen_pos` each frame.
-/// No-op when `state.open == false`.
+/// No-op while `state.open` is false.
 pub fn callout(
     ctx: &Context,
     id: &str,
@@ -171,8 +158,7 @@ pub fn callout(
         state.window_pos = rect.min;
     }
 
-    // Draw on `Order::Background` so the line sits under the Window (default
-    // `Order::Middle`) but still over the wgpu scene; non-interactive overlay.
+    // Background order: under the window, over the scene.
     let painter_layer = egui::LayerId::new(
         egui::Order::Background,
         Id::new(format!("{id}-callout-overlay")),

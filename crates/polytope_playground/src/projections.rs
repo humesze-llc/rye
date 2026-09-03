@@ -4,28 +4,18 @@ use loam_shape::polytope::Polytope4;
 pub(crate) enum WireframeProjection {
     #[default]
     Shadow,
-    /// Pinhole at `(0, 0, 0, focal_distance)` onto the `w = 0` 3-flat,
-    /// foreshortening by `focal / (focal - w)`.
+    /// Pinhole at `(0, 0, 0, focal)` onto `w = 0`, foreshortening by `focal / (focal - w)`.
     WPinhole,
-    /// Central projection from just outside the chosen boundary cell onto its
-    /// 3-flat (Coxeter, *Regular Polytopes*, ch. 13). Deliberately absent from
-    /// `Self::ALL` and `Self::from_token`: the math and its resolution are
-    /// kept and tested for a dedicated Schlegel demo, which is what
-    /// `allow(dead_code)` marks.
+    /// Central projection from just outside one cell (Coxeter, *Regular Polytopes*, ch. 13).
     #[allow(dead_code)]
-    Schlegel { cell_index: u32 },
-    /// `EuclideanR4` normalizes each vertex onto S³ first, so the
-    /// `BODY_SIZE`-scaled vertices read correctly.
+    Schlegel {
+        cell_index: u32,
+    },
     Stereographic,
-    /// Cell-level rather than edge-level, so a kept edge agrees with the
-    /// active-edge coloring and the cross-section.
     Hyperslice,
 }
 
-// Stored in CANONICAL coords: `Demo::resolved_wireframe_projection` scales the
-// offsets by `Demo::effective_body_size` and rotates the normal and basis by
-// the subject slot's own rotor each frame, so the cache stays valid across
-// `surface scale` and as that body spins.
+// Canonical coordinates: `Demo::resolved_wireframe_projection` scales and rotates per frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SchlegelParams {
     pub(crate) polytope: Polytope4,
@@ -34,7 +24,6 @@ pub(crate) struct SchlegelParams {
     pub(crate) cell_basis: [glam::Vec4; 3],
     // The cell lies in `{x : dot(cell_normal, x) = cell_offset}`.
     pub(crate) cell_offset: f32,
-    // Farthest vertex projection along `cell_normal` plus SCHLEGEL_EYE_MARGIN.
     pub(crate) viewpoint_distance: f32,
 }
 
@@ -93,19 +82,12 @@ fn resolve_schlegel_cell_basis(
     basis
 }
 
-// Additive (not a multiple of cell offset) so the clearance does not collapse
-// for small-inradius polytopes: the 5-cell's 0.25 inradius under
-// `1.5 * cell_offset` leaves the eye 0.125 clear and the diagram folds to a
-// sliver. 0.5 of the unit circumradius is polytope-independent.
+// Additive, so a small-inradius polytope's eye clearance does not collapse.
 const SCHLEGEL_EYE_MARGIN: f32 = 0.5;
 
-// Cell normals and inradii come from `Polytope4::face_planes` (cell centroids
-// via topology; Coxeter, *Regular Polytopes*, ch. 13). The dual-vertex
-// `cell{120,600}_face_planes` helpers in `loam_physics::euclidean_r4` are
-// wrong for 96 of the 120/600-cell normals and are NOT used here.
+// Coxeter, *Regular Polytopes*, ch. 13. Not the wrong dual-vertex `cell{120,600}_face_planes`.
 pub(crate) fn resolve_schlegel_params(polytope: Polytope4, cell_index: u32) -> SchlegelParams {
     let cell_count = polytope.cell_count() as u32;
-    // `cell_count >= 1`, so `cell_count - 1` never underflows.
     let clamped = cell_index.min(cell_count - 1);
     let (normals, cell_offset) = polytope.face_planes();
     let cell_normal = normals[clamped as usize];
@@ -126,9 +108,6 @@ pub(crate) fn resolve_schlegel_params(polytope: Polytope4, cell_index: u32) -> S
     }
 }
 
-// A row edit can shrink a 600-cell to a 5-cell while the mode still names
-// `cell_index: 300`, so the returned projection's index is rewritten to the
-// clamped value the cache carries and the two cannot disagree.
 pub(crate) fn synced_schlegel_projection(
     projection: WireframeProjection,
     subject: Option<Polytope4>,
@@ -145,8 +124,7 @@ pub(crate) fn synced_schlegel_projection(
     }
 }
 
-// A conformal-map edge is a circular arc, not a chord. Derived from the
-// projection, not a separate control, so it cannot disagree with the map.
+// A conformal map draws an edge as an arc.
 pub(crate) fn default_edge_blend(projection: WireframeProjection) -> f32 {
     match projection {
         WireframeProjection::Stereographic => 1.0,
@@ -169,8 +147,7 @@ pub(crate) struct ModeAnnotation {
     pub(crate) body: String,
 }
 
-// Explanations follow Coxeter, *Regular Polytopes*, ch. 13 (Schlegel) and the
-// conformal map `(x, y, z) / (1 - w)` (Wikipedia, "Stereographic projection").
+// Coxeter, *Regular Polytopes*, ch. 13; Wikipedia, "Stereographic projection".
 pub(crate) fn mode_annotation(projection: WireframeProjection) -> Option<ModeAnnotation> {
     let (title, projection_body): (&'static str, Option<&str>) = match projection {
         WireframeProjection::Shadow => ("Shadow", None),
@@ -218,17 +195,10 @@ pub(crate) fn mode_annotation(projection: WireframeProjection) -> Option<ModeAnn
     })
 }
 
-// Aligned with the w-slice axis so the conformal scale
-// `1 / (1 - dot(p, pole))` reduces to `1 / (1 - p.w)` and every cell sharing
-// the slice's w maps to one CENTERED radial shell; an off-axis pole makes the
-// scale depend on `x + y + z + w` and skews each slice. `+w` is a 16-cell
-// vertex (`+e_w`, Coxeter, *Regular Polytopes*, §8.2), so a vertex sweeping
-// through the pole flicks to infinity, accepted for the centered image.
-// Exactly unit, so no runtime `normalize` and the constant is bit-reproducible.
+// On the slice axis, so the scale is `1 / (1 - p.w)`; `+e_w` is a 16-cell vertex (Coxeter §8.2).
 pub(crate) const STEREOGRAPHIC_DEFAULT_POLE: glam::Vec4 = glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
 
 impl WireframeProjection {
-    // Hyphens because `w-pinhole` lexes as one token. `schlegel` is not parsed.
     pub(crate) fn from_token(token: &str) -> Option<Self> {
         match token {
             "shadow" => Some(WireframeProjection::Shadow),
@@ -247,10 +217,7 @@ impl WireframeProjection {
         WireframeProjection::Hyperslice,
     ];
 
-    /// Parallel to [`Self::ALL`], which
-    /// `every_token_parses_to_the_variant_it_sits_beside` pins. Tab
-    /// completion and the parse error both read it, so neither can drift
-    /// from [`Self::from_token`].
+    /// Parallel to [`Self::ALL`].
     pub(crate) const TOKENS: [&'static str; 4] =
         ["shadow", "w-pinhole", "stereographic", "hyperslice"];
 
@@ -268,11 +235,7 @@ impl WireframeProjection {
         std::mem::discriminant(&self) == std::mem::discriminant(&other)
     }
 
-    // `WPinhole`'s focal 2.0 clears the `BODY_SIZE`-scaled w-extent, so the
-    // denominator never nears zero. `Schlegel` returns `Identity` as a SAFE
-    // FALLBACK only: the real projection needs the cached `SchlegelParams`
-    // plus the subject slot's live rotor, and is built by
-    // `Demo::resolved_wireframe_projection`.
+    // `Schlegel` falls back to `Identity`; `Demo::resolved_wireframe_projection` builds the real one.
     pub(crate) fn to_projection(self) -> loam_math::Projection<4> {
         match self {
             WireframeProjection::Shadow | WireframeProjection::Hyperslice => {

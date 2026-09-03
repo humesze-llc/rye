@@ -1,12 +1,6 @@
-//! The flat 3-torus through the real GPU chain: `FlatTorus3` prelude ->
-//! `loam_scene::Scene` emit -> `GEODESIC_MARCH_KERNEL`.
-//!
-//! `loam-math` pins the quotient's algebra on the CPU. What cannot be pinned
-//! there is that the *unmodified* march kernel crosses the gluing: it never
-//! mentions a portal, it only calls `loam_exp`, and that claim is about WGSL
-//! and has to be executed to be believed.
-//!
-//! The `gpu_probe`-suffixed tests need an adapter and are ignored by default.
+//! The flat 3-torus through the real GPU chain. `loam-math` pins the quotient
+//! on the CPU; what only execution can pin is that the unmodified march kernel
+//! crosses the gluing by calling `loam_exp` alone.
 
 use glam::Vec3;
 use loam_math::{FlatTorus3, QuotientSpace, Space, WgslSpace};
@@ -14,14 +8,10 @@ use loam_scene::{Scene, SceneNode};
 use loam_shader::{validate_wgsl, GEODESIC_MARCH_KERNEL};
 use wgpu::util::DeviceExt;
 
-// Side lengths of the room. Deliberately unequal so a swapped axis in the
-// wrap shows up as a wrong hit distance rather than as a symmetry.
+// Unequal sides, so a swapped axis in the wrap reads as a wrong distance.
 const CELL: Vec3 = Vec3::new(2.0, 2.6, 1.7);
 
-// Enough landmarks that an observer can tell which copy of the cell they are
-// looking at. Spheres because `Shape::Sphere` is the one primitive that
-// routes through `loam_distance` and is therefore lattice-periodic; a box or
-// a half-space emits raw chart arithmetic and would tear at the gluing.
+// Spheres only: `Shape::Sphere` routes through `loam_distance` and is lattice-periodic.
 fn room() -> Scene {
     Scene::new(
         SceneNode::sphere(Vec3::ZERO, 0.36)
@@ -34,8 +24,7 @@ fn torus() -> FlatTorus3 {
     FlatTorus3::new(CELL)
 }
 
-// Reports, per ray, how far the marcher's wrapped position drifted from the
-// straight covering ray's wrap, plus the arclength at which it hit.
+// Per ray: drift of the marched wrap from the covering ray's wrap, and the hit arclength.
 const PROBE_WGSL: &str = r#"
 struct Ray {
     origin: vec3<f32>,
@@ -60,19 +49,13 @@ fn probe(@builtin(global_invocation_id) gid: vec3<u32>) {
         out[i] = vec2<f32>(-1.0, -1.0);
         return;
     }
-    // `loam_march_geodesic` returns its parameter in units of the tangent it
-    // built from a finite-difference metric probe, not in arclength. That
-    // probe divides a chart-order-1 difference by 1e-4 and so carries ~1e-3
-    // relative error in every Space, this one included. Reproducing it here,
-    // rather than assuming unit speed, keeps this test measuring the
-    // quotient's continuation instead of the kernel's conditioning.
+    // The kernel's parameter is in units of its finite-difference tangent (~1e-3
+    // relative error), not arclength.
     let probe_eps = 1e-4;
     let speed = loam_distance(ray.origin, loam_exp(ray.origin, dir * probe_eps)) / probe_eps;
     let arclength = hit.w / speed;
 
-    // Geodesics of E3/L lift to straight lines of the cover. The marcher never
-    // holds a covering coordinate; it takes wrapped steps. Agreement of the two
-    // is the ray-continuation contract.
+    // Geodesics of E³/L lift to straight lines of the cover.
     let cover = ray.origin + dir * arclength;
     out[i] = vec2<f32>(length(loam_torus_wrap(cover) - loam_torus_wrap(hit.xyz)), arclength);
 }
@@ -93,9 +76,6 @@ fn assemble_probe_source() -> String {
 fn the_unmodified_geodesic_kernel_accepts_the_quotient_prelude() {
     let source = assemble_probe_source();
     validate_wgsl(&source).expect("flat-torus march chain should validate");
-    // Naming the wrap in the prelude is what lets the scene emit and the
-    // kernel stay quotient-agnostic; if it disappears the chain still
-    // validates but stops being a quotient.
     assert!(source.contains("fn loam_torus_wrap("));
     assert!(source.contains("fn loam_scene_sdf("));
 }
@@ -109,8 +89,7 @@ struct GpuRay {
     _pad1: f32,
 }
 
-// Origins on a lattice inside the fundamental domain, directions on a fixed
-// spiral, so the probe set is identical on every machine.
+// Fixed lattice origins and a spiral of directions, identical on every machine.
 fn probe_rays(origin_offset: Vec3) -> Vec<GpuRay> {
     let mut rays = Vec::with_capacity(16 * 64);
     for oi in 0..16 {
@@ -121,7 +100,6 @@ fn probe_rays(origin_offset: Vec3) -> Vec<GpuRay> {
             (s * 7.0 % 1.0 - 0.5) * CELL.z * 0.8,
         ) + origin_offset;
         for di in 0..64 {
-            // Fibonacci-sphere directions: even coverage with no RNG.
             let t = (di as f32 + 0.5) / 64.0;
             let cos_theta = 1.0 - 2.0 * t;
             let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
@@ -160,8 +138,6 @@ async fn request_device() -> (wgpu::Device, wgpu::Queue) {
         .expect("wgpu device")
 }
 
-// One dispatch of a `@workgroup_size(64)` entry point over `input` at binding
-// 0, reading one `O` per element back from binding 1.
 fn dispatch<I: bytemuck::Pod, O: bytemuck::Pod>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -239,13 +215,10 @@ fn dispatch<I: bytemuck::Pod, O: bytemuck::Pod>(
     results
 }
 
-// Returns one `(residual, arclength)` pair per ray, both negative on a miss.
 fn run_probe(device: &wgpu::Device, queue: &wgpu::Queue, rays: &[GpuRay]) -> Vec<[f32; 2]> {
     dispatch(device, queue, &assemble_probe_source(), "probe", rays)
 }
 
-// The emitted prelude's fold into the fundamental domain, evaluated on the GPU
-// so it can be compared against `QuotientSpace::wrap_to_domain`.
 const WRAP_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read> lifts: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> wrapped: array<vec4<f32>>;
@@ -264,8 +237,6 @@ fn the_emitted_prelude_wraps_to_the_same_quotient_point_as_the_rust_impl_gpu_pro
     let (device, queue) = pollster::block_on(request_device());
     let space = torus();
 
-    // Lifts that stress the correction: exact faces, an ulp either side, and
-    // lattice translates of all three, plus a coarse sweep of the cover.
     let half = 0.5 * CELL;
     let mut lifts: Vec<[f32; 4]> = Vec::new();
     for axis in 0..3 {
@@ -309,7 +280,6 @@ fn the_emitted_prelude_wraps_to_the_same_quotient_point_as_the_rust_impl_gpu_pro
         );
         worst_quotient = worst_quotient.max(space.distance(cpu, gpu));
 
-        // Distance from the representative to the nearest face of the box.
         if (half - cpu.abs()).min_element() > 1e-4 {
             worst_off_face = worst_off_face.max((cpu - gpu).abs().max_element());
         } else {
@@ -321,9 +291,7 @@ fn the_emitted_prelude_wraps_to_the_same_quotient_point_as_the_rust_impl_gpu_pro
         on_face > 0,
         "no lift landed on a face; the boundary case went untested"
     );
-    // One ulp at the cell scale is 2.4e-7 and is what the measurement shows;
-    // the bound rules out any lattice-sized drift, which is the failure this
-    // test exists to catch.
+    // Measured: one ulp at the cell scale, 2.4e-7.
     assert!(
         worst_off_face < 1e-6,
         "away from the faces the prelude and the Rust wrap disagreed by \
@@ -343,9 +311,6 @@ fn marched_position_agrees_with_the_covering_ray_gpu_probe() {
     let results = run_probe(&device, &queue, &rays);
 
     let hits = results.iter().filter(|r| r[1] >= 0.0).count();
-    // A compact quotient with three spheres per cell: every ray should hit.
-    // A low hit count means the kernel bailed, and a residual test over an
-    // empty set proves nothing.
     assert!(
         hits * 10 >= rays.len() * 9,
         "only {hits}/{} rays hit; the probe would be vacuous",
@@ -356,10 +321,7 @@ fn marched_position_agrees_with_the_covering_ray_gpu_probe() {
         .iter()
         .filter(|r| r[1] >= 0.0)
         .fold(0.0_f32, |acc, r| acc.max(r[0]));
-    // Measured worst case over this fan is 1.4e-5: the marcher's 256 wrapped
-    // steps each contribute a cell-scaled rounding. The threshold sits an
-    // order above that and four orders below the 0.2 sphere radius the drift
-    // would have to reach to move a pixel.
+    // Measured worst over this fan: 1.4e-5.
     assert!(worst < 1e-4, "worst covering-ray disagreement was {worst}");
 }
 
@@ -383,12 +345,7 @@ fn translating_by_a_lattice_vector_leaves_the_view_unchanged_gpu_probe() {
             );
             worst = worst.max((base[1] - moved[1]).abs() / base[1].max(1.0));
         }
-        // Relative because the residual is relative in origin: the kernel's
-        // unit-speed probe carries an origin-dependent ~1e-3 error that shifts
-        // every sphere-tracing step slightly, and the shift compounds along
-        // the ray. Measured worst over this fan is 4.3e-5 at arclengths up to
-        // 20. A wrap that dropped an axis moves a hit by a whole cell, which
-        // is an O(1) relative error, not a rounding.
+        // Measured worst over this fan: 4.3e-5; a dropped axis is O(1).
         assert!(
             worst < 1e-3,
             "lattice translation on axis {axis} moved a hit by {worst} relative"

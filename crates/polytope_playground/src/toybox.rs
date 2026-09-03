@@ -1,11 +1,6 @@
-//! The floor's normal is pure `y`, so its NORMAL impulse carries no `w`. Its
-//! friction does: the tangent space of a contact in R⁴ is three-dimensional and
-//! `w` is in it, so the impulse that arrests a landing hull also slides it off
-//! the slice. The scene answers that at the spawn, with a drop shallow enough
-//! and a pose flat enough to keep the landing inside [`SETTLED_W_BAND`], rather
-//! than by damping `w`: the `w` a body-body contact imparts is the point. For
-//! the same reason [`ANGULAR_DAMPING`] has no linear counterpart: a linear
-//! damper is exactly what would erase that drift.
+//! The floor's normal is pure `y`, so its normal impulse carries no `w`; its
+//! friction does, because a contact's tangent space in R⁴ includes `w`. The
+//! spawn keeps that drift inside [`SETTLED_W_BAND`]; nothing damps `w`.
 
 use std::borrow::Cow;
 
@@ -37,39 +32,22 @@ const TICK_HZ: u32 = 60;
 
 const TICK_DT: f32 = 1.0 / TICK_HZ as f32;
 
-// A hull settling on a half-space needs 240 Hz, not 120: `polytope_halfspace_r4`
-// reports one deepest vertex per step where the resting manifold holds four, so
-// halving the rate halves the constraints the solver has by the time a body
-// rocks over. Four sub-steps reach that rate without moving the host clock.
+// A hull resting on a half-space needs 240 Hz: one deepest vertex per step.
 const BASE_SUBSTEPS: usize = 4;
 
-// The sub-step count a tick may rise to when something is moving fast. The
-// resolvable travel per step is fixed, so the speed a body may carry is linear
-// in this, at 4.05 u/s per sub-step. Sixteen buys 64.8 u/s, which crosses the
-// 7.2-unit container in about seven frames: fast enough to read as a hard
-// throw, slow enough that the bounce is a thing you SEE. Sixty-four was tried
-// and is a mistake at any body count: 259 u/s crosses the arena in 1.7 frames,
-// so the toy is simply gone, and a deep first contact leaves it drawn outside
-// the wall while Baumgarte recovers.
+// Sixteen buys 64.8 u/s, which crosses the container in about seven frames.
 const MAX_SUBSTEPS: usize = 16;
 
-// Fixed, never derived from wall time. A resting tick runs at
-// `TICK_DT / BASE_SUBSTEPS`; a tick carrying a fast body divides further.
 const MIN_SOLVER_DT: f32 = TICK_DT / MAX_SUBSTEPS as f32;
 
 const GRAVITY: f32 = -9.8;
 
-// Read by the physics half-space and by the background's analytic ground, so
-// the drawn floor cannot drift from the one the bodies land on.
+// Shared by the physics half-space and the drawn ground.
 const FLOOR_Y: f32 = 0.0;
 
-// Slice every cross-section is cut at when the scene boots. A body's distance
-// from the live slice is what [`section_alpha`] fades on.
 const W_SLICE: f32 = 0.0;
 
-// Half-range the slice scrubs over. A toy is `BODY_SIZE` across in `w`, so this
-// carries the slice about three body widths either side of the pile: far enough
-// to lose every cross-section, near enough that the way back is one held key.
+// About three body widths either side of the pile.
 const W_SLICE_RANGE: f32 = 1.5;
 
 const BODY_MASS: f32 = 1.0;
@@ -77,8 +55,6 @@ const BODY_MASS: f32 = 1.0;
 // Circumradius.
 const BODY_SIZE: f32 = 0.45;
 
-// Near-inelastic: a bouncing toy leaves the frame before it settles, and the
-// interesting motion here is the `w` drift a contact imparts, not the rebound.
 const RESTITUTION: f32 = 0.05;
 
 const TOYS: [Polytope4; 5] = [
@@ -89,187 +65,98 @@ const TOYS: [Polytope4; 5] = [
     Polytope4::Tesseract,
 ];
 
-// Wider than two circumradii, so each toy reaches the floor on its own rather
-// than landing on a neighbour: the scene settles before anyone touches it.
+// Wider than two circumradii, so each toy lands on the floor, not a neighbour.
 const SPAWN_SPACING: f32 = 1.4;
 
-// Height of the lowest posed hull vertex above the floor at spawn, in world
-// units. Measured against `w` drift and not chosen for the look of the fall:
-// the friction cone at a contact in R⁴ has a `w` tangent, so the impulse that
-// arrests a landing hull also slides it off the slice. The landing is not
-// monotone in drop height, so this is a sampled value: it settles
-// every toy inside [`SETTLED_W_BAND`], where 0.05 and 0.35 both leave a
-// pentatope a quarter of a unit off the slice with no cross-section left.
+// Sampled: settles every toy inside `SETTLED_W_BAND`; 0.05 and 0.35 do not.
 const SPAWN_CLEARANCE: f32 = 0.20;
 
-// Worst `|w|` a toy reaches from its landing alone
-// `the_floor_alone_leaves_every_toy_inside_the_slice_band` scans, plus margin:
-// the measured worst is 0.047. It is not zero, because the friction that stops
-// the landing acts in a tangent space that includes `w`.
+// Measured worst landing `|w|` is 0.047, plus margin.
 const SETTLED_W_BAND: f32 = 0.06;
 
-// |wedge| of two unit vectors is the sine of their angle, so this is the band
-// in which the plane they span is not determined.
+// |wedge| of unit vectors is the sine of their angle; below this the plane is undetermined.
 const ROTOR_PLANE_EPS: f32 = 1e-6;
 
-// Per-step travel the R⁴ narrowphase still resolves against a thin static wall,
-// as recorded by `loam_physics::world`'s tunneling gate. The floor is a
-// half-space and cannot be tunneled, so this bounds body-against-body only.
+// Recorded by `loam_physics::world`'s tunneling gate; bounds body-against-body only.
 const RESOLVABLE_STEP_TRAVEL: f32 = 0.150;
 
-// The recorded figure is a scanned floor, not a two-sided pin, so a release
-// sized exactly at it would have no margin.
 const TRAVEL_MARGIN: f32 = 0.9;
 
-// The fastest material point of a body of radius `R` covers
-// `(|v| + |ω|·R)·SOLVER_DT` per step. The linear and angular ceilings split the
-// usable budget evenly, so together they spend exactly
-// `TRAVEL_MARGIN · RESOLVABLE_STEP_TRAVEL`.
+// The linear and angular ceilings split `TRAVEL_MARGIN · RESOLVABLE_STEP_TRAVEL` evenly.
 const MAX_RELEASE_SPEED: f32 = 0.5 * TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL / MIN_SOLVER_DT;
 
 const MAX_ANGULAR_SPEED: f32 =
     0.5 * TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL / (BODY_SIZE * MIN_SOLVER_DT);
 
-// Travel one sub-step may cover before the narrowphase stops resolving it.
-// `substeps_for` divides a tick until the fastest material point fits.
 const STEP_TRAVEL_BUDGET: f32 = TRAVEL_MARGIN * RESOLVABLE_STEP_TRAVEL;
 
-// A release throws at the cursor's own speed, clamped only by
-// [`MAX_RELEASE_SPEED`]. An earlier flat cap made every flick above it land on
-// one speed, which flattened the whole top of the range: a fast mouse threw no
-// harder than a medium one. The walls are what make an unclamped throw safe to
-// offer, since a hard throw now bounces rather than leaving.
-
-// World units of throw per world unit per second of cursor. A cursor covers a
-// lot of world at grab depth: a brisk 1 unit per frame is already 60 u/s, and a
-// flick is four times that, so throwing at the hand's own speed sends every
-// toy into a wall faster than the eye follows. The gain keeps the throw
-// PROPORTIONAL to the hand, which is what a flick has to feel like, while
-// putting a hard flick near the ceiling rather than ten times past it.
+// Keeps the throw proportional to the hand and a hard flick near the ceiling.
 const RELEASE_GAIN: f32 = 0.3;
 
-/// Fraction of a release's torque that survives. [`MAX_ANGULAR_SPEED`] is a
-/// tunneling ceiling derived from the sub-step travel budget, so it cannot be
-/// lowered for feel; this is the feel knob that sits under it.
+// The feel knob under `MAX_ANGULAR_SPEED`, which is a tunneling ceiling.
 const RELEASE_SPIN_GAIN: f32 = 0.25;
 
-// Fastest the hold drive carries a body under the cursor. Separate from the
-// release ceiling: a throw may leave at any speed the narrowphase resolves,
-// but a carried body chasing a jumped cursor should not cross the container in
-// a tick.
+// A carried body chasing a jumped cursor must not cross the container in a tick.
 const MAX_CARRY_SPEED: f32 = 20.0;
 
-// Most the grab may change a held body's velocity per tick. Finite so a
-// contact impulse can win: an outright assignment discards what the solver just
-// did to push the body out of a wall, and drives it back in.
+// Finite, so a contact impulse can win over the grab.
 const MAX_GRAB_ACCEL: f32 = 400.0;
 
 const _: () = assert!(MAX_CARRY_SPEED < MAX_RELEASE_SPEED);
 
-// Per-second exponential decay of a free-flight tumble, applied per solver
-// substep. A body knocked off the ground keeps no contact to brake its spin,
-// so without this it tumbles until something catches it; at 1.2 the spin is
-// down to a tenth in two seconds. LINEAR velocity is deliberately undamped:
-// the `w` a body-body contact imparts is positional drift, and a linear damper
-// is exactly what would suppress it.
+// Linear velocity is undamped on purpose: the `w` drift a contact imparts is the point.
 const ANGULAR_DAMPING: f32 = 1.2;
 
-// Rate, in 1/s, at which a held body closes the gap to the cursor's plane
-// point. One tick moves it `GRAB_STIFFNESS/TICK_HZ` of the way, so the body
-// arrives in about three ticks and cannot overshoot: the drive re-reads the
-// error every tick rather than integrating a force.
+// One tick closes `GRAB_STIFFNESS / TICK_HZ` of the gap; no overshoot.
 const GRAB_STIFFNESS: f32 = 20.0;
 
-// Slack added to a visible cross-section's own half-width when the triangle
-// pass has already missed. A ray grazing the silhouette is nearly parallel to
-// the triangles it should hit, so without this a thin section is grabbable in
-// the middle and dead at its edges. A tenth of a body radius is enough to
-// close that rim without letting a click far off a toy find one.
+// Rim slack: a ray grazing the silhouette is parallel to the triangles it should hit.
 const PICK_TOLERANCE: f32 = 0.1 * BODY_SIZE;
 
-// Distance in `w` at which a wireframe vertex reaches its dimmest. A toy spans
-// BODY_SIZE either side of its centre, so fading over that range puts the whole
-// hull between the two shades rather than saturating one of them.
 const WIREFRAME_W_FADE: f32 = BODY_SIZE;
 const WIREFRAME_MIN_SHADE: f32 = 0.25;
 
-// A 4D pinhole at w = 2 rather than the shared `Shadow` default, which is what
-// makes a rotation through `w` read as depth rather than as a sliding shadow.
-// `wireframe perspective` overrides it.
+// A pinhole reads a rotation through `w` as depth; the shared default reads it as a slide.
 const WIREFRAME_PROJECTION: WireframeProjection = WireframeProjection::WPinhole;
 
-// Accumulated normal impulse in a contact that counts as a knock rather than
-// the resting weight a pile puts on the toy under it. Sized above what gravity
-// holds a settled body with and below the lightest deliberate nudge.
+// Above a settled body's resting weight, below the lightest nudge.
 const WAKE_IMPULSE: f32 = 0.05;
 
-// Samples of the grab target kept for the release estimate.
 const GRAB_TRAIL: usize = 8;
 
-// Seconds of cursor history the release velocity is measured over. Short
-// enough that a drag which stalls before the release throws nothing, which is
-// the whole difference between a flick and a slingshot.
+// Short enough that a drag which stalls before the release throws nothing.
 const RELEASE_WINDOW: f32 = 0.08;
 
-// World units of `w` per world unit of cursor rise while the modifier is held.
 const W_PER_RISE: f32 = 1.0;
 
-// A camera ray and the camera forward are never more than the half-diagonal
-// field of view apart, so this rejects only a ray parallel to the grab plane,
-// which the camera cannot produce.
+// Rejects only a ray parallel to the grab plane, which the camera cannot produce.
 const PLANE_MIN_COS: f32 = 1e-3;
 
-// Cross-section half-width at which a cap is drawn opaque. The widest section a
-// body presents is its circumradius, and below a third of that the cap is a
-// sliver, which is what would otherwise blink out.
+// Below a third of the circumradius a cap is a sliver that would blink out.
 const FADE_EXTENT: f32 = 0.35 * BODY_SIZE;
 
-// A resting contact is a Baumgarte limit cycle, not a fixpoint: the bias pushes
-// a sunk body out over a step and gravity puts it back, forever. In R⁴ that
-// leaves the contact point with a tangential velocity whose tangent space
-// includes `w`, so Coulomb friction brakes along `w` and a body parked on the
-// floor creeps off the slice at about 0.011 per second. The latch below snaps a
-// body that has gone nowhere to exact rest, which is what stops the creep
-// without damping the `w` a real contact imparts.
-//
-// Travel, in world units, that a body may cover over [`REST_WINDOW`] ticks and
-// still count as parked. The measured limit cycle covers 0.006 of it. A parked
-// body is restored to its anchor pose rather than merely stopped: zeroing the
-// velocity alone leaves gravity to sink it a little further every tick, and the
-// normal impulse answering that eventually ejects the body on its own.
+// The resting Baumgarte limit cycle covers 0.006 of this while creeping along `w`.
 const REST_TRAVEL: f32 = 0.02;
 
 const REST_WINDOW: u32 = 30;
 
-// Speed and angular speed above which a body is awake whatever its travel, so
-// an impulse into a parked body is not swallowed by the latch. Both sit well
-// above the limit cycle's measured residual and far below any throw.
+// Above the limit cycle's residual, so an impulse into a parked body is not swallowed.
 const REST_SPEED: f32 = 0.15;
 const REST_ANGULAR_SPEED: f32 = 0.3;
 
-// A toy that only ever landed carries no readout; anything past the band it
-// settles in got there by being touched.
 const W_LABEL_MIN: f32 = SETTLED_W_BAND;
 
-// Half-extent of the container, in `x` and in `z`. The outermost toy's hull
-// reaches `2 * SPAWN_SPACING + BODY_SIZE` = 3.25, and the boot camera frames
-// the whole floor rectangle (`the_boot_camera_frames_the_whole_arena`). Both
-// wall normals are pure `x` or pure `z`, so a wall's NORMAL impulse carries no
-// `w` any more than the floor's does.
+// The outermost hull reaches 3.25; wall normals are pure `x` or `z`, so they carry no `w`.
 const ARENA_HALF_EXTENT: f32 = 3.6;
 
-// Contact restitution is the mean of the two bodies', so a wall at 0.4 against
-// a toy at 0.05 rebounds at 0.225: a hard throw comes back rather than
-// stopping dead against an invisible plane.
+// Contact restitution is the mean of the pair's, so 0.4 against 0.05 rebounds at 0.225.
 const WALL_RESTITUTION: f32 = 0.4;
 
 const ARENA_OUTLINE_COLOR: [f32; 4] = [0.55, 0.60, 0.68, 1.0];
 
 const ARENA_OUTLINE_WIDTH_PX: f32 = 1.5;
 
-// Determinant magnitude below which the ray lies in the triangle's plane. It is
-// twice the triangle area times the cosine to the ray; a cap triangle at this
-// body size is ~1e-2 across, so this rejects only genuinely edge-on hits.
+// A cap triangle is ~1e-2 across, so this rejects only edge-on hits.
 const RAY_PARALLEL_EPS: f32 = 1e-8;
 
 const TOY_COLOR_FALLBACK: [f32; 3] = [0.8, 0.8, 0.8];
@@ -278,8 +165,7 @@ const TOY_COLOR_FALLBACK: [f32; 3] = [0.8, 0.8, 0.8];
 pub(crate) enum GrabAxis {
     /// Cursor rise moves the body up the screen and leaves `w` alone.
     Slice,
-    /// Cursor rise moves the body along `w` instead, so a grab can push a body
-    /// off the slice on purpose.
+    /// Cursor rise moves the body along `w` instead.
     Through,
 }
 
@@ -291,16 +177,11 @@ pub(crate) struct ToyBody {
     rest_anchor: Vec4,
     rest_rotor: Rotor4,
     rest_ticks: u32,
-    /// `inv_mass` while awake. Sleeping sets the body's to zero, which is the
-    /// only way to stop it moving: zeroing velocity alone leaves gravity to
-    /// re-sink it every substep and Baumgarte to push it back out by slightly
-    /// more, so a "settled" toy creeps and turns forever.
+    /// Sleeping zeroes the body's `inv_mass`; zeroing velocity alone lets Baumgarte creep.
     awake_inv_mass: f32,
     asleep: bool,
 }
 
-// Ring of recent grab targets. Fixed size and no allocation: the estimate runs
-// on every frame of a held grab.
 #[derive(Copy, Clone, Debug)]
 struct GrabTrail {
     points: [Vec4; GRAB_TRAIL],
@@ -329,8 +210,7 @@ impl GrabTrail {
         self.len = (self.len + 1).min(GRAB_TRAIL);
     }
 
-    /// Mean velocity over the last [`RELEASE_WINDOW`] of samples, or over the
-    /// whole trail when it is shorter than that.
+    /// Mean velocity over the last [`RELEASE_WINDOW`] of samples.
     fn velocity(&self) -> Vec4 {
         let mut span = 0.0;
         let mut index = self.head;
@@ -353,15 +233,11 @@ struct Grab {
     toy: usize,
     /// Depth along the camera forward the body is held at.
     depth: f32,
-    /// Offset from the centre of mass to the grabbed point, in the body frame,
-    /// so a body that turns while held keeps the same handle.
+    /// Grabbed point in the body frame, so a turning body keeps its handle.
     lever_local: Vec4,
-    /// Where the drive is pulling the body, clamped into the container every
-    /// frame so it can never run away past a wall.
+    /// Drive target, clamped into the container.
     target: Vec4,
-    /// The same motion without the clamp. Only its DERIVATIVE is read, by the
-    /// release: a flick toward a wall pins `target` and would otherwise throw
-    /// nothing, because the trail would see a target that had stopped moving.
+    /// Unclamped; only its derivative is read, so a flick into a wall still throws.
     intent: Vec4,
     /// Last cursor point on the grab plane; the target advances by its delta.
     plane_point: Vec3,
@@ -372,8 +248,6 @@ pub(crate) struct Toybox {
     world: World<EuclideanR4>,
     toys: Vec<ToyBody>,
     grab: Option<Grab>,
-    /// The `w` every cross-section is cut at. Scene state, not a constant: the
-    /// held arrow keys and the panel slider both move it.
     slice: f32,
     tick: u64,
     local_vertices: Vec<Vec4>,
@@ -389,8 +263,7 @@ impl Toybox {
         let floor = world.push_body(halfspace4_body_r4(Vec4::Y, FLOOR_Y));
         world.bodies[floor].restitution = RESTITUTION;
         for normal in [Vec4::X, -Vec4::X, Vec4::Z, -Vec4::Z] {
-            // `dot(p, n) >= offset` is the solid side, so a wall facing inward
-            // from `+ARENA_HALF_EXTENT` takes the negative offset.
+            // `dot(p, n) >= offset` is the solid side, so an inward wall takes the negative offset.
             let wall = world.push_body(halfspace4_body_r4(normal, -ARENA_HALF_EXTENT));
             world.bodies[wall].restitution = WALL_RESTITUTION;
         }
@@ -398,8 +271,6 @@ impl Toybox {
         let mut toys = Vec::with_capacity(TOYS.len());
         for (index, polytope) in TOYS.into_iter().enumerate() {
             let x = (index as f32 - (TOYS.len() as f32 - 1.0) * 0.5) * SPAWN_SPACING;
-            // Face down on its first cell, every time. The scene is a bench to
-            // pick things up off, so where they start should not move.
             let pose = face_down_pose(polytope, 0);
             let vertices: Vec<Vec4> = polytope
                 .topology()
@@ -407,8 +278,6 @@ impl Toybox {
                 .iter()
                 .map(|v| BODY_SIZE * *v)
                 .collect();
-            // Every toy is dropped from the same clearance whatever its pose,
-            // so the impact speed does not depend on which face it fell for.
             let lowest = (vertices.iter()).fold(f32::INFINITY, |m, v| m.min(pose.apply(*v).y));
             let id = world.push_body(polytope_body_r4(
                 Vec4::new(x, SPAWN_CLEARANCE - lowest, 0.0, W_SLICE),
@@ -419,8 +288,7 @@ impl Toybox {
             let body = &mut world.bodies[id];
             body.restitution = RESTITUTION;
             body.orientation.rotation = pose;
-            // The exact uniform-solid moment rather than `polytope_body_r4`'s
-            // bounding ball, which the lever arm of a grab reads directly.
+            // Exact moment, not `polytope_body_r4`'s bounding ball.
             body.inertia = regular_polytope4_inertia(polytope, BODY_MASS, BODY_SIZE);
             toys.push(ToyBody {
                 body: id,
@@ -455,9 +323,7 @@ impl Toybox {
         self.slice = slice.clamp(-reach, reach);
     }
 
-    /// How far the slice can be scrubbed. At least the spawn range, and always
-    /// past the deepest toy: a hull that rolls out beyond a fixed range would
-    /// otherwise be unreachable, with no way to bring the slice to it.
+    /// At least the spawn range and always past the deepest toy.
     pub(crate) fn slice_reach(&self) -> f32 {
         let deepest = (self.toys.iter())
             .map(|toy| self.world.bodies[toy.body].position.w.abs())
@@ -465,9 +331,6 @@ impl Toybox {
         (deepest + BODY_SIZE).max(W_SLICE_RANGE)
     }
 
-    /// One frame of the held Up/Down scrub. `dir` is `+1` up, `-1` down, and
-    /// `dt` the sim time the frame covers, so the scrub replays with the tick
-    /// stream rather than the wall clock.
     pub(crate) fn scrub_slice(&mut self, dir: f32, dt: f32) {
         self.set_slice(self.slice + dir * W_SCRUB_RATE * dt);
     }
@@ -476,24 +339,18 @@ impl Toybox {
         self.world.bodies[self.toys[toy].body].position
     }
 
-    /// Offset from the live slice, per toy, read from the live body.
     pub(crate) fn w_offsets(&self) -> impl Iterator<Item = (usize, f32)> + '_ {
         let slice = self.slice;
         (self.toys.iter().enumerate())
             .map(move |(index, toy)| (index, self.world.bodies[toy.body].position.w - slice))
     }
 
-    /// Where the drag is actually holding the body, in R³. Drawn because a
-    /// small or off-slice cross-section gives no other clue which point of the
-    /// hull the cursor caught, and an off-centre catch is what makes it tumble.
     pub(crate) fn grab_handle(&self) -> Option<Vec3> {
         let grab = self.grab.as_ref()?;
         let body = &self.world.bodies[self.toys[grab.toy].body];
         Some((body.position + body.orientation.rotation.apply(grab.lever_local)).truncate())
     }
 
-    /// What the panel's w ruler paints: each toy's signed distance from the
-    /// slice, in the toy's own colour, dimmed once it has gone to sleep.
     pub(crate) fn slice_marks(&self) -> impl Iterator<Item = SliceMark> + '_ {
         self.toys.iter().map(move |toy| SliceMark {
             w: self.world.bodies[toy.body].position.w,
@@ -502,9 +359,6 @@ impl Toybox {
         })
     }
 
-    /// Sub-steps this tick needs so the fastest material point still moves less
-    /// than [`STEP_TRAVEL_BUDGET`] per step. Derived from body state alone, so a
-    /// seeded replay divides its ticks identically.
     fn substeps_for_current_speed(&self) -> usize {
         let fastest = self
             .toys
@@ -528,10 +382,7 @@ impl Toybox {
                 let body = &mut self.world.bodies[toy.body];
                 body.angular_velocity = body.angular_velocity * decay;
             }
-            // Per sub-step, not per tick: a sleeping body is static, so a blow
-            // that lands on one is absorbed by an infinite mass. Waking inside
-            // the tick leaves the sub-steps that follow to hand the struck toy
-            // the rest of the blow.
+            // Per sub-step, so a struck sleeper gets the rest of the blow this tick.
             self.wake_on_contact();
         }
         self.latch_parked_bodies();
@@ -539,9 +390,7 @@ impl Toybox {
     }
 
     fn latch_parked_bodies(&mut self) {
-        // A held body is never parked. The drive moves it slowly enough to look
-        // at rest, and the latch would then snap it back to its anchor while the
-        // hand was still carrying it.
+        // A held body is never parked; the latch would snap it back mid-carry.
         let held = self.grab.as_ref().map(|g| g.toy);
         for (index, toy) in self.toys.iter_mut().enumerate() {
             if held == Some(index) {
@@ -562,8 +411,7 @@ impl Toybox {
             }
             toy.rest_ticks += 1;
             if toy.rest_ticks >= REST_WINDOW {
-                // Velocity only: restoring the POSE snaps a settled body back
-                // to a stale anchor, and freezes one still tipping onto a face.
+                // Velocity only: restoring the pose freezes a body still tipping onto a face.
                 body.velocity = Vec4::ZERO;
                 body.angular_velocity = Bivector4::ZERO;
                 body.inv_mass = 0.0;
@@ -584,9 +432,6 @@ impl Toybox {
         toy.rest_ticks = 0;
     }
 
-    /// Wakes a sleeping toy that a moving body has run into. A sleeping toy is
-    /// static to the solver, so without this a thrown toy would bounce off a
-    /// pile that never reacted.
     fn wake_on_contact(&mut self) {
         let mut hit = [false; TOYS.len()];
         for manifold in self.world.manifolds.values() {
@@ -609,8 +454,6 @@ impl Toybox {
         }
     }
 
-    /// Grabs the nearest body whose drawn cross-section the ray enters.
-    /// A miss leaves any previous grab released.
     pub(crate) fn press(&mut self, ray: &Ray, forward: Vec3) -> bool {
         self.grab = None;
         let Some((toy, hit)) = self.pick(ray) else {
@@ -618,13 +461,9 @@ impl Toybox {
         };
         self.wake(toy);
         let body = &mut self.world.bodies[self.toys[toy].body];
-        // The hand holds the body still: the tumble it arrived with would
-        // otherwise turn the lever arm under the grab.
         body.velocity = Vec4::ZERO;
         body.angular_velocity = Bivector4::ZERO;
-        // The hull is grabbed where the ray met it in R³ and at the body's own
-        // `w`: a body off the slice would otherwise be handled by a point
-        // outside it, and the lever arm would swing it as the drive pulled.
+        // At the body's own `w`, or the lever arm swings an off-slice body as the drive pulls.
         let grabbed = Vec4::new(hit.x, hit.y, hit.z, body.position.w);
         let lever_local = body
             .orientation
@@ -644,8 +483,6 @@ impl Toybox {
         true
     }
 
-    /// Advances the held body's target by the cursor's motion in the grab
-    /// plane and drives the body at it. `dt` is the sim time the frame covers.
     pub(crate) fn hold(&mut self, ray: &Ray, forward: Vec3, axis: GrabAxis, dt: f32) {
         let Some(grab) = self.grab.as_mut() else {
             return;
@@ -665,8 +502,6 @@ impl Toybox {
         body.velocity += clamp_length(desired - body.velocity, MAX_GRAB_ACCEL * TICK_DT);
     }
 
-    /// Throws the held body along its recent target velocity, through the point
-    /// it was grabbed at, so an off-centre grab imparts spin.
     pub(crate) fn release(&mut self) {
         let Some(grab) = self.grab.take() else {
             return;
@@ -674,20 +509,11 @@ impl Toybox {
         let velocity = clamp_length(grab.trail.velocity() * RELEASE_GAIN, MAX_RELEASE_SPEED);
         self.wake(grab.toy);
         let body = &mut self.world.bodies[self.toys[grab.toy].body];
-        // Cleared first so the drive velocity the hold left behind does not add
-        // to the throw: the impulse below is the whole release.
+        // Cleared, so the hold's drive velocity does not add to the throw.
         body.velocity = Vec4::ZERO;
         let point = body.position + body.orientation.rotation.apply(grab.lever_local);
-        // An off-centre catch should still tumble, because the tumble is the
-        // cue that the catch WAS off-centre, but the lever arm of a fast flick
-        // turns that into a whipcrack. Scaling the angular half of the impulse
-        // leaves the throw itself untouched, which is the half the cursor speed
-        // is actually asking for.
         let spin_before = body.angular_velocity;
         body.apply_impulse_at_point(&EuclideanR4, velocity * body.mass, point);
-        // A lerp back toward the spin the body already had, which is the
-        // fraction-of-the-torque above written with the operators `Bivector4`
-        // actually has.
         body.angular_velocity =
             body.angular_velocity * RELEASE_SPIN_GAIN + spin_before * (1.0 - RELEASE_SPIN_GAIN);
         let angular = body.angular_velocity.magnitude();
@@ -696,14 +522,7 @@ impl Toybox {
         }
     }
 
-    /// Nearest toy whose drawn cross-section the ray enters, with the world
-    /// point it enters at. The cross-section and not the bounding ball: the
-    /// ball of a tesseract reaches well past the shape on screen.
-    ///
-    /// A body the slice cannot see draws nothing to aim at, and pushing one
-    /// off the slice is a gesture the scene offers. Those bodies alone fall
-    /// back to their bounding ball, and only when no cross-section was hit, so
-    /// a visible cap always wins.
+    /// The drawn cross-section, not the bounding ball; an invisible body falls back to its ball.
     pub(crate) fn pick(&mut self, ray: &Ray) -> Option<(usize, Vec3)> {
         let mut nearest: Option<(usize, f32)> = None;
         let mut invisible = [false; TOYS.len()];
@@ -734,12 +553,6 @@ impl Toybox {
         self.cap = cap;
         self.local_vertices = local;
         if nearest.is_none() {
-            // Two misses land here. A body the slice cannot see has no cap at
-            // all. A body it CAN see still refuses a ray that grazes its
-            // silhouette, because such a ray is nearly parallel to the
-            // triangles there and `ray_triangle_distance` rejects it as
-            // parallel: the symptom is a cross-section pickable in the middle
-            // and dead at the edges. One ball catches both.
             for (toy, hidden) in invisible.iter().enumerate() {
                 let radius = if *hidden {
                     BODY_SIZE
@@ -758,9 +571,7 @@ impl Toybox {
         nearest.map(|(toy, distance)| (toy, ray.origin + ray.direction * distance))
     }
 
-    /// Splits the frame's cross-section caps by whether they are opaque, so the
-    /// faded ones can be drawn depth-read-only after the solid ones. A faded
-    /// cap that wrote depth would punch a hole rather than fade.
+    /// A faded cap that wrote depth would punch a hole rather than fade.
     pub(crate) fn build_frame_meshes(
         &mut self,
         opaque: &mut TriangleMesh<3>,
@@ -856,9 +667,7 @@ impl Toybox {
     }
 }
 
-/// Rotor putting the outward normal of `cell` on `-y`, so the toy is dropped
-/// flat on that cell rather than on a corner. A regular polychoron is centred
-/// at its centroid, so the cell's own centroid is along its outward normal.
+/// Rotor putting `cell`'s outward normal on `-y`.
 fn face_down_pose(polytope: Polytope4, cell: usize) -> Rotor4 {
     let topology = polytope.topology();
     let indices = topology.cells[cell];
@@ -872,9 +681,7 @@ fn face_down_pose(polytope: Polytope4, cell: usize) -> Rotor4 {
     }
 }
 
-/// Rotor turning the unit vector `from` onto the unit vector `to` in the plane
-/// they span. The chord form `2·asin(|a−b|/2)` and not `acos(a·b)`, which
-/// loses half its digits as the two align.
+/// Chord form `2·asin(|a−b|/2)`, not `acos(a·b)`, which loses digits as the two align.
 fn rotor_onto(from: Vec4, to: Vec4) -> Rotor4 {
     let plane = Bivector4::wedge(from, to);
     let magnitude = plane.magnitude();
@@ -882,7 +689,6 @@ fn rotor_onto(from: Vec4, to: Vec4) -> Rotor4 {
         if from.dot(to) > 0.0 {
             return Rotor4::IDENTITY;
         }
-        // Antiparallel: a half turn in any plane through `from`.
         let axis = orthogonal_to(from);
         return (Bivector4::wedge(from, axis) * std::f32::consts::PI)
             .exp()
@@ -892,8 +698,7 @@ fn rotor_onto(from: Vec4, to: Vec4) -> Rotor4 {
     (plane * (angle / magnitude)).exp().normalize()
 }
 
-/// Unit vector orthogonal to `unit`, taken off the coordinate axis it leans on
-/// least so the rejection cannot underflow.
+/// Off the axis `unit` leans on least, so the rejection cannot underflow.
 fn orthogonal_to(unit: Vec4) -> Vec4 {
     let axes = [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W];
     let least = (0..4).fold(0, |best, i| {
@@ -913,10 +718,7 @@ fn toy_color(polytope: Polytope4) -> [f32; 3] {
         .unwrap_or(TOY_COLOR_FALLBACK)
 }
 
-// Keeps a grab target inside the container, inset by the body's circumradius,
-// so a held body is never ASKED to occupy a wall or the floor. `w` is left
-// free: it is the axis the modifier exists to drive, and no static geometry
-// bounds it.
+// `w` is left free: no static geometry bounds it.
 fn clamp_target_to_arena(target: Vec4) -> Vec4 {
     let reach = ARENA_HALF_EXTENT - BODY_SIZE;
     Vec4::new(
@@ -936,28 +738,18 @@ fn clamp_length(v: Vec4, ceiling: f32) -> Vec4 {
     }
 }
 
-/// Point where the ray meets the plane at `depth` along `forward`. `None` when
-/// the ray runs parallel to that plane.
 pub(crate) struct SliceMark {
     pub(crate) w: f32,
     pub(crate) color: [f32; 3],
     pub(crate) asleep: bool,
 }
 
-// Half-width of the band the ruler shades: a toy inside it has a cross-section
-// in the current slice, because a hull's w half-extent is `BODY_SIZE`.
+// A hull's `w` half-extent.
 const IN_SLICE_HALF_WIDTH: f32 = BODY_SIZE;
 
 const RULER_HEIGHT: f32 = 34.0;
 
-/// The scene's `w` axis: ticks are the toys at their own `w`, the bright line
-/// is the slice, and the shaded band is the reach either side of it where a
-/// toy still has a cross-section to grab. Click or drag anywhere in it to move
-/// the slice there. Returns the `w` the drag asked for, unclamped; the caller
-/// owns the clamp because it owns the reach.
-///
-/// `reach` sets the span rather than a constant, so a toy that rolls deep in
-/// `w` stays on the axis and stays reachable instead of pinning to the edge.
+/// Returns the `w` a click or drag asked for, unclamped; the caller owns the reach.
 fn draw_slice_ruler(
     ui: &mut egui::Ui,
     slice: f32,
@@ -1022,9 +814,7 @@ fn draw_slice_ruler(
     ))
 }
 
-/// Inverse of the ruler's own `x_for`. Split out because the panel cannot be
-/// driven headlessly, and a scrubber that maps a click to the wrong `w` is the
-/// defect worth pinning.
+/// Inverse of the ruler's `x_for`.
 fn slice_for_ruler_x(x: f32, left: f32, width: f32, reach: f32) -> f32 {
     let t = ((x - left) / width.max(f32::MIN_POSITIVE)).clamp(0.0, 1.0);
     (t * 2.0 - 1.0) * reach
@@ -1038,9 +828,6 @@ pub(crate) fn plane_point(ray: &Ray, forward: Vec3, depth: f32) -> Option<Vec3> 
     Some(ray.origin + ray.direction * (depth / along))
 }
 
-/// Routes one frame of cursor motion in the grab plane onto the target. The
-/// modifier trades the plane's rise for `w`, which is why it can be pressed and
-/// released mid-drag without the body jumping: the target integrates deltas.
 pub(crate) fn advance_target(target: Vec4, delta: Vec3, axis: GrabAxis) -> Vec4 {
     match axis {
         GrabAxis::Slice => target + Vec4::new(delta.x, delta.y, delta.z, 0.0),
@@ -1048,15 +835,11 @@ pub(crate) fn advance_target(target: Vec4, delta: Vec3, axis: GrabAxis) -> Vec4 
     }
 }
 
-/// Opacity of a cross-section of half-width `extent`. A body drifting off the
-/// slice shrinks to nothing; without this its last sliver is still fully opaque
-/// on the frame before it disappears.
 pub(crate) fn section_alpha(extent: f32) -> f32 {
     (extent / FADE_EXTENT).clamp(0.0, 1.0)
 }
 
-/// Möller and Trumbore, *Fast, Minimum Storage Ray/Triangle Intersection*,
-/// JGT 2(1), 1997. Two-sided: a cap fan faces either way about its centroid.
+/// Möller and Trumbore, *Fast, Minimum Storage Ray/Triangle Intersection*, JGT 2(1), 1997; two-sided.
 fn ray_triangle_distance(ray: &Ray, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     let edge1 = b - a;
     let edge2 = c - a;
@@ -1080,11 +863,7 @@ fn ray_triangle_distance(ray: &Ray, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     (distance > 0.0).then_some(distance)
 }
 
-/// Nearest positive root of `|o + t·d − centre|² = radius²` for a unit `d`,
-/// which drops the quadratic's leading coefficient. `−b − √D` is the entry
-/// root and cancels only when `b > 0`, where the ray points away from the ball
-/// and the entry root is behind the eye anyway; the returned value is then the
-/// exit root, computed by the well-conditioned sum.
+/// Unit `d`. Where the entry root `−b − √D` would cancel, the ray points away and the exit root is returned.
 fn ray_ball_distance(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
     let to_centre = ray.origin - centre;
     let b = to_centre.dot(ray.direction);
@@ -1101,20 +880,7 @@ fn ray_ball_distance(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
     Some(if entry > 0.0 { entry } else { exit })
 }
 
-/// The four floor edges where the container's walls meet `y = FLOOR_Y`. The
-/// walls are half-spaces and so unbounded upward; this is the footprint, which
-/// is what a throw is aimed inside of.
-/// Every edge of every toy's posed 4D hull, drawn through the same projection
-/// and clipping the rotate scene uses.
-///
-/// The geometry is [`crate::wireframe_geom::push_projected_chord`], not a local
-/// copy: it tessellates each edge so a chord that bows under the projection is
-/// drawn bowed, and clips it against the projection's own view radius. A
-/// hand-rolled drop-`w` shadow was tried first and is the wrong instrument for
-/// the question this answers, because an orthographic shadow turns a rotation
-/// in a `w` plane into vertices sliding inside a fixed silhouette. Under a
-/// w-pinhole the same motion reads as the hull turning through the fourth
-/// dimension, which is the thing worth seeing.
+/// Through [`crate::wireframe_geom::push_projected_chord`], so a chord bows under the projection.
 fn append_toy_wireframe(
     world: &World<EuclideanR4>,
     toys: &[ToyBody],
@@ -1128,8 +894,7 @@ fn append_toy_wireframe(
         let topology = toy.polytope.topology();
         let view_radius = stereographic_view_radius(toy.polytope, BOOT_ORBIT_DISTANCE);
         let body_pos_r3 = body.position.truncate();
-        // Body-local, because the projection is about the body's own w extent;
-        // its world w offset is what the shading reads instead.
+        // Body-local: the projection is about the body's own `w` extent.
         let posed: Vec<Vec4> = (topology.vertices.iter())
             .map(|v| BODY_SIZE * body.orientation.rotation.apply(*v))
             .collect();
@@ -1191,8 +956,7 @@ fn append_mesh(dst: &mut TriangleMesh<3>, src: &TriangleMesh<3>) {
         .extend(src.indices.iter().map(|t| t.map(|i| i + base)));
 }
 
-/// Rebuilds `cap` as one toy's cross-section at `slice`, in world R³, and
-/// returns the cap's half-width about its own centroid.
+/// Returns the cap's half-width about its own centroid.
 fn append_cap(
     world: &World<EuclideanR4>,
     toy: &ToyBody,
@@ -1253,19 +1017,13 @@ struct PhysicsOverlay {
     width_px: f32,
 }
 
-// Bar length per unit impulse. Measured, not derived: a hard flick,
-// [`MAX_CARRY_SPEED`] head-on into a resting neighbour, peaks at 4.41 units of
-// accumulated impulse in one contact, which this scale draws at a third of a
-// body radius. Calibrated on a hard flick rather than [`MAX_RELEASE_SPEED`],
-// which is a tunneling ceiling an order of magnitude above what a cursor
-// produces.
+// Measured: a hard flick peaks at 4.41 of impulse, drawn at a third of a body radius.
 const DEFAULT_IMPULSE_SCALE: f32 = 0.034;
 
 // Small enough that a full four-point manifold reads as four marks, not a blob.
 const CONTACT_CROSS_FRACTION: f32 = 0.15;
 
-// Twice the contact cross, so the one marker the cursor owns reads above the
-// solver's, and drawn in the cursor's own colour rather than any toy's.
+// Twice the contact cross, so the cursor's marker reads above the solver's.
 const GRAB_HANDLE_FRACTION: f32 = 0.30;
 const GRAB_HANDLE_WIDTH: f32 = 2.5;
 const GRAB_HANDLE_COLOR: [f32; 4] = [1.0, 0.95, 0.55, 1.0];
@@ -1280,8 +1038,6 @@ const NORMAL_TIP_COLOR: [f32; 4] = [0.40, 0.95, 1.00, 1.0];
 const NORMAL_IMPULSE_COLOR: [f32; 4] = [1.00, 0.30, 0.22, 1.0];
 const TANGENT_IMPULSE_COLOR: [f32; 4] = [0.70, 0.40, 1.00, 1.0];
 
-// Six hues: a scene with more than six simultaneous islands repeats a colour,
-// so the count is the ceiling on what this layer can claim.
 const ISLAND_PALETTE: [[f32; 4]; 6] = [
     [0.35, 0.85, 0.45, 1.0],
     [0.95, 0.55, 0.20, 1.0],
@@ -1384,8 +1140,7 @@ fn build_physics_overlay_mesh(
                         NORMAL_IMPULSE_COLOR,
                         width,
                     );
-                    // The two bars name opposite bodies and do not compose:
-                    // −tangent_dir is the impulse on B, not on A.
+                    // `−tangent_dir` is the impulse on B, not on A.
                     push_overlay_segment(
                         mesh,
                         point,
@@ -1414,10 +1169,7 @@ fn build_physics_overlay_mesh(
                 );
             }
             for &(a, b) in &island.constraints {
-                // A pair with a static side absorbs no impulse and merges
-                // nothing (`World::fill_islands`), so a bar from a landed toy
-                // to the floor body's origin would draw a coupling the solver
-                // does not have.
+                // A static side merges nothing (`World::fill_islands`), so no bar to the floor.
                 if world.bodies[a].inv_mass == 0.0 || world.bodies[b].inv_mass == 0.0 {
                     continue;
                 }
@@ -1434,17 +1186,10 @@ fn build_physics_overlay_mesh(
     }
 }
 
-/// Everything the toybox console writes to. The overlay is one field of it so
-/// the `physics` verb keeps its own vocabulary while `ground` and `wlabels`
-/// reach the scene's other live settings.
 #[derive(Debug)]
 pub(crate) struct ToyboxControls {
     overlay: PhysicsOverlay,
-    /// Whole-hull wireframe behind the cross-sections. Off by default; it is a
-    /// diagnostic for reading 4D rotation, not the scene's normal look.
     wireframe: WireframeControls,
-    /// Per-body `w` readout painted over each toy. Off by default: the fade
-    /// with cross-section size already says a body is leaving the slice.
     w_labels: bool,
     environment: Environment,
     rig: loam_app::camera_rig::CameraRig,
@@ -1602,8 +1347,6 @@ pub(crate) fn register_toybox_commands(console: &mut Console<ToyboxControls>) {
 // 24-bit depth cracks the thin, densely stacked caps of a tumbling 24-cell.
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-// Far enough that the whole arena floor is inside the frustum at 4:3 and
-// wider, which `the_boot_camera_frames_the_whole_arena` pins.
 const BOOT_ORBIT_DISTANCE: f32 = 9.0;
 const BOOT_ORBIT_PITCH: f32 = -0.16;
 const BOOT_TARGET_HEIGHT: f32 = 0.7;
@@ -1647,10 +1390,7 @@ pub(crate) struct ToyboxScene {
     faded_mesh: TriangleMesh<3>,
     controls: ToyboxControls,
     line_node: LineRasterNode,
-    /// Depth-tested, so the container reads as geometry the toys stand inside
-    /// rather than as an overlay drawn over them. Separate from `line_node`,
-    /// which must NOT test depth: the solver overlay names a contact that is
-    /// behind the hull owning it.
+    /// Depth-tested, unlike `line_node`: the overlay names contacts behind the hull owning them.
     arena_node: LineRasterNode,
     arena_mesh: LineMesh<3>,
     line_mesh: LineMesh<3>,
@@ -1701,8 +1441,6 @@ impl ToyboxScene {
             opaque_mesh: TriangleMesh::<3>::default(),
             faded_mesh: TriangleMesh::<3>::default(),
             controls: ToyboxControls::default(),
-            // No depth attachment: the overlay names where the solver put a
-            // contact, which is behind the hull that owns it.
             line_node: LineRasterNode::new(
                 &ctx.rd.device,
                 ctx.rd.target_format(),
@@ -1787,10 +1525,7 @@ impl ToyboxScene {
         }
     }
 
-    /// One line pass for the frame: the container footprint, then whichever
-    /// solver overlay layers are on. One node and one upload, because a second
-    /// `write_buffer` in a frame lands before the whole command buffer and
-    /// would feed both passes.
+    /// One node and one upload, because a second `write_buffer` would feed both passes.
     fn record_lines(&mut self, ctx: &mut RenderCtx<'_>, view_proj: Mat4) {
         let rd = &ctx.rd;
         let cfg = &rd.surface_bundle.config;
@@ -1853,8 +1588,6 @@ impl ToyboxScene {
             .record(ctx.encoder, ctx.view, Some(&depth.view), None);
     }
 
-    // A body off the slice draws a shrinking cap or none at all, so the offset
-    // is the only thing left saying it is still there.
     fn w_readouts(&self, ctx: &egui::Context, frame: &FrameCtx<'_>) {
         if !self.controls.w_labels {
             return;
@@ -1929,8 +1662,7 @@ impl loam_app::shell::Scene for ToyboxScene {
                 GrabAxis::Slice
             };
             let ray = self.camera.ray_from_ndc(ndc_from_pixels(px, viewport));
-            // The trail is measured in sim time, not wall time, so the release
-            // speed replays with the tick stream.
+            // Sim time, not wall time, so the release replays with the tick stream.
             let dt = ctx.n_ticks as f32 / TICK_HZ as f32;
             self.toybox.hold(&ray, forward, axis, dt);
         }
@@ -1948,9 +1680,6 @@ impl loam_app::shell::Scene for ToyboxScene {
         }
 
         if !ctx.ui_capture.pointer {
-            // `OrbitController` drives off the left button. The left button is
-            // the grab here, so the right one is handed to it under that name
-            // and neither path has to know about the other.
             self.orbit.advance(
                 loam_app::orbit_on_right(ctx.input),
                 &mut self.camera,
@@ -1977,8 +1706,7 @@ impl loam_app::shell::Scene for ToyboxScene {
     ) {
         use winit::event::ElementState;
         use winit::keyboard::KeyCode;
-        // A release always clears the held flag, even when the console took
-        // the key down: otherwise the slice scrubs on forever.
+        // A release clears the flag even when the console owns the keyboard.
         let pressed = state == ElementState::Pressed && !ctx.ui_capture.keyboard;
         match code {
             KeyCode::ArrowUp => self.slice_up_held = pressed,
@@ -2000,7 +1728,7 @@ impl loam_app::shell::Scene for ToyboxScene {
             (cfg.width, cfg.height),
             rd.sample_count(),
         );
-        let depth = self.depth.as_ref().expect("ensure() guarantees Some"); // ok: DepthBuffer::ensure fills the slot on the line above
+        let depth = self.depth.as_ref().expect("ensure() guarantees Some");
 
         let view = self.camera.view();
         let aspect = cfg.width as f32 / cfg.height.max(1) as f32;

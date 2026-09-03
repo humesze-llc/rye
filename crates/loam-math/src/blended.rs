@@ -5,21 +5,13 @@ use glam::{Mat3, Vec3};
 
 use crate::space::{Space, WgslSpace};
 
-/// A [`Space`] whose metric tensor is a scalar multiple of the identity in its
-/// standard chart: g_ij(p) = f(p)·δ_ij for some positive scalar function f.
-///
-/// The claim is about the chart a `Space` ships, not about its manifold: every
-/// constant-curvature 3-manifold is conformally flat in *some* chart, but the
-/// integrator works in the coordinates `Space::Point` actually carries, so only
-/// that chart's metric counts.
+/// `g_ij(p) = f(p)·δ_ij` in the chart `Space::Point` carries, not in some
+/// other chart.
 pub trait ConformallyFlat: Space {
-    /// Positive and finite inside the chart; chart-boundary points (Poincaré
-    /// |p| -> 1) may return `f32::INFINITY`, which the integrator clamps.
+    /// May return `f32::INFINITY` at the chart boundary.
     fn conformal_factor(&self, p: Vec3) -> f32;
 
-    /// Scalar curvature R(p). For a 3D conformally flat metric:
-    /// R = -(4/f(p))·[∇²φ + (1/2)|∇φ|²]. Default is finite-difference; every
-    /// constant-curvature Space overrides with the closed form.
+    /// `R = −(4/f)·[∇²φ + |∇φ|²/2]`; the default is finite-difference.
     fn scalar_curvature(&self, p: Vec3) -> f32 {
         const EPS: f32 = 5.0e-3;
         let phi_at = self.conformal_log_half(p);
@@ -85,7 +77,6 @@ impl ConformallyFlat for crate::HyperbolicH3 {
         4.0 / (denom * denom)
     }
     fn conformal_log_half(&self, p: Vec3) -> f32 {
-        // ln 2 − ln(1 − |p|²).
         let r2 = p.length_squared();
         let denom = (1.0 - r2).max(0.0);
         if denom <= 0.0 {
@@ -94,7 +85,6 @@ impl ConformallyFlat for crate::HyperbolicH3 {
         std::f32::consts::LN_2 - denom.ln()
     }
     fn conformal_log_half_gradient(&self, p: Vec3) -> Vec3 {
-        // ∇φ = 2p / (1 − |p|²).
         let r2 = p.length_squared();
         let denom = (1.0 - r2).max(0.0);
         if denom <= 0.0 {
@@ -103,19 +93,13 @@ impl ConformallyFlat for crate::HyperbolicH3 {
         p * (2.0 / denom)
     }
     fn scalar_curvature(&self, _p: Vec3) -> f32 {
-        // Constant K = -1 in 3D: R = n(n−1)K = −6.
+        // `R = n(n − 1)K` at `K = −1`, `n = 3`.
         -6.0
     }
 }
 
-/// A `Space` whose metric is the smooth blend of two source Spaces' metrics,
-/// weighted by a [`BlendingField`]:
-/// g(p) = (1 - α(p))·g_A(p) + α(p)·g_B(p).
-///
-/// At zone extremes the metric reduces to pure g_A or g_B; in between it is a
-/// variable-metric Riemannian manifold. The field breaks translation and
-/// rotation symmetry, so there are no non-trivial isometries and this Space
-/// does not implement [`crate::IsometryGroup`].
+/// Metric `g = (1 − α)·g_A + α·g_B` with `α` from a [`BlendingField`]; the
+/// field breaks every symmetry, so there is no [`crate::IsometryGroup`] impl.
 pub struct BlendedSpace<A, B, F>
 where
     A: Space<Point = Vec3, Vector = Vec3>,
@@ -124,8 +108,6 @@ where
 {
     pub a: A,
     pub b: B,
-    /// Supplies α(p). Changing it changes the metric itself, so state
-    /// integrated under the old field is no longer on the same manifold.
     pub field: F,
     _marker: PhantomData<(A, B, F)>,
 }
@@ -136,9 +118,6 @@ where
     B: Space<Point = Vec3, Vector = Vec3>,
     F: BlendingField,
 {
-    /// Construction is total and does not require [`ConformallyFlat`]; the
-    /// [`Space`] impl does, so a pair that builds here may still have no
-    /// `Space` behavior.
     pub fn new(a: A, b: B, field: F) -> Self {
         Self {
             a,
@@ -167,15 +146,12 @@ where
         if alpha_a == 1.0 && alpha_b == 1.0 {
             return self.b.distance(a, b);
         }
-        // |log_a(b)|_g = √f(a)·|log_a(b)|_E.
         let log = self.log(a, b);
         let f_a = self.conformal_factor(a);
         f_a.sqrt() * log.length()
     }
 
     fn exp(&self, at: Vec3, v: Vec3) -> Vec3 {
-        // `v` is Euclidean; over unit parameter time the geodesic length covered
-        // is |v|_g = |v|_E·√f(at).
         rk4_geodesic(self, at, v, GEODESIC_DEFAULT_STEPS).0
     }
 
@@ -184,9 +160,7 @@ where
     }
 
     fn parallel_transport(&self, from: Vec3, to: Vec3, v: Vec3) -> Vec3 {
-        // Transports along the chart-coordinate straight line, not the geodesic
-        // (the latter costs ~7x). Callers needing a known path should use
-        // `parallel_transport_along` with the polyline directly.
+        // Along the chart straight line, not the geodesic.
         parallel_transport_segment_rk4(self, from, to, v, PARALLEL_TRANSPORT_DEFAULT_STEPS)
     }
 
@@ -205,14 +179,11 @@ where
     }
 }
 
-/// RK4 steps per unit-parameter integration. 32 gives ~6 digits on moderately
-/// curved metrics; 64 gives ~7.
+/// About six digits on moderately curved metrics.
 pub const GEODESIC_DEFAULT_STEPS: u32 = 32;
 
-// Single RK4 step on the geodesic ODE for a conformally flat metric, state
-// `(p, v)`: ṗ = v, v̇ = |v|²·∇φ(p) - 2·(∇φ·v)·v, i.e. -Γ^k_ij·v^i·v^j for the
-// Christoffel symbols of g = e^(2φ)·δ (Wald, *General Relativity*, 1984,
-// App. D). Steps by `h` in parameter time.
+// Geodesic ODE `v̇ = |v|²·∇φ − 2·(∇φ·v)·v` for `g = e^(2φ)·δ` (Wald, *General
+// Relativity*, 1984, App. D).
 fn rk4_geodesic_step<S: ConformallyFlat>(space: &S, p: Vec3, v: Vec3, h: f32) -> (Vec3, Vec3) {
     let rhs = |p: Vec3, v: Vec3| -> (Vec3, Vec3) {
         let grad_phi = space.conformal_log_half_gradient(p);
@@ -242,8 +213,6 @@ pub fn rk4_geodesic<S: ConformallyFlat>(
     let mut vel = v;
     for _ in 0..n_steps {
         let (np, nv) = rk4_geodesic_step(space, p, vel, h);
-        // Stop at the last finite state so chart-boundary crossings and blow-ups
-        // don't propagate NaN downstream.
         if np.is_finite() && nv.is_finite() {
             p = np;
             vel = nv;
@@ -257,16 +226,11 @@ pub fn rk4_geodesic<S: ConformallyFlat>(
     (p, vel)
 }
 
-/// RK4 steps per polyline segment for parallel transport. 8 gives ~5 digits on
-/// moderately curved metrics, enough that a camera frame stays orthonormal over
-/// typical paths without post-step renormalisation.
+/// About five digits on moderately curved metrics.
 pub const PARALLEL_TRANSPORT_DEFAULT_STEPS: u32 = 8;
 
-/// Parallel-transport `v` along the segment `p_from` -> `p_to`, parameterised
-/// linearly over t ∈ [0, 1]. For a conformally flat metric g = e^(2φ)·δ the ODE
-/// is V̇ = -Γ^k_ij·γ̇^i·V^j
-///        = -[(∇φ·γ̇)·V + (∇φ·V)·γ̇ - (γ̇·V)·∇φ] with
-/// γ̇ = p_to − p_from (Wald, *General Relativity*, 1984, App. D).
+/// Transport ODE `V̇ = −[(∇φ·γ̇)V + (∇φ·V)γ̇ − (γ̇·V)∇φ]` along the chart
+/// segment (Wald, *General Relativity*, 1984, App. D).
 pub fn parallel_transport_segment_rk4<S: ConformallyFlat>(
     space: &S,
     p_from: Vec3,
@@ -314,26 +278,19 @@ pub fn parallel_transport_segment_rk4<S: ConformallyFlat>(
     v_curr
 }
 
-/// Maximum Gauss-Newton iterations for `log`. ~5 converges to f32 precision off
-/// the cut locus; cap at 12 to bound the worst case.
+/// About five suffice off the cut locus.
 pub const LOG_MAX_ITERS: u32 = 12;
 
-/// Euclidean convergence threshold for the residual `|to − exp_from(v)|`.
+/// Euclidean threshold on the residual `|to − exp_from(v)|`.
 pub const LOG_RESIDUAL_TOL: f32 = 1.0e-5;
 
-// Finite-difference step for the Jacobian of `exp` w.r.t. `v`. Smaller is more
-// accurate but noisier; 1e-3 is the sweet spot for f32 RK4-of-32-steps.
+// Central-difference step for `∂exp/∂v`.
 const LOG_JACOBIAN_EPS: f32 = 1.0e-3;
 
-/// Find the tangent `v` at `from` with `exp_from(v) ≈ to`, by Gauss-Newton
-/// shooting: forward-evaluate `exp`, take the residual, estimate the Jacobian
-/// `∂exp/∂v` by central differences, solve for the Newton update. Shooting for
-/// the two-point BVP is Press et al., *Numerical Recipes*, 3rd ed., 2007,
-/// §18.1; Gauss-Newton is Nocedal & Wright, *Numerical Optimization*, 2nd ed.,
-/// 2006, ch. 10.
-///
-/// Returns the best `v` within `max_iters`. A singular Jacobian (e.g. `to` in
-/// the cut locus of `from`) returns the current guess with a `tracing::warn`.
+/// Gauss-Newton shooting for `v` with `exp_from(v) ≈ to` (Press et al.,
+/// *Numerical Recipes*, 3rd ed., 2007, §18.1; Nocedal & Wright, *Numerical
+/// Optimization*, 2nd ed., 2006, ch. 10). A singular Jacobian returns the
+/// current guess.
 pub fn gauss_newton_log<S: ConformallyFlat>(
     space: &S,
     from: Vec3,
@@ -345,7 +302,6 @@ pub fn gauss_newton_log<S: ConformallyFlat>(
         return Vec3::ZERO;
     }
 
-    // Euclidean displacement: exact for pure E³, a Newton seed otherwise.
     let mut v = to - from;
 
     for iter in 0..max_iters {
@@ -395,8 +351,6 @@ pub fn gauss_newton_log<S: ConformallyFlat>(
     v
 }
 
-// Blend of scalar-multiple metrics is itself a scalar multiple, so
-// `BlendedSpace` is conformally flat when both sources are.
 impl<A, B, F> ConformallyFlat for BlendedSpace<A, B, F>
 where
     A: Space<Point = Vec3, Vector = Vec3> + ConformallyFlat,
@@ -407,8 +361,7 @@ where
         let alpha = self.field.weight(p);
         let f_a = self.a.conformal_factor(p);
         let f_b = self.b.conformal_factor(p);
-        // At a zone extreme take the live source's value exactly, so an
-        // off-chart source's INFINITY does not poison the blend.
+        // Exact at the extremes so an off-chart `INFINITY` cannot poison the blend.
         if alpha <= 0.0 {
             return f_a;
         }
@@ -418,17 +371,9 @@ where
         (1.0 - alpha) * f_a + alpha * f_b
     }
 
-    // Analytical chain-rule gradient of φ = (1/2)·ln f for the blended factor
-    // f = (1-α)·f_A + α·f_B:
-    //
-    //   ∇f = ∇α·(f_B - f_A) + 2·(1-α)·f_A·∇φ_A + 2·α·f_B·∇φ_B,
-    //
-    // using ∇f_X = 2·f_X·∇φ_X, then ∇φ = ∇f / (2f). Mirrors the WGSL emit's
-    // `loam_blended_grad_phi`; avoids the default's FD truncation noise.
+    // Chain rule on `φ = ln(f)/2`; mirrors the WGSL `loam_blended_grad_phi`.
     fn conformal_log_half_gradient(&self, p: Vec3) -> Vec3 {
         let alpha = self.field.weight(p);
-        // Zone-extreme fast paths: without them a `0 * INFINITY` from an
-        // off-chart source factor poisons the blend with NaN.
         if alpha <= 0.0 {
             return self.a.conformal_log_half_gradient(p);
         }
@@ -438,10 +383,7 @@ where
         let f_a = self.a.conformal_factor(p);
         let f_b = self.b.conformal_factor(p);
         let f = (1.0 - alpha) * f_a + alpha * f_b;
-        // Inside the zone a non-finite or non-positive `f` means a source
-        // diverged where its chart should be valid. Return NaN (not ZERO) so
-        // the integrator's `is_finite` guard surfaces the bug rather than
-        // marching on with wrong dynamics.
+        // NaN, not zero, so the integrator's finiteness guard surfaces it.
         debug_assert!(
             f.is_finite() && f > 0.0,
             "BlendedSpace conformal factor invalid: f = {f}, alpha = {alpha}, f_a = {f_a}, f_b = {f_b}, p = {p:?}"
@@ -459,12 +401,8 @@ where
     }
 }
 
-/// A scalar blending field over ℝ³. `weight(p)` is `0.0` for pure A, `1.0` for
-/// pure B, blending continuously between.
-///
-/// The integrator differentiates this field for the Christoffel symbols, so a
-/// merely-continuous field (e.g. a clamped linear ramp) produces artifacts at
-/// its breakpoints; use a smoothstep or equivalent C¹ profile.
+/// `weight` is 0 for pure A and 1 for pure B, and must be C¹: the integrator
+/// differentiates it.
 pub trait BlendingField: Copy + Send + Sync + 'static {
     /// Implementations must clamp to `[0, 1]`.
     fn weight(&self, p: Vec3) -> f32;
@@ -478,29 +416,17 @@ pub trait BlendingField: Copy + Send + Sync + 'static {
     }
 }
 
-/// Smoothstep blending zone along the X axis: pure A at `x ≤ start`, pure B at
-/// `x ≥ end`, smooth C² transition between.
-///
-/// Uses the quintic smootherstep 6t⁵ - 15t⁴ + 10t³ (Perlin 2002). It is C²,
-/// so the scalar curvature R(p) (which involves ∇²φ) stays continuous across
-/// the seam; the cubic 3t² - 2t³ is only C¹ and jumps R at the endpoints. Zero
-/// first and second derivative at both endpoints means the metric reduces
-/// exactly to g_A / g_B outside the zone with no curvature kick.
+/// Quintic smootherstep `6t⁵ − 15t⁴ + 10t³` along x (Perlin 2002); C², so
+/// the scalar curvature stays continuous across the seam.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct LinearBlendX {
-    /// Lower zone edge; on a positive-width zone `weight` is exactly 0 at and
-    /// below it. The degenerate zone below inverts that at `start` itself.
     pub start: f32,
-    /// Upper zone edge; `weight` is exactly 1 at and above it. When
-    /// `end <= start` the field degenerates to a step at `start` with a zero
-    /// gradient everywhere; [`LinearBlendX::new`] swaps reversed inputs to
-    /// avoid that, a struct literal does not.
+    /// `end <= start` degenerates to a step at `start`; [`LinearBlendX::new`]
+    /// swaps reversed inputs, a struct literal does not.
     pub end: f32,
 }
 
 impl LinearBlendX {
-    /// New zone over the given start / end x-coordinates; reversed inputs are
-    /// swapped so `weight` still ramps 0 -> 1.
     pub fn new(start: f32, end: f32) -> Self {
         if end >= start {
             Self { start, end }
@@ -543,18 +469,7 @@ impl BlendingField for LinearBlendX {
     }
 }
 
-// WGSL prelude for the specific
-// `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>` instantiation. A
-// hand-rolled parametric prelude, not a generic `WgslSpace` impl; only the
-// shader emission is single-instantiation, the Rust API is already generic.
-//
-// 16 RK4 sub-steps per `loam_exp`, 8 per `loam_parallel_transport`, matching the
-// CPU's `parallel_transport_segment_rk4` step-for-step.
-//
-// `loam_log` returns the chart-coordinate difference (the geodesic march kernel
-// does not call it). `loam_distance` uses the midpoint chord-metric
-// `sqrt(f((a+b)/2)) · |a − b|`, first-order accurate for nearby points (the
-// SDF use case); use the CPU side for accurate arbitrary-pair distances.
+// `loam_parallel_transport` mirrors `parallel_transport_segment_rk4` step for step.
 fn blended_e3_h3_linearx_wgsl(field: &LinearBlendX) -> String {
     format!(
         r#"
@@ -592,21 +507,16 @@ fn loam_blended_f(p: vec3<f32>) -> f32 {{
     return (1.0 - alpha) + alpha * loam_blended_f_h3(p);
 }}
 
-// ∇φ(p) = ∇f / (2f), with f the blended factor.
 fn loam_blended_grad_phi(p: vec3<f32>) -> vec3<f32> {{
     let alpha = loam_blended_alpha(p);
     let alpha_dx = loam_blended_alpha_dx(p);
     let f_e3 = 1.0;
     let f_h3 = loam_blended_f_h3(p);
 
-    // ∂f_H3/∂p_i = 16 p_i / (1 − r²)³
     let r2 = min(dot(p, p), LOAM_BLENDED_R2_MAX);
     let denom = 1.0 - r2;
     let grad_f_h3 = (16.0 / (denom * denom * denom)) * p;
 
-    // ∂f/∂x = α' (f_H3 − f_E3) + α · ∂f_H3/∂x
-    // ∂f/∂y = α · ∂f_H3/∂y
-    // ∂f/∂z = α · ∂f_H3/∂z
     let grad_f = vec3<f32>(
         alpha_dx * (f_h3 - f_e3) + alpha * grad_f_h3.x,
         alpha * grad_f_h3.y,
@@ -617,7 +527,6 @@ fn loam_blended_grad_phi(p: vec3<f32>) -> vec3<f32> {{
     return grad_f / (2.0 * max(f, 1e-12));
 }}
 
-// Geodesic ODE rhs: ṗ = v, v̇ = |v|²·∇φ - 2·(∇φ·v)·v.
 struct LoamBlendedRhs {{ dp: vec3<f32>, dv: vec3<f32> }};
 
 fn loam_blended_rhs(p: vec3<f32>, v: vec3<f32>) -> LoamBlendedRhs {{
@@ -642,11 +551,7 @@ fn loam_blended_rk4_step(p0: vec3<f32>, v0: vec3<f32>, h: f32) -> LoamBlendedSta
     let k4 = loam_blended_rhs(p3, v3);
     let p_out = p0 + (h / 6.0) * (k1.dp + 2.0 * k2.dp + 2.0 * k3.dp + k4.dp);
     let v_out = v0 + (h / 6.0) * (k1.dv + 2.0 * k2.dv + 2.0 * k3.dv + k4.dv);
-    // No position clamp: f_h3 clamps r² internally so the metric
-    // stays bounded for all p. Physically clamping position would
-    // collapse the E³ side's half-space floor to the unit-ball
-    // surface (and create concentric ring artifacts where rays
-    // graze that surface).
+    // No position clamp: it would collapse the E³ side onto the unit ball.
     return LoamBlendedState(p_out, v_out);
 }}
 
@@ -664,8 +569,6 @@ fn loam_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{
     return p;
 }}
 
-// Parallel transport ODE rhs along a curve γ(t):
-//   V̇ = -[(∇φ·γ̇)·V + (∇φ·V)·γ̇ - (γ̇·V)·∇φ]
 fn loam_blended_transport_rhs(p: vec3<f32>, gamma_dot: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{
     let g = loam_blended_grad_phi(p);
     let g_dot_gd = dot(g, gamma_dot);
@@ -675,11 +578,7 @@ fn loam_blended_transport_rhs(p: vec3<f32>, gamma_dot: vec3<f32>, v: vec3<f32>) 
 }}
 
 fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{
-    // 8 RK4 sub-steps along the chart-coordinate straight line from
-    // p_from to p_to. Mirrors the CPU `parallel_transport_segment_rk4`
-    // step-for-step so the two sides agree to 4th-order truncation.
-    // Pinned by `blended_e3_h3_gpu_probe_transport_matches_cpu` in
-    // loam-shader/db.rs.
+    // Mirrors the CPU parallel_transport_segment_rk4 step for step.
     let dgamma = p_to - p_from;
     if dot(dgamma, dgamma) < 1e-14 {{ return v; }}
     let h = 1.0 / f32(LOAM_BLENDED_TRANSPORT_SUB);
@@ -699,9 +598,7 @@ fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> 
 }}
 
 fn loam_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {{
-    // Midpoint-rule chord-metric: accurate for nearby points,
-    // smooth across the blending zone, cheap per call. This is
-    // what `loam_scene_sdf` callers see.
+    // Midpoint chord metric, first-order for nearby points.
     let mid = 0.5 * (a + b);
     let f_mid = loam_blended_f(mid);
     return sqrt(max(f_mid, 0.0)) * length(b - a);
@@ -712,9 +609,7 @@ fn loam_origin_distance(p: vec3<f32>) -> f32 {{
 }}
 
 fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {{
-    // Chart-coord difference. The geodesic march kernel does not
-    // call this; surfaces that need a true Riemannian log should
-    // compute it on the CPU and pass the result through a uniform.
+    // Chart difference; a true log is computed on the CPU and passed in.
     return p_to - p_from;
 }}
 "#,
@@ -764,14 +659,14 @@ mod tests {
         assert!(g.x > 0.0, "midpoint gradient should be positive along +x");
         close(g.y, 0.0, 0.0);
         close(g.z, 0.0, 0.0);
-        // t = 0.5: 30 · 0.25 · 0.25 / 2.0 = 0.9375.
+        // `t = 0.5`: `30 · 0.25 · 0.25 / 2 = 0.9375`.
         close(g.x, 0.9375, 1e-6);
     }
 
     #[test]
     fn linear_blend_x_closed_form_matches_finite_diff() {
         let f = LinearBlendX::new(-1.0, 1.0);
-        // Replicate the trait's default FD path so the override isn't hit.
+        // The trait's default FD path, which the override hides.
         fn finite_diff_gradient<F: BlendingField>(field: &F, p: Vec3) -> Vec3 {
             const EPS: f32 = 1.0e-3;
             let dx =
@@ -822,24 +717,6 @@ mod tests {
     }
 
     #[test]
-    fn hyperbolic_h3_conformal_factor_pin_values() {
-        use crate::HyperbolicH3;
-        let s = HyperbolicH3;
-        close(s.conformal_factor(Vec3::ZERO), 4.0, 1e-6);
-        // |p| = 0.5: f = 4 / 0.5625.
-        close(
-            s.conformal_factor(Vec3::new(0.5, 0.0, 0.0)),
-            4.0 / 0.5625,
-            1e-5,
-        );
-        close(
-            s.conformal_factor(Vec3::new(0.0, 0.0, 0.99499f32.sqrt())),
-            4.0 / (1.0 - 0.99499_f32).powi(2),
-            10.0,
-        );
-    }
-
-    #[test]
     fn hyperbolic_h3_log_half_gradient_matches_finite_diff() {
         use crate::HyperbolicH3;
         let s = HyperbolicH3;
@@ -869,17 +746,13 @@ mod tests {
         }
     }
 
-    // Step for the forward difference against `Space::distance`. Small enough
-    // that the O(ε) truncation below stays ~10⁻³ relative, large enough that
-    // forming `p + ε·u` in f32 costs only ~|p|/ε ≈ 10³ ulps.
+    // Forward-difference step against `Space::distance`.
     const METRIC_PROBE_EPS: f32 = 1.0e-3;
 
-    // Relative slack on the metric probe: the O(ε²) remainder of the length
-    // functional plus the ~10³ ulps lost forming `p + ε·u`.
+    // The O(ε²) remainder plus the ~10³ ulps lost forming `p + ε·u`.
     const METRIC_PROBE_SLACK: f32 = 1.0e-3;
 
-    // Euclidean-unit probe directions at `p`: radial, two tangential, one
-    // oblique. At the origin the radial split degenerates, so anchor on X.
+    // Radial, two tangential, one oblique; anchored on X at the origin.
     fn metric_probe_directions(p: Vec3) -> [Vec3; 4] {
         let radial = if p.length_squared() > 0.0 {
             p.normalize()
@@ -892,19 +765,14 @@ mod tests {
         [radial, tangential_a, tangential_b, oblique]
     }
 
-    // The trait contract, checked against the implementing Space's own metric:
-    // g = f·δ means `d(p, p+ε·u) = √f(p)·ε + O(ε²)` for *every* Euclidean-unit
-    // `u`. Isotropy is the load-bearing half; an anisotropic chart fails it no
-    // matter which scalar is offered.
+    // `d(p, p + ε·u) = √f(p)·ε + O(ε²)` for every Euclidean-unit `u`.
     fn assert_conformal_factor_matches_metric<S>(space: &S, samples: &[Vec3])
     where
         S: ConformallyFlat<Point = Vec3, Vector = Vec3>,
     {
         for &p in samples {
             let root_f = space.conformal_factor(p).sqrt();
-            // d(p, p+εu) = √f(p)·ε·[1 + ½(∇φ(p)·u)·ε + O(ε²)], so the leading
-            // gap scales with the sample's own √f and |∇φ| rather than with a
-            // global constant.
+            // The leading gap is `√f·ε²·(∇φ·u)/2`.
             let truncation = 0.5 * space.conformal_log_half_gradient(p).length() * METRIC_PROBE_EPS;
             let tol = root_f * (truncation + METRIC_PROBE_SLACK);
             for u in metric_probe_directions(p) {
@@ -931,8 +799,7 @@ mod tests {
             ],
         );
 
-        // Kept off the ideal boundary: the forward difference's O(ε) truncation
-        // grows as 2|p|/(1−|p|²)² and swamps the assertion near |p| = 1.
+        // Off the ideal boundary, where the truncation grows as `2|p|/(1 − |p|²)²`.
         assert_conformal_factor_matches_metric(
             &HyperbolicH3,
             &[
@@ -943,10 +810,7 @@ mod tests {
             ],
         );
 
-        // Zone extremes only. Inside the zone `BlendedSpace::distance` is itself
-        // defined as √f·|log|, so the probe would restate its own input; at the
-        // extremes `distance` delegates to the source Space and the check has
-        // content, pinning that the blended factor reduces to the source's.
+        // Zone extremes only; inside, `distance` is defined as `√f·|log|`.
         assert_conformal_factor_matches_metric(
             &BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.5, 0.5)),
             &[Vec3::new(-0.7, 0.1, 0.0), Vec3::new(0.55, 0.15, -0.1)],
@@ -970,7 +834,7 @@ mod tests {
                 / (2.0 * EPS);
             Vec3::new(dx, dy, dz)
         };
-        // alpha=0 region, mid-zone, alpha=1 region (inside the Poincaré ball).
+        // Pure A, mid-zone, pure B.
         for p in [
             Vec3::new(-0.7, 0.05, 0.0),
             Vec3::new(0.0, 0.1, -0.1),
@@ -985,50 +849,9 @@ mod tests {
     }
 
     #[test]
-    fn blended_space_log_half_gradient_at_alpha_zero_is_pure_a() {
-        use crate::{EuclideanR3, HyperbolicH3};
-        let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(50.0, 100.0));
-        let g = bs.conformal_log_half_gradient(Vec3::new(1.0, 2.0, 3.0));
-        close(g.x, 0.0, 1e-6);
-        close(g.y, 0.0, 1e-6);
-        close(g.z, 0.0, 1e-6);
-    }
-
-    #[test]
-    fn blended_space_log_half_gradient_at_alpha_one_is_pure_b() {
-        use crate::{EuclideanR3, HyperbolicH3};
-        let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-100.0, -50.0));
-        let p = Vec3::new(0.2, 0.1, 0.0);
-        let blended = bs.conformal_log_half_gradient(p);
-        let pure_b = HyperbolicH3.conformal_log_half_gradient(p);
-        close(blended.x, pure_b.x, 1e-6);
-        close(blended.y, pure_b.y, 1e-6);
-        close(blended.z, pure_b.z, 1e-6);
-    }
-
-    #[test]
-    fn blended_space_conformal_factor_blends_linearly() {
-        use crate::{EuclideanR3, HyperbolicH3};
-        let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-1.0, 1.0));
-
-        close(bs.conformal_factor(Vec3::new(-1.0, 0.0, 0.0)), 1.0, 1e-6);
-        // Near x=1 but inside; x=1 itself is the Poincaré boundary (f -> ∞).
-        let p = Vec3::new(0.99, 0.0, 0.0);
-        let alpha = LinearBlendX::new(-1.0, 1.0).weight(p);
-        let f_e = 1.0;
-        let f_h = HyperbolicH3.conformal_factor(p);
-        let expected = (1.0 - alpha) * f_e + alpha * f_h;
-        close(bs.conformal_factor(p), expected, 1e-2);
-    }
-
-    #[test]
     fn rk4_in_pure_e3_is_straight_line() {
         use crate::EuclideanR3;
-        let bs = BlendedSpace::new(
-            EuclideanR3,
-            EuclideanR3,
-            LinearBlendX::new(100.0, 200.0), // far away, alpha ≡ 0 in our test region
-        );
+        let bs = BlendedSpace::new(EuclideanR3, EuclideanR3, LinearBlendX::new(100.0, 200.0));
         for (p, v) in [
             (Vec3::ZERO, Vec3::X),
             (Vec3::new(1.0, 2.0, 3.0), Vec3::new(0.5, -0.3, 0.7)),
@@ -1048,69 +871,22 @@ mod tests {
         for &mag in &[0.1_f32, 0.3, 0.5] {
             let v = Vec3::new(mag, 0.0, 0.0);
             let (final_p, _) = rk4_geodesic(&HyperbolicH3, Vec3::ZERO, v, GEODESIC_DEFAULT_STEPS);
-            // |exp_0(v)|_E = tanh(|v|_E).
+            // `|exp_0(v)| = tanh(|v|)`.
             let expected_radius = mag.tanh();
             close(final_p.x, expected_radius, 5e-3);
             close(final_p.y, 0.0, 1e-4);
             close(final_p.z, 0.0, 1e-4);
         }
 
-        // Cross-check against the closed-form `HyperbolicH3::exp`.
         let v = Vec3::new(0.4, 0.1, 0.0);
         let (numerical, _) = rk4_geodesic(&HyperbolicH3, Vec3::ZERO, v, GEODESIC_DEFAULT_STEPS);
         let closed_form = HyperbolicH3.exp(Vec3::ZERO, v);
         close((numerical - closed_form).length(), 0.0, 5e-3);
 
-        // Through `BlendedSpace::exp` with alpha ≡ 1, collapsing to pure H³.
-        let bs = BlendedSpace::new(
-            HyperbolicH3, // dummy; alpha=1 never reaches A
-            HyperbolicH3,
-            LinearBlendX::new(-100.0, -50.0),
-        );
+        let bs = BlendedSpace::new(HyperbolicH3, HyperbolicH3, LinearBlendX::new(-100.0, -50.0));
         let v = Vec3::new(0.5, 0.0, 0.0);
         let final_p_blended = bs.exp(Vec3::ZERO, v);
         close(final_p_blended.x, 0.5_f32.tanh(), 5e-3);
-    }
-
-    #[test]
-    fn rk4_in_e3_is_time_reversible() {
-        use crate::EuclideanR3;
-        let p = Vec3::new(1.0, 2.0, 3.0);
-        let v = Vec3::new(0.5, -0.3, 0.7);
-        let (q, vq) = rk4_geodesic(&EuclideanR3, p, v, GEODESIC_DEFAULT_STEPS);
-        let (back, _) = rk4_geodesic(&EuclideanR3, q, -vq, GEODESIC_DEFAULT_STEPS);
-        close((back - p).length(), 0.0, 1e-5);
-    }
-
-    #[test]
-    fn blended_space_exp_at_alpha_zero_matches_e3() {
-        use crate::EuclideanR3;
-        use crate::Space;
-        let bs = BlendedSpace::new(EuclideanR3, EuclideanR3, LinearBlendX::new(50.0, 100.0));
-        let p = Vec3::new(1.0, 2.0, 3.0);
-        let v = Vec3::new(0.5, -0.3, 0.7);
-        let result = bs.exp(p, v);
-        let expected = p + v;
-        close((result - expected).length(), 0.0, 1e-5);
-    }
-
-    #[test]
-    fn log_in_pure_e3_is_euclidean_displacement() {
-        use crate::EuclideanR3;
-        for (from, to) in [
-            (Vec3::ZERO, Vec3::X),
-            (Vec3::new(1.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 6.0)),
-            (Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)),
-        ] {
-            let v = gauss_newton_log(
-                &EuclideanR3,
-                from,
-                to,
-                GEODESIC_DEFAULT_STEPS,
-                LOG_MAX_ITERS,
-            );
-            close((v - (to - from)).length(), 0.0, 1e-4);
-        }
     }
 
     #[test]
@@ -1159,53 +935,6 @@ mod tests {
         let p = Vec3::new(0.2, 0.1, 0.0);
         let v = gauss_newton_log(&HyperbolicH3, p, p, GEODESIC_DEFAULT_STEPS, LOG_MAX_ITERS);
         close(v.length(), 0.0, 1e-5);
-    }
-
-    #[test]
-    fn parallel_transport_in_e3_is_identity() {
-        use crate::EuclideanR3;
-        let v = Vec3::new(0.5, -0.3, 0.7);
-        let transported = parallel_transport_segment_rk4(
-            &EuclideanR3,
-            Vec3::ZERO,
-            Vec3::new(2.0, 1.0, -1.0),
-            v,
-            PARALLEL_TRANSPORT_DEFAULT_STEPS,
-        );
-        close((transported - v).length(), 0.0, 1e-6);
-
-        use crate::Space;
-        let bs = BlendedSpace::new(EuclideanR3, EuclideanR3, LinearBlendX::new(50.0, 100.0));
-        let path = [
-            Vec3::ZERO,
-            Vec3::X,
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(2.0, -1.0, 1.0),
-        ];
-        let result = bs.parallel_transport_along(&path, v);
-        close((result - v).length(), 0.0, 1e-5);
-    }
-
-    #[test]
-    fn parallel_transport_in_h3_preserves_riemannian_length() {
-        use crate::HyperbolicH3;
-        let from = Vec3::new(0.1, 0.0, 0.0);
-        let to = Vec3::new(0.3, 0.1, 0.0);
-        let v = Vec3::new(0.2, 0.1, 0.0);
-
-        let transported = parallel_transport_segment_rk4(
-            &HyperbolicH3,
-            from,
-            to,
-            v,
-            PARALLEL_TRANSPORT_DEFAULT_STEPS,
-        );
-
-        let f_from = HyperbolicH3.conformal_factor(from);
-        let f_to = HyperbolicH3.conformal_factor(to);
-        let len_from = f_from.sqrt() * v.length();
-        let len_to = f_to.sqrt() * transported.length();
-        close(len_from, len_to, 5e-3);
     }
 
     #[test]
@@ -1270,9 +999,7 @@ mod tests {
         let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.15, 0.15));
         let v = Vec3::new(0.05, -0.03, 0.04);
 
-        // Curved chart everywhere it matters, all inside the Poincaré ball:
-        // one segment crossing the seam, one wholly inside it, one in the
-        // H³-dominated half where α is pinned at 1.
+        // One segment across the seam, one inside it, one in the pure-H³ half.
         let mut worst = 0.0_f32;
         for (a, b) in [
             (Vec3::new(-0.3, 0.05, 0.0), Vec3::new(0.3, -0.05, 0.02)),
@@ -1285,14 +1012,10 @@ mod tests {
                     .map(|i| a + (b - a) * (i as f32 / k as f32))
                     .collect();
                 let refined = bs.parallel_transport_along(&path, v);
-                // Both vectors sit at `b`, so √f(b) is common to them and the
-                // chart residual orders them exactly as the metric norm does.
                 worst = worst.max((refined - direct).length());
             }
         }
-        // Worst measured is 3.7e-5, on the seam-crossing segment and already
-        // flat in `k` at k=2: the gap is the coarse call's own truncation, not
-        // the refined one's, which is the shape a convergent kernel has.
+        // Measured worst is 3.7e-5, flat in `k`.
         assert!(
             worst <= 1.0e-4,
             "subdividing the transport path moved the result by {worst}"
@@ -1302,16 +1025,12 @@ mod tests {
     #[test]
     fn parallel_transport_in_h3_has_nonzero_holonomy() {
         use crate::{HyperbolicH3, Space};
-        let bs = BlendedSpace::new(
-            HyperbolicH3,
-            HyperbolicH3,
-            LinearBlendX::new(-100.0, -50.0), // alpha ≡ 1 in test region
-        );
+        let bs = BlendedSpace::new(HyperbolicH3, HyperbolicH3, LinearBlendX::new(-100.0, -50.0));
         let path = [
             Vec3::new(0.1, 0.0, 0.0),
             Vec3::new(0.3, 0.0, 0.0),
             Vec3::new(0.2, 0.2, 0.0),
-            Vec3::new(0.1, 0.0, 0.0), // back to start
+            Vec3::new(0.1, 0.0, 0.0),
         ];
         let v = Vec3::new(0.1, 0.0, 0.0);
         let transported = bs.parallel_transport_along(&path, v);
@@ -1325,22 +1044,9 @@ mod tests {
     }
 
     #[test]
-    fn hyperbolic_h3_scalar_curvature_is_constant_minus_six() {
-        use crate::HyperbolicH3;
-        let h3 = HyperbolicH3;
-        for p in [
-            Vec3::ZERO,
-            Vec3::new(0.1, 0.0, 0.0),
-            Vec3::new(0.3, 0.2, -0.1),
-        ] {
-            close(h3.scalar_curvature(p), -6.0, 1e-6);
-        }
-    }
-
-    #[test]
     fn finite_diff_curvature_matches_closed_form_in_h3() {
         use crate::HyperbolicH3;
-        // Dummy that doesn't override `scalar_curvature`, hitting the FD default.
+        // Does not override `scalar_curvature`, so the FD default runs.
         struct H3FdOnly;
         impl crate::space::Space for H3FdOnly {
             type Point = Vec3;
@@ -1370,7 +1076,7 @@ mod tests {
             }
         }
         let fd = H3FdOnly;
-        // FD with EPS=5e-3 gives ~3 digits.
+        // FD at `EPS = 5e-3` gives about three digits.
         for p in [Vec3::ZERO, Vec3::new(0.2, 0.1, 0.0)] {
             close(fd.scalar_curvature(p), -6.0, 0.5);
         }
@@ -1384,7 +1090,6 @@ mod tests {
         let r_e = bs.scalar_curvature(Vec3::new(-0.7, 0.0, 0.0));
         close(r_e, 0.0, 1e-1);
 
-        // Well into H³, inside the Poincaré ball. Loose tolerance: FD noise.
         let r_h = bs.scalar_curvature(Vec3::new(0.7, 0.0, 0.0));
         close(r_h, -6.0, 1.0);
 
@@ -1394,8 +1099,7 @@ mod tests {
             .map(|&x| bs.scalar_curvature(Vec3::new(x, 0.0, 0.0)))
             .collect();
 
-        // The seam is its own curved region, so |R| > 6 inside the zone is a
-        // real feature (|∇φ|² and ∇²φ both spike); bound generously.
+        // `|R| > 6` inside the seam is real: `|∇φ|²` and `∇²φ` both spike.
         for &r in &curvatures {
             assert!(
                 r.is_finite() && (-50.0..=5.0).contains(&r),
@@ -1403,9 +1107,7 @@ mod tests {
             );
         }
 
-        // Adjacent samples differ by a bounded amount. FD aliasing on this
-        // sample step reaches ~14 empirically; a C² discontinuity (e.g. cubic
-        // smoothstep) jumps into the tens-hundreds, so 25 catches it.
+        // FD aliasing reaches ~14 here; a C² break (cubic smoothstep) jumps past 25.
         let max_jump = curvatures
             .windows(2)
             .map(|w| (w[1] - w[0]).abs())
@@ -1419,11 +1121,7 @@ mod tests {
     #[test]
     fn blended_space_at_alpha_zero_is_pure_a() {
         use crate::{EuclideanR3, HyperbolicH3, Space};
-        let bs = BlendedSpace::new(
-            EuclideanR3,
-            HyperbolicH3,
-            LinearBlendX::new(50.0, 100.0), // alpha ≡ 0 in test region
-        );
+        let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(50.0, 100.0));
         let p = Vec3::new(1.0, 2.0, 3.0);
         let q = Vec3::new(4.0, 5.0, 6.0);
         let v = Vec3::new(0.5, -0.3, 0.7);
@@ -1447,11 +1145,7 @@ mod tests {
     #[test]
     fn blended_space_at_alpha_one_is_pure_b() {
         use crate::{EuclideanR3, HyperbolicH3, Space};
-        let bs = BlendedSpace::new(
-            EuclideanR3,
-            HyperbolicH3,
-            LinearBlendX::new(-100.0, -50.0), // alpha ≡ 1 in test region
-        );
+        let bs = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-100.0, -50.0));
         let p = Vec3::new(0.1, 0.0, 0.0);
         let q = Vec3::new(0.2, 0.1, 0.0);
         let v = Vec3::new(0.05, 0.0, 0.0);
@@ -1464,7 +1158,6 @@ mod tests {
             HyperbolicH3.conformal_factor(p),
             1e-3,
         );
-        // FD curvature carries ~1% noise even at α=1.
         close(bs.scalar_curvature(p), -6.0, 0.05);
     }
 

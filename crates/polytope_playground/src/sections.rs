@@ -6,12 +6,8 @@ use crate::catalog::ShapeEntry;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) enum SurfaceMode {
-    /// Exact, much faster on the 120/600-cell than the SDF, and sidesteps the
-    /// cell120/600 face-plane BUG in `loam_physics::euclidean_r4`.
     #[default]
     Raster,
-    /// Kept for visual comparison; slower on the 120/600-cell and carries the
-    /// face-plane BUG.
     Sdf,
     Off,
 }
@@ -34,9 +30,7 @@ impl SurfaceMode {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(crate) struct SectionLayer {
     pub(crate) perimeter: bool,
-    /// Per-fragment fill alpha in `[0, 1]`. `0.0` skips the fill; `(0, 1)` goes
-    /// through the depth-write-disabled translucent pipeline; `1.0` is opaque
-    /// with depth-write.
+    /// `0.0` skips the fill; `(0, 1)` is translucent; `1.0` writes depth.
     pub(crate) surface_alpha: f32,
 }
 
@@ -59,10 +53,7 @@ impl SectionLayer {
     };
 }
 
-// The honest cross-section is ALWAYS drop-w
-// ([`loam_math::Projection::Identity`]); the slice is a 3-flat and drop-w is
-// its undistorted view, matching the SDF raymarch. The projected cap follows
-// the active wireframe `projection`.
+// The honest cross-section is always drop-w, matching the SDF raymarch.
 pub(crate) fn section_layer_projection(
     is_cross_section: bool,
     projection: Projection<4>,
@@ -74,11 +65,7 @@ pub(crate) fn section_layer_projection(
     }
 }
 
-// Blocked from SDF for TWO reasons, either sufficient: their SDFs (120 / 600
-// face hyperplanes each, against the per-pixel Wolfe-greedy projection) overrun
-// the browser WebGPU shader budget and crash the tab; and their
-// `cell{120,600}_face_planes` are the known-wrong dual-vertex approximation
-// (see `loam_shape::polytope_geom`). Do NOT re-enable on a perf fix alone.
+// Their SDFs crash the browser tab and their face planes are wrong: not a perf gate.
 pub(crate) fn row_blocks_sdf(row: &[ShapeEntry]) -> bool {
     row.iter().any(|e| {
         matches!(

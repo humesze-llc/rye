@@ -23,9 +23,7 @@ fn main() {
     let dirty_marker = if dirty { "+dirty" } else { "" };
     println!("cargo:rustc-env=BUILD_DIRTY={dirty_marker}");
 
-    // `.git/HEAD` covers branch + commit moves; `.git/index` covers staging.
-    // Cargo watches only .rs / Cargo.toml by default, so a tracked file edited
-    // without being staged does not re-trigger this and may show stale.
+    // HEAD covers branch and commit moves; index covers staging.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
 }

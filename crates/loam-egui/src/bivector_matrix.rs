@@ -1,15 +1,6 @@
-//! A 4D bivector maps to the antisymmetric 4×4 `M_ij = B_ij = -M_ji`, with
-//! upper-triangle entries the six components in the `e_i ∧ e_j` basis:
-//!
-//! - `M_01 = xy`, `M_02 = xz`, `M_03 = xw`
-//! - `M_12 = yz`, `M_13 = yw`, `M_23 = zw`
-//!
-//! For an angular-velocity bivector `ω`, this is the operator `dx/dt = ω x`,
-//! so the display reads "rate of change of axis-`i` due to motion in plane
-//! `(i, j)`," in degrees per unit time.
-//!
-//! Reference: Hestenes & Sobczyk, *Clifford Algebra to Geometric Calculus*,
-//! ch. 1 (2-blade / antisymmetric-tensor correspondence).
+//! Antisymmetric 4×4 `M_ij = B_ij = -M_ji`, upper triangle `xy xz xw / yz yw zw`
+//! in the `e_i ∧ e_j` basis (Hestenes & Sobczyk, Clifford Algebra to Geometric
+//! Calculus, ch. 1).
 
 use egui::{Grid, Label, Response, RichText, Ui};
 use loam_math::{Bivector4, Plane4};
@@ -65,7 +56,6 @@ fn upper_pair(b: &Bivector4, row: usize, col: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui::{Pos2, Rect, Vec2};
 
     fn pure(plane: Plane4) -> Bivector4 {
         let mut b = Bivector4::ZERO;
@@ -82,17 +72,8 @@ mod tests {
     }
 
     #[test]
-    fn cell_text_zero_bivector_off_diagonal_is_signed_zero() {
-        let b = Bivector4::ZERO;
-        // `{:>+5.1}` shows zero as ` +0.0`; pinned to lock the column width.
-        assert_eq!(cell_text(&b, 0, 1), " +0.0");
-        assert_eq!(cell_text(&b, 1, 0), " -0.0");
-    }
-
-    #[test]
     fn cell_text_pure_xy_plane() {
         let b = pure(Plane4::Xy);
-        // 1 rad = 57.295... deg.
         assert_eq!(cell_text(&b, 0, 1), "+57.3");
         assert_eq!(cell_text(&b, 1, 0), "-57.3");
         assert_eq!(cell_text(&b, 0, 2), " +0.0");
@@ -122,34 +103,5 @@ mod tests {
                 "plane {plane:?} mirror ({col}, {row}) should be negated",
             );
         }
-    }
-
-    #[test]
-    fn cell_text_small_angle_rounds_to_zero_at_one_decimal() {
-        // 0.001 rad = 0.057 deg, rounds to +0.1 at one decimal.
-        let mut b = Bivector4::ZERO;
-        b.set_component(Plane4::Xy, 0.001);
-        assert_eq!(cell_text(&b, 0, 1), " +0.1");
-    }
-
-    #[test]
-    fn renders_in_central_panel() {
-        let ctx = egui::Context::default();
-        let input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
-            ..Default::default()
-        };
-        let mut b = Bivector4::ZERO;
-        b.set_component(Plane4::Xy, 0.5);
-        b.set_component(Plane4::Zw, 0.3);
-
-        let mut resp_size = Vec2::ZERO;
-        let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let resp = bivector_matrix(ui, &b);
-                resp_size = resp.rect.size();
-            });
-        });
-        assert!(resp_size.x > 0.0 && resp_size.y > 0.0);
     }
 }

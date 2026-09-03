@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Loam rigid-body physics: Space-generic integration, narrowphase dispatch, impulse solver."
+description = "Loam rigid-body physics: Space-generic integration, GJK and EPA narrowphase, contact manifolds, impulse solver."
 keywords = ["physics", "rigid-body", "collision", "non-euclidean", "gamedev"]
 categories = ["game-development", "simulation"]
 

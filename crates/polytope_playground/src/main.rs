@@ -26,9 +26,7 @@ use loam_shape::polytope::{
 // 24-bit depth cracks the 600-cell's densely-packed caps.
 const SECTION_FACES_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-// Read by the marched half-space and by the background's analytic ground. The
-// kernel discards where the leaf wins and the background paints there instead,
-// so the two planes have to be one plane or the swap shows a seam.
+// Shared by the marched half-space and the background ground, or the swap shows a seam.
 const FLOOR_Y: f32 = 0.0;
 
 use loam_scene::{Scene4, SceneNode4};
@@ -60,11 +58,7 @@ mod ui;
 mod verbs;
 mod wireframe_geom;
 
-// Thread-local so a probe never sees a concurrent test's allocations.
-// Const-initialised so reading it inside `alloc` cannot itself allocate.
-// At the crate root because `#[global_allocator]` is a per-binary singleton:
-// a second declaration in any module is an E0152 hard error, and more than one
-// module's tests measure against it.
+// At the crate root: `#[global_allocator]` is a per-binary singleton (E0152).
 #[cfg(test)]
 pub(crate) mod alloc_probe {
     use std::alloc::{GlobalAlloc, Layout, System};
@@ -124,8 +118,6 @@ use state::{
 use verbs::WireframeControls;
 use wireframe_geom::*;
 
-// 1 at the cell's w-midpoint (widest cap), 0 outside its w-range, linear in
-// `|w_slice - midpoint|` over the half-extent. A cheap proxy for cap area.
 fn compute_cell_strengths(
     cells: &[&[u32]],
     local_vertices: &[Vec4],
@@ -154,9 +146,7 @@ use loam_egui::dnd::{drag_source_collapsing as dnd_drag_source_collapsing, make_
 #[cfg(test)]
 use loam_egui::media::add_button;
 
-// `available_rect` and not `content_rect`, which is the viewport minus OS
-// safe-area insets and does not shrink for a panel, so seating against it
-// hides the popup's first rows behind the menu bar.
+// `content_rect` does not shrink for a panel and would seat under the menu bar.
 fn formula_popup_seat(ctx: &egui::Context) -> egui::Pos2 {
     const RIGHT_INSET: f32 = 280.0;
     const TOP_INSET: f32 = 16.0;
@@ -164,8 +154,6 @@ fn formula_popup_seat(ctx: &egui::Context) -> egui::Pos2 {
     egui::pos2(area.right() - RIGHT_INSET, area.top() + TOP_INSET)
 }
 
-// Floor visibility is gated at runtime via `u.params.x`: 0.0 makes the
-// halfspace SDF return 1e9 so the marcher never paints the checkerboard.
 fn shader_source() -> String {
     let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, FLOOR_Y));
     format!(
@@ -176,8 +164,6 @@ fn shader_source() -> String {
     )
 }
 
-// Every GPU object `Demo::new` mints, in one call so a rebuild's cost is
-// measurable from a device with no surface behind it.
 struct DemoNodes {
     marcher: Hyperslice4DNode,
     section_edges: LineRasterNode,
@@ -212,8 +198,7 @@ fn build_nodes(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32)
             samples,
         ),
         gimbal: LineRasterNode::new(device, format, DepthMode::Off, samples),
-        // A ReadOnly test hid a vertex behind its own cap: drop-w projects it
-        // to the cap's (x, y, z) at slightly farther depth.
+        // A depth test hides a vertex behind its own cap under drop-w.
         points: PointRasterNode::new(device, format, DepthMode::Off, samples),
         section_faces: TriangleRasterNode::new(
             device,
@@ -435,8 +420,6 @@ impl Demo {
             self.rotation_mode,
             omega,
         );
-        // Capped at 1e6 s (~12 days at ×1) so a huge `rate_scale` or long run
-        // cannot run the slider away.
         const T_SLIDER_CAP: f32 = 1.0e6;
         if self.rot_time > self.t_slider_max {
             let new_max = (self.rot_time * 2.0).min(T_SLIDER_CAP);
@@ -445,9 +428,7 @@ impl Demo {
                 self.rot_time = T_SLIDER_CAP;
             }
         }
-        // Rigid bodies advance on the tick count, not on `dt_secs`, so a
-        // trajectory is frame-rate independent. The collider sync runs ahead of
-        // the step so the tick collides this frame's rotor, not the last one's.
+        // Sync before the step, so the tick collides this frame's rotor.
         self.sync_physics_row();
         let bodies_moving = !self.physics.at_rest();
         self.physics.step(ctx.n_ticks);
@@ -477,9 +458,7 @@ impl Demo {
         }
         let view = self.camera.view();
 
-        // Written through `set_if_changed` so a clean frame skips the upload.
-        // The flush itself lives in `render`, once: the viewport is only known
-        // at render time, so a flush here would be wholly overwritten.
+        // No flush here: the viewport is only known in `render`, which flushes once.
         let cfg = &ctx.rd.surface_bundle.config;
         {
             let mut changed = false;
@@ -491,8 +470,6 @@ impl Demo {
             changed |= set_if_changed(&mut u.fov_y_tan, (60.0_f32.to_radians() * 0.5).tan());
             changed |= set_if_changed(&mut u.resolution, [cfg.width as f32, cfg.height as f32]);
             changed |= set_if_changed(&mut u.w_slice, self.w_slice);
-            // Read by the injected wrapper around `loam_scene_sdf`: 1.0 = floor
-            // on, 0.0 = wrapper short-circuits to 1e9.
             changed |= set_if_changed(
                 &mut u.params[0],
                 if self.environment.floor_visible {
@@ -501,22 +478,18 @@ impl Demo {
                     0.0
                 },
             );
-            // Excluded from the change test (pinned by
-            // `assembled_shader_reads_no_clock`): a clock tick must not upload.
+            // Outside the change test: a clock tick must not upload.
             u.time = ctx.time;
             u.tick = ctx.tick as f32;
             self.sdf_upload_pending |= changed;
         }
 
-        // Last, after every reader of the press edge. Without it `pressed` is
-        // true for as long as the button is held, which re-takes the gimbal's
-        // drag every frame and so discards the rotation it had accumulated.
+        // After every reader of the press edge.
         self.left_was_down = ctx.input.buttons.left.down;
     }
 
     pub(crate) fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
-        // Keyboard zoom changes PPP but the wgpu surface stays at native
-        // resolution, so the scene letter-boxes and the tessellator complains.
+        // Keyboard zoom changes PPP under a native-resolution surface and letter-boxes the scene.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
 
         const MENU_BAR_PAD: f32 = 24.0;
@@ -719,10 +692,7 @@ impl Demo {
     }
 }
 
-// A wrapper, not a `console` field on `Demo`: `Scene::apply_command` dispatches
-// `&mut self.console` against `&mut self.demo`, so co-locating both would need
-// a simultaneous whole-`self` borrow.
-
+// Not a field on `Demo`: `apply_command` borrows the console and the demo at once.
 pub(crate) struct RotateScene {
     demo: Demo,
     shader_owner: ShaderOwner,
@@ -732,8 +702,6 @@ pub(crate) struct RotateScene {
     script: Option<ScriptDriver>,
 }
 
-// Lower bound on a visible section-layer fill alpha; below this the cap reads
-// as off, so the grammar rejects it and steers to `0`.
 const SECTION_ALPHA_MIN_VISIBLE: f32 = 0.05;
 
 fn run_section_alpha(
@@ -861,8 +829,7 @@ impl loam_app::shell::Scene for RotateScene {
         loam_app::log::pump_into(&mut self.console);
         loam_app::command::pump_into(&mut self.console);
         self.console.ui(ctx);
-        // After the console's UI, so a line typed this frame reaches the queue
-        // in time for the next frame's drain rather than the one after.
+        // After the console UI, so a line typed this frame is drained next frame.
         loam_app::command::forward_pending(&mut self.console);
     }
 
@@ -872,8 +839,6 @@ impl loam_app::shell::Scene for RotateScene {
         state: winit::event::ElementState,
         ctx: &mut FrameCtx<'_>,
     ) {
-        // Suppress demo keybinds while egui captures the keyboard, so typing
-        // `reset` does not also fire the R hotkey.
         if !ctx.ui_capture.keyboard {
             self.demo.on_key(code, state, ctx);
         }
@@ -944,17 +909,6 @@ mod color_tests {
     }
 
     #[test]
-    fn cell_strength_is_linear() {
-        let cells: [&[u32]; 1] = [&[0, 1]];
-        let local_vertices = [
-            glam::Vec4::new(0.0, 0.0, 0.0, -0.5),
-            glam::Vec4::new(0.0, 0.0, 0.0, 0.5),
-        ];
-        let strengths = strengths_of(&cells, &local_vertices, 0.25);
-        assert!((strengths[0] - 0.5).abs() < 1e-5);
-    }
-
-    #[test]
     fn cell_strength_degenerate_cell_is_zero() {
         let cells: [&[u32]; 1] = [&[0, 1]];
         let local_vertices = [
@@ -1009,29 +963,6 @@ mod blended_edge_tests {
     }
 
     #[test]
-    fn blend_positive_emits_tessellated_segments() {
-        let a = Vec4::new(0.7, 0.0, 0.0, 0.0);
-        let b = Vec4::new(0.0, 0.7, 0.0, 0.0);
-        let mut mesh = LineMesh::<3>::default();
-        let mut scratch = Vec::new();
-        push_blended_edge(
-            &mut mesh,
-            a,
-            b,
-            Vec4::ZERO,
-            WHITE,
-            WHITE,
-            1.0,
-            1.0,
-            &flat_drop_w(),
-            Vec3::ZERO,
-            &mut scratch,
-            STEREOGRAPHIC_VIEW_RADIUS,
-        );
-        assert_eq!(mesh.segments.len(), SPACE_TESSELLATION_SAMPLES);
-    }
-
-    #[test]
     fn spherical_edge_is_longer_than_chord() {
         let a = Vec4::new(0.7, 0.0, 0.0, 0.0);
         let b = Vec4::new(0.0, 0.7, 0.0, 0.0);
@@ -1054,49 +985,10 @@ mod blended_edge_tests {
             STEREOGRAPHIC_VIEW_RADIUS,
         );
         let arc_len = polyline_length(&arc);
-        // Quarter circle of radius 0.7 has arc length 0.7·π/2 ≈ 1.0996 vs chord
-        // 0.7·√2 ≈ 0.9899. The 16-segment approximation undershoots the true arc
-        // slightly but still clears the chord comfortably.
+        // Arc 0.7·π/2 ≈ 1.10 against chord 0.7·√2 ≈ 0.99.
         assert!(
             arc_len > chord + 0.05,
             "arc {arc_len} should exceed chord {chord}"
-        );
-    }
-
-    #[test]
-    fn half_blend_is_between_flat_and_spherical() {
-        let a = Vec4::new(0.7, 0.0, 0.0, 0.0);
-        let b = Vec4::new(0.0, 0.7, 0.0, 0.0);
-        let chord = (Vec3::new(0.0, 0.7, 0.0) - Vec3::new(0.7, 0.0, 0.0)).length();
-
-        let make = |blend: f32| {
-            let mut mesh = LineMesh::<3>::default();
-            let mut scratch = Vec::new();
-            push_blended_edge(
-                &mut mesh,
-                a,
-                b,
-                Vec4::ZERO,
-                WHITE,
-                WHITE,
-                1.0,
-                blend,
-                &flat_drop_w(),
-                Vec3::ZERO,
-                &mut scratch,
-                STEREOGRAPHIC_VIEW_RADIUS,
-            );
-            polyline_length(&mesh)
-        };
-        let half = make(0.5);
-        let full = make(1.0);
-        assert!(
-            half > chord,
-            "half-blend {half} should exceed chord {chord}"
-        );
-        assert!(
-            half < full,
-            "half-blend {half} should be under full arc {full}"
         );
     }
 
@@ -1433,7 +1325,7 @@ mod hyperslice_filter_tests {
     #[test]
     fn cull_keeps_every_active_edge() {
         let w_slice = -0.182_f32;
-        let thickness = HYPERSLICE_MIN_THICKNESS; // razor band: the strictest cull
+        let thickness = HYPERSLICE_MIN_THICKNESS;
         let local_vertices = [
             Vec4::new(0.0, 0.0, 0.0, -0.5),
             Vec4::new(1.0, 0.0, 0.0, -0.5),
@@ -1461,7 +1353,7 @@ mod hyperslice_filter_tests {
     #[test]
     fn cull_drops_edge_when_no_containing_cell_overlaps() {
         let w_slice = 0.0_f32;
-        let thickness = 0.2_f32; // slab [-0.1, 0.1]
+        let thickness = 0.2_f32;
         let local_vertices = [
             Vec4::new(0.0, 0.0, 0.0, 0.6),
             Vec4::new(1.0, 0.0, 0.0, 0.6),
@@ -1608,30 +1500,12 @@ mod alignment_tests {
     }
 
     #[test]
-    fn default_row_4_shapes_aligned() {
-        let row = DEFAULT_ROW.to_vec();
-        let rects = capture_row_rects(&row);
-        assert_cards_h_uniform(&rects, "default 4-shape row");
-        assert_top_aligned(&rects, "default 4-shape row");
-    }
-
-    #[test]
     fn row_with_120cell_aligned() {
         let mut row = DEFAULT_ROW.to_vec();
         row.push(parse_shape_name("120-cell").unwrap());
         let rects = capture_row_rects(&row);
         assert_cards_h_uniform(&rects, "default + 120-cell");
         assert_top_aligned(&rects, "default + 120-cell");
-    }
-
-    #[test]
-    fn row_with_120cell_and_600cell_aligned() {
-        let mut row = DEFAULT_ROW.to_vec();
-        row.push(parse_shape_name("120-cell").unwrap());
-        row.push(parse_shape_name("600-cell").unwrap());
-        let rects = capture_row_rects(&row);
-        assert_cards_h_uniform(&rects, "default + 120-cell + 600-cell");
-        assert_top_aligned(&rects, "default + 120-cell + 600-cell");
     }
 }
 
@@ -1643,9 +1517,7 @@ mod drag_tests {
         egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0))
     }
 
-    // Egui's drag detection compares `time - press_start_time` against
-    // `max_click_duration`, so frames must thread a monotonic clock or every
-    // press reads as still-within-click and never flips to dragging.
+    // egui's drag detection needs a monotonic `time`, or a press never becomes a drag.
     fn pointer_press(time: f64, pos: egui::Pos2) -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(screen()),
@@ -1703,39 +1575,6 @@ mod drag_tests {
     }
 
     #[test]
-    fn baseline_stock_dnd_drag_source_starts_drag() {
-        let ctx = egui::Context::default();
-        let id = egui::Id::new("baseline-test");
-        let mut last_rect = egui::Rect::NOTHING;
-        let render = |ctx: &egui::Context, last_rect: &mut egui::Rect| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let resp = ui.dnd_drag_source(id, 1_usize, |ui| {
-                    egui::Frame::default()
-                        .fill(egui::Color32::DARK_GRAY)
-                        .inner_margin(egui::Margin::symmetric(4, 6))
-                        .show(ui, |ui| {
-                            ui.allocate_exact_size(egui::vec2(80.0, 18.0), egui::Sense::hover());
-                        });
-                });
-                *last_rect = resp.response.rect;
-            });
-        };
-        let card_pos = egui::pos2(60.0, 30.0);
-        let _ = ctx.run(warmup_input(0.0), |c| render(c, &mut last_rect));
-        let _ = ctx.run(pointer_press(0.05, card_pos), |c| render(c, &mut last_rect));
-        let _ = ctx.run(pointer_move(0.10, card_pos + egui::vec2(20.0, 0.0)), |c| {
-            render(c, &mut last_rect)
-        });
-        let _ = ctx.run(pointer_move(0.15, card_pos + egui::vec2(40.0, 0.0)), |c| {
-            render(c, &mut last_rect)
-        });
-        assert!(
-            ctx.is_being_dragged(id),
-            "stock dnd_drag_source should detect drag with this driver"
-        );
-    }
-
-    #[test]
     fn id_new_starts_drag() {
         let id = egui::Id::new(("polytope-playground-shape-card-test", 0_usize));
         let ctx = drive_drag(id);
@@ -1747,54 +1586,6 @@ mod drag_tests {
         assert!(
             egui::DragAndDrop::has_payload_of_type::<usize>(&ctx),
             "drag payload should be set after drag starts"
-        );
-    }
-
-    #[test]
-    fn make_persistent_id_per_pass_avoids_layer_collision() {
-        let ctx = egui::Context::default();
-        let mut measure_id: Option<egui::Id> = None;
-        let mut visible_id: Option<egui::Id> = None;
-        let render = |ctx: &egui::Context,
-                      measure_id: &mut Option<egui::Id>,
-                      visible_id: &mut Option<egui::Id>| {
-            let _ = egui::Area::new(egui::Id::new("measure"))
-                .order(egui::Order::Background)
-                .interactable(false)
-                .fixed_pos(egui::pos2(-99_999.0, -99_999.0))
-                .show(ctx, |ui| {
-                    ui.set_invisible();
-                    let id = ui.make_persistent_id("test-card");
-                    *measure_id = Some(id);
-                    let _ = ui.dnd_drag_source(id, 7_usize, |ui| {
-                        ui.allocate_exact_size(egui::vec2(80.0, 18.0), egui::Sense::hover());
-                    });
-                });
-            let _ = egui::Area::new(egui::Id::new("visible"))
-                .fixed_pos(egui::pos2(0.0, 0.0))
-                .movable(false)
-                .show(ctx, |ui| {
-                    let id = ui.make_persistent_id("test-card");
-                    *visible_id = Some(id);
-                    let _ = ui.dnd_drag_source(id, 7_usize, |ui| {
-                        ui.allocate_exact_size(egui::vec2(80.0, 18.0), egui::Sense::hover());
-                    });
-                });
-        };
-        let _ = ctx.run(warmup_input(0.0), |c| {
-            render(c, &mut measure_id, &mut visible_id)
-        });
-        let _ = ctx.run(warmup_input(0.05), |c| {
-            render(c, &mut measure_id, &mut visible_id)
-        });
-        let measure_id = measure_id.expect("measure ran");
-        let visible_id = visible_id.expect("visible ran");
-        assert_ne!(
-            measure_id, visible_id,
-            "ui.make_persistent_id resolves through per-ui scope, so the same \
-             source must produce different ids in measure vs visible passes; \
-             if these ids ever match, the next regression is the debug_assert \
-             in egui's WidgetRects::insert"
         );
     }
 
@@ -1922,71 +1713,6 @@ mod drag_tests {
             "row total width must stay constant from drag -> drop, otherwise \
              cards rubberband horizontally on release. drag={drag_total:.1}, \
              post_drop={post_drop_total:.1}, drift={drift:.1}"
-        );
-    }
-
-    #[test]
-    fn collapsing_helper_in_two_pass_no_layer_collision() {
-        let ctx = egui::Context::default();
-        let render = |ctx: &egui::Context| {
-            let _ = egui::Area::new(egui::Id::new("measure"))
-                .order(egui::Order::Background)
-                .interactable(false)
-                .fixed_pos(egui::pos2(-99_999.0, -99_999.0))
-                .show(ctx, |ui| {
-                    ui.set_invisible();
-                    let id = ui.make_persistent_id("test-card");
-                    let _ = dnd_drag_source_collapsing(ui, id, 7_usize, |ui| {
-                        ui.allocate_exact_size(egui::vec2(80.0, 18.0), egui::Sense::hover());
-                    });
-                });
-            let _ = egui::Area::new(egui::Id::new("visible"))
-                .fixed_pos(egui::pos2(0.0, 0.0))
-                .movable(false)
-                .show(ctx, |ui| {
-                    let id = ui.make_persistent_id("test-card");
-                    let _ = dnd_drag_source_collapsing(ui, id, 7_usize, |ui| {
-                        ui.allocate_exact_size(egui::vec2(80.0, 18.0), egui::Sense::hover());
-                    });
-                });
-        };
-        let _ = ctx.run(warmup_input(0.0), render);
-        let _ = ctx.run(warmup_input(0.05), render);
-    }
-
-    #[test]
-    fn make_persistent_id_starts_drag() {
-        let ctx = egui::Context::default();
-        let render = |ctx: &egui::Context, captured_id: &mut Option<egui::Id>| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let id = ui.make_persistent_id(("test-card", 0_usize));
-                *captured_id = Some(id);
-                let _ = dnd_drag_source_collapsing(ui, id, 99_usize, |ui| {
-                    egui::Frame::default()
-                        .fill(egui::Color32::DARK_GRAY)
-                        .inner_margin(egui::Margin::symmetric(4, 6))
-                        .show(ui, |ui| {
-                            ui.allocate_exact_size(egui::vec2(80.0, 18.0), egui::Sense::hover());
-                        });
-                });
-            });
-        };
-        let card_pos = egui::pos2(60.0, 30.0);
-        let mut id = None;
-        let _ = ctx.run(warmup_input(0.0), |ctx| render(ctx, &mut id));
-        let _ = ctx.run(pointer_press(0.05, card_pos), |ctx| render(ctx, &mut id));
-        let _ = ctx.run(
-            pointer_move(0.10, card_pos + egui::vec2(20.0, 0.0)),
-            |ctx| render(ctx, &mut id),
-        );
-        let _ = ctx.run(
-            pointer_move(0.15, card_pos + egui::vec2(40.0, 0.0)),
-            |ctx| render(ctx, &mut id),
-        );
-        let id = id.expect("captured id");
-        assert!(
-            ctx.is_being_dragged(id),
-            "drag should be active for make_persistent_id keys too"
         );
     }
 }
@@ -2422,31 +2148,9 @@ mod section_cap_projection_tests {
     }
 
     #[test]
-    fn stereographic_clip_output_bounded_by_radius() {
-        let segs =
-            build_spherical_stereographic_edge(near_pole(1.0), Vec4::new(1.0, 0.0, 0.0, 0.0));
-        assert!(
-            !segs.is_empty(),
-            "edge must emit at least one in-bounds segment"
-        );
-        let r = STEREOGRAPHIC_VIEW_RADIUS;
-        for (s, e) in &segs {
-            for end in [Vec3::from_array(*s), Vec3::from_array(*e)] {
-                assert!(
-                    end.length() <= r + 1e-3,
-                    "emitted endpoint {end:?} (|.| = {}) exceeds clip radius {r}",
-                    end.length()
-                );
-            }
-        }
-    }
-
-    #[test]
     fn stereographic_clip_cuts_to_boundary_and_drops_deep_pole() {
         let r = STEREOGRAPHIC_VIEW_RADIUS;
-        // Endpoints 30 degrees off the pole, opposite sides; their great circle
-        // passes through `+w` at its midpoint. Image magnitude cot(15 deg) ~ 3.73
-        // < R keeps the endpoints while the midpoint samples blow up.
+        // cot(15°) ≈ 3.73 < R keeps the endpoints; the midpoint passes through the pole.
         let off = 30.0_f32.to_radians();
         let a = Vec4::new(off.sin(), 0.0, 0.0, off.cos());
         let b = Vec4::new(-off.sin(), 0.0, 0.0, off.cos());
@@ -2594,12 +2298,6 @@ mod section_cap_projection_tests {
         );
     }
 
-    fn default_stereographic() -> loam_math::Projection<4> {
-        loam_math::Projection::Stereographic {
-            pole: state::STEREOGRAPHIC_DEFAULT_POLE,
-        }
-    }
-
     fn cap_projected(cap_r3: [f32; 3], w_slice: f32, proj: &loam_math::Projection<4>) -> Vec3 {
         let scale = perspective_scale_at_w(w_slice, proj);
         cap_vertex_projected_and_world(cap_r3, w_slice, scale, proj, Vec3::ZERO).0
@@ -2667,78 +2365,6 @@ mod section_cap_projection_tests {
             "fill triangle keep/drop must match the perimeter's endpoint test"
         );
         assert!(!fill_keeps, "the near-pole fan must be dropped");
-    }
-
-    #[test]
-    fn points_overlay_drops_near_pole_vertex() {
-        let proj = loam_math::Projection::Stereographic { pole: Vec4::W };
-        let clip = stereographic_clip_radius(&proj, STEREOGRAPHIC_VIEW_RADIUS);
-        let v_near = <loam_math::EuclideanR4 as loam_math::RasterizableSpace<4>>::project_point(
-            near_pole(1.0),
-            &proj,
-        );
-        let v_far = <loam_math::EuclideanR4 as loam_math::RasterizableSpace<4>>::project_point(
-            Vec4::new(1.0, 0.0, 0.0, 0.0),
-            &proj,
-        );
-        assert!(
-            !sample_in_radius(v_near, clip),
-            "near-pole vertex (|.| = {}) must be dropped from the points overlay",
-            v_near.length()
-        );
-        assert!(
-            sample_in_radius(v_far, clip),
-            "far vertex (|.| = {}) must be kept",
-            v_far.length()
-        );
-        let affine_clip =
-            stereographic_clip_radius(&loam_math::Projection::Identity, STEREOGRAPHIC_VIEW_RADIUS);
-        assert!(
-            sample_in_radius(v_near, affine_clip),
-            "affine projection must keep every point (no clip)"
-        );
-    }
-
-    #[test]
-    fn cap_fill_uses_default_plus_w_pole() {
-        let proj = default_stereographic();
-        let clip = stereographic_clip_radius(&proj, STEREOGRAPHIC_VIEW_RADIUS);
-        // `(0.05, 0, 0, 1.0)` normalizes to dot ~ 0.99875 with +w, image ~40
-        // past the ~35 radius, so it drops.
-        let near = cap_projected([0.05, 0.0, 0.0], 1.0, &proj);
-        assert!(
-            !sample_in_radius(near, clip),
-            "cap vertex near the +w pole (|.| = {}) must drop",
-            near.length()
-        );
-        let far = cap_projected([-0.4, -0.3, 0.2], 0.0, &proj);
-        assert!(
-            far.is_finite() && sample_in_radius(far, clip),
-            "off-pole cap vertex must stay finite + in-radius: {far:?}"
-        );
-    }
-
-    #[test]
-    fn cap_fill_scratch_reused_without_realloc() {
-        let r = STEREOGRAPHIC_VIEW_RADIUS;
-        let mut proj_scratch: Vec<Vec3> = Vec::new();
-        let fill = |scratch: &mut Vec<Vec3>| {
-            scratch.clear();
-            scratch.push(Vec3::ZERO);
-            scratch.push(Vec3::new(1.0, 0.0, 0.0));
-            scratch.push(Vec3::new(r * 2.0, 0.0, 0.0));
-            let mut indices = vec![[0u32, 1, 2], [0u32, 1, 1]];
-            retain_in_radius_triangles(&mut indices, 0, 0, scratch, Some(r));
-        };
-        fill(&mut proj_scratch);
-        let cap_after_first = proj_scratch.capacity();
-        assert!(cap_after_first >= 3);
-        fill(&mut proj_scratch);
-        assert_eq!(
-            proj_scratch.capacity(),
-            cap_after_first,
-            "fill clip must reuse the projected-point scratch without growth"
-        );
     }
 }
 

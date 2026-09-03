@@ -4,7 +4,6 @@ use anyhow::Result;
 pub trait RenderNode {
     fn name(&self) -> &'static str;
 
-    /// Errors abort the rest of the graph.
     fn execute(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()>;
 }
 

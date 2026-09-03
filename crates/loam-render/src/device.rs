@@ -1,18 +1,6 @@
-//! sRGB surface: the scene pass draws through the target's own sRGB view
-//! ([`RenderDevice::msaa_view`], else the `begin_frame` view), and under MSAA
-//! [`RenderDevice::resolve_scene_to_swap`] resolves it into the `begin_frame`
-//! view, sRGB at both ends. The UI pass paints single-sampled through the
-//! swapchain's non-sRGB reinterpretation ([`RenderDevice::create_ui_swap_view`])
-//! so egui blends in gamma space, or through the swapchain's own view where
-//! the adapter forbids the reinterpretation (see `ui_target_formats`).
-//!
-//! Non-sRGB surface: MSAA off, scene and UI both draw into [`OffscreenTarget`],
-//! and [`crate::composite::CompositeNode`] gamma-encodes that into the
-//! swapchain view. The offscreen target takes the surface format's sRGB
-//! sibling, so the UI blends in linear space. A format with no sibling
-//! (`Rgba16Float`) keeps its own format, which lands egui on the
-//! gamma-framebuffer path whose already-encoded output the composite encodes
-//! again.
+//! sRGB surface: the scene draws and resolves through sRGB views; the UI
+//! paints through the swapchain's non-sRGB twin. Non-sRGB surface: MSAA off,
+//! scene and UI draw into [`OffscreenTarget`] and the composite encodes them.
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -25,9 +13,6 @@ pub struct SurfaceBundle {
     pub size: winit::dpi::PhysicalSize<u32>,
 }
 
-/// Written by the scene pass alone, through [`MsaaTarget::view`], and resolved
-/// into the swapchain by [`RenderDevice::resolve_scene_to_swap`] before the UI
-/// pass runs.
 pub struct MsaaTarget {
     // Keeps the GPU allocation alive for the lifetime of `view`.
     #[allow(dead_code)]
@@ -35,10 +20,6 @@ pub struct MsaaTarget {
     pub view: TextureView,
 }
 
-/// Target for the non-sRGB-surface path: scene and UI render here, then
-/// [`crate::composite::CompositeNode`] gamma-encodes into the linear
-/// swapchain. Carries the surface format's sRGB sibling, or the surface
-/// format itself where it has none.
 pub struct OffscreenTarget {
     // Keeps the GPU allocation alive for the lifetime of `view`.
     #[allow(dead_code)]
@@ -49,24 +30,12 @@ pub struct OffscreenTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct UiTargetFormats {
     pub ui_format: TextureFormat,
-    /// Registered as the swapchain's view format and used for the UI pass's
-    /// swapchain view. `None` means the UI uses the swapchain's own format.
+    /// `None`: the UI paints through the swapchain's own format.
     pub swap_view_format: Option<TextureFormat>,
 }
 
-// wgpu-core gates a swapchain texture's view formats behind the
-// `SURFACE_VIEW_FORMATS` downlevel flag (checked at `surface.configure`).
-// GL/WebGL never advertises it and Vulkan advertises it only with
-// `VK_KHR_swapchain_mutable_format`, so an unguarded entry is a validation
-// failure, not a degraded render.
-//
-// The swapchain is the only target reinterpreted: the multisampled
-// attachment's resolve has to stay sRGB at both ends (see
-// `RenderDevice::resolve_scene_to_swap`), so it registers nothing.
+// A view format outside `SURFACE_VIEW_FORMATS` fails validation at `surface.configure`.
 fn ui_target_formats(surface_format: TextureFormat, downlevel: DownlevelFlags) -> UiTargetFormats {
-    // Composite path: the UI paints into the offscreen scene texture and
-    // `CompositeNode` encodes gamma afterwards, so nothing is reinterpreted.
-    // `add_srgb_suffix` is the identity for formats without an sRGB sibling.
     if !surface_format.is_srgb() {
         return UiTargetFormats {
             ui_format: surface_format.add_srgb_suffix(),
@@ -86,9 +55,6 @@ fn ui_target_formats(surface_format: TextureFormat, downlevel: DownlevelFlags) -
     }
 }
 
-// Split out of `RenderDevice::from_surface` so the `view_formats`
-// registration, the field wgpu validates against the downlevel flags, is
-// checkable without a device.
 fn surface_configuration(
     format: TextureFormat,
     size: winit::dpi::PhysicalSize<u32>,
@@ -96,7 +62,7 @@ fn surface_configuration(
     ui_targets: UiTargetFormats,
 ) -> SurfaceConfiguration {
     SurfaceConfiguration {
-        // COPY_SRC keeps headless screenshot readback open at negligible cost.
+        // COPY_SRC for headless screenshot readback.
         usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
         format,
         width: size.width,
@@ -108,8 +74,6 @@ fn surface_configuration(
     }
 }
 
-// `None` requests the target's own format, the only legal request when
-// nothing was registered as a reinterpretation.
 fn ui_view_descriptor(ui_view_format: Option<TextureFormat>) -> TextureViewDescriptor<'static> {
     TextureViewDescriptor {
         format: ui_view_format,
@@ -117,8 +81,8 @@ fn ui_view_descriptor(ui_view_format: Option<TextureFormat>) -> TextureViewDescr
     }
 }
 
-// The target's own format, never the UI pass's non-sRGB twin. Both ends of
-// the MSAA resolve take it, which is what keeps the averaging linear.
+// Both ends of the MSAA resolve take the target's own format; a non-sRGB view
+// would average encoded bytes.
 fn scene_view_descriptor() -> TextureViewDescriptor<'static> {
     TextureViewDescriptor::default()
 }
@@ -131,24 +95,15 @@ pub struct RenderDevice {
     pub surface_bundle: SurfaceBundle,
     sample_count: u32,
     msaa_target: Option<MsaaTarget>,
-    /// `Some` only when the adapter advertised the timestamp features and we
-    /// requested them. The runner owns the per-frame lifecycle.
     pub gpu_timer: Option<crate::gpu_timer::GpuTimer>,
-    /// Present only on the non-sRGB swapchain path; `None` on native.
     scene_target: Option<OffscreenTarget>,
     composite: Option<crate::composite::CompositeNode>,
-    /// The surface format's sRGB sibling where it has one, else the surface
-    /// format. `None` when `scene_target` is `None`.
     scene_format: Option<TextureFormat>,
-    /// Cached so the `vsync` command validates without re-querying
-    /// `get_surface_capabilities`.
     present_modes: Vec<PresentMode>,
     ui_targets: UiTargetFormats,
 }
 
 impl RenderDevice {
-    /// `requested_msaa_samples` of 1 means no MSAA; the effective count (see
-    /// [`RenderDevice::sample_count`]) falls back to 1 if unsupported.
     pub async fn new(window: Arc<Window>, requested_msaa_samples: u32) -> Result<Self> {
         let instance = Instance::default();
         let surface = instance.create_surface(window.clone())?;
@@ -156,9 +111,6 @@ impl RenderDevice {
         Self::from_surface(instance, surface, size, requested_msaa_samples).await
     }
 
-    /// [`Self::new`] variant taking a wgpu [`Surface`] directly, for callers
-    /// without a winit [`Window`]. Keeps `loam-render` decoupled from `web-sys`:
-    /// the caller owns surface creation. `size` is in surface pixels.
     pub async fn from_surface(
         instance: Instance,
         surface: Surface<'static>,
@@ -173,11 +125,8 @@ impl RenderDevice {
             })
             .await?;
 
-        // wgpu 27 splits timestamps into TIMESTAMP_QUERY (pass-attached) and
-        // TIMESTAMP_QUERY_INSIDE_ENCODERS (free-floating write_timestamp, our path
-        // since App::render owns its passes). Some browser builds advertise only
-        // the former, where write_timestamp then panics; require both or skip the
-        // timer entirely.
+        // Some browsers advertise TIMESTAMP_QUERY without INSIDE_ENCODERS, where
+        // `write_timestamp` panics.
         let needed = Features::TIMESTAMP_QUERY | Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         let timestamps_ok = adapter.features().contains(needed);
         let required_features = if timestamps_ok {
@@ -216,9 +165,7 @@ impl RenderDevice {
             caps.formats
         );
 
-        // Prefer `Opaque` over the browser-advertised `PreMultiplied`, which
-        // composites alpha < 1 shader output against the page and darkens it on
-        // non-white backgrounds. Fall back to whatever is advertised first.
+        // Browser `PreMultiplied` composites alpha < 1 against the page.
         let alpha_mode = caps
             .alpha_modes
             .iter()
@@ -237,8 +184,6 @@ impl RenderDevice {
 
         surface.configure(&device, &config);
 
-        // sRGB swapchains render directly; linear ones (browser-WebGPU) need an
-        // offscreen scene texture plus a gamma-encoding composite pass.
         let needs_composite = !format.is_srgb();
         let effective_msaa = surface_msaa_request(format, requested_msaa_samples);
         if effective_msaa < requested_msaa_samples {
@@ -293,9 +238,7 @@ impl RenderDevice {
         })
     }
 
-    /// No-ops on a zero dimension, the minimized case wgpu rejects. Recreates the
-    /// MSAA and offscreen-scene textures, rewiring the composite bind group, when
-    /// those paths are active.
+    /// No-op on a zero dimension, which wgpu rejects.
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width == 0 || new_size.height == 0 {
             return;
@@ -323,8 +266,6 @@ impl RenderDevice {
         }
     }
 
-    /// Returns the wgpu surface error directly so callers can branch on `Lost`,
-    /// `Outdated` and `Timeout`.
     pub fn begin_frame(
         &self,
     ) -> std::result::Result<(SurfaceTexture, TextureView), wgpu::SurfaceError> {
@@ -333,7 +274,6 @@ impl RenderDevice {
         Ok((frame, view))
     }
 
-    /// 1 = off. Below the requested count where the adapter could not honor it.
     pub fn sample_count(&self) -> u32 {
         self.sample_count
     }
@@ -342,15 +282,11 @@ impl RenderDevice {
         self.surface_bundle.config.present_mode
     }
 
-    /// A mode outside this list is a wgpu validation error at
-    /// `surface.configure`.
     pub fn supported_present_modes(&self) -> &[PresentMode] {
         &self.present_modes
     }
 
-    /// `Err(mode)` and no change where the adapter does not advertise it;
-    /// otherwise reconfigures in place for the next `begin_frame`. `Fifo` is the
-    /// only browser-WebGPU mode.
+    /// `Fifo` is the only browser-WebGPU mode.
     pub fn set_present_mode(&mut self, mode: PresentMode) -> std::result::Result<(), PresentMode> {
         if !self.present_modes.contains(&mode) {
             return Err(mode);
@@ -366,61 +302,35 @@ impl RenderDevice {
         Ok(())
     }
 
-    /// `None` when MSAA is off.
     pub fn msaa_view(&self) -> Option<&TextureView> {
         self.msaa_target.as_ref().map(|t| &t.view)
     }
 
-    /// `None` on native. Scene-pass target priority: `msaa_view()`, then
-    /// `scene_view()`, then the swapchain view directly. The UI pass paints here
-    /// too on this path, since the composite is what reaches the swapchain.
+    /// Scene-pass target priority: `msaa_view`, then this, then the swapchain view.
     pub fn scene_view(&self) -> Option<&TextureView> {
         self.scene_target.as_ref().map(|t| &t.view)
     }
 
-    /// On the composite path the offscreen texture's format, not the surface
-    /// format. Pipeline constructors take this rather than reading the surface.
+    /// Pipeline constructors take this, not the surface format.
     pub fn target_format(&self) -> TextureFormat {
         self.scene_format
             .unwrap_or(self.surface_bundle.config.format)
     }
 
-    /// Direct-to-swapchain: the swapchain format with the sRGB suffix stripped,
-    /// so egui blends in the gamma space its feathering assumes; the sRGB format
-    /// instead where the adapter's downlevel capabilities forbid reinterpreting
-    /// swapchain views.
-    ///
-    /// Composite: the scene texture's format, the surface format's sRGB sibling
-    /// where it has one, so blending is linear. Where there is no sibling the
-    /// format is not sRGB and egui takes its gamma-framebuffer path into a target
-    /// the composite encodes again; see this module's doc.
+    /// The format of every view the UI pass renders into.
     pub fn ui_format(&self) -> TextureFormat {
         self.ui_targets.ui_format
     }
 
-    /// The non-sRGB reinterpretation where the adapter supports it, the texture's
-    /// own format otherwise. Always a color attachment and never a
-    /// `resolve_target`, since the UI pass is single-sampled on every path.
-    /// Unused on the composite path, where the UI never touches the swapchain.
+    /// Never a `resolve_target`; the UI pass is single-sampled on every path.
     pub fn create_ui_swap_view(&self, frame: &SurfaceTexture) -> TextureView {
         frame
             .texture
             .create_view(&ui_view_descriptor(self.ui_targets.swap_view_format))
     }
 
-    /// No-op with MSAA off. Caller submits the encoder.
-    ///
-    /// Its own pass because `App::record` owns the scene passes and a resolve can
-    /// only ride on the frame's last write to the attachment. `StoreOp::Store`
-    /// rather than `Discard` for the same reason: the attachment's load ops
-    /// belong to the app, which may carry content across frames.
-    ///
-    /// Both ends carry the target's own sRGB format. A resolve averages samples
-    /// in the encoding its views name, so routing either end through the UI
-    /// pass's gamma twin would average sRGB-encoded values and darken every
-    /// antialiased edge; wgpu also rejects a resolve whose target format differs
-    /// from the attachment view's (`MismatchedResolveTextureFormat`), which is
-    /// why the attachment registers no reinterpretation (see `ui_target_formats`).
+    /// No-op with MSAA off; both ends take the target's own sRGB format so the
+    /// resolve averages linear samples.
     pub fn resolve_scene_to_swap(&self, encoder: &mut CommandEncoder, swap_view: &TextureView) {
         let Some(msaa) = self.msaa_target.as_ref() else {
             return;
@@ -443,15 +353,13 @@ impl RenderDevice {
         });
     }
 
-    /// Caller submits the encoder. No-op when `scene_view()` is `None`.
     pub fn composite_to_swap(&self, encoder: &mut wgpu::CommandEncoder, swap_view: &TextureView) {
         if let Some(composite) = self.composite.as_ref() {
             composite.run(encoder, swap_view);
         }
     }
 
-    /// Forces the driver to compile the composite PSO during setup rather than on
-    /// the first real frame. No-op on the native path.
+    /// Compiles the composite PSO at setup rather than on the first frame.
     pub fn warm_composite(&self) {
         if self.composite.is_none() {
             return;
@@ -483,8 +391,6 @@ impl RenderDevice {
     }
 }
 
-// `RENDER_ATTACHMENT` to draw into, `TEXTURE_BINDING` for the composite's
-// sample.
 fn create_scene_target(
     device: &Device,
     format: TextureFormat,
@@ -509,9 +415,7 @@ fn create_scene_target(
     OffscreenTarget { texture, view }
 }
 
-// The composite path has no multisampled input, so a non-sRGB surface renders
-// single-sampled and `MsaaTarget`, hence `RenderDevice::msaa_view`, stays
-// `None` there.
+// The composite pass has no multisampled input.
 fn surface_msaa_request(surface_format: TextureFormat, requested: u32) -> u32 {
     if surface_format.is_srgb() {
         requested
@@ -550,9 +454,6 @@ fn negotiate_sample_count(adapter: &Adapter, format: TextureFormat, requested: u
     1
 }
 
-// No `view_formats`: the scene pass is the attachment's only consumer and its
-// resolve stays sRGB at both ends, so the gamma twin is never viewable here.
-// Split out so that registration is checkable without a device.
 fn msaa_texture_descriptor(
     format: TextureFormat,
     width: u32,
@@ -707,27 +608,10 @@ mod tests {
     }
 
     #[test]
-    fn composite_path_never_requests_multisampling() {
-        for surface in SURFACES {
-            for requested in [1u32, 2, 4, 8, 16, u32::MAX] {
-                let effective = surface_msaa_request(surface, requested);
-                let case = format!("{surface:?} {requested}");
-                if surface.is_srgb() {
-                    assert_eq!(effective, requested, "{case}");
-                } else {
-                    assert_eq!(effective, 1, "{case}");
-                }
-            }
-        }
-    }
-
-    #[test]
     fn descriptors_register_only_the_sanctioned_reinterpretation() {
         for surface in SURFACES {
             for downlevel in DOWNLEVELS {
                 let case = format!("{surface:?} {downlevel:?}");
-                // Derived from the flags rather than from `ui_target_formats`,
-                // so a descriptor cannot drift in step with the decision.
                 let sanctioned: Vec<TextureFormat> = if surface.is_srgb()
                     && downlevel.contains(DownlevelFlags::SURFACE_VIEW_FORMATS)
                 {
@@ -748,8 +632,6 @@ mod tests {
         for surface in SURFACES {
             for downlevel in DOWNLEVELS {
                 let case = format!("{surface:?} {downlevel:?}");
-                // Derived from the flags rather than from `ui_target_formats`,
-                // so a view descriptor cannot drift in step with the decision.
                 let expected = (surface.is_srgb()
                     && downlevel.contains(DownlevelFlags::SURFACE_VIEW_FORMATS))
                 .then(|| surface.remove_srgb_suffix());

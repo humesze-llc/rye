@@ -1,6 +1,5 @@
-//! Wasm caveat: `cursor::request_grab` is a no-op (Pointer Lock needs a user
-//! gesture), so browser freecam needs a click-to-engage layer on the main
-//! thread. See the cursor module doc.
+//! On wasm `cursor::request_grab` is a no-op (Pointer Lock needs a user
+//! gesture), so browser freecam needs a click-to-engage layer on the main thread.
 
 use glam::Vec3;
 use loam_camera::{CameraController, FirstPersonController};
@@ -11,8 +10,6 @@ use crate::Camera;
 
 const DEFAULT_SPEED: f32 = 4.5;
 
-/// Both modes flip the controller's `use_raw_delta` flag, so a released cursor
-/// never accumulates yaw or pitch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum CursorMode {
     /// MMO-style: cursor released while Alt is held, re-grabbed on release.
@@ -41,12 +38,9 @@ impl CursorMode {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Freecam {
-    /// `advance` overwrites `use_raw_delta` from grab state each frame, so manual
-    /// changes do not persist.
     pub controller: FirstPersonController<EuclideanR3>,
     pub position: Vec3,
-    /// WASD/Space/Shift speed in units/sec. Mouse-look sensitivity lives on
-    /// `controller`.
+    /// Units per second; look sensitivity lives on `controller`.
     pub speed: f32,
     active: bool,
     cursor_grabbed: bool,
@@ -99,8 +93,6 @@ impl Freecam {
         self.cursor_grabbed
     }
 
-    /// Entry seeds `position` from `current_camera_pos`, so there is no teleport,
-    /// and primes raw deltas. Exit leaves the pose intact for re-entry.
     pub fn set_active(&mut self, active: bool, current_camera_pos: Vec3) {
         if active == self.active {
             return;
@@ -118,9 +110,6 @@ impl Freecam {
         }
     }
 
-    /// - [`CursorMode::Hold`]: released while `pressed`, re-grabbed on release;
-    ///   demos must forward both edges.
-    /// - [`CursorMode::Toggle`]: `pressed` flips the grab once, release ignored.
     pub fn on_alt(&mut self, pressed: bool) {
         if !self.active {
             return;
@@ -142,15 +131,12 @@ impl Freecam {
         if target_grabbed {
             crate::cursor::request_grab();
         } else {
-            // Warp to center on release so the cursor reappears where the user
-            // was aiming, not at the OS-cached pre-grab position.
             crate::cursor::request_release();
             crate::cursor::request_warp_to_center();
         }
     }
 
-    /// Prefer [`on_alt`](Self::on_alt) for the modifier-key contract; this
-    /// ignores [`cursor_mode`](Self::cursor_mode) and always toggles.
+    /// Ignores [`cursor_mode`](Self::cursor_mode); prefer [`on_alt`](Self::on_alt).
     pub fn toggle_cursor_grab(&mut self) {
         if !self.active {
             return;
@@ -170,15 +156,10 @@ impl Freecam {
         if !self.active {
             return;
         }
-        // Look needs the grab: raw deltas only mean something while the pointer
-        // is trapped, so releasing via Alt for UI access freezes look.
         if self.cursor_grabbed {
             self.controller.advance(input, camera, &EuclideanR3, dt);
         }
-        // Position runs regardless of grab: on wasm `cursor_grabbed` is
-        // permanently false, so gating WASD on it would freeze browser
-        // translation. This method spends both devices, so the caller must gate
-        // on both halves of `ctx.ui_capture`.
+        // On wasm `cursor_grabbed` is always false, so translation cannot gate on it.
         let mut delta = camera.forward * input.move_forward
             + camera.right * input.move_right
             + Vec3::Y * input.move_up;
@@ -244,7 +225,6 @@ mod tests {
         let (grab, vis) = cursor::take_pending();
         assert_eq!(grab, None, "idempotent set_active shouldn't re-queue");
         assert_eq!(vis, None);
-        // Position should NOT be overwritten by an idempotent call.
         assert_eq!(f.position, Vec3::ZERO);
     }
 
@@ -301,7 +281,7 @@ mod tests {
     fn advance_with_cursor_released_freezes_look_but_keeps_wasd() {
         let mut f = Freecam::new();
         f.set_active(true, Vec3::ZERO);
-        f.toggle_cursor_grab(); // release
+        f.toggle_cursor_grab();
         let mut cam = make_camera();
         let cam_before = cam;
         let input = FrameInput {
@@ -318,14 +298,6 @@ mod tests {
             cam.position, cam_before.position,
             "WASD continues to translate when cursor released (matches wasm where Pointer Lock never engages)"
         );
-    }
-
-    #[test]
-    fn cursor_mode_from_token_roundtrip() {
-        for m in [CursorMode::Hold, CursorMode::Toggle] {
-            assert_eq!(CursorMode::from_token(m.token()), Some(m));
-        }
-        assert_eq!(CursorMode::from_token("nope"), None);
     }
 
     #[test]

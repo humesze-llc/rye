@@ -1,26 +1,17 @@
-//! The console vocabulary scenes share, and the lens that lets them.
-//!
-//! A shared verb is written once against its own state struct; a scene opts in
-//! by handing over a `fn(&mut Ctx) -> &mut State` that says where it keeps
-//! that state. Same shape as `loam_app::environment::register_ground_command`,
-//! generalized. The verbs here are the ones every 4D scene can honour, and
-//! they are the surface the scripting layer will bind to, so a verb that means
-//! subtly different things in two scenes stays out.
+//! Console verbs shared across scenes. A verb is written once against its own
+//! state struct; a scene opts in with a `fn(&mut Ctx) -> &mut State` lens. A
+//! verb that means different things in two scenes stays out.
 
 use crate::projections::{apply_projection_selection_defaults, WireframeProjection};
 use anyhow::anyhow;
 use loam_egui::SubcommandSet;
 
-/// Edge thickness a scene starts at, in pixels.
 pub(crate) const DEFAULT_WIREFRAME_WIDTH_PX: f32 = 1.8;
 
-/// Above this the lines read as ribbons rather than a wireframe.
+// Above this the lines read as ribbons rather than a wireframe.
 const MAX_WIREFRAME_WIDTH_PX: f32 = 16.0;
 
-/// The wireframe state every 4D scene has. Scene-specific knobs (rotate's
-/// per-edge activity gradient, its hyperslice cull) stay on the scene and
-/// chain onto [`wireframe_subcommands`] rather than living here: a scene that
-/// cannot honour a knob should not answer a verb for it.
+/// Scene-specific knobs chain onto [`wireframe_subcommands`] rather than living here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct WireframeControls {
     pub(crate) enabled: bool,
@@ -40,10 +31,7 @@ impl Default for WireframeControls {
     }
 }
 
-/// The `wireframe` verb, less whatever the scene adds. Returned rather than
-/// registered so a scene can chain its own subcommands on before registering:
-/// the set is keyed by name, so a chained entry of the same name replaces the
-/// shared one.
+/// Returned, not registered, so a scene can chain its own subcommands first.
 pub(crate) fn wireframe_subcommands<Ctx: 'static>(
     reach: fn(&mut Ctx) -> &mut WireframeControls,
 ) -> SubcommandSet<Ctx> {
@@ -156,10 +144,6 @@ mod tests {
         c
     }
 
-    // The regression the whole module exists to prevent, stated as a list: a
-    // scene that grows its own copy of one of these, or simply forgets to
-    // register it, drifts from every other scene's console for no reason a
-    // viewer can see.
     #[test]
     fn every_scene_console_carries_the_shared_vocabulary() {
         const SHARED: [&str; 12] = [
@@ -227,9 +211,6 @@ mod tests {
         assert_eq!(scene.wireframe, WireframeControls::default());
     }
 
-    // The regression this module exists to prevent: a scene growing its own
-    // `wireframe` that answers a different set of subcommands from every
-    // other scene's.
     #[test]
     fn every_scene_carrying_wireframe_answers_the_same_subcommands() {
         fn table<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &mut Ctx) -> Vec<String> {

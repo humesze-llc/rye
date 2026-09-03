@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Tesseract w-depth projection + free-roam camera: focused single-pipeline 4D demo."
+description = "Tesseract with w-depth projection and a free-roam camera, on one render pipeline."
 keywords = ["4d", "tesseract", "demo", "wgpu", "graphics"]
 categories = ["game-development", "graphics", "visualization"]
 

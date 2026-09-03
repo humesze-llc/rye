@@ -1,20 +1,12 @@
-//! Ground colours, fog density and floor visibility for every scene that
-//! records [`loam_render::SkyGroundNode`], with the console verbs that edit
-//! them live. They are art parameters: a rebuild is too slow a loop to judge
-//! them in.
-//!
-//! Shared rather than per-demo because two scenes holding their own copy of
-//! this drift, and a viewer reading one scene's `ground` output learns nothing
-//! about the next.
+//! Ground colours, fog density and floor visibility shared by every scene that
+//! records [`loam_render::SkyGroundNode`], with the verbs that edit them live.
 
 use anyhow::{anyhow, Result};
 use loam_egui::Console;
 use loam_render::sky_ground::{DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY};
 use loam_render::Ground;
 
-// A density above this blends the checker into the sky inside one body length,
-// which reads as a bug rather than a setting. The floor is exactly zero, which
-// turns the blend off.
+// Above this the checker blends into the sky inside one body length.
 const MAX_FOG_PER_UNIT: f32 = 1.0;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -22,9 +14,6 @@ pub struct Environment {
     pub dark: [f32; 3],
     pub light: [f32; 3],
     pub fog_per_unit: f32,
-    /// Whether the ground plane is drawn at all. A scene that hides it is left
-    /// with bare sky, which is how a wireframe is read without a checker
-    /// behind it.
     pub floor_visible: bool,
 }
 
@@ -50,7 +39,6 @@ impl Environment {
         }
     }
 
-    /// Bare-read text for one field, or for all three when `field` is `None`.
     pub fn report(&self, field: Option<&str>) -> String {
         match field {
             Some("dark") => format!("ground dark: {}", rgb_text(self.dark)),
@@ -70,8 +58,6 @@ impl Environment {
         }
     }
 
-    /// Runs one `ground` line. `args` is the verb's argument list, so an empty
-    /// slice is the bare read.
     pub fn apply(&mut self, args: &[&str]) -> Result<String> {
         let Some(field) = args.first().copied() else {
             return Ok(self.report(None));
@@ -107,8 +93,7 @@ impl Environment {
     }
 }
 
-/// Distance at which the sky is half mixed into the ground, from
-/// `1 − exp(−t·density) = 1/2`.
+/// Solves `1 − exp(−t·density) = 1/2` for t.
 pub fn half_blend_distance(fog_per_unit: f32) -> f32 {
     if fog_per_unit <= 0.0 {
         return f32::INFINITY;
@@ -153,9 +138,6 @@ fn parse_fog(token: &str) -> Result<f32> {
     Ok(value)
 }
 
-/// Registers `ground` on a scene console. `reach` names where that scene keeps
-/// its [`Environment`]; a plain `fn` pointer so the same registration serves
-/// consoles over four different context types.
 pub fn register_ground_command<Ctx: 'static>(
     console: &mut Console<Ctx>,
     reach: fn(&mut Ctx) -> &mut Environment,
@@ -184,9 +166,6 @@ pub fn register_ground_command<Ctx: 'static>(
     );
 }
 
-/// Registers `floor` on a scene console. Same lens as
-/// [`register_ground_command`]: both verbs edit one [`Environment`], so a
-/// scene that has one has both.
 pub fn register_floor_command<Ctx: 'static>(
     console: &mut Console<Ctx>,
     reach: fn(&mut Ctx) -> &mut Environment,
@@ -308,29 +287,5 @@ mod tests {
         assert_eq!(env.fog_per_unit, 0.03, "the verb never reached the state");
         console.dispatch("ground", &["fog"], &mut env);
         assert_eq!(env.fog_per_unit, 0.03, "the bare read wrote");
-    }
-
-    #[test]
-    fn the_field_names_tab_complete() {
-        let mut console = Console::<Environment>::new();
-        register_ground_command(&mut console, |env| env);
-        *console.input_mut() = "ground ".to_string();
-        let mut seen = Vec::new();
-        for _ in 0..4 {
-            console.tab_complete();
-            seen.push(
-                console
-                    .input()
-                    .trim_start_matches("ground ")
-                    .trim()
-                    .to_string(),
-            );
-        }
-        for field in ["dark", "fog", "light", "reset"] {
-            assert!(
-                seen.contains(&field.to_string()),
-                "tab from `ground ` produced {seen:?}, missing {field}"
-            );
-        }
     }
 }

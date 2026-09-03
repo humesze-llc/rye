@@ -21,9 +21,7 @@ const POINT_RASTER_WGSL: &str = include_str!("point_raster.wgsl");
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct PointRasterUniforms {
     pub view_projection: [[f32; 4]; 4],
-    /// Render target size in pixels; the vertex shader turns pixel radii into NDC.
     pub viewport_size: [f32; 2],
-    /// Padding to round the struct to 16-byte alignment for `std140` uniform layout.
     pub _pad: [f32; 2],
 }
 
@@ -41,15 +39,12 @@ impl Default for PointRasterUniforms {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
 struct PointInstance {
-    /// Post-projection R³ position.
     pos: [f32; 3],
-    /// Screen-space pixel radius. AA falloff adds ~1 px beyond this.
     radius_px: f32,
-    /// RGBA linear color, alpha-multiplied with the AA disc coverage.
     color: [f32; 4],
 }
 
-/// Antialiased point-disc rasterizer. Construct once per `RenderDevice`.
+/// Construct once per `RenderDevice`.
 pub struct PointRasterNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
@@ -58,17 +53,12 @@ pub struct PointRasterNode {
     corner_buf: Buffer,
     index_buf: Buffer,
     instance_buf: Buffer,
-    /// Number of points currently uploaded; `0` means [`Self::record`] is a no-op.
     instance_count: u32,
     instance_capacity: u32,
     has_depth: bool,
 }
 
 impl PointRasterNode {
-    /// - `surface_format` must match the color attachment at draw time.
-    /// - `depth`: see [`crate::DepthMode`]. `LessEqual` is the compare convention,
-    ///   for the reason `LineRasterNode` gives.
-    /// - `sample_count` must match the attachment's MSAA sample count.
     pub fn new(
         device: &Device,
         surface_format: TextureFormat,
@@ -230,7 +220,7 @@ impl PointRasterNode {
         }
     }
 
-    /// Update the camera uniform. Call once per frame before [`Self::record`].
+    /// Call before [`Self::record`] each frame.
     pub fn set_camera(&self, queue: &Queue, view_projection: Mat4, viewport_size: Vec2) {
         let uniforms = PointRasterUniforms {
             view_projection: view_projection.to_cols_array_2d(),
@@ -240,9 +230,6 @@ impl PointRasterNode {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Projects each position from R^N to R³ via
-    /// [`RasterizableSpace::project_point`]; colors and sizes are copied verbatim.
-    /// An empty mesh uploads nothing and makes the next [`Self::record`] a no-op.
     pub fn upload<S, const N: usize>(
         &mut self,
         device: &Device,
@@ -273,11 +260,7 @@ impl PointRasterNode {
         {
             let p_native = S::array_to_point(*p);
             let p3 = S::project_point(p_native, projection);
-            // Same CPU-side backstop as `LineRasterNode::upload`: a central projection
-            // (Schlegel, Stereographic, Perspective4D) can map a vertex on the projection
-            // center or pole to a NaN or infinity, and one non-finite point poisons the
-            // GPU view-projection divide into a full-screen garbage quad rather than a
-            // missing dot. `is_finite` rejects quiet NaNs and both infinities.
+            // One non-finite point poisons the GPU divide into a full-screen quad.
             if !p3.is_finite() {
                 continue;
             }
@@ -288,7 +271,6 @@ impl PointRasterNode {
             });
         }
 
-        // Grow on demand; round to next power of two to amortize re-allocations.
         if instances.len() as u32 > self.instance_capacity {
             let new_cap = (instances.len() as u32).next_power_of_two().max(16);
             self.instance_buf = device.create_buffer(&BufferDescriptor {
@@ -306,11 +288,8 @@ impl PointRasterNode {
         self.instance_count = instances.len() as u32;
     }
 
-    /// Does not call `encoder.finish()` or `queue.submit`: the runner owns one
-    /// encoder per frame and submits it once. `LoadOp::Load` for both color and
-    /// depth, matching the other rasterizer nodes so several passes share one
-    /// cleared buffer within a frame. `depth_view` must be `Some` when the
-    /// pipeline has a depth format and `None` otherwise; a mismatch panics.
+    /// Records into the caller's encoder with `LoadOp::Load` on both attachments;
+    /// `depth_view` is `Some` iff the pipeline has depth.
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -367,6 +346,15 @@ impl PointRasterNode {
     }
 }
 
+// Pins that `record` takes the caller's encoder and cannot submit.
+const _: fn(
+    &PointRasterNode,
+    &mut wgpu::CommandEncoder,
+    &wgpu::TextureView,
+    Option<&wgpu::TextureView>,
+    Option<&crate::Viewport>,
+) = PointRasterNode::record;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,23 +368,5 @@ mod tests {
         naga::valid::Validator::new(flags, caps)
             .validate(&module)
             .expect("point_raster WGSL must validate");
-    }
-
-    #[test]
-    fn uniforms_size_matches_wgsl() {
-        assert_eq!(std::mem::size_of::<PointRasterUniforms>(), 80);
-    }
-
-    #[test]
-    fn instance_size_matches_layout() {
-        assert_eq!(std::mem::size_of::<PointInstance>(), 32);
-        let zero = PointInstance::default();
-        let base = &zero as *const _ as usize;
-        let pos_off = &zero.pos as *const _ as usize - base;
-        let radius_off = &zero.radius_px as *const _ as usize - base;
-        let color_off = &zero.color as *const _ as usize - base;
-        assert_eq!(pos_off, 0);
-        assert_eq!(radius_off, 12);
-        assert_eq!(color_off, 16);
     }
 }

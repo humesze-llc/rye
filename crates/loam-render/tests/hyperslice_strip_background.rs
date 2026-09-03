@@ -1,11 +1,6 @@
-//! What a filmstrip cell shows where the kernel draws nothing.
-//!
-//! `execute_strip` owns its attachment and its clear, and the kernel discards
-//! on a miss and on the floor rather than painting either, so the clear is the
-//! only thing standing in for the sky in a comparison grid. A cell of
-//! `Color::BLACK` is the regression this pins.
-//!
-//! The `gpu_probe` suffix is what CI's software-adapter job selects on.
+//! `execute_strip` owns its clear, and the kernel discards on a miss and on
+//! the floor, so the clear is what stands in for the sky in a comparison grid.
+//! A cell of `Color::BLACK` is the regression this pins.
 
 use loam_render::raymarch::{
     polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
@@ -14,8 +9,7 @@ use loam_render::sky_ground::SKY_HORIZON;
 use loam_render::Viewport;
 use wgpu::*;
 
-// 64 * 4 bytes per row hits `COPY_BYTES_PER_ROW_ALIGNMENT` exactly, so the
-// readback needs no row unpadding.
+// 64 * 4 bytes per row meets `COPY_BYTES_PER_ROW_ALIGNMENT`, so no row unpadding.
 const SIZE: [u32; 2] = [64, 64];
 
 const CELLS: u32 = 4;
@@ -23,8 +17,7 @@ const CELLS: u32 = 4;
 // Slack for the float-to-unorm round trip in the clear.
 const TOLERANCE: u8 = 2;
 
-// The demo's floor and nothing else, so every ray either misses or lands on
-// the half-space: both are `discard` paths, so the whole grid is clear.
+// Floor only: every ray misses or lands on the half-space, both discard paths.
 const FLOOR_SCENE_WGSL: &str = r#"
 const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;
 const LOAM_PRIM_HALFSPACE4D: u32 = 1u;

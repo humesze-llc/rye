@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Polytope Playground: interactive 4D rotation over Polytope4 with active-set and composer rotor UIs. Native + wasm32."
+description = "Polytope Playground: rotate the regular 4-polytopes, cut exact cross-sections, and throw them around a 4D toybox. Native and browser."
 keywords = ["4d", "polytope", "rotation", "demo", "wgpu"]
 categories = ["game-development", "graphics", "visualization"]
 

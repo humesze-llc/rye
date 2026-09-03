@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Quake-style developer console: command registry, scrollback, tokenizer, tab completion and key binds, with no UI-framework dependency. Frontends (see loam-egui) drive it and paint it."
+description = "Developer console model: command registry, scrollback, tokenizer, tab completion, key binds. No UI dependency."
 
 [dependencies]
 anyhow.workspace = true

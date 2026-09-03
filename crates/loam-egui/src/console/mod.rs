@@ -1,7 +1,4 @@
-//! Console keys are intercepted via `egui::InputState::consume_key` before
-//! `TextEdit::singleline` sees them, so the toggle key and Tab do not leak
-//! into the input box or move focus. Enter is detected via the TextEdit
-//! response to preserve `lost_focus`-on-submit semantics.
+//! Console keys are consumed via `InputState::consume_key` before `TextEdit` sees them.
 
 mod key;
 mod panel;
@@ -17,16 +14,13 @@ pub const ANIM_DURATION_SECS: f32 = 0.15;
 /// Half the viewport height, the Quake convention.
 pub const PANEL_HEIGHT_FRACTION: f32 = 0.5;
 
-/// No `Ctx`: the frontend accepts lines, it does not run them. What it accepts
-/// leaves through `Console::drain_pending`.
 pub trait ConsoleUi {
     fn ui(&mut self, egui_ctx: &egui::Context);
 }
 
 impl<Ctx: 'static> ConsoleUi for Console<Ctx> {
     fn ui(&mut self, egui_ctx: &egui::Context) {
-        // `consume_key` strips the Key event, but a printable key also emits a
-        // Text event TextEdit reads; strip that too or it leaks into the input.
+        // A printable key also emits a Text event; strip it or it leaks into the input.
         let toggle = self.toggle_key();
         let toggle_text = key::key_text(toggle);
         let toggle_pressed = egui_ctx.input_mut(|i| {

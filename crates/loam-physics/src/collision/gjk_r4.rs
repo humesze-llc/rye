@@ -1,7 +1,3 @@
-//! Parallels [`crate::collision::gjk`] but substitutes the 3D hand-rolled
-//! Voronoi-region analysis with the Gram-matrix projection from
-//! [`super::simplex_r4`].
-
 use glam::Vec4;
 use loam_math::{Rotor, Rotor4};
 
@@ -30,16 +26,8 @@ impl<'a> SupportFn4 for ConvexHull4<'a> {
     }
 }
 
-/// A hull kept in body-local coordinates and posed on demand. Supporting in
-/// the body frame and mapping only the winning vertex out means the world
-/// vertices are never materialized, so a hull costs O(1) scratch whatever its
-/// vertex count and no fixed buffer bounds it.
-///
-/// A rotor is an isometry, so `<R v, d> = <v, R⁻¹ d>` and the argmax is the
-/// same vertex computed either way; one inverse rotation replaces `n` forward
-/// ones. Translation shifts every candidate equally and so cannot change the
-/// argmax, which is why `position` is added after the search rather than
-/// before it.
+/// Body-local vertices supported in the body frame via `<R v, d> = <v, R⁻¹ d>`,
+/// so the world vertices are never materialized.
 pub struct PosedHull4<'a> {
     pub local: &'a [Vec4],
     pub position: Vec4,
@@ -62,7 +50,6 @@ impl SupportFn4 for PosedHull4<'_> {
     }
 }
 
-/// Support is `centre + r·d̂`.
 pub struct Sphere4 {
     pub center: Vec4,
     pub radius: f32,
@@ -80,8 +67,7 @@ impl SupportFn4 for Sphere4 {
     }
 }
 
-/// The contributing pre-image points on `A` and `B` are cached for EPA's
-/// contact-point reconstruction.
+/// `sa` and `sb` are the contributing support points on A and B.
 #[derive(Clone, Copy, Debug)]
 pub struct MinkowskiPoint4 {
     pub point: Vec4,
@@ -103,8 +89,6 @@ pub fn minkowski_support_r4<A: SupportFn4, B: SupportFn4>(
     }
 }
 
-/// In 4D the enclosing simplex always has 5 vertices, and EPA receives exactly
-/// that.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum GjkResult4 {
@@ -138,8 +122,7 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
         if new_point.point.dot(dir) < 0.0 {
             return GjkResult4::Separated;
         }
-        // A duplicate support cannot make further toward-origin progress, so
-        // it confirms enclosure.
+        // A duplicate support confirms enclosure.
         if simplex
             .iter()
             .any(|p| (p.point - new_point.point).length_squared() < 1e-10)
@@ -164,10 +147,6 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
         dir = -closest;
     }
 
-    // Grow the already-enclosing simplex to 5 points. Each iteration adds the
-    // support along a direction orthogonal to the current affine hull; a
-    // co-located result means the polytope is too thin along that axis, so try
-    // the opposite sign and then bail.
     let mut tried: Vec<Vec4> = Vec::new();
     while simplex.len() < 5 {
         let Some(probe) = orthogonal_to_hull(&simplex, &tried) else {
@@ -210,9 +189,7 @@ fn finalize_intersecting(simplex: Vec<MinkowskiPoint4>) -> GjkResult4 {
     }
 }
 
-// A unit vector perpendicular to the current simplex's affine hull. `tried` is
-// consulted so a direction the caller has already probed is not re-picked,
-// which would return the same support and stall growth.
+// `tried` directions are projected out so a probe is never re-picked.
 fn orthogonal_to_hull(simplex: &[MinkowskiPoint4], tried: &[Vec4]) -> Option<Vec4> {
     let points: Vec<Vec4> = simplex.iter().map(|p| p.point).collect();
     let basis: Vec<Vec4> = if points.len() <= 1 {
@@ -222,7 +199,6 @@ fn orthogonal_to_hull(simplex: &[MinkowskiPoint4], tried: &[Vec4]) -> Option<Vec
         points[1..].iter().map(|&p| p - v0).collect()
     };
 
-    // Gram-Schmidt, skipping near-zero rows.
     let mut onb: Vec<Vec4> = Vec::with_capacity(basis.len());
     for &b in &basis {
         let mut r = b;
@@ -271,8 +247,7 @@ mod tests {
             Vec4::new(0.25, 0.4, 0.5, 0.6),
         ];
         let position = Vec4::new(3.0, -1.5, 0.75, -2.25);
-        // A simple rotation and a double one: the double mixes all four axes,
-        // which is what a transposed or un-inverted rotor gets wrong.
+        // The double rotation mixes all four axes, which an un-inverted rotor gets wrong.
         let simple = (Plane4::Xw.unit_bivector() * 0.8).exp().normalize();
         let double = (Bivector4::new(0.5, 0.0, 0.0, 0.0, 0.0, -0.9).exp()).normalize();
 
@@ -339,8 +314,6 @@ mod tests {
     fn tesseracts_overlap_past_touching() {
         use crate::euclidean_r4::tesseract_vertices;
         let va: Vec<Vec4> = tesseract_vertices(1.0);
-        // Shift under 1, so they overlap well past a single-corner touch:
-        // exact touch at `(1,1,1,1)` is a case GJK handles probabilistically.
         let vb: Vec<Vec4> = tesseract_vertices(1.0)
             .into_iter()
             .map(|v| v + Vec4::new(0.6, 0.6, 0.6, 0.6))
@@ -392,9 +365,7 @@ mod tests {
 
         let va: Vec<Vec4> = tesseract_vertices(1.0);
         let a = ConvexHull4 { vertices: &va };
-        // `tesseract_vertices(r)` is the box of half extent `r/2`, so the
-        // faces meet at a shift of `r`; below that the boxes overlap by the
-        // difference, above it they are clear.
+        // `tesseract_vertices(1.0)` has half extent 0.5, so the faces meet at shift 1.
         for (shift, expect_overlap) in [
             (1.0 - 1e-1, true),
             (1.0 - 1e-2, true),
@@ -409,8 +380,7 @@ mod tests {
             let b = ConvexHull4 { vertices: &vb };
             let depth = match gjk_intersect_r4(&a, &b, Vec4::X) {
                 GjkResult4::Intersecting { simplex } => {
-                    // Both hulls are circumradius 1, so the Minkowski
-                    // difference's characteristic length is 2.
+                    // Both circumradius 1, so the difference body's scale is 2.
                     epa_r4(&a, &b, simplex, 2.0).map_or(0.0, |c| c.penetration)
                 }
                 GjkResult4::Separated => 0.0,

@@ -2,20 +2,14 @@ use egui::{
     vec2, Align, Button, CursorIcon, DragValue, Layout, RichText, Slider, SliderClamping, Ui,
 };
 
-/// `changed` fires for a slider drag, a popup edit, or any external mutation
-/// the slider observes. `dragged` is strictly user-on-the-slider this frame,
-/// so a caller that recomputes expensive state only while scrubbing gates on
-/// it and does not refire when an integrator advances the value.
+/// `dragged` is user-on-the-slider this frame; `changed` also covers the popup.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct SliderInteraction {
     pub changed: bool,
     pub dragged: bool,
 }
 
-/// The side cell displays `formatted` and opens a precise-edit
-/// [`DragValue`](egui::DragValue) popup on right-click. `value_cell_w` is
-/// fixed because a cell sized to the value's character count shifts the
-/// slider's right edge frame to frame.
+/// Right-click on the value cell opens a [`DragValue`] popup.
 pub fn slider_with_edit(
     ui: &mut Ui,
     value: &mut f32,

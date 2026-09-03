@@ -1,6 +1,5 @@
-//! Falling letters take [`GlyphSolid::rigid_hull_4d`], the one convex prism per
-//! letter, and not [`GlyphSolid::colliders_4d`]'s faithful box cover: a moving
-//! faithful cover would need a compound collider `loam-physics` does not have.
+//! A falling letter collides as [`GlyphSolid::rigid_hull_4d`]'s one convex
+//! prism: `loam-physics` has no compound collider for the faithful box cover.
 
 use std::borrow::Cow;
 
@@ -31,33 +30,19 @@ const WORD: &str = "LOAM";
 
 const TICK_HZ: u32 = 60;
 
-// A letter hull dropped on a half-space settles at 240 Hz and does NOT at 120,
-// where the same drops skid 0.45 to 0.61 em and end tipped on a corner:
-// `polytope_halfspace_r4` reports one deepest vertex per step, a manifold holds
-// four, and halving the rate halves
-// the constraints the solver has accumulated by the time a letter rocks over.
-// Four sub-steps of a 60 Hz tick is that rate, reached without moving the host
-// clock.
+// 240 Hz: a letter hull on a half-space settles at 240 and skids at 120.
 const SUBSTEPS_PER_TICK: usize = 4;
 
-// Fixed and never derived from wall time.
 const SOLVER_DT: f32 = 1.0 / (TICK_HZ as f32 * SUBSTEPS_PER_TICK as f32);
 
-// One captured frame per tick. Every captured frame is a full image in the
-// APNG and is held in memory until the stop, so the rate is the file-size and
-// footprint dial; the delays keep playback at the sequence's own speed at any
-// rate, and halving this halves both costs.
+// One frame per tick; the APNG holds every frame in memory until the stop.
 const RECORD_FPS: u16 = TICK_HZ as u16;
 
 const GRAVITY: f32 = -9.8;
 
 const PILE_PGS_ITERS: usize = 20;
 
-// Collision groups. A drop still falling passes through the other drops still
-// falling: mid-air collisions turn the rain into a scatter of ricochets before
-// it ever reaches the word, and the thing worth watching is what the rain does
-// TO the letters. It collides with everything the moment it touches anything,
-// so a landed pile still stacks.
+// Falling drops pass through each other; a landed drop collides with all.
 const GROUP_SCENERY: u32 = 1 << 0;
 const GROUP_FALLING: u32 = 1 << 1;
 const GROUP_LANDED: u32 = 1 << 2;
@@ -65,31 +50,22 @@ const MASK_FALLING: u32 = GROUP_SCENERY | GROUP_LANDED;
 
 const ASSEMBLE_TICKS: u32 = 90;
 
-// The last letter must still finish inside [`ASSEMBLE_TICKS`], which
-// `the_assembly_slides_every_letter_onto_its_mark_before_the_release` pins.
+// Bounded so the last letter's slide ends inside ASSEMBLE_TICKS.
 const LETTER_STAGGER_TICKS: u32 = 12;
 
 const LETTER_SLIDE_TICKS: u32 = 36;
 
-// How far out in `w` a letter starts: two letterforms, so the entrance sweeps
-// its section through both neighbours before settling on its own.
+// Two letterforms of w, so the entrance sweeps both neighbours.
 const W_ENTRY_SPAN: f32 = 0.6;
 
-// Height of the lowest hull vertex above the floor at release, in em. The
-// settle holds at 0.15 and 0.25 either side of this; the narrowphase still
-// reports one contact per step, so above 0.25 is untested.
+// Height of the lowest hull vertex above the floor at release, in em.
 const RELEASE_CLEARANCE: f32 = 0.20;
 
-// Every letter is at rest well inside this, which
-// `every_letter_is_at_rest_on_the_floor_before_the_rain_starts` pins at the
-// last tick before the spawn.
 const SETTLE_TICKS: u32 = 120;
 
 const RAIN_START_TICK: u32 = ASSEMBLE_TICKS + SETTLE_TICKS;
 
-// The sim runs until here and is then FROZEN for the `w` sweep. Sweeping while
-// the pile is still rolling reads as two unrelated motions at once; frozen, the
-// only thing moving is the slice, which is the point of the sweep.
+// After this the sim is frozen and only the slice moves.
 const PHYSICS_TICKS: u32 = 360;
 const PHYSICS_PAUSE_TICK: u32 = RAIN_START_TICK + PHYSICS_TICKS;
 
@@ -98,46 +74,34 @@ const SWEEP_TICKS: u32 = 300;
 
 pub(crate) const SEQUENCE_TICKS: u32 = PHYSICS_PAUSE_TICK + SWEEP_TICKS;
 
-// A cap on the drops the scene will hold, not a target: the rain spawns until
-// the sim freezes, and this is the allocation and the point past which a
-// spawn is skipped rather than a schedule.
+// An allocation cap, not a target: a spawn past it is skipped.
 const RAIN_CAP: usize = 64;
 
 const RAIN_INTERVAL_TICKS: u32 = 7;
 const RAIN_INTERVAL_JITTER: u32 = 4;
 
-// Written as the difference of the two above so a jitter wider than the
-// interval is a compile error rather than a wrap to a spawn tick four billion
-// ticks away.
+// A difference, so a jitter wider than the interval fails to compile.
 const RAIN_INTERVAL_MIN: u32 = RAIN_INTERVAL_TICKS - RAIN_INTERVAL_JITTER;
 
 const RAIN_SIZE: f32 = 0.30;
 
 const LETTER_MASS: f32 = 1.0;
 
-// Lighter than a letter, which a 0.30 em drop should be. 48 drops heavier than
-// this drive a body past the 0.075 em tunnelling bound; heavier rain is also
-// what scatters the letters, so this is the most the floor will hold.
+// The most the floor holds: heavier rain tunnels past 0.075 em.
 const RAIN_MASS: f32 = 0.75;
 
-// The lower bound clears the tops of the letters, so nothing is ever spawned
-// inside one.
+// The lower bound clears the tops of the letters.
 const RAIN_HEIGHT: (f32, f32) = (2.6, 3.6);
 
-// Small: most of the impact speed is the fall, and a spawn speed large enough
-// to matter would also be the one that tunnels.
+// A spawn speed large enough to matter is the one that tunnels.
 const RAIN_ENTRY_SPEED: f32 = 1.0;
 
-// A letter prism spans only the glyph slab in `w` (0.15 em), so a drop whose
-// centre strays much further than its own circumradius would pass the letters
-// by in the fourth dimension rather than hit them.
+// A letter prism spans 0.15 em in w; a drop further out passes it by.
 const RAIN_W_SPREAD: f32 = 0.10;
 
 const RAIN_Z_SPREAD: f32 = 0.20;
 
-// Per-plane ceiling on a drop's spawn tumble, rad/s. At [`RAIN_SIZE`] the
-// fastest material point then travels `6 · 0.30 · SOLVER_DT = 0.0075` em per
-// step, two orders inside the band the narrowphase resolves.
+// Per-plane spawn tumble ceiling, rad/s.
 const RAIN_TUMBLE: f32 = 6.0;
 
 const RESTITUTION: f32 = 0.0;
@@ -195,13 +159,10 @@ pub(crate) struct HeroSequence {
     director: Director,
     letters: Vec<HeroLetter>,
     drops: Vec<HeroDrop>,
-    // Advanced only by a spawn, so the draw a given drop gets does not depend
-    // on how many ticks passed before it.
+    // Advanced only by a spawn, so a drop's draw is independent of tick count.
     rng: u64,
     tick: u32,
     next_spawn_tick: u32,
-    /// Reused across sub-steps; a fresh `Vec` here would allocate four times a
-    /// tick for four floats.
     letter_w_scratch: Vec<f32>,
 }
 
@@ -213,9 +174,6 @@ impl HeroSequence {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
         world.push_field(Box::new(Gravity::new(Vec4::new(0.0, GRAVITY, 0.0, 0.0))));
-        // A pile this deep needs more sweeps than the default 8: the load path
-        // from the top of the rain down to the floor is many contacts long,
-        // and PGS propagates one contact per iteration.
         world.pgs_iters = PILE_PGS_ITERS;
         let floor = world.push_body(halfspace4_body_r4(Vec4::Y, FLOOR_Y));
         world.bodies[floor].restitution = RESTITUTION;
@@ -239,9 +197,7 @@ impl HeroSequence {
             director,
             letters,
             drops: Vec::with_capacity(RAIN_CAP),
-            // xorshift64* has a fixed point at zero, so a zero seed would
-            // produce a constant stream rather than a degenerate one nobody
-            // notices. Mixing in an odd constant keeps seed 0 usable.
+            // xorshift64* fixes zero; the mix keeps seed 0 a live stream.
             rng: seed ^ 0x9e37_79b9_7f4a_7c15,
             tick: 0,
             next_spawn_tick: RAIN_START_TICK,
@@ -267,17 +223,12 @@ impl HeroSequence {
             self.letter_w_scratch = before_w;
         }
         self.tick += 1;
-        // Closes the assemble tick rather than opening the fall one, so the
-        // director and the world never both own a letter at a tick boundary.
+        // Closes the assemble tick: director and world never both own a letter.
         if self.tick == ASSEMBLE_TICKS {
             self.release_letters();
         }
     }
 
-    /// Promotes a drop out of [`GROUP_FALLING`] the first step it touches
-    /// anything, so it stops being transparent to the rest of the rain. Read
-    /// off the manifolds rather than a height, because "has landed" is exactly
-    /// "has a contact" and a height would have to guess at the pile.
     fn land_touched_drops(&mut self) {
         for index in 0..self.drops.len() {
             let id = self.drops[index].body;
@@ -294,15 +245,7 @@ impl HeroSequence {
         }
     }
 
-    /// A DELIBERATE DEVIATION: letters spin only inside the slice. The draw
-    /// poses a section with the rotor and drops `w`, and a 4D rotation's 3x3
-    /// block is not a rotation, so a letter tumbling into a `w` plane flattens
-    /// as that block goes singular. Held here the block is a rotation and the
-    /// draw is exact; the letters read as 4D through `w` translation instead,
-    /// and the rain, which is sliced properly, still tumbles anywhere.
-    ///
-    /// The three kept planes are closed under the Lie bracket, so the rotor
-    /// stays in SO(3): a projection, not a fight with the integrator.
+    // The draw uses the rotor's 3x3 block, which goes singular in a w plane.
     fn hold_letters_in_the_slice(&mut self) {
         for letter in &self.letters {
             let Some(body) = letter.body else { continue };
@@ -313,8 +256,6 @@ impl HeroSequence {
         }
     }
 
-    /// Each letter's `w` velocity, to be handed back to
-    /// [`Self::keep_scenery_from_moving_letters_in_w`] after the solve.
     fn letter_w_velocities(&self, out: &mut Vec<f32>) {
         out.clear();
         out.extend(self.letters.iter().map(|letter| {
@@ -324,16 +265,7 @@ impl HeroSequence {
         }));
     }
 
-    /// A DELIBERATE DEVIATION: scenery may slow a letter along `w` but never
-    /// speed one up. Narrow three ways, so a drop striking a letter still
-    /// drives it off the slice: scenery contacts only, `w` only, and only the
-    /// direction that adds speed.
-    ///
-    /// Friction, not the normal impulse: the floor's normal is pure `y`, but a
-    /// contact's tangent space in R⁴ contains `w`, so a letter's `w`-plane
-    /// spin reads as `w` motion at the contact and friction turns it into
-    /// linear `w`. One-sided because braking must survive; without it a
-    /// rain-pushed letter slides in `w` with nothing to stop it.
+    // Friction in R⁴ has a w tangent that would push a letter off the slice.
     fn keep_scenery_from_moving_letters_in_w(&mut self, before: &[f32]) {
         for (index, letter) in self.letters.iter().enumerate() {
             let Some(body) = letter.body else { continue };
@@ -358,10 +290,6 @@ impl HeroSequence {
         self.tick >= SEQUENCE_TICKS
     }
 
-    /// Where the scene is sliced this tick. Pinned at [`W_SLICE`] for as long
-    /// as the sim runs, then swept once everything has frozen: a slice moving
-    /// under a pile that is still rolling reads as two unrelated motions, and
-    /// the sweep is worth watching precisely because nothing else moves.
     pub(crate) fn slice(&self) -> f32 {
         let Some(since) = self.tick.checked_sub(PHYSICS_PAUSE_TICK) else {
             return W_SLICE;
@@ -370,9 +298,6 @@ impl HeroSequence {
         W_SLICE + SLICE_SWEEP_RANGE * phase.sin()
     }
 
-    /// Centre of the assembled word's bounding box, which is what the orbit
-    /// target is set to: the controller aims the camera at its target, so the
-    /// point named here is the point that lands at the centre of the frame.
     pub(crate) fn word_centre(&self) -> Vec3 {
         let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
         for letter in &self.letters {
@@ -440,9 +365,7 @@ impl HeroSequence {
         let index = self.drops.len();
         let polytope = RAIN_SHAPES[index % RAIN_SHAPES.len()];
         let span = word_span(&self.letters);
-        // Rust evaluates argument lists left to right, so the draws below
-        // consume the stream in written order and the seed pins each
-        // coordinate to a particular position in it.
+        // Argument order is stream order, so each coordinate has a fixed draw.
         let position = Vec4::new(
             lerp(span.0, span.1, unit(self.draw())),
             lerp(RAIN_HEIGHT.0, RAIN_HEIGHT.1, unit(self.draw())),
@@ -474,9 +397,6 @@ impl HeroSequence {
         body.angular_velocity = tumble;
         body.collision_group = GROUP_FALLING;
         body.collision_mask = MASK_FALLING;
-        // The exact uniform-solid moment, not `polytope_body_r4`'s bounding
-        // ball: every one of these symmetry groups acts irreducibly on R⁴, so
-        // the scalar inertia slot is exact rather than an approximation.
         body.inertia = regular_polytope4_inertia(polytope, RAIN_MASS, RAIN_SIZE);
         self.drops.push(HeroDrop {
             body: id,
@@ -487,8 +407,7 @@ impl HeroSequence {
         self.next_spawn_tick = self.tick + RAIN_INTERVAL_MIN + jitter;
     }
 
-    // xorshift64* (Vigna 2016, *An experimental exploration of Marsaglia's
-    // xorshift generators, scrambled*, §4).
+    // xorshift64*, Vigna 2016 §4.
     fn draw(&mut self) -> u64 {
         self.rng ^= self.rng >> 12;
         self.rng ^= self.rng << 25;
@@ -499,7 +418,6 @@ impl HeroSequence {
 
 #[cfg(test)]
 impl HeroSequence {
-    // Backwards is a no-op: the solver has no inverse.
     fn run_to(&mut self, tick: u32) {
         while self.tick < tick {
             self.tick();
@@ -538,14 +456,11 @@ impl HeroSequence {
     }
 }
 
-// Draw in `[0, 1)`. The top 24 bits convert to `f32` exactly and the scale is
-// a power of two, so the value is identical on any host that rounds
-// IEEE-754.
+// Top 24 bits scaled by a power of two: exact on any IEEE-754 host.
 fn unit(draw: u64) -> f32 {
     ((draw >> 40) as u32) as f32 * (1.0 / 16_777_216.0)
 }
 
-// Draw in `[-1, 1)`, same exactness argument as the unit draw above.
 fn signed_unit(draw: u64) -> f32 {
     2.0 * unit(draw) - 1.0
 }
@@ -554,33 +469,21 @@ fn lerp(a: f32, b: f32, u: f32) -> f32 {
     a + (b - a) * u
 }
 
-/// Every letter of the word resampled onto one shared grid, so a blend between
-/// two of them is elementwise. This is what makes the wordmark a single 4D
-/// solid rather than four: letter `k` is the same field read at a `w` offset
-/// of `k`, so sliding a letter through `w` sweeps its cross-section through
-/// the other letterforms and lands on its own.
+/// Every letter on one shared grid, so a blend between two is elementwise.
 pub(crate) struct MorphField {
     origin: glam::Vec2,
     cell: f32,
     counts: (usize, usize),
-    /// One resampled grid per letter, in word order.
     letters: Vec<Vec<f32>>,
     blended: Vec<f32>,
 }
 
-// A letter's own field is baked over its own bounding box, so the shared grid
-// has to cover the widest letter with the padding the blend needs: a shape
-// growing out of a neighbour reaches past both outlines on the way.
+// A shape growing out of a neighbour reaches past both outlines.
 const MORPH_PAD_EM: f32 = 0.25;
 
-// How much `w` separates one letterform from the next. Sized against
-// `W_ENTRY_SPAN` so the entry sweeps about two letterforms, which reads as a
-// morph rather than as a full cycle of the word.
 const W_PER_LETTERFORM: f32 = 0.3;
 
 impl MorphField {
-    /// `None` if the word has no ink, which cannot happen for a real font but
-    /// is the honest result for one that hands back only blanks.
     fn new(solids: &[GlyphSolid], cell: f32) -> Option<Self> {
         let inked: Vec<&GlyphSolid> = solids.iter().filter(|s| !s.is_blank()).collect();
         let mut half = glam::Vec2::ZERO;
@@ -599,17 +502,11 @@ impl MorphField {
         );
         let origin = -half;
 
-        // Each letter is resampled about its OWN centre, so the blend morphs a
-        // letter in place instead of sliding it across the shared grid.
         let letters = inked
             .iter()
             .map(|solid| {
                 let field = solid.field().expect("checked above");
-                // The SAME centre `rigid_hull_4d` puts the collider on, which
-                // is the hull ring's centroid and not the field's bounding-box
-                // centre. Resampling about the box centre instead offsets the
-                // drawn section from the body it belongs to, which shows up as
-                // the word sinking through the floor.
+                // About the hull centroid the body sits on, not the box centre.
                 let centre = solid
                     .rigid_hull_4d()
                     .map(|(c, _)| glam::Vec2::new(c.x, c.y))
@@ -633,9 +530,6 @@ impl MorphField {
         })
     }
 
-    /// The field `u` letterforms along the word, wrapping, so the sequence is a
-    /// loop and a letter approaching from either side of the slice finds a
-    /// neighbour rather than an edge.
     fn blend_at(&mut self, u: f32) -> Option<loam_text::glyph::DistanceField2D> {
         let n = self.letters.len();
         let wrapped = u.rem_euclid(n as f32);
@@ -674,13 +568,8 @@ fn letter_from(solid: &GlyphSolid, index: usize) -> Result<HeroLetter> {
     })
 }
 
-/// Shifts every mark so the assembled word straddles the origin in `x`. The
-/// layout pen starts at `x = 0` and advances right, so an unshifted word sits
-/// entirely to one side of the orbit target and reads off-centre in frame.
 fn centre_word_on_origin(letters: &mut [HeroLetter]) {
-    // The INK, not the marks: a mark is its glyph's own centre, and the
-    // letters differ in width, so the midpoint of the marks is not the
-    // midpoint of what is drawn.
+    // Over the ink, not the marks: the letters differ in width.
     let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
     for letter in letters.iter() {
         for v in &letter.hull {
@@ -734,45 +623,26 @@ fn assembly_timeline(letters: &[HeroLetter]) -> Timeline {
 
 const LETTER_COLOR: [f32; 4] = [0.92, 0.90, 0.86, 1.0];
 
-// Read by the physics half-space the letters land on and by the background's
-// analytic ground, so the drawn floor cannot drift from the one they hit.
+// Shared by the physics half-space and the drawn ground.
 const FLOOR_Y: f32 = 0.0;
 
-// The letters live in a slab about `w = 0`, so this is where their neighbours
-// have to be cut to share a scene with them.
-// The slice the scene is viewed at while nothing has been disturbed. Letters
-// rest here, so at rest each one cuts its own letterform.
 const W_SLICE: f32 = 0.0;
 
-// How far the slice travels once the sim has frozen. A letterform every
-// `W_PER_LETTERFORM`, so a sweep of the whole word carries every letter
-// through every other letterform and back to its own.
 const SLICE_SWEEP_RANGE: f32 = 4.0 * W_PER_LETTERFORM;
 
-// 32-bit float: the caps of a tumbling 24-cell are thin and densely stacked,
-// and 24-bit depth cracks them.
+// 24-bit depth cracks the thin, dense caps of a tumbling 24-cell.
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-// The 3.488 em word fills 42% of a `d * tan(30 deg) * 16/9` half-frame here.
-// The bound is the rain, not the word: its +/-2.04 em spread fits the 4.11 em
-// half-frame, and its 2.6 to 3.6 em spawn height sits above the 2.73 em top of
-// view, so a drop falls into frame rather than appearing inside it.
+// Bounded by the rain: its spawn height must sit above the top of view.
 const BOOT_ORBIT_DISTANCE: f32 = 4.0;
 const BOOT_ORBIT_PITCH: f32 = -0.12;
 const BOOT_EYE_HEIGHT: f32 = 1.4;
 
-/// Latin Modern Roman 10 Bold, GUST's OpenType cut of Knuth's Computer
-/// Modern, under the GUST Font License beside it. Vendored unmodified, so the
-/// licence's rename request, which binds derived works, does not apply.
-///
-/// Bundled rather than a system face so the typeset word, and with it the
-/// trajectory, is identical on any machine running the same binary.
+/// Latin Modern Roman 10 Bold, vendored unmodified under the GUST Font License.
 pub(crate) fn hero_font_bytes() -> &'static [u8] {
     include_bytes!("../fonts/lmroman10-bold.otf")
 }
 
-// The scene's whole GPU footprint, in one call so a rebuild's cost is
-// measurable from a device with no surface behind it.
 pub(crate) fn build_triangles(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -789,8 +659,6 @@ pub(crate) fn build_triangles(
     )
 }
 
-// The playground's catalogue colours, inlined: this crate draws six shapes and
-// does not otherwise need a shape table.
 fn drop_color(polytope: Polytope4) -> [f32; 3] {
     match polytope {
         Polytope4::Pentatope => [0.95, 0.55, 0.30],
@@ -815,15 +683,7 @@ fn build_frame_mesh(
     push_drop_caps(sequence, local, scratch, mesh);
 }
 
-// The morph field IS a letter's 4D solid, so it is read for the letter's whole
-// life: one knocked along `w` sweeps its section through the neighbouring
-// letterforms. Exact while a letter's own `w` axis stays parallel to the
-// world's, which covers all of its `w` translation; once a hit tumbles it into
-// a `w` plane the true section would need marching a 3D implicit surface, and
-// the morph parameter is taken at the body centre instead.
-//
-// 3.31 ms a frame while morphing against 0.62 ms settled: a fifth of a 60 Hz
-// budget, and it would not fit at 240 Hz.
+// Sampled at the body centre; exact while the letter's w axis is world w.
 fn push_letters(sequence: &mut HeroSequence, mesh: &mut TriangleMesh<3>) {
     let half_depth = 0.5 * GlyphParams::default().depth;
     let slice = sequence.slice();
@@ -832,10 +692,7 @@ fn push_letters(sequence: &mut HeroSequence, mesh: &mut TriangleMesh<3>) {
         let translate = pose.position_r3();
         let base = mesh.vertices.len() as u32;
 
-        // `w` runs the other way from the letterform index so a letter
-        // approaching from negative `w` arrives through the letters BEFORE it
-        // in the word, which reads as the word assembling rather than
-        // unwinding.
+        // Negative w reads the letterforms BEFORE this one in the word.
         let u = index as f32 - (pose.position.w - slice) / W_PER_LETTERFORM;
         let Some(field) = sequence.morph.blend_at(u) else {
             continue;
@@ -890,16 +747,12 @@ fn push_drop_caps(
     }
 }
 
-/// Where `--record` writes its frames. `None` takes the shell's capture
-/// directory, the same one the capture panel uses.
+/// Where `--record` writes; `None` is the shell's capture directory.
 pub(crate) struct RecordRequest {
     pub(crate) dir: Option<std::path::PathBuf>,
 }
 
-// The runner drains capture requests AFTER `update` and taps the swapchain
-// after that, so a stop enqueued on the tick the sequence ends would discard
-// that tick's frame, which is the pose the whole sequence builds to. One frame
-// of lag records it and then stops.
+// Stop lags a frame: the runner drains captures after update and taps after.
 enum Recording {
     Running,
     LastFrameQueued,
@@ -953,15 +806,9 @@ impl HeroScene {
     pub(crate) fn new(ctx: &mut SetupCtx<'_>, record: Option<RecordRequest>) -> Result<Self> {
         let console = Self::build_console();
         let recording = record.map(|record| {
-            // The sequence advances on ticks and the tap fires on rendered
-            // frames, so the recording only runs at the sequence's own speed
-            // where the two are locked: uncapped, this machine rendered 1760
-            // frames for 870 ticks.
+            // The tap fires per rendered frame; lock frames to ticks.
             loam_app::frame_pacing::set_target_fps(TICK_HZ as f32);
-            // APNG rather than a PNG sequence: one lossless file and no
-            // external encoder. The cost is that the worker holds every frame
-            // in memory until the stop, which is what bounds a run to this
-            // length. Pre-egui, so the console never lands in a frame.
+            // Pre-egui, so the console never lands in a frame.
             loam_app::capture::enqueue(CaptureRequest::StartSequence {
                 format: CaptureFormat::Apng,
                 stage: CaptureStage::Pre,
@@ -1095,8 +942,7 @@ impl loam_app::shell::Scene for HeroScene {
         let proj_mat = Mat4::perspective_rh(55.0_f32.to_radians(), aspect, 0.05, 200.0);
         let view_proj = proj_mat * view_mat;
 
-        // This scene owns the clear: nothing runs before it in the frame's
-        // encoder, and the raster node loads rather than clears.
+        // First in the encoder; the raster node loads rather than clears.
         self.sky_ground.set_uniforms(
             &rd.queue,
             &SkyGroundUniforms::new(
@@ -1139,38 +985,26 @@ mod tests {
 
     const SEED: u64 = 0x10a3_5eed;
 
-    // Ticks over which a settled letter must hold still, and the position
-    // spread allowed across them. The measured worst is 0.0063 em on `L`, and
-    // what is left at rest is the Baumgarte limit cycle: gravity sinks the
-    // letter over a step and the positional bias pushes it back out, forever,
-    // at the slop's amplitude.
     const REST_WINDOW_TICKS: u32 = 60;
+    // Measured worst at rest: 0.0063 em, the Baumgarte limit cycle.
     const REST_SPREAD: f32 = 0.02;
 
     // Displacement, in em, that reads as knocked aside rather than nudged.
     const SCATTER_THRESHOLD: f32 = 0.25;
 
-    // A tunneling bound, not a contact bound: the resting overlap the solver
-    // holds is `PENETRATION_SLOP`, and an impact transiently reaches 0.034, so
-    // a body 0.075 under would be one that the contact never caught.
+    // An impact transiently reaches 0.034; deeper, the contact never caught.
     const TUNNEL_DEPTH: f32 = 0.075;
 
-    // 1.5x the measured peak. The mesh is rebuilt and re-uploaded every frame,
-    // so its size is a per-frame bandwidth cost rather than a one-time bake.
+    // 1.5x the measured peak.
     const MESH_VERTEX_BUDGET: u32 = 42_000;
 
-    // Per-step travel, in em, the R⁴ narrowphase still resolves against a thin
-    // static wall, as recorded by `loam_physics::world`'s tunneling gate.
-    // Sampling the floor test once per tick is sound only if no body can cross
-    // and return inside a tick, which is what bounding the travel buys.
+    // Per-step travel the R⁴ narrowphase still resolves against a thin wall.
     const RESOLVABLE_STEP_TRAVEL: f32 = 0.150;
 
     fn scene() -> HeroSequence {
         HeroSequence::new(hero_font_bytes(), SEED).expect("hero scene")
     }
 
-    // Indexes the INKED solids, which is what every caller enumerates, so a
-    // word carrying a blank would otherwise mislabel every message downstream.
     fn label(index: usize) -> char {
         WORD.chars()
             .filter(|c| !c.is_whitespace())
@@ -1225,9 +1059,6 @@ mod tests {
             letters_a, letters_b,
             "the seed reached the letters' landing"
         );
-        // Counts differ by seed now: the rain spawns on a jittered interval
-        // until the freeze rather than to a fixed total, so the seed reaches
-        // how many fell as well as where.
         assert!(
             drops_a.len() != drops_b.len() || drops_a.iter().zip(&drops_b).any(|(a, b)| a != b),
             "two seeds rained identically, so the seed is decoration"
@@ -1253,9 +1084,7 @@ mod tests {
             scene.letters().len() + 1,
             "the release did not hand every letter to the solver"
         );
-        // Each body starts at the pose the director's last key put its letter
-        // in. The slides have all finished by then, so the last two director
-        // frames are the same pose and the equality is exact.
+        // The slides finish before the release, so the handover pose is exact.
         for (index, before) in directed.iter().enumerate() {
             assert_eq!(scene.letter_pose(index).position, *before);
         }
@@ -1310,12 +1139,7 @@ mod tests {
         let settled = letter_positions(&s);
         s.run_to(SEQUENCE_TICKS);
 
-        // A band, not the four measured displacements: the pile is chaotic, so
-        // exact figures re-record on any solver or constant change and pin
-        // nothing. Both edges are regressions that happened. Under the floor,
-        // the rain stopped reaching the letters at all; over it, scenery
-        // friction stopped braking `w` and a letter slid 4.4 em out of a
-        // 3.5 em word.
+        // A band: the pile is chaotic, so exact figures pin nothing.
         for (index, (before, after)) in settled.iter().zip(&letter_positions(&s)).enumerate() {
             let moved = before.distance(*after);
             assert!(
@@ -1394,10 +1218,6 @@ mod tests {
             let exact = regular_polytope4_inertia(drop.polytope(), RAIN_MASS, RAIN_SIZE);
             assert_eq!(body.inertia, exact, "drop {index} kept the ball's moment");
         }
-        // The two large polychora were spheres until the narrowphase stopped
-        // materialising world vertices through a fixed buffer. They are the
-        // reason that cap is gone, so the rain is where their absence would
-        // show first.
         for large in [Polytope4::Cell120, Polytope4::Cell600] {
             assert!(
                 RAIN_SHAPES.contains(&large),
@@ -1433,10 +1253,6 @@ mod tests {
     fn the_assembled_word_is_centred_on_what_the_camera_aims_at() {
         let scene = HeroSequence::new(hero_font_bytes(), DEFAULT_SEED).expect("scene");
         let centre = scene.word_centre();
-        // The orbit controller aims the camera at its target, so a target on
-        // the word's bounding-box centre IS the word centred in frame. The
-        // regression this catches is the layout pen: it starts at x = 0 and
-        // advances right, so an unshifted word sits wholly to one side.
         assert!(
             centre.x.abs() < 1e-5,
             "the word centres at x {}, so it hangs off one side of frame",
@@ -1467,8 +1283,6 @@ mod tests {
             .reduce(|(lo, hi), (l, h)| (lo.min(l), hi.max(h)))
     }
 
-    // Bounds of everything the frame drew, which is how a section's identity
-    // is compared without pinning vertex positions a re-bake would move.
     fn letter_section_bounds(scene: &mut HeroSequence, index: usize) -> (Vec3, Vec3) {
         let pose = scene.letter_pose(index);
         let u = index as f32 - (pose.position.w - W_SLICE) / W_PER_LETTERFORM;
@@ -1504,8 +1318,6 @@ mod tests {
             lo = lo.min(scene.slice());
             hi = hi.max(scene.slice());
         }
-        // A full sweep either side, which is what carries every letter through
-        // every other letterform.
         assert!(
             hi > 0.9 * SLICE_SWEEP_RANGE && lo < -0.9 * SLICE_SWEEP_RANGE,
             "the sweep only reached [{lo}, {hi}] of +/-{SLICE_SWEEP_RANGE}"
@@ -1523,9 +1335,7 @@ mod tests {
             .map(|i| scene.letter_pose(i).position)
             .collect();
 
-        // Checked on the way through rather than at the end: `run_to` only
-        // goes forwards, and a whole sweep lands back on the resting slice by
-        // construction, so the end is exactly where the sweep is invisible.
+        // A whole sweep ends on the resting slice, so the end shows nothing.
         let mut swept = 0.0f32;
         for tick in PHYSICS_PAUSE_TICK..SEQUENCE_TICKS {
             scene.run_to(tick);
@@ -1560,11 +1370,7 @@ mod tests {
             scene.run_to(tick);
             for index in 0..scene.letters().len() {
                 let r = scene.letter_pose(index).rotor;
-                // The block the draw actually uses: the rotor applied to each
-                // local axis, truncated. A 4D rotation's 3x3 block is NOT a
-                // rotation, and when the letter tumbles into a `w` plane it
-                // goes singular and the letter flattens to a sheet. Holding
-                // the letters' spin inside the slice is what keeps this at 1.
+                // The draw's 3x3 block; singular once tumbled into a w plane.
                 let det = r.apply(Vec4::X).truncate().dot(
                     r.apply(Vec4::Y)
                         .truncate()
@@ -1586,8 +1392,6 @@ mod tests {
     fn the_rain_still_tumbles_through_the_w_planes_the_letters_are_held_out_of() {
         let mut scene = scene();
         scene.run_to(SEQUENCE_TICKS);
-        // The deviation is the LETTERS', not the scene's: a drop is sliced
-        // properly, so it can tumble anywhere and show it honestly.
         let spun = (0..scene.drops().len())
             .map(|i| {
                 let spin = scene.world.bodies[scene.drops()[i].body].angular_velocity;
@@ -1619,7 +1423,6 @@ mod tests {
             "nothing was in the air 20 ticks into the rain"
         );
 
-        // No manifold ever holds two bodies that are both still falling.
         for tick in RAIN_START_TICK..PHYSICS_PAUSE_TICK {
             scene.run_to(tick);
             for (key, manifold) in &scene.world.manifolds {
@@ -1634,8 +1437,6 @@ mod tests {
             }
         }
 
-        // And landing is not a one-way trip into never colliding: by the
-        // freeze most of the rain has joined the pile.
         let landed = (scene.drops().iter())
             .filter(|d| scene.world.bodies[d.body].collision_group == GROUP_LANDED)
             .count();
@@ -1649,7 +1450,6 @@ mod tests {
     #[test]
     fn the_floor_never_slides_a_letter_along_w_but_the_rain_still_does() {
         let mut scene = scene();
-        // The whole settle, where the only thing touching a letter is scenery.
         for tick in ASSEMBLE_TICKS..RAIN_START_TICK {
             scene.run_to(tick);
             for (index, letter) in scene.letters().iter().enumerate() {
@@ -1663,8 +1463,6 @@ mod tests {
             }
         }
 
-        // And the rain still drives them off the slice, which is the effect
-        // the deviation above exists to protect rather than to suppress.
         scene.run_to(PHYSICS_PAUSE_TICK);
         let pushed = (scene.letters().iter())
             .map(|l| {
@@ -1684,9 +1482,6 @@ mod tests {
         scene.run_to(ASSEMBLE_TICKS);
         for index in 0..scene.letters().len() {
             let (lo, hi) = letter_section_bounds(&mut scene, index);
-            // Oracle built independently of the scene: the glyph's own mesh,
-            // straight from the font, so the blend is checked against the
-            // letterform and not against another copy of itself.
             let font = ab_glyph::FontRef::try_from_slice(hero_font_bytes()).expect("font");
             let solids = layout_word(&font, WORD, &GlyphParams::default()).expect("layout");
             let solid = solids
@@ -1696,9 +1491,7 @@ mod tests {
                 .expect("a solid per letter");
             let own = bounds_of(&Visualizable::<3>::to_triangles(solid).expect("glyph mesh"))
                 .expect("baked mesh");
-            // The morph grid is centred on each glyph and resampled at the
-            // same pitch it was baked at, so at its own letterform the section
-            // reproduces the glyph to within a cell.
+            // Resampled at the bake pitch, so a section matches to a cell.
             let cell = GlyphParams::default().em_size / GlyphParams::default().resolution as f32;
             let (want, got) = (own.1 - own.0, hi - lo);
             assert!(
@@ -1722,10 +1515,7 @@ mod tests {
         let mid = letter_section_bounds(&mut approaching, 0);
         let own = settled[0];
 
-        // Not a scaled copy: a pure scale about a point keeps the aspect
-        // ratio, so a changed ratio is the signature of a genuine morph. This
-        // is exactly what the bicone could not do, and what an opacity fade
-        // stood in for before that.
+        // A pure scale keeps the aspect ratio; a changed ratio is a morph.
         let ratio = |(lo, hi): (Vec3, Vec3)| (hi.x - lo.x) / (hi.y - lo.y);
         assert!(
             (ratio(mid) - ratio(own)).abs() > 0.05,
@@ -1733,7 +1523,6 @@ mod tests {
             ratio(mid),
             ratio(own)
         );
-        // And it is never empty on the way in, which the taper was.
         assert!(mid.1.y - mid.0.y > 0.1, "the approach drew almost nothing");
     }
 
@@ -1741,8 +1530,6 @@ mod tests {
     fn the_letterform_sequence_wraps_so_neither_direction_runs_off_the_word() {
         let mut scene = scene();
         let count = scene.letters().len() as f32;
-        // Far outside `[0, count)` in both directions: the word is a loop, so
-        // every `u` names a blend and none falls off an end.
         for step in -20..=20 {
             let u = step as f32 * 0.37 * count;
             assert!(
@@ -1758,9 +1545,6 @@ mod tests {
         let entries = letter_positions(&scene);
         for (index, letter) in scene.letters().iter().enumerate() {
             assert_eq!(entries[index], letter.entry);
-            // The whole point of the entrance: a letter arrives by crossing
-            // into the slice, not by sliding across it. A 3D translation here
-            // is the regression this pins.
             let offset = letter.entry + letter.mark * -1.0;
             assert!(
                 offset.w.abs() > W_PER_LETTERFORM,
@@ -1828,10 +1612,6 @@ mod tests {
             .map(GlyphSolid::collider_margin)
             .fold(0.0f32, f32::max);
 
-        // Per-letter spans are gone: a morph section has its own vertex
-        // count per letter and per frame, so the bound is taken over the
-        // whole drawn word instead. It still fails if any single letter sinks
-        // or floats, which is the property.
         let mut mesh = TriangleMesh::<3>::default();
         push_letters(&mut scene, &mut mesh);
         assert!(!mesh.vertices.is_empty(), "the settled word drew nothing");

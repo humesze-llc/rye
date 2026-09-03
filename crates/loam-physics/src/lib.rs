@@ -1,7 +1,3 @@
-//! The integration loop is written against [`loam_math::Space`] operations
-//! only, so it does not assume flat space: `exp`, `parallel_transport`,
-//! `distance`.
-
 pub mod body;
 pub mod collider;
 pub mod field;

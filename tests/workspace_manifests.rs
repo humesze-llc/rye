@@ -1,17 +1,6 @@
-//! Publishability gate over every workspace manifest.
-//!
-//! `cargo publish` rejects a dependency that names a `path` but no `version`,
-//! and the rejection surfaces only at publish time: a path-only dep resolves
-//! fine locally, so nothing in the ordinary build, clippy or test gates
-//! notices that the workspace cannot be released.
-//!
-//! The checks are stricter than cargo's rule in two places, both deliberate.
-//! Cargo strips a version-less dev-dependency from the published manifest
-//! rather than rejecting it, and cargo accepts any requirement that admits the
-//! local package. Requiring an exact match against `workspace.package.version`
-//! keeps a version bump from leaving the hand-written requirements pointing at
-//! the previous release: a dep that declares both path and version resolves
-//! through the path locally, so it never disagrees with itself until publish.
+//! `cargo publish` rejects a path dependency with no `version`, and only at
+//! publish time. Stricter than cargo: intra-workspace versions must equal
+//! `workspace.package.version` exactly, so a bump cannot leave them behind.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -30,8 +19,7 @@ fn parse_manifest(path: &Path) -> DocumentMut {
         .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-/// Root manifest first, then members in declaration order, so a failure
-/// message names the same manifest on every run.
+/// Root first, then members in declaration order, for stable failure messages.
 fn manifests() -> Vec<(String, DocumentMut)> {
     let root = parse_manifest(&workspace_root().join("Cargo.toml"));
 
@@ -64,10 +52,7 @@ fn member_package_names() -> BTreeSet<String> {
         .collect()
 }
 
-/// Every dependency declared anywhere in `manifest`, as (table label, dep name, spec).
-/// The three dependency kinds appear at the top level, again under each
-/// `[target.'cfg(..)']` block, and once more as `[workspace.dependencies]`;
-/// missing any of those would leave a place a path-only dep could hide.
+/// Top-level, `target.'cfg(..)'` and `workspace.dependencies` tables alike.
 fn dependencies(manifest: &DocumentMut) -> Vec<(String, String, &Item)> {
     const KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
 
@@ -106,7 +91,6 @@ fn dep_key<'a>(spec: &'a Item, key: &str) -> Option<&'a Item> {
     spec.as_table_like()?.get(key)
 }
 
-/// A path dep with no version is exactly what `cargo publish` refuses.
 #[test]
 fn path_dependencies_declare_a_version() {
     let mut offenders = Vec::new();
@@ -124,8 +108,6 @@ fn path_dependencies_declare_a_version() {
     );
 }
 
-/// Pins the version requirements against `workspace.package.version` so a
-/// version bump cannot silently leave them behind.
 #[test]
 fn intra_workspace_dep_versions_track_the_workspace_version() {
     let expected = workspace_version();

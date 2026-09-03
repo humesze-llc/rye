@@ -1,5 +1,4 @@
-//! The persistent contact cache lives in `crate::manifold`, not here, because it depends on
-//! `PhysicsSpace` (S::Vector, etc.) and these algorithms are deliberately Space-free.
+//! Space-free: nothing here depends on `PhysicsSpace`.
 
 pub mod epa;
 pub mod epa_r4;

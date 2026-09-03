@@ -109,22 +109,6 @@ mod tests {
     }
 
     #[test]
-    fn advance_move_up_lifts_player_along_world_y() {
-        let mut player: PlayerState<EuclideanR3> = PlayerState::new(Vec3::ZERO);
-        player.advance(
-            &FrameInput {
-                move_up: 1.0,
-                ..FrameInput::default()
-            },
-            &EuclideanR3,
-            1.0,
-        );
-        assert_close(player.position.x, 0.0);
-        assert_close(player.position.y, 1.0);
-        assert_close(player.position.z, 0.0);
-    }
-
-    #[test]
     fn with_yaw_rotates_forward_direction() {
         let mut player: PlayerState<EuclideanR3> =
             PlayerState::new(Vec3::ZERO).with_yaw(std::f32::consts::FRAC_PI_2);

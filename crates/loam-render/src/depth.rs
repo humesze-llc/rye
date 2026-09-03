@@ -1,9 +1,3 @@
-//! Sample count must match the color attachment's MSAA configuration.
-//! [`DepthBuffer::ensure`] rechecks size and sample count every frame
-//! because the framework surfaces no resize hook. Only the
-//! [`wgpu::TextureView`] is held; the texture stays alive through the
-//! view's own Arc.
-
 use wgpu::{
     Device, Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
     TextureView, TextureViewDescriptor,

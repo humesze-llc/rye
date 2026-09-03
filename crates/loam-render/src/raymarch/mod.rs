@@ -1,11 +1,6 @@
-//! The user shader must export two entry points:
-//!
-//! ```wgsl
-//! @vertex   fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> { ... }
-//! @fragment fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> { ... }
-//! ```
-//!
-//! See [`RayMarchUniforms`] for the layout of bind group 0 / binding 0.
+//! The user shader exports `vs_fullscreen(@builtin(vertex_index))` and
+//! `fs_main(@builtin(position))`, and binds [`RayMarchUniforms`] at group 0,
+//! binding 0.
 
 mod geodesic;
 mod hyperslice4d;
@@ -18,9 +13,7 @@ pub use hyperslice4d::{
 };
 pub use polytope_data::{polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl};
 
-/// Bridge a raymarch shape ID (one of the `SHAPE_*` constants re-exported
-/// above) to its [`loam_shape::polytope::Polytope4`] variant. `None` for the
-/// smooth-surface SDFs, which have no polytope topology.
+/// `None` for the smooth-surface SDFs.
 pub fn polytope4_from_shape_id(shape: u32) -> Option<loam_shape::polytope::Polytope4> {
     use loam_shape::polytope::Polytope4;
     Some(match shape {
@@ -44,7 +37,6 @@ pub enum RaymarchShape {
 }
 
 impl RaymarchShape {
-    /// GPU-side shape index (matches a `SHAPE_*` u32 constant).
     pub fn shape_id(&self) -> u32 {
         use loam_shape::polytope::Polytope4;
         match self {
@@ -63,7 +55,6 @@ impl RaymarchShape {
         }
     }
 
-    /// `None` for the smooth-surface shapes, which have no polytope topology.
     pub fn polytope4(&self) -> Option<loam_shape::polytope::Polytope4> {
         match self {
             RaymarchShape::Polytope(p) => Some(*p),
@@ -91,9 +82,7 @@ use wgpu::*;
 use crate::device::RenderDevice;
 use crate::graph::RenderNode;
 
-/// Uniform buffer for [`RayMarchNode`]. Bind group 0, binding 0. `std140`
-/// layout: every `vec3` is padded to 16 bytes, so WGSL uniform access matches
-/// without `@align` annotations.
+/// Bind group 0, binding 0, `std140`: every `vec3` pads to 16 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct RayMarchUniforms {
@@ -105,11 +94,8 @@ pub struct RayMarchUniforms {
     pub _pad2: f32,
     pub camera_up: [f32; 3],
     pub fov_y_tan: f32,
-    /// Framebuffer size in pixels.
     pub resolution: [f32; 2],
-    /// Seconds since app start.
     pub time: f32,
-    /// Current sim tick, as f32 for the std140 layout.
     pub tick: f32,
     /// Four scalar knobs; semantics are up to the user shader.
     pub params: [f32; 4],
@@ -143,8 +129,6 @@ pub struct RayMarchNode {
 }
 
 impl RayMarchNode {
-    /// `sample_count` must match the color attachment's sample count at draw time
-    /// ([`crate::device::RenderDevice::sample_count`] in app code, 1 in tests).
     pub fn new(
         device: &Device,
         surface_format: TextureFormat,
@@ -241,16 +225,14 @@ impl RayMarchNode {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
     }
 
-    /// Render loops must call this, or [`set_uniforms`](Self::set_uniforms),
-    /// before the first draw; the UBO is undefined at construction.
+    /// The UBO is undefined until this or [`set_uniforms`](Self::set_uniforms) runs.
     pub fn flush_uniforms(&self, queue: &Queue) {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
     }
 }
 
 impl RayMarchNode {
-    /// `clear` selects `LoadOp::Clear` (first panel) or `LoadOp::Load`
-    /// (subsequent panels). `scissor` is `[x, y, width, height]` in pixels.
+    /// `clear` selects `LoadOp::Clear`; `scissor` is `[x, y, width, height]`.
     pub fn execute_panel(
         &mut self,
         rd: &RenderDevice,
@@ -261,13 +243,8 @@ impl RayMarchNode {
         self.execute_impl(rd, view, clear, Some(scissor))
     }
 
-    /// Records into the caller's `encoder` and draws only inside `viewport`; the
-    /// clear still covers the whole attachment. Does not submit, so a host owning
-    /// one encoder per frame need not reorder its passes behind this one.
-    ///
-    /// The fragment shader still receives framebuffer-space `@builtin(position)`,
-    /// so a shader drawn into an offset viewport takes its own origin from the
-    /// caller; the free [`RayMarchUniforms::params`] slots are the place for it.
+    /// Records into the caller's encoder without submitting; the clear covers the
+    /// whole attachment.
     pub fn record_in_viewport(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -337,6 +314,9 @@ impl RayMarchNode {
         Ok(())
     }
 }
+
+const _: fn(&mut RayMarchNode, &RenderDevice, &wgpu::TextureView, bool, [u32; 4]) -> Result<()> =
+    RayMarchNode::execute_panel;
 
 impl RenderNode for RayMarchNode {
     fn name(&self) -> &'static str {

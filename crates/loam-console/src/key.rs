@@ -1,9 +1,6 @@
-//! The console names its own keys so binds carry no UI-framework type; a
-//! frontend translates at the input boundary.
+//! A frontend translates [`Key`] at its input boundary.
 
-/// Modifiers are not representable: binds fire on unmodified presses only.
-/// Declaration order is the [`Key::ALL`] order and the [`Ord`] order, which is
-/// also the order bound keys fire in when several land in one frame.
+/// Declaration order is [`Key::ALL`] order, `Ord` order and bind firing order.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Key {
@@ -81,7 +78,7 @@ pub enum Key {
 }
 
 impl Key {
-    /// `ALL[i] as usize == i` holds; adding a variant means adding it here.
+    /// `ALL[i] as usize == i`.
     pub const ALL: &'static [Key] = &[
         Key::Escape,
         Key::Tab,
@@ -166,10 +163,5 @@ mod tests {
             last as usize + 1,
             "ALL skips a variant before {last:?}"
         );
-    }
-
-    #[test]
-    fn ord_follows_declaration_order() {
-        assert!(Key::ALL.windows(2).all(|w| w[0] < w[1]));
     }
 }

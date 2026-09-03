@@ -22,15 +22,13 @@ mod native {
     use std::path::{Path, PathBuf};
     use std::sync::mpsc::{channel, Receiver};
 
-    /// [`poll`](Self::poll) deduplicates per path per cycle, so an editor
-    /// save burst collapses to one event per file.
+    /// [`poll`](Self::poll) collapses a save burst to one event per path.
     pub struct AssetWatcher {
         watcher: RecommendedWatcher,
         rx: Receiver<notify::Result<notify::Event>>,
     }
 
     impl AssetWatcher {
-        /// No paths are watched until [`watch`](Self::watch) is called.
         pub fn new() -> Result<Self> {
             let (tx, rx) = channel();
             let watcher = notify::recommended_watcher(move |res| {
@@ -41,7 +39,7 @@ mod native {
             Ok(Self { watcher, rx })
         }
 
-        /// Begin watching `path` recursively.
+        /// Recursive.
         pub fn watch(&mut self, path: impl AsRef<Path>) -> Result<()> {
             let path = path.as_ref();
             self.watcher
@@ -63,9 +61,7 @@ mod native {
 
             while let Ok(res) = self.rx.try_recv() {
                 let Ok(event) = res else {
-                    // `warn`, not `debug`: notify errors are platform-watcher
-                    // failures that silently degrade hot-reload, so surface
-                    // them when reloads stop working.
+                    // warn: a notify error silently degrades hot-reload.
                     tracing::warn!("notify error: {:?}", res.err());
                     continue;
                 };
@@ -98,8 +94,7 @@ mod web {
     use anyhow::Result;
     use std::path::Path;
 
-    /// Every call succeeds and `poll` returns empty, so a consumer compiles
-    /// against the native API and skips hot-reload.
+    /// Compiles against the native API; `poll` is always empty.
     pub struct AssetWatcher {
         _private: (),
     }
@@ -128,10 +123,7 @@ pub use native::AssetWatcher;
 #[cfg(target_arch = "wasm32")]
 pub use web::AssetWatcher;
 
-// `Created` survives a later `Modified` because Windows `fs::write` on a
-// fresh file emits Create+Modify and consumers want "new file" distinct
-// from "changed file." Otherwise the later event wins, handling
-// save-by-atomic-replace correctly.
+// Windows `fs::write` on a fresh file emits Create+Modify; keep Created.
 #[cfg(not(target_arch = "wasm32"))]
 fn merge_kinds(old: AssetEventKind, new: AssetEventKind) -> AssetEventKind {
     use AssetEventKind::*;

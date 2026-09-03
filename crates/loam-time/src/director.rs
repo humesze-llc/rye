@@ -1,6 +1,4 @@
-//! This is presentation timing, not the crate's Tier-0 same-bits contract, and
-//! it must never feed simulation state. The property it does carry is the
-//! weaker same-binary-same-frames one.
+//! Presentation timing only: a directed value must never feed simulation state.
 
 use std::num::NonZeroU32;
 
@@ -8,7 +6,6 @@ use glam::Vec4;
 use loam_math::{Bivector, Rotor, Rotor4};
 use serde::{Deserialize, Serialize};
 
-/// Named easing curve on `[0, 1] -> [0, 1]`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ease {
     #[default]
@@ -18,7 +15,6 @@ pub enum Ease {
 }
 
 impl Ease {
-    /// Reparametrize `u`, clamped to `[0, 1]`.
     pub fn apply(self, u: f32) -> f32 {
         let u = u.clamp(0.0, 1.0);
         match self {
@@ -39,7 +35,6 @@ impl Ease {
     }
 }
 
-/// A channel's value type: how two keys blend at parameter `u` in `[0, 1]`.
 pub trait Interpolate: Copy {
     fn mix(from: Self, to: Self, u: f32) -> Self;
 }
@@ -57,28 +52,14 @@ impl Interpolate for Vec4 {
 }
 
 impl Interpolate for Rotor4 {
-    // Geodesic of the bi-invariant metric on Spin(4), given by
-    // `R(u) = R₀·exp(u·log(R₀⁻¹·R₁))`: the SO(4) reading of the quaternion
-    // slerp (Shoemake 1985, "Animating Rotation with Quaternion Curves",
-    // SIGGRAPH '85, §3). `Rotor4::log` returns the minimal-norm generator,
-    // so this takes the short way round with no double-cover fixup at the
-    // callsite.
-    //
-    // Not renormalized. Every factor is unit by construction and the product
-    // of units is unit to a few ulps, so a `normalize` here would hide drift
-    // rather than bound it; the bound is pinned by test instead.
-    //
-    // `log` is undefined in direction for one relative rotor, the isoclinic
-    // half-turn, which `Timeline::validate` refuses rather than reaching
-    // here.
+    // Geodesic R₀·exp(u·log(R₀⁻¹·R₁)), the SO(4) slerp (Shoemake 1985, §3).
     fn mix(from: Self, to: Self, u: f32) -> Self {
         let relative = from.inverse() * to;
         from * (relative.log() * u).exp()
     }
 }
 
-/// `t` is a timeline second; `ease` is applied to the span reaching this key
-/// from the previous one.
+/// `t` in timeline seconds; `ease` applies to the span reaching this key.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Key<T> {
     pub t: f32,
@@ -87,9 +68,7 @@ pub struct Key<T> {
     pub ease: Ease,
 }
 
-/// A pure function of a frame index, defined by keys in strictly ascending
-/// `t`. The value is held constant before the first key and after the last;
-/// between two keys it blends with the *later* key's easing.
+/// Held at the first key before it and at the last key after it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Track<T> {
@@ -137,9 +116,6 @@ impl<T: Interpolate> Track<T> {
     }
 }
 
-/// `position.w` is a rigid translation along the fourth axis, which decides
-/// whether the body meets the slice at all; it is an existence channel, not a
-/// place, and has no 3D counterpart.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BodyTrack {
     pub name: String,
@@ -151,9 +127,7 @@ pub struct BodyTrack {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Timeline {
-    /// Frames per second the keys' seconds are read at.
     pub fps: u32,
-    /// Frame count; valid indices are `0..frames`.
     pub frames: u32,
     #[serde(default)]
     pub w_slice: Option<Track<f32>>,
@@ -161,17 +135,10 @@ pub struct Timeline {
     pub bodies: Vec<BodyTrack>,
 }
 
-// A key's rotor must be unit: the geodesic assumes it, and `Rotor4::log` of
-// a non-unit relative rotor is not the rotation's generator. The bound
-// admits a component hand-rounded to four decimals, whose worst-case norm²
-// error is `2·√8·5e-5 ≈ 2.8e-4`, and refuses anything that is a different
-// rotor rather than a rounded one.
+// Admits a component hand-rounded to four decimals.
 const UNIT_ROTOR_TOLERANCE: f32 = 1e-3;
 
 impl Timeline {
-    /// Rejects at authoring time everything the sampler would otherwise have
-    /// to cope with mid-playback. The returned rate is why the sampler's
-    /// divisor cannot be zero.
     pub fn validate(&self) -> Result<NonZeroU32, TimelineError> {
         let fps = NonZeroU32::new(self.fps).ok_or(TimelineError::ZeroFps)?;
         if self.frames == 0 {
@@ -263,10 +230,6 @@ pub enum TimelineError {
         index: usize,
         norm_squared: f32,
     },
-    /// Both invariant angles are π, so the rotor negates every vector and
-    /// every plane pair through the origin is invariant. The plane the
-    /// geodesic would turn in is not in the rotor to recover, and no
-    /// downstream code can repair that; the fix is an intermediate key.
     #[error(
         "channel '{channel}' keys {index} and {} differ by an isoclinic half-turn, \
          whose rotation plane the rotor does not carry; insert an intermediate key",
@@ -279,7 +242,6 @@ pub enum TimelineError {
     Ron(#[from] ron::error::SpannedError),
 }
 
-/// Position in whole frames.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Playhead {
     frame: u32,
@@ -288,8 +250,7 @@ pub struct Playhead {
 }
 
 impl Playhead {
-    /// `frames` is a count; the last valid index is one less. Zero is raised
-    /// to one so a playhead always has a frame to sit on.
+    /// Zero `frames` reads as one.
     pub fn new(frames: u32) -> Self {
         Self {
             frame: 0,
@@ -333,21 +294,15 @@ impl Playhead {
     }
 }
 
-/// Two clocks on one rotor is the defect the director exists to prevent. The
-/// `Host` arm is where a host runs its own clock, and nothing outside the
-/// host enforces that it does not run one in the other arm too.
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[must_use]
 pub enum Drive<T> {
-    /// Not in the timeline: the host's own clock still owns it.
     Host,
-    /// The director owns it. The host must not advance its own clock for it,
-    /// this frame or any frame while the director is loaded.
+    /// The host must not advance its own clock for this channel.
     Directed(T),
 }
 
-/// Ownership does not lapse while paused: holding a pose is what makes
-/// scrub-and-look work. A host hands a channel back by dropping the director.
+/// Paused channels stay directed; dropping the director hands them back.
 #[derive(Clone, Debug)]
 pub struct Director {
     timeline: Timeline,
@@ -410,7 +365,7 @@ impl Director {
         self.drive(self.body(body).and_then(|b| b.orientation.as_ref()))
     }
 
-    /// The bodies the timeline names, in file order.
+    /// In file order.
     pub fn bodies(&self) -> impl Iterator<Item = &str> {
         self.timeline.bodies.iter().map(|b| b.name.as_str())
     }
@@ -490,14 +445,10 @@ mod tests {
 
     #[test]
     fn a_span_runs_from_the_earlier_key_and_is_eased_by_the_later_one() {
-        // Sampled off the midpoint, the one fraction at which a reversed
-        // parameter is invisible, and with a different curve on each key, so
-        // reading the ease off the earlier one is visible too.
         let track = Track::new()
             .key(0.0, 0.0, Ease::OutCubic)
             .key(1.0, 10.0, Ease::InOutCubic);
-        // InOutCubic(0.25) = 4·0.25³, so 0.625. No easing at all would give
-        // 2.5, the earlier key's OutCubic 5.78, a reversed fraction 9.375.
+        // InOutCubic(0.25) = 4·0.25³ = 0.625; OutCubic gives 5.78, a reversed u 9.375.
         let quarter = track.sample(15, FPS).unwrap();
         assert!((quarter - 0.625).abs() < 1e-6, "sampled {quarter}");
     }
@@ -545,7 +496,6 @@ mod tests {
             assert_eq!(walked.position("row"), other.position("row"));
             assert_eq!(walked.orientation("row"), other.orientation("row"));
         }
-        assert_eq!(walked.orientation("row"), walked.orientation("row"));
     }
 
     #[test]
@@ -600,9 +550,7 @@ mod tests {
             );
         }
 
-        // Endpoints compared by action, not by components: `log` recovers the
-        // minimal-norm generator, which cannot also track the double cover,
-        // so `mix(.., 1.0)` may be −to and act identically.
+        // Compared by action: `mix(.., 1.0)` may be −to under the double cover.
         for probe in probes {
             let start = Rotor4::mix(from, to, 0.0).apply(probe);
             let end = Rotor4::mix(from, to, 1.0).apply(probe);
@@ -629,8 +577,6 @@ mod tests {
 
     #[test]
     fn an_isoclinic_half_turn_between_keys_is_refused_at_authoring_time() {
-        // Neither key is near ±I; only their difference is, so a guard read
-        // off the absolute rotors instead of the relative one misses this.
         let from = rotor(Bivector4::new(0.4, -0.9, 0.2, 0.0, 0.0, 0.0));
         let half_turn = rotor(Bivector4::new(PI, 0.0, 0.0, 0.0, 0.0, PI));
         let to = from * half_turn;
@@ -771,8 +717,6 @@ mod tests {
 
     #[test]
     fn a_hand_written_ron_timeline_loads() {
-        // Pins the authored shape, which serde symmetry alone would not: a
-        // field rename stays symmetric and breaks every file on disk.
         let text = r#"(
             fps: 30,
             frames: 90,

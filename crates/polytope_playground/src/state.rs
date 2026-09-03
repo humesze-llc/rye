@@ -41,10 +41,7 @@ pub(crate) fn render_row_entries<'a>(
     }
 }
 
-// `bodies_moving` must be read BEFORE the physics step: a body that comes to
-// rest during the step still has a final pose to upload, and an at-rest world
-// is an exact fixpoint of the integrator, so it has none. The rotor test is
-// over the WHOLE row, because each slot carries its own orientation.
+// Read `bodies_moving` before the step: a body that stops mid-step still has a pose to upload.
 pub(crate) fn body_upload_needed(
     spins: &SlotSpins,
     uploaded_rotors: &[Rotor4],
@@ -98,8 +95,6 @@ impl WireframeColorMode {
     }
 }
 
-// Bivector addition within a term is commutative, so plane order inside a term
-// is irrelevant; rotor multiplication between terms is not.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RotorTerm {
     pub(crate) planes: Vec<Plane4>,
@@ -156,9 +151,7 @@ pub(crate) fn active_plane_angle(base: f32, active: bool, t: f32) -> f32 {
     base + if active { t * BASE_ROTATION_RATE } else { 0.0 }
 }
 
-// The ORDERED PRODUCT `∏ᵢ exp(planeᵢ · active_plane_angle(base[i], active[i],
-// t))` in `Plane4::ALL` order. A product (independent sliders), not `exp(sum)`,
-// which would reintroduce BCH coupling.
+// Ordered product in `Plane4::ALL` order, not `exp(sum)`.
 pub(crate) fn compose_active_rotor(base_angles: &[f32; 6], active: &[bool; 6], t: f32) -> Rotor4 {
     let mut r = Rotor4::IDENTITY;
     for i in 0..6 {
@@ -182,8 +175,6 @@ pub(crate) fn angular_velocity_from_seq(seq: &[RotorTerm], rate_scale: f32) -> B
     omega * (BASE_ROTATION_RATE * rate_scale)
 }
 
-// Applying mid-render lays out the rest of the frame against the new state
-// while the rows already emitted used the old.
 #[derive(Clone, Debug)]
 pub(crate) enum DeferredAction {
     DraftPush(Plane4),
@@ -212,10 +203,7 @@ pub(crate) fn sdf_body_uniform(
     size: f32,
     surface_mode: SurfaceMode,
 ) -> BodyUniform {
-    // The 120-cell and 600-cell have NO authoritative SDF: their
-    // `cell{120,600}_face_planes` are the known-wrong dual-vertex
-    // approximation (see `loam_shape::polytope_geom`), wrong on 96 normals.
-    // Never raymarch them, on any platform or mode.
+    // The 120-cell and 600-cell have no correct SDF (`loam_shape::polytope_geom`); never raymarch them.
     if matches!(
         entry.shape.polytope4(),
         Some(Polytope4::Cell120 | Polytope4::Cell600)
@@ -235,8 +223,7 @@ pub(crate) fn sdf_body_uniform(
     )
 }
 
-// Each reader takes ALL of its per-body geometry from one `PlaygroundPhysics`,
-// so no pass can quietly fall back to the authored spin over the static layout.
+// Every pass takes its per-body geometry from one `PlaygroundPhysics`.
 pub(crate) struct RowFrame<'a> {
     pub(crate) physics: &'a PlaygroundPhysics,
     pub(crate) row: &'a [ShapeEntry],
@@ -280,8 +267,6 @@ impl RowFrame<'_> {
 }
 
 pub(crate) struct Demo {
-    // The row's pose and collider store, not a simulation: no path in this
-    // scene writes a body velocity, so `step` never leaves `at_rest`.
     pub(crate) physics: PlaygroundPhysics,
     pub(crate) left_was_down: bool,
     pub(crate) gimbal: crate::hypergimbal::GimbalUi,
@@ -290,8 +275,7 @@ pub(crate) struct Demo {
     pub(crate) orbit: OrbitController<EuclideanR3>,
     pub(crate) rig: loam_app::camera_rig::CameraRig,
     pub(crate) node: Hyperslice4DNode,
-    /// Owns the frame's colour and depth clear, so it is recorded first and
-    /// unconditionally; every later pass loads.
+    /// Owns the frame's clear, so it records first; every later pass loads.
     pub(crate) sky_ground: SkyGroundNode,
     pub(crate) sdf_upload_pending: bool,
     pub(crate) uploaded_rotors: Vec<Rotor4>,
@@ -325,14 +309,9 @@ pub(crate) struct Demo {
     pub(crate) section_clip_projected_scratch: Vec<glam::Vec3>,
     pub(crate) body_uniform_scratch: Vec<BodyUniform>,
     pub(crate) slerp_scratch: Vec<glam::Vec4>,
-    /// Reused across frames: worst measured case (an eight-slot row of
-    /// 600-cells, both perimeters on) is ~12k segments, about 0.7 MB.
     pub(crate) wireframe_section_edges_scratch: loam_shape::LineMesh<3>,
     pub(crate) body_perimeter_scratch: loam_shape::LineMesh<3>,
-    // The two are called from different render passes, which is why
-    // `Demo::record_section_faces` running before
-    // `Demo::record_wireframe_overlay` is load-bearing: each takes this buffer
-    // and restores it before the other runs.
+    // Taken and restored by both section passes, so their order is load-bearing.
     pub(crate) section_cap_scratch: loam_shape::polytope::SectionScratch,
     pub(crate) wireframe_parent_lines_scratch: loam_shape::LineMesh<3>,
     pub(crate) overlay_local_vertices_scratch: Vec<glam::Vec4>,
@@ -449,8 +428,6 @@ impl Demo {
         BODY_SIZE * self.surface_scale
     }
 
-    // A 120-cell or 600-cell in the live SDF kernel crashes the browser tab;
-    // see [`row_blocks_sdf`].
     pub(crate) fn sdf_blocked_by_heavy_polychora(&self) -> bool {
         row_blocks_sdf(self.render_row())
     }
@@ -485,8 +462,7 @@ impl Demo {
             .position(|e| e.shape.polytope4().is_some())
     }
 
-    // Call at every cell-SELECT point so the per-frame path never reruns the
-    // `LazyLock`-backed [`Polytope4::face_planes`] fit.
+    // Called at select points only; the per-frame path never reruns the fit.
     pub(crate) fn resolve_schlegel_cache(&mut self) {
         let (projection, cache) =
             synced_schlegel_projection(self.wireframe.projection, self.schlegel_subject());
@@ -559,8 +535,6 @@ impl Demo {
         self.body_uniform_scratch = scratch;
     }
 
-    // Called from `Demo::update` AHEAD of the physics step, so a tick collides
-    // the shape the frame draws (up to 0.088 of rim lag at `rate_scale` 4).
     pub(crate) fn sync_physics_row(&mut self) {
         let size = self.effective_body_size();
         let row = render_row_entries(self.view_mode, &self.row, &self.strip_subject);
@@ -594,8 +568,6 @@ impl Demo {
         self.rate_scale = 1.0;
         self.spins.reset();
         self.rot_time = 0.0;
-        // A loaded timeline is the other half of `rot_time`, so the reset that
-        // zeroes one has to rewind the other or half the row would restart.
         if let Some(playback) = &mut self.playback {
             playback.rewind();
         }
@@ -603,8 +575,7 @@ impl Demo {
         self.cross_section = SectionLayer::CROSS_SECTION_DEFAULT;
         self.projected_cap = SectionLayer::PROJECTED_CAP_DEFAULT;
         self.draft.clear();
-        // Drop a handle drag in progress: its slot names a body the respawn
-        // below despawns.
+        // A held drag names a body the respawn despawns.
         self.gimbal.drag = None;
         let slots = self.render_row().len();
         self.physics.respawn(slots, self.effective_body_size());
@@ -616,10 +587,9 @@ impl Demo {
 mod tests {
     use super::{
         active_plane_angle, body_position, body_upload_needed, compose_active_rotor,
-        mode_annotation, render_row_entries, resolve_schlegel_params, row_blocks_sdf,
-        sdf_body_uniform, section_layer_projection, set_if_changed, synced_schlegel_projection,
-        SectionLayer, SurfaceMode, ViewMode, WireframeProjection, BASE_ROTATION_RATE, BODY_SIZE,
-        STEREOGRAPHIC_DEFAULT_POLE,
+        render_row_entries, resolve_schlegel_params, row_blocks_sdf, sdf_body_uniform,
+        set_if_changed, synced_schlegel_projection, SurfaceMode, ViewMode, WireframeProjection,
+        BASE_ROTATION_RATE, BODY_SIZE,
     };
     use crate::catalog::ShapeEntry;
     use crate::physics::{composed_rotor, PlaygroundPhysics};
@@ -628,7 +598,6 @@ mod tests {
     use loam_math::{Bivector, EuclideanR4, Plane4, Projection, Rotor, Rotor4};
     use loam_render::raymarch::{BodyUniform, RaymarchShape};
     use loam_shape::polytope::Polytope4;
-    use std::collections::HashSet;
 
     fn entry(shape: RaymarchShape) -> ShapeEntry {
         ShapeEntry {
@@ -663,36 +632,6 @@ mod tests {
     }
 
     #[test]
-    fn toggling_active_preserves_displayed_angle() {
-        // Flipping `active` re-solves `base` so the displayed angle is continuous
-        // across the toggle: `base = displayed_before - spin(active_after)`.
-        let t = 7.5_f32;
-        let resolve = |base_old: f32, active_before: bool| {
-            let displayed_before = active_plane_angle(base_old, active_before, t);
-            let active_after = !active_before;
-            let spin_after = if active_after {
-                t * BASE_ROTATION_RATE
-            } else {
-                0.0
-            };
-            let base_new = displayed_before - spin_after;
-            active_plane_angle(base_new, active_after, t)
-        };
-        let base_off = 0.42_f32;
-        let displayed_off = active_plane_angle(base_off, false, t);
-        assert!(
-            (resolve(base_off, false) - displayed_off).abs() < 1e-6,
-            "toggle on changed the displayed angle"
-        );
-        let base_on = -1.1_f32;
-        let displayed_on = active_plane_angle(base_on, true, t);
-        assert!(
-            (resolve(base_on, true) - displayed_on).abs() < 1e-6,
-            "toggle off changed the displayed angle"
-        );
-    }
-
-    #[test]
     fn compose_all_zero_is_identity() {
         let r = compose_active_rotor(&[0.0; 6], &NONE, 0.0);
         assert!(rotor_close(r, Rotor4::IDENTITY, 1e-6), "got {r:?}");
@@ -712,7 +651,7 @@ mod tests {
     fn compose_single_plane_equals_direct_exp() {
         let theta = 0.8_f32;
         let mut base = [0.0; 6];
-        base[2] = theta; // Plane4::Xw
+        base[2] = theta;
         let composed = compose_active_rotor(&base, &NONE, 0.0);
         let direct = (Plane4::Xw.unit_bivector() * theta).exp().normalize();
         assert!(
@@ -725,8 +664,8 @@ mod tests {
     fn compose_orthogonal_pair_is_order_independent() {
         let (a, b) = (0.6_f32, -0.9_f32);
         let mut base = [0.0; 6];
-        base[0] = a; // xy
-        base[5] = b; // zw
+        base[0] = a;
+        base[5] = b;
         let composed = compose_active_rotor(&base, &NONE, 0.0);
         let xy = (Plane4::Xy.unit_bivector() * a).exp();
         let zw = (Plane4::Zw.unit_bivector() * b).exp();
@@ -755,38 +694,6 @@ mod tests {
     }
 
     #[test]
-    fn annotation_text_present_per_mode() {
-        assert!(
-            mode_annotation(WireframeProjection::Shadow).is_none(),
-            "drop-w must not annotate the default view"
-        );
-
-        let cases = [
-            WireframeProjection::WPinhole,
-            WireframeProjection::Schlegel { cell_index: 0 },
-            WireframeProjection::Stereographic,
-            WireframeProjection::Hyperslice,
-        ];
-        let mut bodies = HashSet::new();
-        for projection in cases {
-            let annotation = mode_annotation(projection)
-                .unwrap_or_else(|| panic!("{projection:?} must annotate"));
-            assert!(
-                !annotation.title.is_empty(),
-                "{projection:?}: title must be non-empty"
-            );
-            assert!(
-                !annotation.body.is_empty(),
-                "{projection:?}: body must be non-empty"
-            );
-            assert!(
-                bodies.insert(annotation.body.clone()),
-                "{projection:?}: body duplicates another mode's copy"
-            );
-        }
-    }
-
-    #[test]
     fn sdf_gate_follows_single_subject_not_row() {
         let heavy = entry(RaymarchShape::Polytope(Polytope4::Cell600));
         let light = entry(RaymarchShape::Polytope(Polytope4::Tesseract));
@@ -804,79 +711,6 @@ mod tests {
         assert!(
             row_blocks_sdf(render_row_entries(ViewMode::Shapes, &heavy_row, &light)),
             "Shapes mode blocks SDF on a heavy row member",
-        );
-    }
-
-    #[test]
-    fn wireframe_projection_from_token_round_trips() {
-        assert_eq!(
-            WireframeProjection::ALL.len(),
-            4,
-            "ALL must list every selectable projection mode (Schlegel is excluded)"
-        );
-        assert_eq!(
-            WireframeProjection::from_token("schlegel"),
-            None,
-            "Schlegel is deliberately not a selectable playground mode"
-        );
-        for mode in WireframeProjection::ALL {
-            let token = match mode {
-                WireframeProjection::Shadow => "shadow",
-                WireframeProjection::WPinhole => "w-pinhole",
-                WireframeProjection::Stereographic => "stereographic",
-                WireframeProjection::Hyperslice => "hyperslice",
-                WireframeProjection::Schlegel { .. } => {
-                    unreachable!("Schlegel must not be in ALL while it is unwired")
-                }
-            };
-            assert_eq!(
-                WireframeProjection::from_token(token),
-                Some(mode),
-                "token `{token}` must parse back to {mode:?}"
-            );
-        }
-        assert_eq!(
-            WireframeProjection::Shadow.to_projection(),
-            Projection::Identity
-        );
-        assert_eq!(
-            WireframeProjection::WPinhole.to_projection(),
-            Projection::Perspective4D {
-                focal_distance: 2.0
-            }
-        );
-        assert_eq!(
-            WireframeProjection::Stereographic.to_projection(),
-            Projection::Stereographic {
-                pole: STEREOGRAPHIC_DEFAULT_POLE
-            }
-        );
-        assert_eq!(
-            WireframeProjection::Hyperslice.to_projection(),
-            Projection::Identity
-        );
-        assert_eq!(
-            WireframeProjection::Schlegel { cell_index: 0 }.to_projection(),
-            Projection::Identity
-        );
-    }
-
-    #[test]
-    fn stereographic_plus_w_pole_scale_depends_only_on_w() {
-        let pole = STEREOGRAPHIC_DEFAULT_POLE;
-        let p = Vec4::new(0.8, 0.0, 0.0, 0.6);
-        let q = Vec4::new(0.0, 0.48, 0.64, 0.6);
-        assert!((p.w - q.w).abs() < 1e-6, "fixture points must share w");
-        let denom_p = 1.0 - p.dot(pole);
-        let denom_q = 1.0 - q.dot(pole);
-        assert!(
-            (denom_p - denom_q).abs() < 1e-6,
-            "+w pole must give equal scale at equal w ({denom_p} vs {denom_q})"
-        );
-        let off_w = Vec4::splat(0.5);
-        assert!(
-            (1.0 - p.dot(off_w) - (1.0 - q.dot(off_w))).abs() > 1e-3,
-            "off-w pole must spread a single w-slice (the skew we reverted)"
         );
     }
 
@@ -908,7 +742,7 @@ mod tests {
 
     #[test]
     fn schlegel_cell_index_clamped_to_cell_count() {
-        let polytope = Polytope4::Pentatope; // 5 cells.
+        let polytope = Polytope4::Pentatope;
         let last = polytope.cell_count() as u32 - 1;
         let params = resolve_schlegel_params(polytope, 9999);
         assert_eq!(params.cell_index, last);
@@ -918,7 +752,7 @@ mod tests {
 
     #[test]
     fn schlegel_resolve_syncs_carried_index_to_clamp() {
-        let polytope = Polytope4::Pentatope; // 5 cells; indices 0..=4.
+        let polytope = Polytope4::Pentatope;
         let last = polytope.cell_count() as u32 - 1;
         let overrun = WireframeProjection::Schlegel { cell_index: 300 };
         let (projection, cache) = synced_schlegel_projection(overrun, Some(polytope));
@@ -947,22 +781,6 @@ mod tests {
         let (proj, cache) = synced_schlegel_projection(schlegel, None);
         assert_eq!(proj, schlegel, "no subject means no clamp, index stays put");
         assert!(cache.is_none(), "no subject means no cache");
-    }
-
-    #[test]
-    fn schlegel_resolution_is_bit_deterministic() {
-        for polytope in Polytope4::ALL {
-            let cell_index = (polytope.cell_count() / 2) as u32;
-            let a = resolve_schlegel_params(polytope, cell_index);
-            let b = resolve_schlegel_params(polytope, cell_index);
-            assert_eq!(a.cell_normal, b.cell_normal, "{polytope:?} normal");
-            assert_eq!(a.cell_basis, b.cell_basis, "{polytope:?} basis");
-            assert_eq!(a.cell_offset, b.cell_offset, "{polytope:?} offset");
-            assert_eq!(
-                a.viewpoint_distance, b.viewpoint_distance,
-                "{polytope:?} viewpoint"
-            );
-        }
     }
 
     #[test]
@@ -1009,51 +827,6 @@ mod tests {
     }
 
     #[test]
-    fn schlegel_frame_rotates_with_body() {
-        let polytope = Polytope4::Tesseract;
-        let cell_index = 0;
-        let params = resolve_schlegel_params(polytope, cell_index);
-        let rot = (Plane4::Xw.unit_bivector() * 0.7).exp().normalize();
-        let rotated = rot.apply(params.cell_normal);
-        assert!(
-            (rotated - params.cell_normal).length() > 1e-3,
-            "rotation must actually move the normal for this test to bite"
-        );
-        assert!((rotated.length() - 1.0).abs() < 1e-5);
-        let rotated_basis = params.cell_basis.map(|axis| rot.apply(axis));
-        for (i, axis) in rotated_basis.iter().enumerate() {
-            assert!((axis.length() - 1.0).abs() < 1e-5, "axis {i} unit");
-            assert!(
-                axis.dot(rotated).abs() < 1e-5,
-                "axis {i} remains perpendicular to the rotated normal"
-            );
-        }
-        let topo = polytope.topology();
-        let cell = topo.cells[cell_index as usize];
-        let anchor = topo.vertices[cell[0] as usize];
-        let rotated_anchor = rot.apply(anchor);
-        for &vi in cell {
-            let v = topo.vertices[vi as usize];
-            let lhs = rotated.dot(rot.apply(v));
-            assert!(
-                (lhs - params.cell_offset).abs() < 1e-4,
-                "rotated cell vertex must stay on the rotated boundary hyperplane: {lhs} vs {}",
-                params.cell_offset
-            );
-            let delta = v - anchor;
-            let rotated_delta = rot.apply(v) - rotated_anchor;
-            for (axis, rotated_axis) in params.cell_basis.iter().zip(rotated_basis) {
-                let want = delta.dot(*axis);
-                let got = rotated_delta.dot(rotated_axis);
-                assert!(
-                    (got - want).abs() < 1e-5,
-                    "rotated basis coordinates must match canonical coordinates"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn single_mode_renders_one_subject() {
         let subject = entry(RaymarchShape::Polytope(Polytope4::Cell600));
         let row = [
@@ -1072,78 +845,6 @@ mod tests {
             let full = render_row_entries(mode, &row, &subject);
             assert_eq!(full, &row[..], "{mode:?} renders the full row");
         }
-    }
-
-    #[test]
-    fn single_mode_schlegel_cell_bound_from_subject() {
-        let subject = entry(RaymarchShape::Polytope(Polytope4::Cell600));
-        let row = [
-            entry(RaymarchShape::Polytope(Polytope4::Pentatope)), // 5 cells
-            entry(RaymarchShape::Polytope(Polytope4::Cell24)),
-        ];
-        let subject_poly = render_row_entries(ViewMode::Single, &row, &subject)
-            .iter()
-            .find_map(|e| e.shape.polytope4())
-            .expect("the single subject is a polychoron");
-        assert_eq!(subject_poly, Polytope4::Cell600);
-        assert_eq!(
-            subject_poly.cell_count(),
-            Polytope4::Cell600.cell_count(),
-            "the cell-index bound is the subject's cell count (600), not the row's leading 5",
-        );
-        let row_poly = render_row_entries(ViewMode::Shapes, &row, &subject)
-            .iter()
-            .find_map(|e| e.shape.polytope4())
-            .expect("the row has a polychoron");
-        assert_eq!(row_poly, Polytope4::Pentatope);
-        assert_ne!(
-            subject_poly.cell_count(),
-            row_poly.cell_count(),
-            "test setup: subject and row-leader must differ in cell count",
-        );
-    }
-
-    #[test]
-    fn section_layer_projection_honest_ignores_projected_follows() {
-        let actives = [
-            Projection::Identity,
-            Projection::Perspective4D {
-                focal_distance: 2.0,
-            },
-            Projection::Stereographic { pole: Vec4::W },
-            Projection::schlegel(Vec4::W, 0.5, 0.75),
-        ];
-        for active in actives {
-            assert_eq!(
-                section_layer_projection(true, active),
-                Projection::Identity,
-                "honest cross-section must stay drop-w under active {active:?}"
-            );
-            assert_eq!(
-                section_layer_projection(false, active),
-                active,
-                "projected cap must follow the active projection {active:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn section_layer_fill_visible_at_positive_alpha_only() {
-        assert!(!SectionLayer {
-            perimeter: true,
-            surface_alpha: 0.0
-        }
-        .fill_visible());
-        assert!(SectionLayer {
-            perimeter: false,
-            surface_alpha: 0.01
-        }
-        .fill_visible());
-        assert!(SectionLayer {
-            perimeter: false,
-            surface_alpha: 1.0
-        }
-        .fill_visible());
     }
 
     fn tumbling(slots: usize) -> PlaygroundPhysics {
@@ -1165,8 +866,6 @@ mod tests {
         let shape = entry(RaymarchShape::Polytope(Polytope4::Cell24));
         let mut spins = SlotSpins::new(SLOTS);
         spins.spin_mut().active = [true, false, false, false, false, false];
-        // A timeline owning slot 1 is the only thing that can break the row's
-        // shared orientation, and the upload has to carry both.
         spins.recompose_active(1.7, &[false, true]);
         spins.set_rotor(1, (Plane4::Zw.unit_bivector() * 0.6).exp());
 

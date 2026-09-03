@@ -16,20 +16,14 @@ use crate::director::Playback;
 use crate::physics::{ndc_from_pixels, PlaygroundPhysics};
 use crate::state::{Demo, RotationMode, ViewMode};
 
-// Rings reach `(1 + √2)·scale` and arrow tips just under `3·scale`, so this
-// puts the widget's outer edge at 1.64 world units: inside `BODY_X_SPACING`,
-// so no handle reaches the centre of the neighbouring column.
+// Puts the widget's outer edge at 1.64 units, inside `BODY_X_SPACING`.
 const SCALE: f32 = 0.55;
 
-// Grab radius in world units, about seven pixels at the startup framing (720
-// rows, 60° fov, 8 units out). World-space rather than screen-space, which is
-// what makes grabbing fussier as the camera pulls back.
+// World units, about seven pixels at the startup framing.
 const PICK_TOLERANCE: f32 = 0.09;
 
 const HIGHLIGHT: [f32; 4] = [1.0, 0.94, 0.55, 1.0];
 
-// The handles are the ambient rotation planes and axes, so their shape never
-// tracks the subject's orientation; only where they stand does.
 pub(crate) fn widget(center: Vec3) -> TransformGizmo {
     TransformGizmo {
         center,
@@ -41,9 +35,6 @@ pub(crate) fn gimbal_center(physics: &PlaygroundPhysics, slot: usize, slots: usi
     physics.pose(slot, slots, Rotor4::IDENTITY).position_r3()
 }
 
-// The widget drives the whole row, so it stands at the row's mean position
-// rather than on any one body. The layout is symmetric about the origin, but
-// a body the shafts have already dragged is not, and the widget has to follow.
 pub(crate) fn row_center(physics: &PlaygroundPhysics, slots: usize) -> Vec3 {
     let sum: Vec3 = (0..slots)
         .map(|slot| gimbal_center(physics, slot, slots))
@@ -51,8 +42,6 @@ pub(crate) fn row_center(physics: &PlaygroundPhysics, slots: usize) -> Vec3 {
     sum / slots as f32
 }
 
-// Anchored at the press edge so the whole drag is measured against one origin
-// rather than accumulated frame by frame.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct GimbalDrag {
     held: HandleDrag,
@@ -62,11 +51,8 @@ pub(crate) struct GimbalDrag {
 
 #[derive(Default)]
 pub(crate) struct GimbalUi {
-    /// Off at startup, by the maintainer's call.
     pub(crate) enabled: bool,
     pub(crate) drag: Option<GimbalDrag>,
-    /// Every body's position at the press, so a shaft drag stays anchored to
-    /// one origin instead of accumulating frame by frame.
     base_positions: Vec<Vec4>,
     hover: Option<HandleId>,
     built_highlight: Option<HandleId>,
@@ -78,16 +64,11 @@ fn grab_handle(gizmo: &TransformGizmo, ray: &Ray) -> Option<HandleDrag> {
     HandleDrag::press(handle, ray.origin, ray.direction)
 }
 
-// The displayed angle is `base + spin(t)`, so the drag has to hand back the
-// spin it does not own; this is the same solve the Active slider does.
 fn dragged_base_angle(base_displayed: f32, drag_angle: f32, spin_contribution: f32) -> f32 {
     base_displayed + drag_angle - spin_contribution
 }
 
 impl Demo {
-    // Filmstrip composes its own per-cell viewports with no shared world
-    // origin, so the widget has nowhere to stand; drawing and grabbing are
-    // gated together, because a grabbable invisible handle is worse than none.
     fn gimbal_visible(&self) -> bool {
         self.gimbal.enabled && self.view_mode != ViewMode::Filmstrip
     }
@@ -96,8 +77,6 @@ impl Demo {
         widget(row_center(&self.physics, self.render_row().len()))
     }
 
-    // The sole reader of `left_was_down`: the left button is the handles' and
-    // nothing else's, since the camera orbits on the right one.
     pub(crate) fn update_gimbal(&mut self, enabled: bool, input: &Input, viewport: (u32, u32)) {
         if !enabled || !self.gimbal_visible() {
             self.gimbal.drag = None;
@@ -144,9 +123,6 @@ impl Demo {
         let Some(drag) = self.gimbal.drag else {
             return;
         };
-        // A cursor that left the window, or a camera that swung the handle
-        // edge-on, leaves the drag held at its last delta rather than snapping
-        // the subject somewhere arbitrary.
         if let Some(delta) = cursor_ray.and_then(|ray| drag.held.delta(ray.origin, ray.direction)) {
             self.apply_gimbal_drag(&drag, delta);
         }
@@ -178,23 +154,16 @@ impl Demo {
                 let bodies = self.physics.world.bodies.iter_mut();
                 for (body, base) in bodies.zip(&self.gimbal.base_positions) {
                     body.position = *base + step;
-                    // A held shaft owns the row's positions for the whole
-                    // drag, so it takes the velocities with it: otherwise the
-                    // frame's physics step integrates the bodies out from
-                    // under the cursor.
+                    // Zeroed, or the physics step integrates the row out from under the cursor.
                     body.velocity = Vec4::ZERO;
                 }
-                // The upload gate keys on a moving world and on changed
-                // rotors, and a teleport is neither.
+                // A teleport is neither a moving world nor a rotor change, so the gate misses it.
                 self.rebuild_bodies();
             }
         }
     }
 
-    // Last pass of the frame and depth-free: a manipulator the scene can hide
-    // is a manipulator that cannot be grabbed. The mesh is built about the
-    // ORIGIN and carried to the row by a translation folded into the
-    // view-projection, so only the highlight can dirty the geometry.
+    // Built about the origin; the row translation is folded into `view_proj`.
     pub(crate) fn record_gimbal(
         &mut self,
         rd: &RenderDevice,

@@ -1,8 +1,6 @@
-//! The simulation is a pure, bit-reproducible function
-//! `tick(state, input, tick_number) -> state'`; time enters only as the
-//! tick number, never wall-clock. This crate is the wall-clock-to-tick-count
-//! adapter the local render loop uses; a replay drives the sim by tick number
-//! directly and never touches [`FixedTimestep`].
+//! Time enters the sim only as a tick number, never wall-clock. This crate
+//! is the wall-clock-to-tick adapter for the render loop; a replay drives
+//! the sim by tick number and never touches [`FixedTimestep`].
 
 pub mod alloc;
 pub mod director;

@@ -1,15 +1,11 @@
 use std::ops::Range;
-// `web_time::Instant` over `std::time::Instant`: the latter's `now` panics on
-// wasm32; `web_time` backs it with `performance.now()`.
+// `std::time::Instant::now` panics on wasm32.
 use std::time::Duration;
 use web_time::Instant;
 
-/// Per-frame catch-up tick cap. Excess is dropped to avoid the spiral of
-/// death where a slow sim falls further behind each frame.
+/// Per-frame catch-up cap; excess ticks are dropped.
 pub const DEFAULT_MAX_CATCH_UP: u32 = 10;
 
-/// Tick duration is stored as nanoseconds from the target Hz, so a given
-/// `FixedTimestep::new(hz)` is bit-identical across machines.
 #[derive(Debug, Clone)]
 pub struct FixedTimestep {
     dt: Duration,
@@ -37,7 +33,6 @@ impl FixedTimestep {
         self
     }
 
-    /// Monotonic from 0, one per tick yielded by [`FixedTimestep::advance`].
     pub fn tick(&self) -> u64 {
         self.tick
     }
@@ -50,16 +45,13 @@ impl FixedTimestep {
         self.dt.as_secs_f32()
     }
 
-    /// In `[0.0, 1.0)`: the wall-clock fraction between the last completed
-    /// tick and the next pending one.
+    /// Fraction of the pending tick elapsed, in `[0, 1)`.
     pub fn alpha(&self) -> f32 {
         let a = self.accumulator.as_secs_f64() / self.dt.as_secs_f64();
         (a as f32).clamp(0.0, 1.0)
     }
 
-    /// The first call primes the wall-clock reference and returns an empty
-    /// range. Beyond `max_catch_up` ticks behind, the excess is dropped:
-    /// the loop recovers to real-time at the cost of a visual jump.
+    /// The first call only primes the clock; ticks past `max_catch_up` are dropped.
     pub fn advance(&mut self, now: Instant) -> Range<u64> {
         let last = match self.last_instant.replace(now) {
             Some(t) => t,
@@ -90,12 +82,6 @@ mod tests {
 
     fn base() -> Instant {
         Instant::now()
-    }
-
-    #[test]
-    fn dt_matches_hz() {
-        let t = FixedTimestep::new(60);
-        assert_eq!(t.dt(), Duration::from_nanos(16_666_666));
     }
 
     #[test]

@@ -1,7 +1,5 @@
 use crate::integrator::PhysicsSpace;
 
-/// Uniform across spaces. 0.35 reads as moderate grip: shapes roll under
-/// gravity rather than slide indefinitely.
 pub const FRICTION_COEFF: f32 = 0.35;
 
 pub struct Contact<S: PhysicsSpace> {

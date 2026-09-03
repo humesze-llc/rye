@@ -1,31 +1,19 @@
-//! One analytic background for every scene with a 3D camera: a ray-direction
-//! sky, a closed-form checkerboard on `y = Ground::y` with analytic depth, and
-//! the frame's colour and depth clear.
-//!
-//! Rays are unprojected through the caller's own `view_proj` rather than built
-//! from a camera basis and a field of view, which is what the two marchers do
-//! ([`crate::raymarch`]). They own their whole image; this node has to agree
-//! with raster content composited over it, so it takes the same matrix that
-//! content is drawn with and the horizon cannot drift from it.
+//! The analytic background: sky, checkerboard on `y = Ground::y` with analytic
+//! depth, and the frame's colour and depth clear. Rays unproject through the
+//! caller's `view_proj`, so the ground's depth agrees with raster content.
 
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 use wgpu::*;
 
-/// Sky and checkerboard shading, shared with
-/// [`crate::raymarch::HYPERSLICE_KERNEL_WGSL`].
+/// Shared with [`crate::raymarch::HYPERSLICE_KERNEL_WGSL`].
 pub const SKY_GROUND_WGSL: &str = include_str!("sky_ground.wgsl");
 
-// Mirrors `sky`'s two endpoints in sky_ground.wgsl; pinned by
-// `sky_horizon_is_the_shader_gradient_at_the_horizon`.
-// Dark, so a wireframe drawn against bare sky with the floor off still reads.
-// The ground is fog-blended toward the sky, so this also sets how far out the
-// checker stays legible.
+// Mirror `sky`'s endpoints in sky_ground.wgsl.
 const SKY_BELOW: [f64; 3] = [0.04, 0.05, 0.10];
 const SKY_ABOVE: [f64; 3] = [0.10, 0.13, 0.22];
 
-/// `sky` evaluated at `rd.y = 0`. Linear, as every [`Color`] clear is, so a
-/// pass clearing to it meets a pass shading `sky` without a seam.
+/// `sky` at `rd.y = 0`, linear, so a clear meets the shaded sky without a seam.
 pub const SKY_HORIZON: Color = Color {
     r: 0.5 * (SKY_BELOW[0] + SKY_ABOVE[0]),
     g: 0.5 * (SKY_BELOW[1] + SKY_ABOVE[1]),
@@ -33,34 +21,22 @@ pub const SKY_HORIZON: Color = Color {
     a: 1.0,
 };
 
-/// The pair the hyperslice kernel painted before this node took the ground.
 pub const GROUND_DARK_GREY: [f32; 3] = [0.18, 0.20, 0.24];
 pub const GROUND_LIGHT_GREY: [f32; 3] = [0.30, 0.32, 0.36];
 
-/// Sky blended into the ground per world unit of view distance. Half the sky
-/// is mixed in at `ln 2 / density`, so this is the number that decides how far
-/// out the checker stays legible: half sky at 462 units here. The blend runs
-/// toward the SKY colour, so a pale sky makes the same density read as a
-/// bright wash rather than the dark haze a near-black sky gave.
+/// Half the sky is mixed in at `ln 2 / density` world units.
 pub const DEFAULT_FOG_PER_UNIT: f32 = 0.0015;
 
-/// The checkerboard plane under the sky. `y` is a parameter because a scene
-/// may centre its content on the origin, where a plane at `y = 0` would cut it
-/// in half.
 #[derive(Copy, Clone, Debug)]
 pub struct Ground {
     pub y: f32,
     pub dark: [f32; 3],
     pub light: [f32; 3],
-    /// See [`DEFAULT_FOG_PER_UNIT`]. Drives both the sky blend and the
-    /// checker band-limit, which is why it is one number and not two.
     pub fog_per_unit: f32,
     pub visible: bool,
 }
 
-/// Uniform buffer for [`SkyGroundNode`]. Bind group 0, binding 0. `std140`:
-/// two `mat4x4<f32>`, then two `vec2<f32>`, then a `vec3<f32>` and an `f32`
-/// per 16-byte slot.
+/// Bind group 0, binding 0; matches the node's WGSL `Uniforms`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct SkyGroundUniforms {
@@ -72,17 +48,14 @@ pub struct SkyGroundUniforms {
     pub ground_y: f32,
     pub ground_light: [f32; 3],
     pub show_ground: f32,
-    /// std140 keeps the trailing `f32` in a 16-byte slot only if the slot
-    /// starts on a 16-byte boundary, and the struct's `mat4x4` alignment
-    /// rounds its size up to one. These three floats are that slot's lead.
+    /// std140: the trailing `f32` needs a 16-byte slot, which these lead.
     pub fog_pad: [f32; 3],
     pub fog_per_unit: f32,
 }
 
 impl SkyGroundUniforms {
-    /// `view_proj` must be the matrix the raster content composited over this
-    /// pass is drawn with; the ground's depth is `clip.z / clip.w` under it,
-    /// which is the number that content's vertex stage produces.
+    /// `view_proj` must be the matrix the raster content over this pass is drawn
+    /// with.
     pub fn new(view_proj: Mat4, viewport: crate::Viewport, ground: Ground) -> Self {
         Self {
             view_proj: view_proj.to_cols_array_2d(),
@@ -117,13 +90,10 @@ struct Uniforms {
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
-// |rd.y| under this puts the plane past a million units, where the fog term is
-// 1.0 to the last f32 bit and the pixel is sky whatever the intersection
-// returns. It is here so the division cannot produce an infinity.
+// Below this the plane is past a million units and the pixel is sky; guards the division.
 const HORIZON_EPS: f32 = 1.0e-6;
 
-// The hyperslice kernel's key light and ambient floor, so a marched body and
-// the ground under it take the same shading.
+// The hyperslice kernel's key light and ambient floor.
 const LIGHT_DIR: vec3<f32> = vec3<f32>(0.5, 0.85, 0.3);
 const AMBIENT: f32 = 0.20;
 const DIFFUSE: f32 = 0.85;
@@ -146,8 +116,7 @@ fn unproject(ndc: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
-    // `frag_pos.xy` is framebuffer space whatever `set_viewport` carved out,
-    // and framebuffer y runs down while clip y runs up.
+    // `frag_pos` is framebuffer space with y down.
     let uv = (frag_pos.xy - u.viewport_origin) / u.resolution;
     let ndc_xy = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     // wgpu clip space puts the near plane at z = 0 and the far plane at z = 1.
@@ -157,10 +126,6 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
 
     var out: Fragment;
 
-    // One positive-t test covers both sides of the plane. A hit from
-    // underneath (near.y < ground_y, rd.y > 0) is reachable by drag alone:
-    // `OrbitController` clamps pitch short of the pole but lets the camera
-    // orbit below the plane.
     var t: f32 = 0.0;
     var hit = false;
     if (u.show_ground >= 0.5 && abs(rd.y) > HORIZON_EPS) {
@@ -177,8 +142,6 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
     let p_hit = near + rd * t;
     let fog = 1.0 - exp(-t * u.fog_per_unit);
     let base = ground_color(p_hit, u.ground_dark, u.ground_light, fog);
-    // The plane's normal is +Y everywhere, so the Lambert term is one number
-    // for the whole surface and only the sky blend varies across it.
     let lambert = max(dot(vec3<f32>(0.0, 1.0, 0.0), normalize(LIGHT_DIR)), 0.0);
     let lit = base * (AMBIENT + DIFFUSE * lambert);
     out.color = vec4<f32>(mix(lit, sky(rd), fog), 1.0);
@@ -269,8 +232,7 @@ impl SkyGroundNode {
                 topology: PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            // `Always`: the pass clears depth and this is the first thing in
-            // the frame to write it, so there is nothing to test against.
+            // The pass clears depth and this is its first write.
             depth_stencil: Some(DepthStencilState {
                 format: depth_format,
                 depth_write_enabled: true,
@@ -293,15 +255,13 @@ impl SkyGroundNode {
         }
     }
 
-    /// Call once per frame before [`Self::record`]; the UBO is undefined at
-    /// construction.
+    /// Call before [`Self::record`] each frame.
     pub fn set_uniforms(&self, queue: &Queue, uniforms: &SkyGroundUniforms) {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(uniforms));
     }
 
-    /// Records into the caller's `encoder` and does not submit. Clears both
-    /// attachments, so it must be the frame's first pass; `viewport` restricts
-    /// the shading, not the clear.
+    /// Clears both attachments, so it must be the frame's first pass; `viewport`
+    /// restricts the shading, not the clear.
     pub fn record(
         &self,
         encoder: &mut CommandEncoder,
@@ -340,6 +300,15 @@ impl SkyGroundNode {
     }
 }
 
+// Pins that `record` takes the caller's encoder and cannot submit.
+const _: fn(
+    &SkyGroundNode,
+    &mut CommandEncoder,
+    &TextureView,
+    &TextureView,
+    Option<&crate::Viewport>,
+) = SkyGroundNode::record;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,15 +337,8 @@ mod tests {
                 endpoint(c),
             );
         }
-        assert_eq!(SKY_HORIZON.r, 0.5 * (SKY_BELOW[0] + SKY_ABOVE[0]));
-        assert_eq!(SKY_HORIZON.g, 0.5 * (SKY_BELOW[1] + SKY_ABOVE[1]));
-        assert_eq!(SKY_HORIZON.b, 0.5 * (SKY_BELOW[2] + SKY_ABOVE[2]));
     }
 
-    // The Rust struct and the WGSL `Uniforms` block are two hand-written
-    // declarations of one buffer layout. Compare them member by member: a
-    // field added, dropped or reordered on one side alone moves an offset
-    // here, which a size assertion against a literal cannot see.
     #[test]
     fn uniforms_size_matches_wgsl() {
         let module = naga::front::wgsl::parse_str(SKY_GROUND_NODE_WGSL).expect("parse");
@@ -437,8 +399,7 @@ mod tests {
         }
     }
 
-    // Rust twin of `fs_main`'s ground path: unproject the pixel centre, meet
-    // the plane, and return the hit and the depth the fragment writes.
+    // Rust twin of `fs_main`'s ground path.
     fn ground_hit(u: &SkyGroundUniforms, pixel: Vec2) -> Option<(Vec3, f32)> {
         let view_proj = Mat4::from_cols_array_2d(&u.view_proj);
         let inv = Mat4::from_cols_array_2d(&u.inv_view_proj);
@@ -484,13 +445,6 @@ mod tests {
         )
     }
 
-    // Take a point known to be on the plane, project it the way the raster
-    // vertex stage does, and demand `ground_hit` at that pixel recover the
-    // same point and the same depth. This pins the algorithm, not its WGSL
-    // transcription: a flipped framebuffer y, a near/far swap or an
-    // intersection sign flip is caught here only if it is also made in the
-    // twin above. The shader's own copy is pinned on a device by
-    // `ground_occludes_raster_content_behind_the_plane_gpu_probe`.
     #[test]
     fn background_depth_matches_the_raster_projection() {
         for (eye, ground_y) in [
@@ -534,8 +488,6 @@ mod tests {
     fn a_ray_leaving_the_plane_behind_finds_no_ground() {
         let u = probe_uniforms(Vec3::new(0.0, 2.5, 6.0), 0.0);
         let resolution = Vec2::from(u.resolution);
-        // Top row of the frame: the camera looks down at the origin, so these
-        // pixels point above the horizon.
         for x in [0.5_f32, resolution.x * 0.5, resolution.x - 0.5] {
             assert!(
                 ground_hit(&u, Vec2::new(x, 0.5)).is_none(),

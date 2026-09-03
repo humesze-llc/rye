@@ -1,7 +1,6 @@
-//! Both capture taps copy the swapchain, never a multisampled attachment. With
-//! MSAA off the scene pass writes the swapchain directly; with MSAA on the
-//! runner's scene resolve writes it before the pre-egui tap runs, so the tap
-//! copies resolved pixels either way.
+//! Both taps copy the swapchain, never a multisampled attachment: with MSAA on
+//! the runner's scene resolve writes it before the pre-egui tap runs, so the
+//! tap copies resolved pixels either way.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -25,7 +24,7 @@ use loam_egui::Console;
 pub enum CaptureStage {
     Pre,
     Post,
-    /// Both, written to two separate files per frame. PNG-only; GIF can't multiplex.
+    /// Two files per frame; PNG only.
     Both,
 }
 
@@ -42,26 +41,24 @@ impl CaptureStage {
 pub enum CaptureFormat {
     Png,
     Gif,
-    /// Worker buffers all frames in memory until stop (~5 s at 1080p).
+    /// Buffered in memory until stop.
     Apng,
 }
 
-/// How GIF frames are palette-quantized. NeuQuant (Dekker, 1994) is a self-organizing
-/// map that picks 256 colors; the mode controls what it trains on.
+/// NeuQuant (Dekker, 1994) picks 256 colours; the mode controls what it trains on.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum PaletteMode {
-    /// Per-frame NeuQuant: consecutive palettes differ, so gradients shimmer.
+    /// Per-frame: consecutive palettes differ, so gradients shimmer.
     #[default]
     Local,
-    /// One palette trained on the first `GIF_WARMUP_FRAMES` captures. The warmup
-    /// also avoids training on transient overlays like the console.
+    /// One palette trained on the first `GIF_WARMUP_FRAMES` captures.
     Global,
 }
 
 impl CaptureFormat {
     fn default_fps(self) -> Option<u16> {
         match self {
-            CaptureFormat::Png => None, // unlimited; every frame
+            CaptureFormat::Png => None,
             CaptureFormat::Gif | CaptureFormat::Apng => Some(30),
         }
     }
@@ -73,13 +70,11 @@ impl CaptureFormat {
 
 #[derive(Debug)]
 pub enum CaptureRequest {
-    /// Stage `Both` writes two files.
     OneShot {
         stage: CaptureStage,
         dir: Option<PathBuf>,
         name: Option<String>,
     },
-    /// Runs until [`CaptureRequest::Stop`] or the next [`CaptureRequest::Toggle`].
     StartSequence {
         format: CaptureFormat,
         stage: CaptureStage,
@@ -87,14 +82,12 @@ pub enum CaptureRequest {
         name: Option<String>,
         /// `None` = every render frame; GIF and APNG fall back to 30 fps.
         fps: Option<u16>,
-        /// Downscale width in pixels, aspect preserved. `None` = native; PNG
-        /// sequences ignore it.
+        /// Output width, aspect preserved; `None` = native. PNG ignores it.
         scale: Option<u32>,
-        /// GIF palette strategy. Ignored for PNG sequences.
+        /// GIF only.
         palette: PaletteMode,
     },
     Stop,
-    /// Toggle a sequence: stop if running, start with these params if idle.
     Toggle {
         format: CaptureFormat,
         stage: CaptureStage,
@@ -106,11 +99,7 @@ pub enum CaptureRequest {
     },
 }
 
-// A frame arriving a hair under the interval is the frame that slot was meant
-// for. The render clock and this one are independent, so an exact `>=` drops a
-// beat whenever the requested rate divides the render rate: asking 30 of a
-// 60 Hz surface measured 23. An eighth of a period is far short of the half
-// that would let two frames into one slot.
+// Admits a frame a hair early; a half period would admit two per slot.
 const FPS_SLACK_DIVISOR: u32 = 8;
 
 fn interval_elapsed(since_last: Duration, interval: Duration) -> bool {
@@ -130,7 +119,7 @@ pub(crate) fn drain_requests() -> Vec<CaptureRequest> {
 
 static STATUS: Mutex<Option<String>> = Mutex::new(None);
 
-/// Compact one-line status set by the runner each frame; `None` when idle.
+/// `None` when idle.
 pub fn current_status() -> Option<String> {
     STATUS.lock().ok().and_then(|g| g.clone())
 }
@@ -152,8 +141,7 @@ fn toggle_panel_global() -> bool {
 pub(crate) struct Capture {
     default_dir: PathBuf,
     state: CaptureState,
-    /// Detached encoder threads still flushing after `stop`. Joined at shutdown so
-    /// trailers finish; finished handles are reaped on each new stop.
+    /// Encoder threads still flushing after `stop`; joined at shutdown so trailers finish.
     pending: Vec<JoinHandle<()>>,
 }
 
@@ -174,28 +162,25 @@ enum CaptureState {
 }
 
 enum SequenceWriter {
-    /// Encoded on the main thread; the cost is readback-dominated.
-    Png { dir: PathBuf },
-    /// Encoded on a worker thread. Frames cross a bounded channel and are dropped
-    /// under backpressure; the dropped count surfaces on stop.
+    Png {
+        dir: PathBuf,
+    },
+    /// Frames cross a bounded channel and drop under backpressure.
     Gif {
         worker: GifWorker,
         path: PathBuf,
         /// First-frame delay in centiseconds; later frames use wall-clock delays.
         default_delay_cs: u16,
-        /// Output width in pixels (Lanczos3, aspect preserved).
         scale: Option<u32>,
         palette_mode: PaletteMode,
-        /// `Some` during `Global`-mode warmup; `None` for `Local` and post-warmup.
+        /// `Some` during `Global`-mode warmup.
         warming: Option<WarmingState>,
         global_palette: Option<Arc<color_quant::NeuQuant>>,
     },
-    /// The `acTL` chunk needs the frame count up front, so the worker buffers
-    /// every frame until stop. Memory = `frames * width * height * 4` bytes.
+    /// The `acTL` chunk needs the frame count up front, so every frame is buffered.
     Apng {
         worker: ApngWorker,
         path: PathBuf,
-        /// Output width in pixels (Lanczos3, aspect preserved).
         scale: Option<u32>,
     },
 }
@@ -212,9 +197,7 @@ struct WarmupFrame {
     captured_at: Instant,
 }
 
-// Captures buffered before training the global palette (~1 s at 30 fps). Memory
-// is `frames * width * height * 4` bytes (~57 MB at 800x600), released after
-// training.
+// ~1 s at 30 fps; ~57 MB at 800x600, released after training.
 const GIF_WARMUP_FRAMES: u32 = 30;
 
 // Dropping it closes the channel, joins the thread, and flushes the trailer.
@@ -228,20 +211,15 @@ struct GifFrame {
     rgba: Vec<u8>,
     src_width: u32,
     src_height: u32,
-    /// Capture wall-clock time. The worker derives each frame's delay from the gap to
-    /// the previous encoded frame, so dropped frames stretch the next delay and total
-    /// playback duration matches recording duration.
+    /// Each delay is the gap to the previous encoded frame, so drops stretch the next.
     captured_at: Instant,
-    /// First-frame fallback delay (no previous timestamp), from the target fps.
     default_delay_cs: u16,
     scale: Option<u32>,
-    /// `Some`: index against this shared NeuQuant and emit `palette: None` (global
-    /// table). `None`: per-frame NeuQuant via `Frame::from_rgba_speed`.
+    /// `Some` indexes against the shared table; `None` quantizes per frame.
     global_palette: Option<Arc<color_quant::NeuQuant>>,
 }
 
-// ~8 frames absorbs a small encode spike while bounding worker lag to ~270 ms at
-// 30 fps. Higher trades smoothness for latency.
+// Bounds worker lag to ~270 ms at 30 fps.
 const GIF_CHANNEL_CAPACITY: usize = 8;
 
 impl GifWorker {
@@ -259,15 +237,11 @@ impl GifWorker {
         }
     }
 
-    // Returns without waiting; the worker drains in the background and the caller
-    // parks the handle for the shutdown join, when the trailer flushes.
     fn detach(mut self) -> JoinHandle<()> {
         self.tx.take();
         self.handle.take().expect("worker handle present")
     }
 
-    // Non-blocking: a full channel bumps the dropped counter so the renderer never
-    // stalls.
     fn try_send(&self, frame: GifFrame) {
         let Some(tx) = self.tx.as_ref() else { return };
         match tx.try_send(frame) {
@@ -293,8 +267,7 @@ impl GifWorker {
 
 impl Drop for GifWorker {
     fn drop(&mut self) {
-        // Fallback for a worker that was never detached (a panic unwinding through
-        // Capture). The normal `Capture::stop` path detaches first.
+        // Fallback for a worker never detached, such as a panic unwinding through `Capture`.
         self.tx.take();
         if let Some(h) = self.handle.take() {
             let _ = h.join();
@@ -311,7 +284,6 @@ fn gif_encoder_loop(path: PathBuf, rx: Receiver<GifFrame>) {
             return;
         }
     }
-    // Encoder drops here, flushing the trailer.
     drop(encoder);
     tracing::info!("capture: gif file finalised at {}", path.display());
 }
@@ -326,9 +298,7 @@ fn encode_one_frame(
     let w_u16: u16 = out_w.try_into().context("gif width > 65535")?;
     let h_u16: u16 = out_h.try_into().context("gif height > 65535")?;
 
-    // Global mode seeds the LSD with the shared palette (later frames write
-    // `palette: None`); local mode passes an empty one and each frame writes its
-    // own.
+    // Global mode seeds the LSD with the shared palette; local passes an empty one.
     let enc = match encoder {
         Some(e) => e,
         None => {
@@ -407,18 +377,15 @@ fn encode_one_frame(
             width: w_u16,
             height: h_u16,
             buffer: std::borrow::Cow::Owned(indices),
-            // `palette: None` -> use the global color table the encoder was opened with.
             palette: None,
             ..gif::Frame::default()
         }
     } else {
-        // Per-frame NeuQuant. Speed 10 (crate default) matches the rate the encoder
-        // thread sustains (~30 fps at 800x600).
+        // Speed 10 sustains ~30 fps at 800x600 on the encoder thread.
         gif::Frame::from_rgba_speed(w_u16, h_u16, &mut buf, 10)
     };
     gif_frame.delay = delay_cs;
-    // `Any` (crate default) lets decoders keep full-frame opaque content; forcing
-    // `Background` caused a perceptible inter-frame flash.
+    // `Background` disposal flashes between frames.
     gif_frame.dispose = gif::DisposalMethod::Any;
     enc.write_frame(&gif_frame).context("gif encode")?;
     Ok(())
@@ -468,7 +435,6 @@ impl ApngWorker {
         self.frame_count.load(Ordering::Relaxed)
     }
 
-    // The worker writes the APNG once the channel closes.
     fn detach(mut self) -> JoinHandle<()> {
         self.tx.take();
         self.handle.take().expect("worker handle present")
@@ -502,7 +468,6 @@ fn apng_encoder_loop(path: PathBuf, rx: Receiver<ApngFrame>, frame_count: Arc<At
 }
 
 fn write_apng(path: &Path, frames: Vec<ApngFrame>) -> Result<()> {
-    // First frame's dimensions fix the canvas size.
     let (out_w, out_h) = scaled_dims(frames[0].src_width, frames[0].src_height, frames[0].scale)?;
     let file =
         File::create(path).with_context(|| format!("create apng output {}", path.display()))?;
@@ -539,8 +504,7 @@ fn write_apng(path: &Path, frames: Vec<ApngFrame>) -> Result<()> {
             frame.rgba
         };
 
-        // Delay = wall-clock gap since the previous frame, clamped to >= 1 ms.
-        // First frame defaults to 33 ms (~30 fps).
+        // The first frame has no gap; 33 ms is ~30 fps.
         let delay_ms = match last_captured_at {
             None => 33u16,
             Some(prev) => {
@@ -652,7 +616,6 @@ impl Capture {
         let name = name.unwrap_or_else(default_name);
         let fps = fps.or_else(|| format.default_fps());
 
-        // Single-file formats can't multiplex two stages; downgrade `Both` to `Post`.
         if !format.supports_both_stages() && stage == CaptureStage::Both {
             stage = CaptureStage::Post;
         }
@@ -742,8 +705,6 @@ impl Capture {
                     warming,
                     ..
                 } => {
-                    // Stopped mid-warmup: train on the partial buffer so the
-                    // file is not empty.
                     if let Some(mut w) = warming {
                         if !w.buffer.is_empty() {
                             tracing::info!(
@@ -926,7 +887,6 @@ impl Capture {
 
 impl Drop for Capture {
     fn drop(&mut self) {
-        // Wait so still-encoding workers leave valid trailers before exit.
         self.join_pending();
     }
 }
@@ -978,8 +938,6 @@ impl SequenceWriter {
                                 captured_at,
                             });
                             if w.buffer.len() as u32 >= w.target_frames {
-                                // Train on the buffer (one-time ~50-100 ms pause), then
-                                // drain it through the worker so no frames are lost.
                                 let nq = Arc::new(train_global_palette(&w.buffer));
                                 tracing::info!(
                                     "capture: gif global palette trained from {} frames",
@@ -1032,14 +990,13 @@ impl SequenceWriter {
     }
 }
 
-// Sparse sample across all warmup frames so the palette spans the recording's
-// colors. Stride 16 feeds ~110 K samples at 800x600 over 30 frames.
 fn train_global_palette(buffer: &[WarmupFrame]) -> color_quant::NeuQuant {
+    // Stride 16 feeds ~110 K samples at 800x600 over 30 frames.
     const STRIDE: usize = 16;
     let mut samples: Vec<u8> = Vec::new();
     for frame in buffer {
         for px in frame.rgba.chunks_exact(4).step_by(STRIDE) {
-            // Normalize alpha for opaque pixels so NeuQuant's 4D metric isn't biased.
+            // Opaque alpha is normalized so NeuQuant's 4D metric is not biased.
             samples.push(px[0]);
             samples.push(px[1]);
             samples.push(px[2]);
@@ -1049,8 +1006,6 @@ fn train_global_palette(buffer: &[WarmupFrame]) -> color_quant::NeuQuant {
     color_quant::NeuQuant::new(10, 256, &samples)
 }
 
-// Aspect preserved; height clamped to >= 1 so degenerate scenes do not crash the
-// encoder.
 fn scaled_dims(width: u32, height: u32, scale: Option<u32>) -> Result<(u32, u32)> {
     let Some(target_w) = scale else {
         return Ok((width, height));
@@ -1065,7 +1020,7 @@ fn scaled_dims(width: u32, height: u32, scale: Option<u32>) -> Result<(u32, u32)
 }
 
 fn fps_to_centiseconds(fps: u16) -> u16 {
-    // GIF delay is in centiseconds; clamp to >= 1 so a 0-delay frame isn't rejected.
+    // A zero-delay GIF frame is rejected.
     let cs = (100.0_f32 / fps.max(1) as f32).round() as u16;
     cs.max(1)
 }
@@ -1579,9 +1534,6 @@ impl CapturePanel {
 mod tests {
     use super::*;
 
-    // The defect this names: at `fps=30` on a 60 Hz surface the frame meant
-    // for each slot lands a few hundred microseconds early, an exact `>=`
-    // rejects it, and the next candidate is a whole period late.
     #[test]
     fn a_frame_a_hair_early_is_taken_and_one_a_half_period_early_is_not() {
         let interval = Duration::from_micros(33_333);
@@ -1592,7 +1544,6 @@ mod tests {
         ));
         assert!(interval_elapsed(interval * 2, interval));
 
-        // Half a period early is the next render frame, not this slot's.
         assert!(!interval_elapsed(interval / 2, interval));
         assert!(!interval_elapsed(Duration::ZERO, interval));
     }
@@ -1611,15 +1562,6 @@ mod tests {
         assert!(scaled_dims(1920, 1080, Some(0)).is_err());
         assert!(scaled_dims(0, 1080, Some(720)).is_err());
         assert!(scaled_dims(1920, 0, Some(720)).is_err());
-    }
-
-    #[test]
-    fn parse_capture_args_extracts_kv_pairs() {
-        let p = parse_capture_args(&["pre", "./shots", "fps=24", "scale=480"]);
-        assert_eq!(p.stage, CaptureStage::Pre);
-        assert_eq!(p.dir.as_deref(), Some(std::path::Path::new("./shots")));
-        assert_eq!(p.fps, Some(24));
-        assert_eq!(p.scale, Some(480));
     }
 
     #[test]

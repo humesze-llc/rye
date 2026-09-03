@@ -11,17 +11,7 @@ pub struct UiIntegration {
 }
 
 impl UiIntegration {
-    /// `surface_format` is the format of the view [`UiIntegration::paint`]
-    /// will be handed, which is not necessarily the swapchain's; callers pass
-    /// `RenderDevice::ui_format`.
-    ///
-    /// An sRGB format selects egui-wgpu's linear-framebuffer fragment entry
-    /// point (and its warning), blending the feathered alpha ramp in linear
-    /// space so hairlines read thin. That is the fallback where the adapter
-    /// cannot reinterpret a view, and the composite path for every surface
-    /// format whose offscreen target has an sRGB sibling to take; the
-    /// direct-to-swapchain path passes the non-sRGB twin and gets gamma-space
-    /// blending.
+    /// `surface_format` must be the format of the view [`UiIntegration::paint`] receives.
     pub fn new(
         device: &wgpu::Device,
         window: &Arc<Window>,
@@ -62,12 +52,8 @@ impl UiIntegration {
         self.winit_state.on_window_event(window, event)
     }
 
-    /// Forces egui-wgpu's lazy pipeline compilation up front, which is
-    /// otherwise a first-paint stall.
-    ///
-    /// `target_format` and `sample_count` MUST match the values
-    /// `UiIntegration::new` was constructed with, or the warm compiles the
-    /// wrong pipeline variant and warms nothing.
+    /// `target_format` and `sample_count` must match the values passed to
+    /// [`UiIntegration::new`], or the warm compiles the wrong pipeline variant.
     pub fn warm_pipelines(
         &mut self,
         device: &wgpu::Device,
@@ -92,7 +78,6 @@ impl UiIntegration {
         });
         let dummy_view = dummy_color.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // MSAA needs a separate single-sample resolve target.
         let resolve_tex = if sample_count > 1 {
             Some(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("loam-egui::warm resolve"),
@@ -119,8 +104,7 @@ impl UiIntegration {
             label: Some("loam-egui::warm encoder"),
         });
 
-        // Text, filled rect, and line stroke cover the lazily-compiled
-        // egui-wgpu pipeline variants the demo set needs.
+        // Text, filled rect and line stroke cover the pipeline variants the demos use.
         let ctx = self.begin_frame(window);
         let ctx = ctx.clone();
         egui::Area::new(egui::Id::new("loam-egui::warm")).show(&ctx, |ui| {
@@ -144,9 +128,7 @@ impl UiIntegration {
         queue.submit(Some(encoder.finish()));
     }
 
-    /// The runner calls this ahead of `App::update` and reads
-    /// [`crate::UiCapture`] from the returned context: the hit test behind
-    /// the pointer clock is refreshed here, not in [`Self::paint`].
+    /// Refreshes the hit test [`crate::UiCapture`] reads; call before `App::update`.
     pub fn begin_frame(&mut self, window: &Window) -> &egui::Context {
         let raw_input = self.winit_state.take_egui_input(window);
         self.pixels_per_point = window.scale_factor() as f32;
@@ -154,15 +136,8 @@ impl UiIntegration {
         &self.ctx
     }
 
-    /// Pairs with `begin_frame`. Overlays with `LoadOp::Load`, so the caller
-    /// must have already rendered the scene into the same attachment.
-    /// `viewport` is `(width_px, height_px)`.
-    ///
-    /// `view` carries the format `new` was constructed with: the swapchain
-    /// texture's non-sRGB reinterpretation on the direct paths, the offscreen
-    /// scene texture's own view on the composite path.
-    ///
-    /// `resolve_target` is `Some` only when `view` is multisampled.
+    /// Loads the attachment, so the scene must already be in `view`. `viewport`
+    /// is in pixels; `resolve_target` is `Some` only when `view` is multisampled.
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &mut self,

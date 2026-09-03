@@ -1,14 +1,6 @@
-//! Whether raster content composites over the analytic background at the right
-//! depth, both from above the ground plane and from below it.
-//!
-//! A quad straddling `y = 0` is drawn after `SkyGroundNode` into one 64x64
-//! attachment pair. The half on the camera's side of the plane must survive and
-//! the half behind it must not, whichever side the camera is on. The control
-//! arm turns the ground off through the same uniform: it isolates the ground's
-//! depth as the thing doing the occluding, so a pass that merely failed to draw
-//! cannot pass this.
-//!
-//! The `gpu_probe` suffix is what CI's software-adapter job selects on.
+//! A quad straddling `y = 0` drawn after `SkyGroundNode`: the half on the
+//! camera's side must survive and the half behind the ground must not, from
+//! above and from below. The control arm turns the ground off.
 
 use glam::{Mat4, Vec3};
 use loam_math::{EuclideanR3, Projection};
@@ -19,19 +11,15 @@ use loam_render::{
 use loam_shape::TriangleMesh;
 use wgpu::*;
 
-// 64 * 4 bytes per row hits `COPY_BYTES_PER_ROW_ALIGNMENT` exactly, so the
-// readback needs no row unpadding.
+// 64 * 4 bytes per row meets `COPY_BYTES_PER_ROW_ALIGNMENT`, so no row unpadding.
 const SIZE: u32 = 64;
 
 const TARGET_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 
-// Pure red against a ground whose channels all sit near 0.2 linear, so one
-// channel separates the two without any tolerance argument.
+// Red against a ground near 0.2 linear, so one channel separates them.
 const QUAD_COLOR: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
-// The quad's sample points, one either side of the plane, and far enough from
-// it that no rasterisation edge case lands on the seam.
 const ABOVE: Vec3 = Vec3::new(0.0, 0.5, 0.0);
 const BELOW: Vec3 = Vec3::new(0.0, -0.5, 0.0);
 
@@ -198,9 +186,6 @@ fn render(device: &Device, queue: &Queue, eye: Vec3, show_ground: bool) -> Vec<u
     data
 }
 
-// Linear red at 1.0 stores as 255 in a non-sRGB target, and every ground
-// channel is near 0.2 linear, so these two thresholds cannot both be met by
-// one surface.
 const QUAD_RED_MIN: u8 = 200;
 const GROUND_RED_MAX: u8 = 120;
 
@@ -208,8 +193,6 @@ const GROUND_RED_MAX: u8 = 120;
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn ground_occludes_raster_content_behind_the_plane_gpu_probe() {
     let (device, queue) = request_device();
-    // Above the plane the near half of the quad is the one over `y = 0`;
-    // below it, the one under. In both the far half is behind the ground.
     for (eye, visible, occluded) in [
         (Vec3::new(0.0, 2.0, 4.0), ABOVE, BELOW),
         (Vec3::new(0.0, -2.0, 4.0), BELOW, ABOVE),
@@ -229,8 +212,6 @@ fn ground_occludes_raster_content_behind_the_plane_gpu_probe() {
              be cut by its depth, got {hidden:?}"
         );
 
-        // Same frame, ground off: if the far half now draws, the cut above was
-        // the ground's depth and not a lost draw or a clipped vertex.
         let without_ground = render(&device, &queue, eye, false);
         let uncovered = texel(&without_ground, pixel_of(vp, occluded));
         assert!(

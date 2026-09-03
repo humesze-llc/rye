@@ -40,8 +40,6 @@ impl Demo {
             .inner_margin(egui::Margin::symmetric(6, 2))
             .corner_radius(3);
 
-        // w fans symmetrically (center index is current); t fans
-        // forward from `rot_time` (index 0 is current).
         let w_axis_label = |i: usize, n: usize| -> (String, bool) {
             let off = if n <= 1 {
                 0.0
@@ -112,8 +110,6 @@ impl Demo {
         }
     }
 
-    // The Schlegel boundary-cell stepper's `cell_count()` bound is well-defined
-    // only against one unambiguous polytope.
     pub(crate) fn render_single_body(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         let heavy = matches!(
@@ -151,8 +147,7 @@ impl Demo {
                 "120/600-cell SDFs are heavy; expect <60 fps.",
             );
         }
-        // At least one of `strip_w` / `strip_t` stays on, so toggling off the
-        // last active axis is a no-op.
+        // At least one axis stays on.
         ui.horizontal(|ui| {
             let mut w_on = self.strip_w;
             let mut t_on = self.strip_t;

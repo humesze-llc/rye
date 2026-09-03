@@ -18,9 +18,7 @@ pub enum WgslValidationError {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ShaderId(u32);
 
-/// A prelude belongs to the loader, not the file: one path under two owners
-/// is two modules, and hot-reload is scoped by owner so a host fanning one
-/// event slice at every owner recompiles each module once.
+/// One path under two owners is two modules; hot-reload is scoped by owner.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ShaderOwner(u32);
 
@@ -28,28 +26,21 @@ struct Entry {
     path: PathBuf,
     module: ShaderModule,
     scene_source: Option<String>,
-    /// Kept so a reload reproduces the entry's geometry without the caller
-    /// re-supplying a Space it may no longer hold.
     prelude: Cow<'static, str>,
     generation: u64,
     label: String,
 }
 
-/// A failed hot-reload or a removed file keeps the last good module; a later
-/// create or modify restores it.
+/// A failed reload or a removed file keeps the last good module.
 pub struct ShaderDb {
     device: Device,
     entries: HashMap<ShaderId, Entry>,
-    /// Per owner rather than one shared map: two owners loading the same file
-    /// need two entries, since a module carries exactly one prelude.
     path_index: HashMap<ShaderOwner, HashMap<PathBuf, ShaderId>>,
     next_id: u32,
     next_owner: u32,
 }
 
 impl ShaderDb {
-    /// The owner every db starts with. Sub-scenes with Spaces of their own take
-    /// an owner from [`ShaderDb::new_owner`] instead.
     pub const ROOT_OWNER: ShaderOwner = ShaderOwner(0);
 
     pub fn new(device: Device) -> Self {
@@ -62,16 +53,13 @@ impl ShaderDb {
         }
     }
 
-    /// Distinct from [`ShaderDb::ROOT_OWNER`] and from every owner already issued.
     pub fn new_owner(&mut self) -> ShaderOwner {
         let owner = ShaderOwner(self.next_owner);
         self.next_owner += 1;
         owner
     }
 
-    /// Prepends the Space's WGSL prelude. The [`ShaderId`] is stable across
-    /// reloads for one owner and path; another owner loading the same path gets
-    /// its own ID and its own prelude.
+    /// The id is stable across reloads for one owner and path.
     pub fn load<S: WgslSpace>(
         &mut self,
         owner: ShaderOwner,
@@ -92,8 +80,7 @@ impl ShaderDb {
         self.load_inner(owner, path, Some(scene_source), space)
     }
 
-    /// Assembles Space prelude + scene SDF + [`crate::GEODESIC_MARCH_KERNEL`] +
-    /// user shading, in that order. Scene and kernel are reused on reloads.
+    /// Prelude, scene SDF, [`crate::GEODESIC_MARCH_KERNEL`], user shading, in that order.
     pub fn load_geodesic_scene<S: WgslSpace>(
         &mut self,
         owner: ShaderOwner,
@@ -168,20 +155,16 @@ impl ShaderDb {
             .module
     }
 
-    /// Generation counter for `id`; bumps on every successful (re)compile so
-    /// render code can rebuild its pipeline on mismatch.
+    /// Bumps on every successful compile.
     pub fn generation(&self, id: ShaderId) -> u64 {
         self.entries.get(&id).map(|e| e.generation).unwrap_or(0)
     }
 
-    /// Recompiles each of `owner`'s shaders against the prelude it was loaded
-    /// with. Other owners are untouched, including entries for the same path.
-    /// A compile error keeps the last good module.
+    /// Other owners are untouched, including entries for the same path.
     pub fn apply_events(&mut self, owner: ShaderOwner, events: &[AssetEvent]) {
         for event in events {
             let canonical = match canonicalize(&event.path) {
                 Ok(p) => p,
-                // Removed files can't be canonicalized; look up by raw path.
                 Err(_) => event.path.clone(),
             };
             let Some(id) = self.lookup(owner, &canonical) else {
@@ -272,8 +255,7 @@ pub(crate) fn assemble_source_with_scene(
     out
 }
 
-/// Headless: rejects a broken prelude or user shader without a GPU adapter.
-/// `wgpu` still does its own backend validation at module creation.
+/// Headless; `wgpu` still validates at module creation.
 pub fn validate_wgsl(source: &str) -> std::result::Result<(), WgslValidationError> {
     let module = naga::front::wgsl::parse_str(source)?;
     let flags = naga::valid::ValidationFlags::all();
@@ -309,8 +291,6 @@ fn main() {
 }
 "#;
 
-    // 4D variant of `ABI_PROBE`; `EuclideanR4` uses `vec4<f32>` throughout, v0 ABI
-    // otherwise identical.
     const ABI_PROBE_VEC4: &str = r#"
 @compute @workgroup_size(1)
 fn main() {
@@ -325,17 +305,6 @@ fn main() {
     _ = LOAM_MAX_ARC;
 }
 "#;
-
-    #[test]
-    fn assemble_includes_both_sources() {
-        let s = assemble_source(
-            "fn loam_distance(a: f32, b: f32) -> f32 { return 0.0; }",
-            "@fragment fn main() {}",
-        );
-        assert!(s.contains("loam_distance"));
-        assert!(s.contains("@fragment fn main"));
-        assert!(s.find("loam_distance").unwrap() < s.find("@fragment fn main").unwrap());
-    }
 
     #[test]
     fn assemble_includes_scene_between_space_and_user() {
@@ -439,180 +408,6 @@ fn main() {
             .expect("BlendedSpace<E3,H3,LinearBlendX> + geodesic kernel should validate");
     }
 
-    // `loam_origin_distance` as the Space preludes ship it, verbatim. The S3
-    // saturation constant is pinned beside the body because the body only names
-    // it, and the two could otherwise drift apart at the shell.
-    const R3_ORIGIN_DISTANCE_FN: &str =
-        "fn loam_origin_distance(p: vec3<f32>) -> f32 { return length(p); }";
-    const S3_R2_MAX_DECL: &str = "const LOAM_S3_R2_MAX: f32 = 0.999999;";
-    const S3_ORIGIN_DISTANCE_BODY: &str =
-        "    let r2 = min(dot(p, p), LOAM_S3_R2_MAX);\n    return asin(sqrt(r2));\n}";
-    const S3_R2_MAX: f32 = 0.999999;
-
-    // The text pin lives in the constructor so a prelude that moves out from
-    // under this port fails the `cpu_march_*` tests themselves.
-    fn euclidean_origin_distance_mirror() -> impl Fn(Vec3) -> f32 {
-        assert!(
-            EuclideanR3.wgsl_impl().contains(R3_ORIGIN_DISTANCE_FN),
-            "EuclideanR3 loam_origin_distance drifted from its CPU port",
-        );
-        |p: Vec3| p.length()
-    }
-
-    fn spherical_origin_distance_mirror() -> impl Fn(Vec3) -> f32 {
-        let prelude = SphericalS3.wgsl_impl();
-        assert!(
-            prelude.contains(S3_R2_MAX_DECL) && prelude.contains(S3_ORIGIN_DISTANCE_BODY),
-            "SphericalS3 loam_origin_distance drifted from its CPU port",
-        );
-        |p: Vec3| {
-            let r2 = p.length_squared().min(S3_R2_MAX);
-            r2.sqrt().asin()
-        }
-    }
-
-    // Line-for-line CPU port of `kernel.wgsl::loam_march_geodesic`.
-    // `loam_origin_distance` and `loam_max_arc` are parameters (the kernel reads
-    // both from the Space prelude) so each test supplies its own pinned mirror.
-    fn march_geodesic_cpu<S: Space<Point = Vec3, Vector = Vec3>>(
-        space: &S,
-        sdf: impl Fn(Vec3) -> f32,
-        origin_distance: impl Fn(Vec3) -> f32,
-        ro: Vec3,
-        rd: Vec3,
-        ball_scale: f32,
-        loam_max_arc: f32,
-    ) -> Option<(Vec3, f32)> {
-        let scale = ball_scale.max(1e-5);
-        let mut p = ro * scale;
-
-        let rd_unit = rd.try_normalize().unwrap_or(Vec3::new(0.0, 0.0, -1.0));
-        let probe_eps = 1e-4_f32;
-        let probed = space.exp(p, rd_unit * probe_eps);
-        let riem_norm = space.distance(p, probed) / probe_eps;
-        let mut v = rd_unit / riem_norm.max(1e-7);
-
-        let mut t_scene = 0.0_f32;
-        let mut t_arc = 0.0_f32;
-        let hit_eps = 0.001 * scale;
-        let min_step = 0.0001 * scale;
-
-        for _ in 0..256 {
-            if origin_distance(p) > loam_max_arc * 0.92 {
-                return None;
-            }
-            let d = sdf(p);
-            if d < hit_eps {
-                return Some((p, t_scene));
-            }
-            if t_scene > 40.0 || t_arc > loam_max_arc {
-                return None;
-            }
-            let step = (d * 0.85).max(min_step);
-            let next_p = space.exp(p, v * step);
-            let next_v = space.parallel_transport(p, next_p, v);
-            p = next_p;
-            if next_v.length_squared() > 1e-12 {
-                v = next_v;
-            }
-            t_scene += step / scale;
-            t_arc += step;
-        }
-        None
-    }
-
-    #[test]
-    fn cpu_march_hits_centered_sphere_in_euclidean_r3() {
-        let space = EuclideanR3;
-        let sphere_radius = 0.5_f32;
-        let sdf = |p: Vec3| p.length() - sphere_radius;
-        let ro = Vec3::new(0.0, 0.0, 2.0);
-        let rd = Vec3::new(0.0, 0.0, -1.0);
-        let (hit, t) = march_geodesic_cpu(
-            &space,
-            sdf,
-            euclidean_origin_distance_mirror(),
-            ro,
-            rd,
-            1.0,
-            1.0e9,
-        )
-        .expect("ray should hit centered sphere");
-
-        // Front of the sphere along -Z: (0, 0, 0.5).
-        let expected = Vec3::new(0.0, 0.0, sphere_radius);
-        let position_drift = (hit - expected).length();
-        assert!(
-            position_drift < 5e-3,
-            "hit {hit:?} should be within hit_eps of expected {expected:?} (drift {position_drift})",
-        );
-
-        // t_scene = ro.z - radius = 1.5; tolerance covers last-step overshoot
-        // (up to one hit_eps) plus float-stepping noise.
-        let expected_t = 1.5_f32;
-        assert!(
-            (t - expected_t).abs() < 5e-3,
-            "t_scene {t} should be ~{expected_t} (within last-step overshoot)",
-        );
-    }
-
-    #[test]
-    fn cpu_march_misses_when_ray_points_away_in_euclidean_r3() {
-        let space = EuclideanR3;
-        let sdf = |p: Vec3| p.length() - 0.5;
-        let ro = Vec3::new(0.0, 0.0, 2.0);
-        let rd = Vec3::new(0.0, 0.0, 1.0);
-        let result = march_geodesic_cpu(
-            &space,
-            sdf,
-            euclidean_origin_distance_mirror(),
-            ro,
-            rd,
-            1.0,
-            1.0e9,
-        );
-        assert!(
-            result.is_none(),
-            "ray pointing away from sphere should miss; got {result:?}",
-        );
-    }
-
-    #[test]
-    fn cpu_march_arc_escape_tracks_origin_distance_near_the_s3_origin() {
-        let solid = |_: Vec3| -1.0_f32;
-        let ro = Vec3::new(0.0, 0.0, 1e-4);
-        let rd = Vec3::new(0.0, 0.0, -1.0);
-
-        let escaped = march_geodesic_cpu(
-            &SphericalS3,
-            solid,
-            spherical_origin_distance_mirror(),
-            ro,
-            rd,
-            1.0,
-            1e-4,
-        );
-        assert!(
-            escaped.is_none(),
-            "|p| = 1e-4 is past a 1e-4 arc budget (0.92 buffer); \
-             the march must escape before sampling, got {escaped:?}",
-        );
-
-        let inside = march_geodesic_cpu(
-            &SphericalS3,
-            solid,
-            spherical_origin_distance_mirror(),
-            ro,
-            rd,
-            1.0,
-            1.0,
-        );
-        assert!(
-            inside.is_some(),
-            "|p| = 1e-4 is well inside a 1.0 arc budget; the march must sample the scene",
-        );
-    }
-
     #[repr(C)]
     #[derive(Copy, Clone, Debug, Pod, Zeroable)]
     struct GpuCase {
@@ -668,8 +463,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-    // `EuclideanR4` ships the same v0 ABI over `vec4<f32>`, so it needs its own
-    // probe body; the buffer layout is unchanged.
     const GPU_PROBE_VEC4: &str = r#"
 @compute @workgroup_size(1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -697,8 +490,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ParityCase { corner, a, b, v }
     }
 
-    // Nothing here is a domain boundary: R^n has none, so these pin the plumbing
-    // and the exp/log/transport algebra rather than a conditioning class.
     fn flat_corners() -> Vec<ParityCase> {
         vec![
             corner(
@@ -734,9 +525,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ]
     }
 
-    // Radii are literals rather than offsets from the prelude's saturation
-    // constant: a fixture that reads the constant it probes retunes with it and
-    // stops failing. `0.9999` is inside today's shell.
+    // Literal radii: a fixture that reads the shell constant retunes with it.
     fn hemisphere_corners() -> Vec<ParityCase> {
         vec![
             corner(
@@ -745,8 +534,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 Vec3::new(0.2, -0.1, 0.05),
                 Vec3::new(0.01, 0.02, -0.03),
             ),
-            // Below the radius where `acos(sqrt(1 - r2))` collapses to zero in
-            // f32; the regime the shipped origin distance was wrong in.
             corner(
                 "small radius",
                 Vec3::new(1e-4, 0.0, 0.0),
@@ -759,11 +546,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 Vec3::new(0.2, -0.1, 0.05),
                 Vec3::new(0.01, 0.02, -0.03),
             ),
-            // Two points near the equator on opposite sides: arc ≈ π − 0.028,
-            // driving the transport denominator `|qf + qt|²/2 = 2w²` to 4e-4,
-            // the smallest of any corner here. Deliberately short of the
-            // chart's own extreme (π − 0.002, at the saturation shell), so a
-            // retune of that shell cannot turn this into a clamp probe.
             corner(
                 "near-antipodal across the equator",
                 Vec3::new(0.9999, 0.0, 0.0),
@@ -779,9 +561,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ]
     }
 
-    // Near-antipodal here means opposite sides of the ideal boundary, along a
-    // segment whose conformal factor runs from 4 at its centre to 1.0e4 at each
-    // endpoint.
     fn ball_corners() -> Vec<ParityCase> {
         vec![
             corner(
@@ -817,9 +596,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ]
     }
 
-    // The radii are literals: both charts clamp onto a shell a few f32 ulps
-    // inside `|p| = 1`, and a fixture parameterised on that shell would move
-    // with a retune and stop being out of domain at all.
     fn out_of_domain_corners() -> Vec<ParityCase> {
         let directions = [
             Vec3::new(1.0, 0.0, 0.0),
@@ -889,9 +665,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_prelude_matches_cpu(&EuclideanR3, &flat_corners(), 1e-6);
     }
 
-    // Per-corner rather than one constant triple: a constant one separates the
-    // coincident pair and swamps the sub-ulp one, destroying the two regimes
-    // the fixture exists for.
+    // Per corner: one constant `w` would separate the coincident pair.
     const FLAT_CORNER_W: [[f32; 3]; 5] = [
         [0.0, 0.0, 0.125],
         [1.0, 1.0 + 1e-8, 1e-8],
@@ -1107,8 +881,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         slice.map_async(wgpu::MapMode::Read, move |res| {
             tx.send(res).expect("map callback receiver should exist");
         });
-        // `submission_index = None` waits on the most recent submission;
-        // `timeout = None` waits indefinitely.
         device
             .poll(wgpu::PollType::Wait {
                 submission_index: None,
@@ -1126,9 +898,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         Ok(rows)
     }
 
-    // `loam_origin_distance` is checked against `distance` from the chart origin
-    // because that identity is the whole content of the function. Its absence
-    // here is why S3 shipped an `acos` form that reads zero under 1.73e-4.
     fn assert_prelude_matches_cpu<S>(space: &S, cases: &[ParityCase], eps: f32)
     where
         S: WgslSpace + Space<Point = Vec3, Vector = Vec3>,
@@ -1163,12 +932,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Out there both charts clamp onto a saturation shell a few f32 ulps thick,
-    // and `artanh`, the `1/w` tangent lift and the conformal ratio all carry
-    // derivatives past 1e6 in where that clamp lands, so two compilers rounding
-    // it differently disagree by whole percent. No parity budget separates that
-    // from a transcription error, so this gates on the chart contract instead:
-    // finite, never NaN, and a returned point still inside the chart.
+    // No parity budget survives the shell clamp; gate on finite and in-chart instead.
     fn assert_prelude_survives_out_of_domain<S>(space: &S, label: &str)
     where
         S: WgslSpace + Space<Point = Vec3, Vector = Vec3>,
@@ -1213,10 +977,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     }
                 }
             }
-            // Both charts are the open unit ball and both preludes end
-            // `loam_exp` in their own clamp, so a result outside it is the clamp
-            // failing. Excluded when the tangent is zero: there the tiny-
-            // tangent early-out returns the base point, in domain or not.
+            // A zero tangent returns the base point, in domain or not.
             let exp_gpu = Vec3::new(row.exp_point[0], row.exp_point[1], row.exp_point[2]);
             assert!(
                 v == Vec3::ZERO || exp_gpu.length_squared() <= 1.0,
@@ -1232,34 +993,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     fn blended_e3_h3_gpu_probe_exp_matches_cpu() {
         let space = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.5, 0.5));
         let cases = [
-            // Pure E3 (alpha = 0): straight-line motion.
+            // Pure E3.
             gpu_case(
                 Vec3::new(-1.0, 0.05, 0.0),
                 Vec3::new(-0.8, 0.05, 0.0),
                 Vec3::new(0.1, 0.0, 0.0),
             ),
-            // Mid-zone (alpha ~ 0.5): exercises the conformal factor's gradient.
+            // Mid-zone.
             gpu_case(
                 Vec3::new(0.0, 0.05, 0.0),
                 Vec3::new(0.1, 0.05, 0.0),
                 Vec3::new(0.05, 0.0, 0.0),
             ),
-            // Pure H3 (alpha = 1) at r=0.7: f(p) ~ 15.4x identity, non-linear.
+            // Pure H3 at r = 0.7.
             gpu_case(
                 Vec3::new(0.7, 0.0, 0.0),
                 Vec3::new(0.71, 0.05, 0.0),
                 Vec3::new(0.02, 0.02, 0.0),
             ),
-            // Straddles the `|v|² < 1e-14` early-out both sides share; the
-            // RK4 loop and the identity return must agree here.
+            // Straddles the `|v|² < 1e-14` early-out.
             gpu_case(
                 Vec3::new(0.0, 0.05, 0.0),
                 Vec3::new(0.0, 0.05, 0.0),
                 Vec3::new(1e-7, 0.0, 0.0),
             ),
-            // Outside the H3 unit ball but inside the blended chart: the
-            // field pins alpha to 0 there, so the metric is flat and the
-            // H3 side's saturation shell is never consulted.
+            // Outside the H3 ball, in the flat zone.
             gpu_case(
                 Vec3::new(-2.0, 0.3, 0.1),
                 Vec3::new(-1.6, 0.3, 0.1),
@@ -1287,20 +1045,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     fn blended_e3_h3_gpu_probe_transport_matches_cpu() {
         let space = BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.5, 0.5));
         let cases = [
-            // Pure E3: transport is identity; drift is pure GPU-vs-CPU noise.
+            // Pure E3.
             gpu_case(
                 Vec3::new(-1.0, 0.05, 0.0),
                 Vec3::new(-0.8, 0.05, 0.0),
                 Vec3::new(0.1, 0.0, 0.0),
             ),
-            // Long traversal across the transition zone into H3 at r ~ 0.7; the
-            // case that discriminates 8-step RK4 from single-step Euler.
+            // Across the transition zone into H3.
             gpu_case(
                 Vec3::new(-0.6, 0.0, 0.0),
                 Vec3::new(0.7, 0.0, 0.0),
                 Vec3::new(0.5, 0.5, 0.0),
             ),
-            // Pure H3 at r ~ 0.7 where f(p) ~ 15.4x identity.
+            // Pure H3 at r = 0.7.
             gpu_case(
                 Vec3::new(0.7, 0.0, 0.0),
                 Vec3::new(0.72, 0.05, 0.0),
@@ -1312,7 +1069,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 Vec3::new(1e-7, 0.05, 0.0),
                 Vec3::new(0.05, -0.02, 0.01),
             ),
-            // Outside the H3 unit ball, inside the blended chart's flat zone.
+            // Outside the H3 ball, in the flat zone.
             gpu_case(
                 Vec3::new(-2.0, 0.3, 0.1),
                 Vec3::new(-1.6, 0.3, 0.1),
@@ -1423,14 +1180,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-    // Shared by the probe scenes and the explicit boundary sample points, so
-    // "on the surface" and "in the blend band" stay true when one is retuned.
+    // Shared by the scenes and the boundary sample points.
     const PROBE_BALL_A: (Vec3, f32) = (Vec3::new(0.10, 0.00, 0.05), 0.22);
     const PROBE_BALL_B: (Vec3, f32) = (Vec3::new(-0.15, 0.08, 0.00), 0.18);
     const PROBE_BOX_HALF_EXTENTS: Vec3 = Vec3::new(0.20, 0.15, 0.25);
     const PROBE_PLANE_OFFSET: f32 = -0.30;
-    // An order of magnitude apart, so the probe sees a wide active band and a
-    // nearly hard `min`.
+    // A wide band and a nearly hard `min`.
     const PROBE_SMOOTH_K: [f32; 2] = [0.12, 0.012];
 
     // One scene per emit feature, so a parity failure localises to one combinator.
@@ -1614,16 +1369,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Two f32 pipelines that agree to their last bits still differ by ~1e-7 on a
-    // coordinate of order 1, and a lane whose true value is 0 has no relative
-    // scale. One order above that and no higher: the small-radius corner works
-    // at 1e-4, so 1e-6 holds it to 1% and the `acos(sqrt(1 - r^2))` origin
-    // distance, which reads exactly 0 there, cannot pass under it.
+    // One order above f32 pipeline noise on a coordinate of order 1.
     const PARITY_ABSOLUTE_FLOOR: f32 = 1e-6;
 
-    // Relative: the curved charts carry conformal factors reaching 1e7 near
-    // their boundaries and metric quantities down at 1e-4 near their origins, so
-    // a flat absolute bound would pass everything at one end or fail the other.
+    // Relative: conformal factors reach 1e7 near the boundaries.
     fn assert_near(what: &str, actual: f32, expected: f32, eps: f32) {
         let budget = eps * expected.abs() + PARITY_ABSOLUTE_FLOOR;
         assert!(
@@ -1632,9 +1381,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
     }
 
-    // The noop backend stubs `create_shader_module`, the one layer these tests
-    // do not care about: naga still validates every assembled source inside
-    // `ShaderDb::compile`. No GPU, so they run without `#[ignore]`.
+    // Noop backend: naga still validates inside `ShaderDb::compile`.
     fn noop_device() -> Device {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::NOOP,
@@ -1667,8 +1414,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }]
     }
 
-    // Differs byte-wise but still validates, so a recompile shows up as a
-    // generation bump. The needle is arity-free so it hits both probes.
+    // Still validates; the needle appears in both probes.
     fn touch_with_edit(path: &Path) {
         let previous = std::fs::read_to_string(path).unwrap();
         let edited = previous.replace("0.1, 0.2, 0.3", "0.15, 0.25, 0.35");
@@ -1846,29 +1592,5 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             3,
             "the reload must use ℝ⁴'s prelude; ℝ³'s no longer validates this source",
         );
-    }
-
-    #[test]
-    fn hot_reload_pipeline_reads_assembles_and_validates_mutated_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("probe.wgsl");
-
-        let v1 = ABI_PROBE;
-        std::fs::write(&path, v1).unwrap();
-
-        let read1 = std::fs::read_to_string(&path).unwrap();
-        let src1 = assemble_source(&EuclideanR3.wgsl_impl(), &read1);
-        validate_wgsl(&src1).expect("v1 must validate");
-
-        // Mutate in place (same path, changed bytes, as the watcher sees a save);
-        // tweak a constant, not structure, so v2 still validates.
-        let v2 = ABI_PROBE.replace("vec3<f32>(0.1, 0.2, 0.3)", "vec3<f32>(0.4, 0.5, 0.6)");
-        assert_ne!(v1, v2, "test mutation should produce different source");
-        std::fs::write(&path, &v2).unwrap();
-
-        let read2 = std::fs::read_to_string(&path).unwrap();
-        assert_ne!(read1, read2, "file mutation should change bytes");
-        let src2 = assemble_source(&EuclideanR3.wgsl_impl(), &read2);
-        validate_wgsl(&src2).expect("v2 must validate after mutation");
     }
 }

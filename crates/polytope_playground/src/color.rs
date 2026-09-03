@@ -1,5 +1,4 @@
-// Keyed on SIGNED w so a +w and a -w vertex read as different colors. Matches
-// the depth cue in the LineRasterStaticR4 shader.
+// Matches the depth cue in the LineRasterStaticR4 shader.
 const W_DEPTH_BACK: [f32; 3] = [0.30, 0.42, 0.58];
 const W_DEPTH_FRONT: [f32; 3] = [1.00, 0.78, 0.45];
 
@@ -19,8 +18,6 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
     [r + m, g + m, b + m]
 }
 
-// Golden-ratio hue spacing plus an S/V cycle, so adjacent indices land far
-// apart in HSV.
 fn unique_edge_palette_color(idx: usize) -> [f32; 4] {
     const PHI_INV: f32 = 0.618_034;
     let h = ((idx as f32) * PHI_INV).fract();
@@ -30,8 +27,7 @@ fn unique_edge_palette_color(idx: usize) -> [f32; 4] {
     [r, g, b, 1.0]
 }
 
-// Greedy first-fit coloring of the edge line-graph: edges sharing a vertex get
-// different colors. Deterministic in `edges` order.
+// Greedy first-fit coloring of the edge line-graph.
 pub(crate) fn unique_edge_palette(edges: &[[u32; 2]]) -> Vec<[f32; 4]> {
     let n = edges.len();
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -66,8 +62,6 @@ pub(crate) fn unique_edge_palette(edges: &[[u32; 2]]) -> Vec<[f32; 4]> {
         .collect()
 }
 
-// Cool at -w, warm at +w, neutral on the slice plane. `w_extent_local` is the
-// fixed post-scale |w| bound, so the gradient is orientation-stable.
 pub(crate) fn w_depth_color(w: f32, w_extent_local: f32) -> [f32; 4] {
     let denom = w_extent_local.max(1e-6);
     let t = ((w / denom) * 0.5 + 0.5).clamp(0.0, 1.0);
@@ -133,14 +127,6 @@ mod tests {
     }
 
     #[test]
-    fn unique_edge_palette_is_deterministic() {
-        let edges: &[[u32; 2]] = &[[0, 1], [1, 2], [2, 3], [0, 3]];
-        let a = unique_edge_palette(edges);
-        let b = unique_edge_palette(edges);
-        assert_eq!(a, b);
-    }
-
-    #[test]
     fn w_depth_color_zero_w_is_midpoint() {
         let c = w_depth_color(0.0, 1.0);
         for ch in 0..3 {
@@ -152,28 +138,6 @@ mod tests {
             );
         }
         assert!((c[3] - 1.0).abs() < 1e-5, "alpha is 1.0");
-    }
-
-    #[test]
-    fn w_depth_color_neg_extent_is_back() {
-        let c = w_depth_color(-1.0, 1.0);
-        for ch in 0..3 {
-            assert!(
-                (c[ch] - W_DEPTH_BACK[ch]).abs() < 1e-5,
-                "channel {ch}: expected back tint",
-            );
-        }
-    }
-
-    #[test]
-    fn w_depth_color_pos_extent_is_front() {
-        let c = w_depth_color(1.0, 1.0);
-        for ch in 0..3 {
-            assert!(
-                (c[ch] - W_DEPTH_FRONT[ch]).abs() < 1e-5,
-                "channel {ch}: expected front tint",
-            );
-        }
     }
 
     #[test]

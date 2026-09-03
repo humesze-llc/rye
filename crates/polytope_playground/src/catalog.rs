@@ -4,9 +4,6 @@ use loam_app::egui;
 use loam_render::raymarch::RaymarchShape;
 use loam_shape::polytope::Polytope4;
 
-// `body_color` drives `BodyUniform.color` on the GPU, not the uniformly grey
-// card color. `long_name` uses the `pentachoron`/`tesseract`/`hexadecachoron`
-// family, not the dimension-generalized `*-plex` aliases.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub(crate) struct ShapeEntry {
     pub(crate) shape: RaymarchShape,
@@ -16,11 +13,6 @@ pub(crate) struct ShapeEntry {
 }
 
 impl ShapeEntry {
-    // `None` only for the four smooth solids, which have no vertex list. The
-    // 120-cell and 600-cell used to be excluded here as well, because the
-    // narrowphase posed hulls through a fixed 32-vertex buffer and silently
-    // truncated past it; it supports in the body frame now and materializes
-    // nothing, so vertex count no longer bounds what can collide.
     pub(crate) fn collider_polytope(&self) -> Option<Polytope4> {
         self.shape.polytope4()
     }
@@ -134,7 +126,6 @@ pub(crate) fn render_shape_catalog_menu(ui: &mut egui::Ui, mut on_select: impl F
     }
 }
 
-// Ranges, not nested slices, keep flat `SHAPE_CATALOG[i]` lookups working.
 struct ShapeCategory {
     name: &'static str,
     start: usize,
@@ -185,8 +176,7 @@ pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
     })
 }
 
-// Parses `--shapes=a,b` natively and `?shapes=a,b` in the browser. The
-// space-separated `--shapes a,b` form errors: its value never reaches `args`.
+// The space-separated `--shapes a,b` form never reaches `args`, so it errors.
 pub(crate) fn parse_row(args: &Args) -> Result<Vec<ShapeEntry>> {
     if args.has_bare_flag("shapes") {
         return Err(anyhow!(

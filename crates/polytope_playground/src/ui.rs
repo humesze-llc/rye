@@ -15,8 +15,6 @@ use crate::state::{
 
 const OVERLAY_PAD: f32 = 16.0;
 
-// Read off the registry the `scene` command and `--scene=` / `?scene=` resolve
-// against, so a scene added to the table cannot ship without an in-app mention.
 fn scene_roster() -> String {
     crate::shell::Playground::SCENES
         .iter()
@@ -25,15 +23,12 @@ fn scene_roster() -> String {
         .join(", ")
 }
 
-// The window's pivot is `CENTER_BOTTOM`, so this is the bottom edge of its
-// frame, not the top.
+// The window pivots at `CENTER_BOTTOM`, so this is its bottom edge.
 pub(crate) fn overlay_seat(ctx: &egui::Context) -> egui::Pos2 {
     let screen = ctx.content_rect();
     egui::pos2(screen.center().x, screen.bottom() - OVERLAY_PAD)
 }
 
-// Free function so it can take a `&mut SectionLayer` destructured out of
-// `Demo` without re-borrowing the whole `Demo`.
 fn section_layer_controls(
     ui: &mut egui::Ui,
     title: &str,
@@ -102,7 +97,6 @@ impl Demo {
         }
     }
 
-    // Staged into `self.pending_mode` so the switch lands between frames.
     pub(crate) fn render_rotation_tab_row(&mut self, ui: &mut egui::Ui) {
         let mut staged = self.rotation_mode;
         ui.horizontal(|ui| {
@@ -145,16 +139,10 @@ impl Demo {
     }
 
     pub(crate) fn render_render_panel(&mut self, ctx: &egui::Context) {
-        // Snapshot fields the panel mutates so the surface-mode rebuild and
-        // Schlegel re-resolve can run AFTER the destructure-borrow's lifetime
-        // ends; they need `&mut self`, unavailable inside the closure.
         let prev_surface = self.surface_mode;
         let prev_projection = self.wireframe.projection;
-        // Before the destructure (which exclusively borrows `self.row`).
         let sdf_disabled = self.sdf_blocked_by_heavy_polychora();
         let schlegel_cell_count = self.schlegel_subject().map(|p| p.cell_count() as u32);
-        // Destructure-borrow so the closure stays a plain `FnOnce(&mut Ui)` and
-        // does not conflict with `show_render_panel`.
         let Self {
             show_render_panel,
             surface_mode,
@@ -184,8 +172,6 @@ impl Demo {
             |ui| {
                 ui.label(egui::RichText::new("Surface").strong());
                 ui.radio_value(surface_mode, SurfaceMode::Raster, "Raster (default)");
-                // 120-cell / 600-cell SDF kernels overrun the browser's WebGPU
-                // shader budget and crash the tab.
                 ui.add_enabled_ui(!sdf_disabled, |ui| {
                     let resp = ui.radio_value(surface_mode, SurfaceMode::Sdf, "SDF raymarch");
                     if sdf_disabled {
@@ -305,7 +291,6 @@ impl Demo {
         if self.surface_mode != prev_surface {
             self.rebuild_bodies();
         }
-        // Deferred here because the Schlegel re-resolve needs `&mut self`.
         if self.wireframe.projection != prev_projection {
             self.resolve_schlegel_cache();
         }
@@ -480,8 +465,6 @@ impl Demo {
 
         let default_bottom_centre = overlay_seat(ctx);
 
-        // Single-view subject IS the rendered row, so a picker change needs the
-        // same rebuild and Schlegel re-resolve a row edit does.
         let prev_strip_subject = self.strip_subject;
 
         egui::Window::new("polytope-playground-overlay")
@@ -505,8 +488,7 @@ impl Demo {
                 self.render_rate_row(ui);
             });
 
-        // Drain only once the overlay closure has returned: applying mid-render
-        // would lay out the rest of the frame against the new state.
+        // Drained after the overlay closure returns, not mid-render.
         if let Some(new_mode) = self.pending_mode.take() {
             self.rotation_mode = new_mode;
         }
@@ -563,9 +545,7 @@ impl Demo {
         let mut t_dragged = false;
         ui.allocate_ui_with_layout(row_size, row_layout, |ui| {
             let formatted = format!("t {:>5.2}s", self.rot_time);
-            // Gate the scrub recompute on `dragged`, not `changed`: the spin's
-            // per-frame `rot_time += dt` would otherwise re-fire the
-            // `(omega * t).exp()` rebuild every frame and snap the rotor.
+            // `dragged`, not `changed`: the spin's own `rot_time` advance would re-fire this.
             let interaction = slider_with_edit(
                 ui,
                 &mut self.rot_time,

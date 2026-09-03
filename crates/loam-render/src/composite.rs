@@ -1,13 +1,6 @@
-//! Native (D3D/Vulkan/Metal) swapchains advertise sRGB formats, so the GPU
-//! encodes linear output on write and `RenderDevice::new` skips this node.
-//! Browser WebGPU (Chrome 2026-05) only advertises linear canvas formats, so
-//! direct writes display ~2.2x dark. The scene instead renders into an
-//! offscreen target carrying the canvas format's sRGB sibling (`Bgra8Unorm`
-//! -> `Bgra8UnormSrgb`), or the canvas format itself where it has none
-//! (`Rgba16Float`), and this pass samples it, applies `linear_to_srgb`, and
-//! writes the sRGB-encoded bits the compositor expects. Scene texels read
-//! back linear either way; egui-painted texels do not on the no-sibling arm,
-//! where egui-wgpu writes encoded values that this pass then encodes twice.
+//! Browser WebGPU advertises only linear canvas formats, so the scene renders
+//! offscreen and this pass sRGB-encodes it into the swapchain. Native sRGB
+//! swapchains skip it.
 
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
@@ -19,18 +12,14 @@ use wgpu::{
     TextureView, TextureViewDimension, VertexState,
 };
 
-/// The bind group is rebuilt on resize, when the scene texture view changes.
 pub struct CompositeNode {
     pipeline: RenderPipeline,
     sampler: Sampler,
     bind_group_layout: BindGroupLayout,
-    /// `None` until the first `set_scene_view`; rebuilt whenever the scene
-    /// target is reallocated.
     bind_group: Option<BindGroup>,
 }
 
 impl CompositeNode {
-    /// Reused for the device's lifetime.
     pub fn new(device: &Device, target_format: TextureFormat) -> Self {
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("loam-render::composite::shader"),

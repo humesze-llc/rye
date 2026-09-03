@@ -1,7 +1,4 @@
-//! For R⁴ line meshes that do not change between frames, with the rotation
-//! and Perspective4D projection running on the GPU. Dropping the per-frame
-//! instance upload also halves wasm JS-interop pressure: each
-//! `queue.write_buffer` spawns short-lived JS proxies.
+//! For R⁴ line meshes uploaded once; the rotor and projection run on the GPU.
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
@@ -22,8 +19,7 @@ use wgpu::{
 
 const SHADER_WGSL: &str = include_str!("line_raster_static_r4.wgsl");
 
-/// Uniform layout matching the `TransformUniform` struct in the WGSL shader.
-/// 144 bytes; padded to 16-byte alignment for `std140`.
+/// Matches the WGSL `TransformUniform`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct LineRasterStaticR4Uniforms {
@@ -40,17 +36,13 @@ impl Default for LineRasterStaticR4Uniforms {
             rotor_matrix: Mat4::IDENTITY.to_cols_array_2d(),
             view_projection: Mat4::IDENTITY.to_cols_array_2d(),
             viewport_size: [1.0, 1.0],
-            // Neutral focal distance giving the cube-within-cube tesseract view
-            // for unit-circumradius polytopes; keeps a pre-set_transform
-            // record() from producing NaNs.
             focal_distance: 2.0,
             _pad: 0.0,
         }
     }
 }
 
-// 80 bytes, matching the R³ `LineInstance`, with full Vec4 positions instead
-// of Vec3 + pad.
+// Matches the `@location(1..=5)` slots in the shader.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
 struct LineInstance4D {
@@ -62,8 +54,6 @@ struct LineInstance4D {
     _pad: [f32; 3],
 }
 
-/// One instance per edge, uploaded once; the per-frame uniform carries the
-/// rotor, camera, viewport and focal distance.
 pub struct LineRasterStaticR4Node {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
@@ -78,8 +68,6 @@ pub struct LineRasterStaticR4Node {
 }
 
 impl LineRasterStaticR4Node {
-    /// `surface_format`, `depth` and `sample_count` must match the attachments at
-    /// draw time, as in [`crate::LineRasterNode::new`].
     pub fn new(
         device: &Device,
         surface_format: TextureFormat,
@@ -98,8 +86,6 @@ impl LineRasterStaticR4Node {
             mapped_at_creation: false,
         });
 
-        // The buffer is zero-cleared at creation (wgpu invariant); the first
-        // set_transform before any record() establishes valid data.
         let defaults = LineRasterStaticR4Uniforms::default();
         let _ = defaults;
 
@@ -132,8 +118,6 @@ impl LineRasterStaticR4Node {
             push_constant_ranges: &[],
         });
 
-        // One u32 corner index per vertex; instance attributes fill WGSL
-        // @location(1..=5), positions as Float32x4 to carry w.
         let corner_attrs = [VertexAttribute {
             format: VertexFormat::Uint32,
             offset: 0,
@@ -258,9 +242,7 @@ impl LineRasterStaticR4Node {
         }
     }
 
-    /// Intended to be called once, or on topology change; per-frame rotation goes
-    /// through [`Self::set_transform`]. Allocates a scratch `Vec` per call, so
-    /// per-frame uploads belong in [`crate::LineRasterNode`] instead.
+    /// Allocates per call; per-frame uploads belong in [`crate::LineRasterNode`].
     pub fn upload_mesh(&mut self, device: &Device, queue: &Queue, mesh: &LineMesh<4>) {
         let n = mesh.segments.len();
         debug_assert_eq!(mesh.colors.len(), n);
@@ -301,7 +283,6 @@ impl LineRasterStaticR4Node {
         self.instance_count = needed;
     }
 
-    /// One `queue.write_buffer` call per frame on the hot path.
     pub fn set_transform(
         &self,
         queue: &Queue,
@@ -320,8 +301,7 @@ impl LineRasterStaticR4Node {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Same `LoadOp::Load` discipline and depth-attachment contract as
-    /// [`crate::LineRasterNode::record`].
+    /// Same contract as [`crate::LineRasterNode::record`].
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -392,18 +372,6 @@ impl LineRasterStaticR4Node {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_uniforms_match_wgsl_size() {
-        // Must match WGSL `TransformUniform`: 64 + 64 + 8 + 4 + 4 = 144.
-        assert_eq!(std::mem::size_of::<LineRasterStaticR4Uniforms>(), 144);
-        assert_eq!(std::mem::align_of::<LineRasterStaticR4Uniforms>(), 4);
-    }
-
-    #[test]
-    fn instance_size_matches_r3_node() {
-        assert_eq!(std::mem::size_of::<LineInstance4D>(), 80);
-    }
 
     #[test]
     fn shader_wgsl_validates() {

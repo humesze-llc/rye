@@ -1,12 +1,6 @@
-//! The lens space prelude through the real GPU chain.
-//!
-//! `loam-math` pins the quotient's algebra on the CPU. What cannot be pinned
-//! there is that the emitted WGSL is the same arithmetic: if the two halves
-//! drift, the simulation walks through one manifold and the shader draws
-//! another, and neither half fails on its own.
-//!
-//! The `gpu_probe`-suffixed test needs an adapter and is ignored by default,
-//! matching `flat_torus_room.rs`; run with `--include-ignored`.
+//! The lens space prelude through the real GPU chain: `loam-math` pins the
+//! quotient on the CPU, and this pins that the emitted WGSL is the same
+//! arithmetic, or the sim and the shader walk different manifolds.
 
 use glam::Vec4;
 use loam_math::{IsometryGroup, LensSpace, QuotientSpace, Space};
@@ -16,15 +10,12 @@ use wgpu::util::DeviceExt;
 const P: u32 = 5;
 const Q: u32 = 2;
 
-// A centre off both degenerate circles, so its deck orbit is p distinct points
-// and the distance minimisation has something to choose between.
+// Off both degenerate circles, so the deck orbit is p distinct points.
 fn probe_centre() -> Vec4 {
     Vec4::new(0.62, 0.18, 0.55, 0.52).normalize()
 }
 
-// A fixed spiral over S³ plus the wedge walls and an ulp either side of them,
-// which is where the wrap's correction step decides. Constructed rather than
-// sampled, so the probe set is identical on every machine.
+// A fixed spiral plus the wedge walls and an ulp either side.
 fn probe_lifts() -> Vec<Vec4> {
     let mut lifts = Vec::new();
     for i in 0..192 {
@@ -55,8 +46,7 @@ fn probe_lifts() -> Vec<Vec4> {
 
 const PROBE_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read> lifts: array<vec4<f32>>;
-// xyz w: the wrapped lift. The second vector carries the quotient distance to
-// LENS_PROBE_CENTRE in x and the deck power the minimisation picked in y.
+// out[i][1]: quotient distance to LENS_PROBE_CENTRE in x, chosen deck power in y.
 @group(0) @binding(1) var<storage, read_write> out: array<array<vec4<f32>, 2>>;
 
 @compute @workgroup_size(64)
@@ -118,8 +108,7 @@ fn the_emitted_prelude_wraps_and_measures_as_the_rust_impl_does_gpu_probe() {
         &lifts.iter().map(|p| p.to_array()).collect::<Vec<_>>(),
     );
 
-    // Half a wedge wall's worth of argument, four decades over the rotation's
-    // own rounding: outside it the representative is determined.
+    // Outside a wall band the representative is determined.
     let wall_band = 1e-4;
     let half_wedge = std::f32::consts::PI / P as f32;
     for (lift, result) in lifts.iter().zip(&results) {
@@ -143,8 +132,6 @@ fn the_emitted_prelude_wraps_and_measures_as_the_rust_impl_does_gpu_probe() {
             "the GPU measured {} to the centre against the CPU's {cpu_distance}",
             result[1][0]
         );
-        // The power is an integer, so this is exact or it is wrong: it selects
-        // the lift the closed-form surface normal is taken against.
         let power = result[1][1] as i32;
         let selected = lens.iso_apply(lens.deck(power), centre);
         assert!(
@@ -177,8 +164,6 @@ async fn request_device() -> (wgpu::Device, wgpu::Queue) {
         .expect("wgpu device")
 }
 
-// One dispatch of a `@workgroup_size(64)` entry point over `input` at binding
-// 0, reading one `O` per element back from binding 1.
 fn dispatch<I: bytemuck::Pod, O: bytemuck::Pod>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

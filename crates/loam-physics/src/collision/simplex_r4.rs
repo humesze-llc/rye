@@ -1,19 +1,13 @@
-//! The 3D Voronoi-region approach does not generalize to 4D, so the closest
-//! point comes from a Gram-matrix projection onto each sub-simplex's affine
-//! hull, keeping the nearest one whose barycentric weights are all
-//! non-negative. O(2^k · k³), at most ~2000 f32 ops for k ≤ 4. The
-//! signed-volumes method (Montanari-Petrinic 2018) is the faster alternative.
+//! Gram-matrix projection onto each sub-simplex's affine hull, O(2^k · k³).
+//! Signed volumes (Montanari and Petrinic 2018) is the faster alternative.
 
 use glam::Vec4;
 
 #[derive(Debug, Clone)]
 pub struct Closest {
-    /// `Σ weight_i · simplex_i`, in world space.
     pub point: Vec4,
-    /// Entries not in `kept` are zero; those in `kept` are ≥ 0 and sum to 1
-    /// within f32 tolerance.
+    /// Zero outside `kept`, otherwise ≥ 0 and summing to 1.
     pub weights: Vec<f32>,
-    /// Non-zero-weight vertex indices, the sub-simplex GJK carries forward.
     pub kept: Vec<usize>,
 }
 
@@ -40,8 +34,6 @@ pub fn closest_to_origin(simplex: &[Vec4]) -> Closest {
             continue;
         };
 
-        // All-non-negative weights put the projection inside the sub-simplex.
-        // The tolerance covers f32 boundary cases.
         if !weights.iter().all(|&w| w >= -1e-6) {
             continue;
         }
@@ -64,12 +56,8 @@ pub fn closest_to_origin(simplex: &[Vec4]) -> Closest {
     best
 }
 
-/// `min_α |v₀ + Σ αᵢ (vᵢ − v₀)|²` reduces to the normal equations `G α = −Dᵀv₀`
-/// with Gram matrix `Dᵢⱼ = (vᵢ − v₀) · (vⱼ − v₀)`. `None` for a degenerate
-/// sub-simplex.
-///
-/// Weights sum to 1 but are unclamped, going negative when the projection falls
-/// outside the sub-simplex: this is an affine decomposition, not a convex one.
+/// Affine, not convex: weights sum to 1 and go negative outside the
+/// sub-simplex. `None` for a degenerate sub-simplex.
 pub(super) fn project_origin_onto_affine_hull(
     subset: &[usize],
     simplex: &[Vec4],
@@ -110,11 +98,9 @@ pub(super) fn project_origin_onto_affine_hull(
     Some((point, weights))
 }
 
-// Gauss-Jordan on the augmented matrix, in place. `None` if any pivot is too
-// small to trust.
+// Gauss-Jordan on the augmented matrix; `None` on an untrustworthy pivot.
 fn solve_spd_system(g: &mut [[f32; 4]; 4], b: &mut [f32; 4], k: usize) -> Option<Vec<f32>> {
     for i in 0..k {
-        // Partial pivot: largest |g[row][i]| at or below the diagonal.
         let mut pivot = i;
         for r in (i + 1)..k {
             if g[r][i].abs() > g[pivot][i].abs() {
@@ -137,8 +123,6 @@ fn solve_spd_system(g: &mut [[f32; 4]; 4], b: &mut [f32; 4], k: usize) -> Option
         }
         b[i] *= inv_piv;
 
-        // Cache the pivot row so other rows can be mutated without splitting
-        // the borrow.
         let pivot_row = g[i];
         let pivot_b = b[i];
         for r in 0..k {

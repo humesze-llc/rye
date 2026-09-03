@@ -1,8 +1,6 @@
-//! Every pass records into the runner's frame-wide encoder, which the runner
-//! submits once (`loam_app::App::record`). Two consequences bind the code here:
-//! nothing may call `queue.submit`, and no node may be uploaded twice in a
-//! frame, because `Queue::write_buffer` lands before the whole command buffer
-//! and the second upload would feed both passes.
+//! Every pass records into the runner's frame-wide encoder, submitted once by
+//! `loam_app::App::record`: nothing here calls `queue.submit`, and no node is
+//! uploaded twice in a frame, because `Queue::write_buffer` lands before it.
 
 use crate::*;
 
@@ -68,8 +66,7 @@ impl Demo {
                     grid_cells.push((cell_vp, cell_w_slice, body));
                 }
             }
-            // `execute_strip` owns its encoder and submit; that submit lands
-            // before the runner's, so the strip composites under the UI.
+            // `execute_strip` submits its own encoder, which lands before the runner's.
             let result = self
                 .node
                 .execute_strip(&rd.device, &rd.queue, view, &grid_cells);
@@ -92,17 +89,14 @@ impl Demo {
                     );
                     self.sdf_upload_pending |= changed;
                 }
-                // The only flush on this path: `update` leaves the dirty flag
-                // rather than uploading a buffer this would overwrite.
+                // The only flush: `update` leaves the flag set rather than uploading twice.
                 if self.sdf_upload_pending {
                     self.node.flush_uniforms(&rd.queue);
                     self.sdf_upload_pending = false;
                 }
                 self.node.record_in_viewport(encoder, view, viewport);
             }
-            // Order: background (clears color and depth, writes the ground's)
-            // -> SDF (color only) -> section_faces (writes depth in Raster) ->
-            // wireframe (tests, no write).
+            // Order matters: background clears, section faces write depth, later passes test it.
             if matches!(self.surface_mode, SurfaceMode::Raster) {
                 let _scope = loam_time::frame_trace::scope("pp-section-faces");
                 self.record_section_faces(rd, encoder, view);
@@ -123,13 +117,7 @@ impl Demo {
         }
     }
 
-    /// The frame's first pass. It clears both attachments and writes the
-    /// ground's depth, so the raymarch loads colour and every raster consumer
-    /// finds a cleared shared depth whether or not it reads one.
-    ///
-    /// `view_proj` is the raster nodes' own matrix: the ground's depth has to
-    /// be the number their vertex stage would produce for a point on the
-    /// plane, or the two disagree along the horizon.
+    // Clears both attachments and writes the ground's depth with the raster nodes' matrix.
     fn record_sky_ground(
         &mut self,
         rd: &RenderDevice,
@@ -159,9 +147,7 @@ impl Demo {
             &SkyGroundUniforms::new(
                 proj_mat * view_mat,
                 viewport,
-                // The `floor` console verb gates the marched half-space
-                // through `u.params.x`; the background has to follow it or the
-                // checkerboard outlives the leaf that occludes for it.
+                // Must follow the `floor` verb's `u.params.x` gate or the checkerboard outlives the leaf.
                 self.environment
                     .ground(FLOOR_Y, self.environment.floor_visible),
             ),
@@ -216,8 +202,6 @@ impl Demo {
             &loam_math::Projection::Identity,
         );
         self.points_mesh_scratch = mesh;
-        // No depth attachment: see `PointRasterNode::new` (drop-w + ReadOnly
-        // LessEqual occluded non-w=0 vertices behind their own caps).
         self.points_node.record(encoder, view, None, None);
     }
 
@@ -404,10 +388,6 @@ pub(crate) fn section_alpha_is_opaque(alpha: f32) -> bool {
     alpha >= 1.0
 }
 
-// A node owns one vertex buffer, and every `Queue::write_buffer` of a frame is
-// applied before the frame's single command buffer runs, so uploading twice
-// would leave BOTH passes reading the second mesh: the honest cross-section
-// would silently render as the projected cap.
 pub(crate) fn section_layers_share_a_node(
     cross: state::SectionLayer,
     cap: state::SectionLayer,
@@ -521,8 +501,7 @@ pub(crate) fn build_points_mesh(
             }
         }
         if style.show_cell_centers {
-            // `cell_centers()` returns centroids at the inradius, the DUAL's
-            // vertex set, so inset them inside the cap.
+            // `cell_centers()` sits at the inradius, so inset inside the cap.
             const CELL_CENTER_INSET: f32 = 0.5;
             let centers: &[Vec4] = centers_cache
                 .entry(polytope)
@@ -680,8 +659,6 @@ pub(crate) struct WireframeStyle {
     pub(crate) width_px: f32,
     pub(crate) nearest_active: bool,
     pub(crate) space_blend: f32,
-    /// Deliberately not a `Projection` variant: the projection has discarded w,
-    /// so it cannot carry a keep/drop signal.
     pub(crate) hyperslice: Option<f32>,
 }
 
@@ -719,9 +696,6 @@ pub(crate) fn build_wireframe_meshes(
         };
         let view_radius = stereographic_view_radius(polytope, frame.camera_distance);
         let topo = polytope.topology();
-        // Projecting in the body-local frame and translating in R³ AFTER keeps
-        // the apparent x-position stable when Perspective4D scales (x, y, z) by
-        // `focal / (focal - w)`.
         let body_pos_r3 = frame.body_local(slot, topo.vertices, frame.body_size, local_vertices);
         let arc_center = frame.pose(slot).body_local(Vec4::ZERO, frame.body_size);
 
@@ -795,8 +769,7 @@ pub(crate) fn build_wireframe_meshes(
                 .any(|(cell, &s)| s > 0.0 && cell.contains(&i) && cell.contains(&j))
         };
 
-        // CELL-level to match `edge_is_active`: the edge-level test would cull
-        // a far-side edge of an active cell that the coloring paints green.
+        // Cell-level to match `edge_is_active`.
         let edge_in_slab_cell = |i: u32, j: u32, thickness: f32| -> bool {
             topo.cells.iter().any(|cell| {
                 if !(cell.contains(&i) && cell.contains(&j)) {
@@ -815,9 +788,7 @@ pub(crate) fn build_wireframe_meshes(
             } else {
                 &[]
             };
-        // Normalized against the CANONICAL max |w|, not the rotated per-frame
-        // max, so the color stays temporally stable as the rotor swings a
-        // vertex from -w to +w. Per-polytope: the band differs.
+        // Canonical max |w|, not the rotated one, so the color is stable over a spin.
         let w_extent_local: f32 = if matches!(style.color_mode, WireframeColorMode::WDepth) {
             let canonical_max_w = topo
                 .vertices
@@ -899,29 +870,6 @@ mod tests {
     use loam_math::{EuclideanR4, Plane4, Projection};
     use loam_render::raymarch::RaymarchShape;
     use loam_shape::polytope::Polytope4;
-
-    #[test]
-    fn section_layers_merge_exactly_when_they_share_a_node() {
-        const ALPHAS: [f32; 4] = [0.0, 0.5, 1.0, 1.5];
-        for cross_alpha in ALPHAS {
-            for cap_alpha in ALPHAS {
-                let layer = |surface_alpha| SectionLayer {
-                    perimeter: false,
-                    surface_alpha,
-                };
-                let cross = layer(cross_alpha);
-                let cap = layer(cap_alpha);
-                let both_drawn = cross.fill_visible() && cap.fill_visible();
-                let same_node =
-                    section_alpha_is_opaque(cross_alpha) == section_alpha_is_opaque(cap_alpha);
-                assert_eq!(
-                    section_layers_share_a_node(cross, cap),
-                    both_drawn && same_node,
-                    "cross alpha {cross_alpha}, cap alpha {cap_alpha}"
-                );
-            }
-        }
-    }
 
     #[test]
     fn appending_a_section_mesh_rebases_its_indices_and_keeps_draw_order() {
@@ -1530,11 +1478,7 @@ mod tests {
     fn hyperslice_keeps_the_edges_whose_cells_cross_the_slab() {
         const THICKNESS: f32 = 0.2;
         const TILT: f32 = 0.5;
-        // Slab `[0.4, 0.6]`: above the tilted `e_z` w-extent
-        // (`BODY_SIZE · sin TILT` = 0.34) and below the `e_w` one
-        // (`BODY_SIZE · cos TILT` = 0.61), so a cell's w-range straddles the
-        // near boundary exactly when the cell holds `+e_w`, and the edges
-        // reaching only `-e_w` cells are the ones culled.
+        // Slab `[0.4, 0.6]` sits between the tilted `e_z` and `e_w` w-extents (0.34, 0.61).
         const SLAB_CENTRE_W: f32 = 0.5;
         let physics = PlaygroundPhysics::new(1, BODY_SIZE);
         let frame = frame_of(

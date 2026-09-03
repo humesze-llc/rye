@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Loam canonical geometric primitives: single Shape enum used by both loam-scene (rendering) and loam-physics (collision)."
+description = "Loam shapes: the Shape enum, regular 4-polytope topology, cross-sections, and isovolumes."
 keywords = ["geometry", "polytope", "primitives", "sdf", "collision"]
 categories = ["mathematics", "game-development"]
 

@@ -1,44 +1,16 @@
-/// The two fields are deliberately not one bool: they are measured at
-/// different points in egui's pass and a caller that gates on the wrong one
-/// gets a defect that shows up on one input device only. Gate pointer-driven
-/// gameplay (orbit, click-to-throw, picking) on [`Self::pointer`]; gate
-/// hotkeys on [`Self::keyboard`].
+/// `pointer` and `keyboard` are read at different points in egui's pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UiCapture {
-    /// This frame's pointer against the previous build's layout, plus any
-    /// press or drag egui already owns. As fresh as immediate mode allows:
-    /// `begin_pass` hit-tests the new pointer position against the widget
-    /// rects the last build left behind, so a pointer that arrives over a
-    /// widget and clicks on the same frame reports here on that frame.
+    /// This frame's pointer against the previous build's layout.
     pub pointer: bool,
-    /// Focus as of the end of the previous build, minus a focus this frame's
-    /// Escape has already dropped. It cannot be fresher: focus is granted
-    /// during the widget pass and resolved in `Focus::end_pass`
-    /// (egui 0.33.3 memory/mod.rs:584-599), and the only event `begin_pass`
-    /// acts on is Escape (memory/mod.rs:561). The residue is one frame, on
-    /// the frame focus changes, for Tab and for click-to-focus; neither can
-    /// coincide with the gameplay keystroke this gates, because the focusing
-    /// input is a click or a Tab.
+    /// Focus as of the previous build, minus what this frame's Escape dropped.
     pub keyboard: bool,
 }
 
 impl UiCapture {
-    /// Read both clocks from `ctx`. Valid only inside a pass, and only
-    /// before the build: `begin_pass` refreshes the hit test and the
-    /// interaction snapshot this reads, and every widget added afterwards
-    /// belongs to the layout the *next* frame will be measured against.
-    ///
-    /// [`Self::pointer`] deliberately does not use
-    /// `egui::Context::wants_pointer_input`. That reads
-    /// `PassState::unused_rect` through `is_pointer_over_area`
-    /// (egui 0.33.3 context.rs:2753-2779), which `begin_pass` resets to the
-    /// whole screen and only the build shrinks, so a pointer resting on a
-    /// panel reads as free until that panel is added. It also drops the
-    /// hover term outright while a button is held, so a drag that began on
-    /// a panel reports nothing for its whole duration. The interaction
-    /// snapshot's `contains_pointer` is the same hit test without either
-    /// gap: `begin_pass` fills it from the previous build's widget rects
-    /// (context.rs:474-495).
+    /// Valid only inside a pass, before the build: `begin_pass` refreshes the hit
+    /// test this reads. Not `wants_pointer_input`, which reads the unbuilt
+    /// `unused_rect` and drops hover during a drag (egui 0.33.3 context.rs:2753).
     pub fn read(ctx: &egui::Context) -> Self {
         Self {
             pointer: ctx.is_using_pointer()
@@ -81,9 +53,7 @@ mod tests {
     }
 
     impl Host {
-        // Two warm-up builds before any test input: egui hit-tests against
-        // the previous build's widget rects, and the stale bool is sampled
-        // from the pass before that one.
+        // Two warm-ups: hit tests use the previous build, `stale` the one before.
         fn new() -> Self {
             let mut host = Self {
                 ctx: egui::Context::default(),

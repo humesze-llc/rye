@@ -1,28 +1,16 @@
-//! What R costs. A restart calls a scene's registry builder again, so the
-//! builder's own wall time is the frame the gesture drops.
-//!
-//! Run: `cargo test -p polytope_playground --release build_cost -- --ignored
-//! --nocapture`. Ignored because it is a measurement, not an assertion: it
-//! prints, and a machine with no adapter has nothing to say rather than
-//! something to fail. Release, because the shipped gesture is a release
-//! gesture.
-//!
-//! `RenderDevice` needs a surface and therefore a window, so this drives the
-//! same builder-side calls from a surfaceless device instead of calling
-//! `RotateScene::new` whole. What is left out is named at its call site.
+//! What a restart costs: the scene's registry builder wall time. Run with
+//! `cargo test -p polytope_playground --release build_cost -- --ignored
+//! --nocapture`; a surfaceless device stands in for `RenderDevice`.
 
 use std::time::Instant;
 
 use wgpu::*;
 
-// The native swapchain picks an sRGB format and `RunConfig::default` asks for
-// one sample.
+// The native swapchain's format and `RunConfig::default`'s sample count.
 const FORMAT: TextureFormat = TextureFormat::Bgra8UnormSrgb;
 const SAMPLES: u32 = 1;
 
-// One cold build plus a distribution. The first build of a module pays the
-// driver's compile once and is reported on its own: a restart is by definition
-// not the first build, since boot already paid it.
+// The first build pays the driver compile and is reported on its own.
 const RUNS: usize = 32;
 const MEASURED: usize = RUNS - 1;
 
@@ -82,14 +70,11 @@ fn scene_build_cost() {
 
     println!("rotate, milliseconds over {RUNS} builds:");
     report("shader source", time(|| drop(crate::shader_source())));
-    // Everything `Demo::new` asks the GPU for, plus the WGSL above. Left out:
-    // `parse_row`, the physics table and the console registry, none of which
-    // touch a device or a font.
+    // Left out: `parse_row`, the physics table and the console registry.
     report(
         "nodes + shader",
         time(|| drop(crate::build_nodes(&device, FORMAT, SAMPLES))),
     );
-    // The other half of `RotateScene::new`: the HUD's glyph atlas.
     report(
         "HUD atlas",
         time(|| drop(crate::hud::TextHud::new(&device, &queue, FORMAT, SAMPLES).expect("hud"))),

@@ -8,8 +8,7 @@ use loam_render::device::RenderDevice;
 
 use crate::App;
 
-/// Tokenized with `loam_console::parse_line`, so the queue and the console share
-/// one grammar rather than agreeing by accident.
+/// Tokenized with `loam_egui::parse_line`, so queue and console share one grammar.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandLine {
     pub name: String,
@@ -29,7 +28,6 @@ impl CommandLine {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StampedCommand {
-    /// The command is applied before this tick runs.
     pub tick: u64,
     pub command: CommandLine,
 }
@@ -38,8 +36,6 @@ static QUEUE: Mutex<Vec<CommandLine>> = Mutex::new(Vec::new());
 
 static OUTPUT: Mutex<Vec<HistoryLine>> = Mutex::new(Vec::new());
 
-// Oldest lines drop first, as the console's own scrollback does at
-// `MAX_HISTORY_LINES`, so a host that never pumps cannot grow this unbounded.
 const MAX_BUFFERED_OUTPUT: usize = 256;
 
 pub fn submit(command: CommandLine) {
@@ -60,7 +56,6 @@ pub fn submit_line(line: &str) -> bool {
     }
 }
 
-/// Take everything queued, stamped with the tick the caller is about to run.
 pub(crate) fn drain(tick: u64) -> Vec<StampedCommand> {
     let queued = std::mem::take(&mut *QUEUE.lock().unwrap_or_else(|e| e.into_inner()));
     queued
@@ -71,15 +66,12 @@ pub(crate) fn drain(tick: u64) -> Vec<StampedCommand> {
 
 pub struct CommandCtx<'a> {
     pub rd: &'a RenderDevice,
-    /// The tick this command was stamped for; it has not run yet.
     pub tick: u64,
-    /// Drained into the module's bounded output buffer after the command returns;
-    /// a target that owns a console writes to that instead and leaves this empty.
+    /// Drained into the output buffer after the command returns.
     pub out: &'a mut ConsoleWriter,
 }
 
-// Returns false when nothing here claims the name, which is the whole precedence
-// rule: a claimed name never reaches an App.
+// A claimed name never reaches an App.
 fn apply_engine_verb(command: &CommandLine, out: &mut ConsoleWriter) -> bool {
     match command.name.as_str() {
         "vsync" => {
@@ -90,9 +82,6 @@ fn apply_engine_verb(command: &CommandLine, out: &mut ConsoleWriter) -> bool {
     }
 }
 
-// Written by whatever ran the line so it lands ahead of that line's own output.
-// `Console::dispatch` writes its own; this is for the engine-verb branch, which
-// runs with no console in scope.
 fn echo_line(command: &CommandLine) -> HistoryLine {
     HistoryLine::input(format!(
         "> {}",
@@ -100,8 +89,7 @@ fn echo_line(command: &CommandLine) -> HistoryLine {
     ))
 }
 
-/// The single application point; both runners call this immediately before their
-/// `drive_fixed_ticks`.
+/// Both runners call this immediately before `drive_fixed_ticks`.
 pub(crate) fn apply_drained<A: App>(app: &mut A, rd: &RenderDevice, tick: u64) {
     for stamped in drain(tick) {
         let mut writer = ConsoleWriter::new();
@@ -120,9 +108,6 @@ pub(crate) fn apply_drained<A: App>(app: &mut A, rd: &RenderDevice, tick: u64) {
         if claimed {
             lines.insert(0, echo_line(&stamped.command));
         }
-        // An `Err` from one command must not strand the ones behind it. It also
-        // reaches tracing, because a `--script` run is unattended and a
-        // scrollback nobody is looking at is not a report.
         if let Err(e) = result {
             let text = format!("error: {}: {e:#}", stamped.command.name);
             tracing::error!("command: {text}");
@@ -141,30 +126,23 @@ pub fn drain_output() -> Vec<HistoryLine> {
     std::mem::take(&mut *OUTPUT.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// Call once per frame before the console paints; this frame's drain already ran,
-/// so what it wrote shows this frame.
+/// Call once per frame, before the console paints.
 pub fn pump_into<Ctx: 'static>(console: &mut Console<Ctx>) {
     for line in drain_output() {
         console.write(line);
     }
 }
 
-/// Everything `Console::execute` accepted becomes a submission. Call once per
-/// frame after the console's UI runs, so a line typed this frame applies at the
-/// next frame's drain rather than the one after.
+/// Call once per frame, after the console's UI runs.
 pub fn forward_pending<Ctx: 'static>(console: &mut Console<Ctx>) {
     for line in console.drain_pending() {
         submit_line(&line);
     }
 }
 
-/// The queue is process-global and cargo runs tests on parallel threads. A test
-/// that submits holds this.
 #[cfg(test)]
 pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-/// For tests about what a command does; the ones about when it runs drive
-/// [`drain`] themselves.
 #[cfg(test)]
 pub(crate) fn run_on_console<Ctx: 'static>(console: &mut Console<Ctx>, line: &str, ctx: &mut Ctx) {
     console.execute(line);
@@ -263,8 +241,6 @@ mod tests {
         assert_eq!(echo.text, r#"> vsync "a b""#);
     }
 
-    // Comments dropped, because the prose names the very call sites the scan
-    // counts, and the test module dropped with it.
     fn shipped_code(source: &str) -> String {
         source
             .split("#[cfg(test)]")

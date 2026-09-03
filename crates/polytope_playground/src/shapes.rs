@@ -48,8 +48,7 @@ impl Demo {
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
                         ui.spacing_mut().item_spacing.x = CARD_ITEM_SPACING_X;
 
-                        // Apply the reorder before rendering so the loop sees
-                        // the new order and gaps close this frame.
+                        // Before the loop, so gaps close this frame.
                         if dnd_apply_drop_pre_pass::<ShapeEntry, usize>(
                             ui,
                             &mut self.row,
@@ -117,15 +116,10 @@ impl Demo {
         }
         if row_changed {
             self.rebuild_bodies();
-            // A row edit can change the leading polychoron the Schlegel diagram
-            // projects through, so a stale cache would index the wrong
-            // polytope's face planes.
             self.resolve_schlegel_cache();
         }
     }
 
-    // Returns `true` on Remove so the caller can defer removal past the row's
-    // iteration.
     fn render_shape_card(ui: &mut egui::Ui, i: usize, entry: &ShapeEntry, row_len: usize) -> bool {
         let card_id = ui.make_persistent_id(("shape-card", i));
         let pickup_t = drag_pickup_t(ui.ctx(), card_id);

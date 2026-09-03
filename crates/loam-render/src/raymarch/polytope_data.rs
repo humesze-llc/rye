@@ -1,14 +1,6 @@
-//! WGSL emission for the 120-cell and 600-cell SDFs. The fragment also
-//! defines `CELL_INRADIUS_UNIT`, the inradius `φ²/(2√2)` both polytopes share
-//! at unit circumradius, and the face-normal and vertex arrays the SDFs read.
-//!
-//! Both SDFs use Wolfe's greedy hyperplane projection, matching the CPU port
-//! in `loam_physics::euclidean_r4::polytope_sdf_wolfe`:
-//!   - |S|=1: project onto closest face plane.
-//!   - |S|=2: 2x2 Lagrange-multiplier solve.
-//!   - |S|=3: 3x3 Lagrange-multiplier solve via cofactor expansion.
-//!   - |S|=4: closest polytope vertex; the 4-plane intersection IS a vertex,
-//!     found by brute-force search of the vertex array.
+//! WGSL for the 120-cell and 600-cell SDFs: Wolfe's greedy hyperplane
+//! projection as in `loam_physics::euclidean_r4::polytope_sdf_wolfe`, with a
+//! vertex search for |S|=4. Also defines `CELL_INRADIUS_UNIT`.
 
 use std::fmt::Write;
 
@@ -18,23 +10,16 @@ use loam_shape::polytope_geom::{
     icosian_inradius_unit,
 };
 
-/// Returns `+1e9` so the dispatch branches are inert at runtime.
-///
-/// The kernel's `body_polytope_sdf_4d` always references both function names
-/// and naga rejects the WGSL otherwise, so callers must include either this
-/// or [`polytope_extended_sdfs_wgsl`].
+/// The kernel references both names, so callers include this or
+/// [`polytope_extended_sdfs_wgsl`].
 pub fn polytope_stub_sdfs_wgsl() -> &'static str {
     "// ---- Polytope stub SDFs (no 120-cell/600-cell bodies in scene) ----\n\
      fn cell120_sdf_local(p: vec4<f32>) -> f32 { return 1.0e9; }\n\
      fn cell600_sdf_local(p: vec4<f32>) -> f32 { return 1.0e9; }\n"
 }
 
-/// Append to the hyperslice4d kernel before naga validation.
-///
-/// Includes ~24 KB of `const` array data. On some GPU drivers that constant
-/// data competes with scalar registers and slows all pixel-shader work, even
-/// where the dispatch branches are never reached; a scene with no 120-cell or
-/// 600-cell bodies wants [`polytope_stub_sdfs_wgsl`] instead.
+/// ~24 KB of `const` data, which slows every pixel shader on some drivers;
+/// prefer the stub when no such body is in the scene.
 pub fn polytope_extended_sdfs_wgsl() -> String {
     let mut s = String::with_capacity(32 * 1024);
     s.push_str("// ---- Extended polytope SDFs (120-cell, 600-cell) ----\n");
@@ -92,10 +77,7 @@ fn emit_vec4_array(out: &mut String, name: &str, data: &[Vec4]) {
     out.push_str(");\n");
 }
 
-// Projects `p` onto the intersection of `count` (1..=3) active hyperplanes
-// (`dot(active[i], q) = inradius`) via Lagrange multipliers. Mirrors
-// `loam_physics::euclidean_r4::project_onto_active_planes` 1:1; |S|=4 is
-// handled by the per-polytope SDF via vertex lookup.
+// Mirrors `loam_physics::euclidean_r4::project_onto_active_planes`.
 const WOLFE_PROJECTION_HELPER_WGSL: &str = r#"
 fn polytope_project_active(
     p: vec4<f32>,
@@ -118,8 +100,6 @@ fn polytope_project_active(
         let l1 = (b1 - g01 * b0) * inv_det;
         return p - l0 * a0 - l1 * a1;
     }
-    // count == 3: 3x3 solve via cofactor expansion of the symmetric
-    // Gram matrix (diagonals = 1 for unit normals).
     let g01 = dot(a0, a1);
     let g02 = dot(a0, a2);
     let g12 = dot(a1, a2);
@@ -161,11 +141,7 @@ fn {fn_name}(p: vec4<f32>) -> f32 {{
     }}
     if (max_d <= 0.0) {{ return max_d; }}
 
-    // Outside-circumsphere fast-path: max-plane distance is a
-    // Lipschitz-1 lower bound on the true SDF; tight in face-Voronoi
-    // regions, slightly loose in corner regions but still safe for
-    // sphere-tracing convergence. Skip Wolfe iteration here so distant
-    // grazing rays don't pay the full 4-level projection cost.
+    // Outside the unit circumsphere the max plane distance is a Lipschitz-1 lower bound.
     if (dot(p, p) > 1.0) {{ return max_d; }}
 
     var active_idx_0: u32 = max_i;
@@ -205,9 +181,6 @@ fn {fn_name}(p: vec4<f32>) -> f32 {{
             active_count = 3u;
             q = polytope_project_active(p, a0, a1, a2, 3u, inradius);
         }} else {{
-            // |S|=4: closest point is a polytope vertex. Brute-force
-            // search the vertex array. (Avoids a 4x4 matrix inverse in
-            // WGSL.)
             var best_d2: f32 = 1.0e30;
             for (var j: u32 = 0u; j < {vertex_count}u; j = j + 1u) {{
                 let dv = p - {vertices_name}[j];
@@ -230,8 +203,6 @@ mod tests {
     #[test]
     fn polytope_extended_sdfs_wgsl_validates() {
         let wgsl = polytope_extended_sdfs_wgsl();
-        // Wrap with a minimal compute shader that calls each SDF, so naga has an entry point to
-        // anchor validation against.
         let probe = format!(
             "{wgsl}\n\
              @compute @workgroup_size(1) fn main() {{\n\
@@ -249,9 +220,6 @@ mod tests {
             .expect("polytope WGSL should validate");
     }
 
-    // The vertex path is the one that can report more than the true distance: it
-    // answers with the closest polytope vertex, which is the true distance only
-    // when the closest feature really is a vertex.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum WolfeBranch {
         Inside,
@@ -260,10 +228,7 @@ mod tests {
         ClosestVertex,
     }
 
-    // Deliberately not the `loam_shape::polytope_geom::polytope_sdf_wolfe` CPU
-    // implementation: that one solves the |S|=4 case with a 4x4 inverse where the
-    // emitted WGSL searches the vertex array, and it is the emitted form whose
-    // distances the marcher steps on.
+    // Mirrors the emitted WGSL, not the CPU `polytope_sdf_wolfe`, which inverts 4x4.
     fn wolfe_sdf_wgsl_mirror(
         p: Vec4,
         face_normals: &[Vec4],
@@ -363,11 +328,8 @@ mod tests {
         p - l0 * a[0] - l1 * a[1] - l2 * a[2]
     }
 
-    // `|p - x|` for a point `x` inside the polytope, hence an upper bound on
-    // `dist(p, P)`. Dykstra's alternating projection (Boyle and Dykstra 1986)
-    // converges to the projection itself, unlike plain cyclic projection which
-    // only reaches feasibility; the trailing cyclic sweeps then repair the
-    // residual constraint violation so `x` is genuinely inside.
+    // Dykstra's alternating projection (Boyle and Dykstra 1986) reaches a point
+    // inside P, so `|p - x|` bounds `dist(p, P)` from above.
     fn dykstra_distance_upper_bound(
         p: Vec4,
         face_normals: &[Vec4],
@@ -401,7 +363,7 @@ mod tests {
         (p - x).length()
     }
 
-    // Knuth MMIX LCG, seeded, so the sweep below is reproducible.
+    // Knuth MMIX LCG.
     fn lcg_signed_unit(state: &mut u64) -> f32 {
         *state = state
             .wrapping_mul(6364136223846793005)

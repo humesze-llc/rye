@@ -1,8 +1,6 @@
 use loam_egui::{cmd, Console};
 
-/// Pass `env!()` strings from the demo's own crate. The hash and dirty fields
-/// may be empty when the demo has no `build.rs` baking those env vars; the
-/// output then collapses to crate name and version.
+/// Empty hash and dirty strings collapse the line to crate name and version.
 pub fn register_command<Ctx: 'static>(
     console: &mut Console<Ctx>,
     crate_name: &'static str,

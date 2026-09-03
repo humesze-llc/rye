@@ -5,14 +5,10 @@ use crate::device::RenderDevice;
 use crate::graph::RenderNode;
 use crate::raymarch::{RayMarchNode, RayMarchUniforms};
 
-/// Assembled from four layers: `[Space prelude] + [scene SDF] + [march
-/// kernel] + [user shading]`. Build the module with
-/// `loam_shader::ShaderDb::load_geodesic_scene`.
+/// Build the module with `loam_shader::ShaderDb::load_geodesic_scene`.
 pub struct GeodesicRayMarchNode(RayMarchNode);
 
 impl GeodesicRayMarchNode {
-    /// `sample_count` must match the render target's sample count; use
-    /// [`crate::device::RenderDevice::sample_count`] in app code.
     pub fn from_module(
         device: &Device,
         surface_format: TextureFormat,
@@ -43,7 +39,6 @@ impl GeodesicRayMarchNode {
         self.0.flush_uniforms(queue);
     }
 
-    /// Records into the caller's frame-wide encoder without submitting.
     pub fn record_in_viewport(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -63,6 +58,14 @@ impl GeodesicRayMarchNode {
         self.0.execute_panel(rd, view, clear, scissor)
     }
 }
+
+const _: fn(
+    &mut GeodesicRayMarchNode,
+    &RenderDevice,
+    &wgpu::TextureView,
+    bool,
+    [u32; 4],
+) -> Result<()> = GeodesicRayMarchNode::execute_panel;
 
 impl RenderNode for GeodesicRayMarchNode {
     fn name(&self) -> &'static str {

@@ -24,8 +24,6 @@ pub use triangle_raster::{
     FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,
 };
 
-/// Three states rather than `Option<TextureFormat>` plus a `depth_write`
-/// bool, which would admit invalid combinations.
 #[derive(Copy, Clone, Debug)]
 pub enum DepthMode {
     Off,

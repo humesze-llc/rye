@@ -1,19 +1,12 @@
-// Sky and ground shading, shared verbatim by `SkyGroundNode`'s pipeline and by
-// the hyperslice kernel, which still needs `sky` for its body fog term after
-// the background takes the ground over. Declares no binding and no uniform, so
-// either module may paste it ahead of its own declarations.
+// Shared verbatim by SkyGroundNode and the hyperslice kernel; declares no binding.
 
-// The two endpoints are mirrored in Rust as `SKY_BELOW` / `SKY_ABOVE`, from
-// which `SKY_HORIZON` (the filmstrip's clear) is derived; keep in sync.
+// The endpoints are mirrored as `SKY_BELOW` / `SKY_ABOVE` in sky_ground.rs.
 fn sky(rd: vec3<f32>) -> vec3<f32> {
     let t = (rd.y + 1.0) * 0.5;
     return mix(vec3<f32>(0.04, 0.05, 0.10), vec3<f32>(0.10, 0.13, 0.22), t);
 }
 
-// `checker_fade` collapses the two colours toward their mean. Driven by the
-// same fog factor as the sky blend, it band-limits the checker at grazing
-// angles, where an unbounded plane puts many cells inside one pixel and a
-// point sample aliases.
+// `checker_fade` collapses the checker toward its mean to band-limit it at grazing angles.
 fn ground_color(
     p: vec3<f32>,
     dark: vec3<f32>,

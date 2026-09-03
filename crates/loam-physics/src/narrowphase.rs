@@ -37,13 +37,8 @@ impl<S: PhysicsSpace> Narrowphase<S> {
         if let Some(&f) = self.dispatch.get(&key) {
             return f(a, b, space);
         }
-        // Symmetry lets a pair be registered in one direction only, when the
-        // function handles both.
         let reversed = (b.collider.kind(), a.collider.kind());
         if let Some(&f) = self.dispatch.get(&reversed) {
-            // The registered function must see the kinds it expects, so flip
-            // the bodies and negate the normal on the way out. The contact
-            // point is world-space and stays.
             return f(b, a, space).map(|c| Contact {
                 normal: c.normal * -1.0,
                 point: c.point,

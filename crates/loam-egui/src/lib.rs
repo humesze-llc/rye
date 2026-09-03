@@ -26,5 +26,4 @@ pub use integration::UiIntegration;
 pub use slider_edit::{slider_with_edit, SliderInteraction};
 pub use world::world_to_screen;
 
-// Re-export egui so the version pin lives in one place.
 pub use egui;

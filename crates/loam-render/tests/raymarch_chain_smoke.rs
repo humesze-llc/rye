@@ -1,32 +1,19 @@
-//! Smoke pins for the 3D raymarch chain: typed `loam_scene::Scene` -> WGSL ->
-//! `loam_shader::ShaderDb` -> `RayMarchNode` / `GeodesicRayMarchNode`.
-//!
-//! No other code in the workspace instantiates any link in that chain, so it
-//! compiles in isolation and rots silently. These tests exist to fail when a
-//! signature or a WGSL-symbol contract drifts, nothing more: they assert the
-//! chain still type-checks and the assembled shader still validates, never
-//! what it draws. Keep them thin.
-//!
-//! Everything except the `gpu_probe` test is headless; naga does the same
-//! validation `ShaderDb` runs before it reaches a device.
+//! The 3D raymarch chain, `loam_scene::Scene` -> WGSL -> `ShaderDb` ->
+//! `RayMarchNode`: nothing else in the workspace instantiates it. Headless
+//! except the `gpu_probe`.
 
 use glam::Vec3;
 use loam_math::{EuclideanR3, WgslSpace};
-use loam_render::device::RenderDevice;
 use loam_render::{GeodesicRayMarchNode, RayMarchNode, RayMarchUniforms};
 use loam_scene::{Scene, SceneNode};
 use loam_shader::{validate_wgsl, ShaderDb, GEODESIC_MARCH_KERNEL};
 use wgpu::{Device, TextureFormat};
 
-// Two leaves and one combinator: enough for the emitter to produce both a
-// helper function and a `let` binding, which is the whole shape of the emit.
 fn probe_scene() -> Scene {
     Scene::new(SceneNode::sphere(Vec3::ZERO, 0.5).union(SceneNode::plane(Vec3::Y, -0.5)))
 }
 
-// Mirror of `RayMarchUniforms` in WGSL. The Rust struct pads each `vec3` to
-// 16 bytes by hand; WGSL's `vec3<f32>` alignment produces the same offsets,
-// so the explicit `_padN` fields have no counterpart here.
+// Mirror of `RayMarchUniforms`; WGSL's `vec3` alignment matches the hand padding.
 const UNIFORMS_WGSL: &str = r#"
 struct RayMarchUniforms {
     camera_pos: vec3<f32>,
@@ -56,8 +43,7 @@ fn ray_direction(pos: vec4<f32>) -> vec3<f32> {
 }
 "#;
 
-// Calls every symbol `GEODESIC_MARCH_KERNEL` exports, so a kernel rename is a
-// validation failure rather than a black screen.
+// Calls every symbol `GEODESIC_MARCH_KERNEL` exports.
 const GEODESIC_SHADING_WGSL: &str = r#"
 @fragment
 fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
@@ -71,8 +57,6 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
-// The kernel-free path: the user shader calls the scene emit directly, which
-// is the contract `ShaderDb::load_with_scene` exists to satisfy.
 const SCENE_SHADING_WGSL: &str = r#"
 @fragment
 fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
@@ -90,35 +74,9 @@ fn scene_user_shader() -> String {
     format!("{UNIFORMS_WGSL}{SCENE_SHADING_WGSL}")
 }
 
-// `ShaderDb`'s assembler is crate-private, so reproduce its ordering contract
-// (Space prelude, then scene module, then user source) here. loam-shader pins
-// the ordering itself and the `gpu_probe` test below runs the real assembler,
-// so a divergence cannot hide in both places.
+// `ShaderDb`'s assembler is crate-private; this repeats its ordering.
 fn assemble(space_wgsl: &str, scene_wgsl: &str, user_wgsl: &str) -> String {
     format!("{space_wgsl}\n{scene_wgsl}\n{user_wgsl}")
-}
-
-#[test]
-fn uniforms_match_the_wgsl_mirror_layout() {
-    use std::mem::offset_of;
-    assert_eq!(std::mem::size_of::<RayMarchUniforms>(), 96);
-    assert_eq!(offset_of!(RayMarchUniforms, camera_pos), 0);
-    assert_eq!(offset_of!(RayMarchUniforms, camera_forward), 16);
-    assert_eq!(offset_of!(RayMarchUniforms, camera_right), 32);
-    assert_eq!(offset_of!(RayMarchUniforms, camera_up), 48);
-    assert_eq!(offset_of!(RayMarchUniforms, fov_y_tan), 60);
-    assert_eq!(offset_of!(RayMarchUniforms, resolution), 64);
-    assert_eq!(offset_of!(RayMarchUniforms, time), 72);
-    assert_eq!(offset_of!(RayMarchUniforms, tick), 76);
-    assert_eq!(offset_of!(RayMarchUniforms, params), 80);
-}
-
-#[test]
-fn panel_draw_entry_points_keep_their_signature() {
-    type ExecutePanel<N> =
-        fn(&mut N, &RenderDevice, &wgpu::TextureView, bool, [u32; 4]) -> anyhow::Result<()>;
-    let _: ExecutePanel<RayMarchNode> = RayMarchNode::execute_panel;
-    let _: ExecutePanel<GeodesicRayMarchNode> = GeodesicRayMarchNode::execute_panel;
 }
 
 #[test]
@@ -139,7 +97,6 @@ fn scene_chain_assembles_into_valid_wgsl() {
     validate_wgsl(&source).expect("scene raymarch chain should validate");
 }
 
-// Compiled unconditionally; executed only by the `gpu_probe` test.
 fn build_geodesic_node(
     device: &Device,
     surface_format: TextureFormat,

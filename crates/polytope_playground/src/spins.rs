@@ -6,8 +6,7 @@ use loam_math::Rotor4;
 
 use crate::state::{active_plane_angle, compose_active_rotor};
 
-// A mask shorter than the row leaves its tail to the spin, which is what a
-// timeline naming only the leading slots means.
+// A mask shorter than the row leaves its tail to the spin.
 pub(crate) fn is_directed(directed: &[bool], slot: usize) -> bool {
     directed.get(slot).copied().unwrap_or(false)
 }
@@ -16,8 +15,7 @@ const DEFAULT_ACTIVE: [bool; 6] = [false, false, true, false, false, false];
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SlotSpin {
-    /// Plane `i`'s displayed angle is `base_angles[i] + rot_time * RATE *
-    /// active[i]`, in radians.
+    /// Displayed angle is `base_angles[i] + rot_time · RATE · active[i]`, in radians.
     pub(crate) base_angles: [f32; 6],
     pub(crate) active: [bool; 6],
 }
@@ -44,8 +42,6 @@ impl SlotSpin {
 // Never empty: the rotation UI always needs a subject to write to.
 pub(crate) struct SlotSpins {
     spin: SlotSpin,
-    /// The row's orientation. Active recomposes it from `spin`; Composer
-    /// integrates it directly and leaves `spin` alone.
     rotor: Rotor4,
     /// Upload row: `rotor` everywhere except the slots a timeline owns.
     rotors: Vec<Rotor4>,
@@ -67,10 +63,7 @@ impl SlotSpins {
         spins
     }
 
-    // Resizes rather than rebuilding the way
-    // [`crate::physics::PlaygroundPhysics::respawn`] does: a layout position is
-    // a function of the slot count, an authored rotation is not. A slot that
-    // arrives mid-spin joins at the row's orientation, not at identity.
+    // Resizes rather than rebuilds: a slot arriving mid-spin joins at the row's orientation.
     pub(crate) fn sync(&mut self, slots: usize) {
         self.rotors.resize(slots.max(1), self.rotor);
     }
@@ -79,7 +72,6 @@ impl SlotSpins {
         self.rotors[slot]
     }
 
-    /// The orientation every slot a timeline does not own is holding.
     pub(crate) fn row_rotor(&self) -> Rotor4 {
         self.rotor
     }
@@ -92,10 +84,7 @@ impl SlotSpins {
         &mut self.spin
     }
 
-    // The mask is a parameter rather than a field because it is the whole
-    // suppression: `t` is the UI spin's wall clock, a directed slot is on the
-    // director's frame index, and a slot recomposed here after the director
-    // wrote it is the two-clock defect with extra steps.
+    // `t` is the UI clock; a directed slot is on the director's frame index.
     pub(crate) fn recompose_active(&mut self, t: f32, directed: &[bool]) {
         self.set_row_rotor(self.spin.active_rotor_at(t), directed);
     }
@@ -119,8 +108,7 @@ impl SlotSpins {
         }
     }
 
-    // The length is part of the test: a row edit that changed the slot count
-    // changed which body each rotor belongs to.
+    // Length included: a row edit changes which body each rotor belongs to.
     pub(crate) fn rotors_differ_from(&self, uploaded: &[Rotor4]) -> bool {
         self.rotors != uploaded
     }
@@ -130,8 +118,7 @@ impl SlotSpins {
         out.extend_from_slice(&self.rotors);
     }
 
-    // Zeroing `base_angles` is the load-bearing half: Active recomposes the
-    // row from them on the next frame, so clearing the rotors alone is undone.
+    // `base_angles` too, or the next Active recompose undoes this.
     pub(crate) fn clear_orientation(&mut self) {
         self.spin.base_angles = [0.0; 6];
         self.rotor = Rotor4::IDENTITY;
@@ -149,12 +136,7 @@ mod tests {
     use glam::Vec4;
     use loam_math::{Bivector, Plane4, Rotor};
 
-    // Angle a rotor turns a probe vector through, as the chord half-angle
-    // `2·asin(|a - b| / 2)` on the unit sphere. The chord form is
-    // well-conditioned near zero where `acos(dot)` loses half its digits
-    // (Kahan, *Mindless Assessments of Roundoff*, 2006, §12). The clamp is
-    // the antipodal guard: a chord of exactly 2 rounds past 1 in f32 and
-    // `asin` would answer NaN, which `f32::max` then swallows.
+    // Chord half-angle `2·asin(|a - b| / 2)`; Kahan, *Mindless Assessments of Roundoff*, 2006, §12.
     fn probe_separation(a: Rotor4, b: Rotor4) -> f32 {
         let probe = Vec4::new(0.5, -0.3, 0.7, 0.4).normalize();
         2.0 * ((a.apply(probe) - b.apply(probe)).length() * 0.5)

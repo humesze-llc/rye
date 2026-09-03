@@ -3,47 +3,19 @@
 
 use std::num::NonZeroUsize;
 
-/// `ceil(units / workers)`, floored at 1 so an empty buffer still names a
-/// legal chunk width. Contiguous ascending chunks of this width tile the
-/// buffer exactly once and produce at most `workers` of them, so which units
-/// a partition owns is a pure function of `(units, workers)` and of nothing
-/// else: not of arrival order, not of how fast a worker ran.
-/// Work stealing is excluded by that sentence, deliberately. Under stealing
-/// the owner of a unit stops being a function of the schedule, and the
-/// moment any stage carries a per-worker partial its reduction order stops
-/// being fixed.
-///
-/// Panics if `workers` is zero.
+/// `ceil(units / workers)`, at least 1. Panics if `workers` is zero.
 pub fn partition_len(units: usize, workers: usize) -> usize {
     units.div_ceil(workers).max(1)
 }
 
-/// [`JobPool::run_stage`] joins every partition before it returns, so two
-/// stages never overlap and two app-level systems can therefore never run
-/// concurrently with each other.
-///
-/// A stage whose per-unit writes are disjoint is bit-identical between one
-/// worker and many: the value written to a unit is a function of the unit
-/// index, and the partition only decides which thread evaluates it.
-///
-/// A partial that reduces across the units of a chunk is not. Chunk
-/// boundaries move with the worker count and f32 addition is not
-/// associative, so such a stage is bit-reproducible at a fixed worker count
-/// (partials come back in ascending partition index, never completion order)
-/// and must not be read as reproducible across worker counts. A stage that
-/// needs a reduction invariant under the worker count reduces per unit in
-/// canonical order instead, and stays serial.
+/// A partial reduced across a chunk is reproducible only at a fixed worker count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JobPool {
     workers: NonZeroUsize,
 }
 
 impl JobPool {
-    /// `0` is read as 1.
-    ///
-    /// Permanently 1 worker on wasm32. That is the platform, not a policy:
-    /// the browser gives the worker one thread, and `frame_trace`'s
-    /// thread-local state is sound only because of it.
+    /// `0` reads as 1; wasm32 is always 1 worker.
     pub fn new(threads: usize) -> Self {
         let workers = if cfg!(target_arch = "wasm32") {
             1
@@ -59,24 +31,9 @@ impl JobPool {
         self.workers.get()
     }
 
-    /// Splits `units` by [`partition_len`] and joins before returning.
-    ///
-    /// `kernel` receives a partition index `k` and the units it owns, which
-    /// are `[k * partition_len(units.len(), self.threads()) ..]` capped at
-    /// the buffer end, so a kernel needing a unit's global index derives it
-    /// from the same function the pool split by.
-    ///
-    /// `partials` is cleared and refilled with one kernel result per
-    /// partition in ascending partition index.
-    ///
-    /// Panics from a kernel are resumed on the calling thread after the
-    /// barrier, so a partition panicking cannot leave the caller believing
-    /// the stage ran.
-    ///
-    /// A kernel may open [`crate::frame_trace::scope`] freely: recording is
-    /// thread-local, so a spawned partition's sections would die with its
-    /// thread, and the barrier merges them into the caller's in-flight frame
-    /// in ascending partition index instead.
+    /// Splits `units` into [`partition_len`] chunks, calls `kernel(index, chunk)`
+    /// on each and joins before returning. `partials` is refilled in ascending
+    /// partition index; a kernel panic resumes on the caller after the join.
     pub fn run_stage<T, R, F>(&self, units: &mut [T], partials: &mut Vec<R>, kernel: F)
     where
         T: Send,
@@ -86,17 +43,11 @@ impl JobPool {
         partials.clear();
         let chunk = partition_len(units.len(), self.workers.get());
 
-        // Spawning is compiled out on wasm32 rather than guarded at runtime:
-        // `threads()` is 1 there, so the branch is unreachable, and a
-        // platform whose thread spawn panics should not carry the call.
         #[cfg(not(target_arch = "wasm32"))]
         if self.workers.get() > 1 && units.len() > chunk {
             let kernel = &kernel;
             std::thread::scope(|scope| {
                 let mut chunks = units.chunks_mut(chunk).enumerate();
-                // Held across the spawn loop: `ChunksMut` yields items that
-                // borrow the buffer, not the iterator, so partition 0 can
-                // run here while the rest are already in flight.
                 let head = chunks.next();
                 let mut handles = Vec::with_capacity(self.workers.get() - 1);
                 for (index, slice) in chunks {
@@ -105,9 +56,7 @@ impl JobPool {
                         (partial, crate::frame_trace::take_worker_trace())
                     }));
                 }
-                // Partition 0 records straight into the caller's frame, and it
-                // runs before any join, so the merge below extends an ascending
-                // sequence rather than interleaving with one.
+                // Partition 0 runs before any join so the trace merge stays ascending.
                 if let Some((index, slice)) = head {
                     partials.push(kernel(index, slice));
                 }
@@ -134,10 +83,7 @@ impl JobPool {
 mod tests {
     use super::*;
 
-    // Per-unit value with no structure a partition boundary could hide:
-    // xorshift64 (Marsaglia 2003, "Xorshift RNGs", J. Stat. Soft. 8(14),
-    // the 13/7/17 triple) off the index, mapped into [-1, 1) by an exact
-    // power-of-two scale so the f32 carries no rounding of its own.
+    // xorshift64 (Marsaglia 2003, 13/7/17) off the index, scaled into [-1, 1).
     fn unit_value(index: usize) -> f32 {
         let mut x = (index as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
         x ^= x << 13;
@@ -188,8 +134,7 @@ mod tests {
 
     #[test]
     fn disjoint_writes_are_bit_identical_between_one_worker_and_many() {
-        // Deliberately not a multiple of any worker count under test, so
-        // every count has a short tail partition.
+        // Not a multiple of any worker count under test.
         const UNITS: usize = 1_009;
 
         let mut serial = vec![f32::NAN; UNITS];
@@ -214,8 +159,7 @@ mod tests {
     fn partials_come_back_in_ascending_partition_index_not_completion_order() {
         const UNITS: usize = 64;
         const WORKERS: usize = 4;
-        // Lower partitions do strictly more work, so a merge in completion
-        // order comes back roughly reversed rather than by luck.
+        // Lower partitions spin longer, so completion order is reversed.
         const SKEW: u32 = 200_000;
 
         let pool = JobPool::new(WORKERS);
@@ -244,8 +188,7 @@ mod tests {
     fn a_spawned_partitions_panic_reaches_the_caller_carrying_its_own_payload() {
         const UNITS: usize = 8;
         const WORKERS: usize = 4;
-        // Not 0, so the panic crosses the join rather than unwinding straight
-        // out of the caller's own kernel call.
+        // Not 0, so the panic crosses the join.
         const PANICKING: usize = 2;
         const MESSAGE: &str = "kernel panic under test";
 
@@ -272,17 +215,12 @@ mod tests {
     const PARTITION_SCOPES: [&str; 4] =
         ["partition-0", "partition-1", "partition-2", "partition-3"];
 
-    // Lower partitions spin longer, so the spawned partitions complete in
-    // descending index order and a merge that followed completion would come
-    // back reversed.
     #[cfg(feature = "frame-trace")]
     fn stage_section_names(workers: usize) -> Vec<&'static str> {
         use crate::frame_trace;
         const UNITS: usize = 64;
         const SKEW: u32 = 200_000;
 
-        // Drain what this test thread had in flight so the frame rolled below
-        // holds this stage and nothing else.
         frame_trace::end_frame();
 
         let pool = JobPool::new(workers);

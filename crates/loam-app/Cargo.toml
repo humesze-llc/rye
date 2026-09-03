@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Loam App: thin trait + event-loop runner over winit, native and wasm32."
+description = "Loam app shell: the App trait, winit event loop, scene registry, and console commands on native and browser; capture on native."
 keywords = ["winit", "event-loop", "wgpu", "wasm", "gamedev"]
 categories = ["game-development"]
 

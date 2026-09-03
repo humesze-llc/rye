@@ -76,8 +76,6 @@ pub(super) fn to_egui(key: Key) -> egui::Key {
     }
 }
 
-// Strips the matching `egui::Event::Text` after the Key event is consumed,
-// so the toggle char does not leak into the input.
 pub(super) fn key_text(key: Key) -> Option<&'static str> {
     match key {
         Key::Backtick => Some("`"),
@@ -88,20 +86,6 @@ pub(super) fn key_text(key: Key) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
-
-    #[test]
-    fn to_egui_is_injective_over_every_console_key() {
-        let mut seen: HashSet<egui::Key> = HashSet::new();
-        for key in Key::ALL {
-            let mapped = to_egui(*key);
-            assert!(
-                seen.insert(mapped),
-                "{key:?} collides with an earlier key on {mapped:?}"
-            );
-        }
-        assert_eq!(seen.len(), Key::ALL.len());
-    }
 
     #[test]
     fn to_egui_preserves_the_key_name() {

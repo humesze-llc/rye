@@ -1,8 +1,8 @@
 # Loam
 
-![The LOAM wordmark: 4D letters fall onto a floor, polychora rain down and knock them over, then the slice sweeps through w](assets/readme/hero.webp)
+![The LOAM wordmark](assets/readme/hero.webp)
 
-A Rust game engine where the geometry of the world is a parameter the game picks. A scene names its space, and rendering, physics, and input run in that space. Flat 4D is the space the demos use today; curved and glued spaces sit behind the same trait.
+A game engine where the geometry of the world is a parameter the game picks. A scene names its space, and rendering, physics, and input run in that space. The demos use flat 4D today; the same trait covers curved and glued spaces.
 
 The animation above is a simulation. The letters are 4D solids, the shapes that knock them over are rigid bodies under 4D gravity, and the ending is the 3D slice sweeping along the fourth axis. The `hero` crate in this repo records it.
 
@@ -22,11 +22,11 @@ Rust 1.95, pinned in `rust-toolchain.toml`. Native runs through wgpu (Vulkan on 
 
 ![Regular 4-polytopes turning through a rotation plane while their 3D cross-sections change](assets/readme/rotate.webp)
 
-The six regular 4-polytopes, from the 5-cell to the 600-cell, turning through any of the six rotation planes of 4D space. What you see is the exact 3D cross-section of each solid at the current w, recomputed every frame, with the full 4D edge graph drawn over it if you want it. Slide along w and the sections grow, split, and vanish. Turn in a plane that includes w and the section changes shape as the solid passes through your slice.
+The six regular 4-polytopes, 5-cell through 600-cell, turn through any of the six rotation planes of 4D space. What you see is the exact 3D cross-section of each solid at the current w, recomputed every frame, with the full 4D edge graph drawn over it if you want it. Slide along w and the sections grow, split, and vanish. Turn in a plane that includes w and the section changes shape as the solid passes through your slice.
 
 ![Polychora dropped into a box under 4D gravity, picked up and thrown](assets/readme/toybox.webp)
 
-The toybox drops the same solids onto a floor under 4D gravity. Click a shape to pick it up by the section you can see, drag it, and let go to throw it; an off-centre grab spins it. Hold Shift and the up-and-down of your drag becomes motion through w, so you can push a shape out of your slice, where it keeps falling and colliding until you scrub the slice after it. When they stack and settle, that is the rigid-body solver working in four dimensions.
+The toybox drops the same solids onto a floor under 4D gravity. Click a shape to pick it up by the section you can see, drag it, and let go to throw it; an off-centre grab spins it. Hold Shift and a vertical drag becomes motion through w, so you can push a shape out of your slice, where it keeps falling and colliding until you scrub the slice after it. Stacking and settling come from the rigid-body solver, which runs in four dimensions.
 
 ## What the engine does
 
@@ -39,7 +39,7 @@ Rustdoc for every crate: [throgsoft.github.io/loam](https://throgsoft.github.io/
 
 ## Where it is going
 
-Next is scripting, so a scene is a file rather than Rust, then a first-party UI and multi-core simulation. After that, 4D versions of the classic simulations (fluids, boids, cellular automata) on GPU compute, then games, with the engine growing as they need it. I have no dates for any of it.
+Scripting comes next, so a scene can be a file rather than Rust. Then a first-party UI and multi-core simulation. After that I want 4D versions of the classic simulations (fluids, boids, cellular automata) on GPU compute, and then games, with the engine growing as they need it. I have no dates for any of it.
 
 ## Lineage
 

@@ -2,8 +2,9 @@
 /target
 **/*.rs.bk
 
-# IDE / editor / tooling
+# Agent guidance and tooling (local only)
 CLAUDE.md
+AGENTS.md
 .claude/
 .codex/
 .idea/

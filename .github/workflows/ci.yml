@@ -61,8 +61,7 @@ jobs:
       # the adapter; fonts-dejavu-core provides the system TTF loam-text's
       # probe panics without, its candidates being absolute paths. Filter by
       # name so the loam-camera perf bench (the other #[ignore]d
-      # test) does not run here. This is the gate behind docs/QUALITY.md
-      # item 6.
+      # test) does not run here.
       - name: cargo test gpu_probe -- --include-ignored
         env:
           WGPU_BACKEND: vulkan

@@ -1,25 +1,48 @@
-//! `loam` aggregator crate.
+//! Loam is a game engine where the geometry of the world is a parameter the
+//! game picks. A scene names a [`math::Space`] and rendering, physics, and
+//! input run in that space.
 //!
-//! ## Facade scope
+//! # Crates
 //!
-//! Re-exports the foundational + rendering crates that an external
-//! consumer is most likely to want by short name:
+//! The workspace is a DAG. Lower tiers never depend on higher ones, and a
+//! change low in the graph ripples up.
 //!
-//! - [`asset`] (filesystem watcher)
-//! - [`math`] (Space trait + closed-form Spaces + bivectors)
-//! - [`render`] (wgpu wrapper + ray-march nodes)
-//! - [`shader`] (WGSL hot reload + Space-prelude injection)
-//! - [`time`] (fixed-timestep accumulator)
+//! - `loam-math`: the `Space` trait and its geometries, bivectors and rotors,
+//!   projections. The root; nothing sits below it.
+//! - `loam-shape`: the `Shape` enum, regular 4-polytope topology,
+//!   cross-sections, isovolumes. With `loam-math`, the stable surface.
+//! - `loam-time`, `loam-scene`, `loam-physics`, `loam-text`: the fixed
+//!   timestep and job pool, typed SDF scenes that emit WGSL, rigid bodies,
+//!   and glyph geometry, built on the two above.
+//! - `loam-shader`, `loam-render`: WGSL assembly with hot reload, and the wgpu
+//!   pipelines (raymarch, line, point, triangle, sky and ground).
+//! - `loam-console`, `loam-egui`, `loam-app`: the console model, its egui
+//!   frontend, and the shell that hosts both: the `App` trait, the winit
+//!   event loop, the scene registry, the command queue, and capture.
+//! - `polytope_playground`, `hero`, `tesseract_demo`: demos. Depend on the
+//!   engine crates, never on each other.
 //!
-//! The remaining crates (`loam-app`, `loam-camera`, `loam-input`,
-//! `loam-physics`, `loam-player`, `loam-scene`, `loam-shape`, `loam-text`)
-//! are deliberately not re-exported here. They form the
-//! application/runtime layer and are best depended on directly so
-//! consumers see them in their own `Cargo.toml` rather than nested
-//! under `loam::*`. Revisit if the surface stabilizes and a flat
-//! `loam::*` import becomes the dominant ergonomic.
+//! # Capability traits
 //!
-//! Common types are gathered in [`prelude`] for `use loam::prelude::*;`.
+//! A geometry is anything implementing `Space` (`exp`, `log`, distance,
+//! parallel transport) and `IsometryGroup`. What a geometry can do
+//! downstream is an opt-in trait, split by how fast each surface changes:
+//! `WgslSpace` emits the raymarcher's prelude, `RasterizableSpace` projects
+//! for the rasterizer, `SectionableSpace` supports cross-sections, and
+//! `PhysicsSpace` supports rigid bodies. A new geometry implements what it
+//! supports and nothing else.
+//!
+//! # Two render paths
+//!
+//! The raymarch path and the rasterizer path run on the same `Space` impls
+//! wherever a space implements both. Over Euclidean R⁴ that is what lets one
+//! polytope appear as a raymarched surface, an exact cross-section, and a
+//! wireframe from one source of truth.
+//!
+//! # This crate
+//!
+//! A facade. It re-exports the crates a consumer is most likely to want under
+//! short names; the rest are depended on directly.
 
 pub use loam_asset as asset;
 pub use loam_math as math;

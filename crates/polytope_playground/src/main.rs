@@ -1,11 +1,8 @@
 use anyhow::{anyhow, Result};
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use loam_app::{
-    args::Args,
-    egui,
-    script::{Script, ScriptDriver, ScriptStatus},
-    AssetEvent, Camera, CameraController, FrameCtx, OrbitController, RunConfig, SetupCtx, ShaderDb,
-    ShaderOwner,
+    args::Args, egui, AssetEvent, Camera, CameraController, FrameCtx, OrbitController, RunConfig,
+    SetupCtx, ShaderDb, ShaderOwner,
 };
 use loam_egui::{Console, ConsoleUi};
 use loam_math::WPlane;
@@ -699,7 +696,6 @@ pub(crate) struct RotateScene {
     console: Console<Demo>,
     text_hud: hud::TextHud,
     hud_seat: hud::HudSeat,
-    script: Option<ScriptDriver>,
 }
 
 const SECTION_ALPHA_MIN_VISIBLE: f32 = 0.05;
@@ -759,7 +755,6 @@ impl RotateScene {
                 ctx.rd.sample_count(),
             )?,
             hud_seat: hud::HudSeat::default(),
-            script: load_script(&Args::current())?,
         })
     }
 }
@@ -778,20 +773,6 @@ fn load_director(args: &Args, slots: usize) -> Result<Option<Playback>> {
     let director =
         Director::from_ron(&text).map_err(|e| anyhow!("parsing timeline `{path}`: {e}"))?;
     Ok(Some(Playback::new(director, slots)?))
-}
-
-fn load_script(args: &Args) -> Result<Option<ScriptDriver>> {
-    if args.has_bare_flag("script") {
-        return Err(anyhow!(
-            "--script needs its path attached: --script=path/to/file.script"
-        ));
-    }
-    match args.get("script") {
-        Some(path) => Ok(Some(ScriptDriver::new(Script::load(
-            std::path::Path::new(path),
-        )?))),
-        None => Ok(None),
-    }
 }
 
 impl loam_app::shell::Scene for RotateScene {
@@ -814,12 +795,6 @@ impl loam_app::shell::Scene for RotateScene {
     }
 
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
-        if let Some(driver) = self.script.as_mut() {
-            if driver.advance() == ScriptStatus::Finished {
-                self.script = None;
-                loam_app::script::request_exit();
-            }
-        }
         self.demo.update(ctx);
     }
 
@@ -1133,30 +1108,6 @@ mod section_command_tests {
             "unparseable alpha is rejected"
         );
         assert_eq!(run(0.7, &[]), (0.7, true), "bare query leaves the field");
-    }
-}
-
-#[cfg(test)]
-mod script_arg_tests {
-    use super::*;
-
-    #[test]
-    fn no_script_argument_leaves_the_scene_undriven() {
-        assert!(load_script(&Args::default()).unwrap().is_none());
-    }
-
-    #[test]
-    fn the_space_separated_form_is_diagnosed_rather_than_ignored() {
-        let args = Args::from_argv(["--script", "some.script"]);
-        let err = load_script(&args).expect_err("a bare --script is not a silent default");
-        assert!(format!("{err:#}").contains("--script="), "{err:#}");
-    }
-
-    #[test]
-    fn an_unreadable_script_path_fails_setup() {
-        let args = Args::from_pairs([("script", "no-such-directory-for-a-script/x.script")]);
-        let err = load_script(&args).expect_err("missing file");
-        assert!(format!("{err:#}").contains("x.script"), "{err:#}");
     }
 }
 

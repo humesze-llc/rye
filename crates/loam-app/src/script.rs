@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{anyhow, bail, Context as _, Result};
 
+use crate::args::Args;
 use crate::command;
 
 // Lets the last command reach the swapchain and a capture it started write.
@@ -136,6 +137,17 @@ pub fn exit_requested() -> bool {
     EXIT_REQUESTED.load(Ordering::Relaxed)
 }
 
+/// `--script=<path>` loads a driver; a bare `--script` is an error, not a default.
+pub fn driver_from_args(args: &Args) -> Result<Option<ScriptDriver>> {
+    if args.has_bare_flag("script") {
+        bail!("--script needs its path attached: --script=path/to/file.script");
+    }
+    match args.get("script") {
+        Some(path) => Ok(Some(ScriptDriver::new(Script::load(Path::new(path))?))),
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +247,25 @@ mod tests {
         let missing = Path::new("no-such-directory-for-a-script/x.script");
         let err = Script::load(missing).expect_err("missing file");
         assert!(format!("{err:#}").contains("x.script"));
+    }
+
+    #[test]
+    fn no_script_argument_leaves_the_run_undriven() {
+        assert!(driver_from_args(&Args::default()).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_space_separated_form_is_diagnosed_rather_than_ignored() {
+        let args = Args::from_argv(["--script", "some.script"]);
+        let err = driver_from_args(&args).expect_err("a bare --script is not a silent default");
+        assert!(format!("{err:#}").contains("--script="), "{err:#}");
+    }
+
+    #[test]
+    fn an_unreadable_script_path_fails_setup() {
+        let args = Args::from_pairs([("script", "no-such-directory-for-a-script/x.script")]);
+        let err = driver_from_args(&args).expect_err("missing file");
+        assert!(format!("{err:#}").contains("x.script"), "{err:#}");
     }
 
     #[test]

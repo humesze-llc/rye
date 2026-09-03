@@ -244,6 +244,14 @@ struct Grab {
     trail: GrabTrail,
 }
 
+/// The held hull's xz bounds at floor height, and its `w` distance from the slice.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DropFootprint {
+    min: Vec2,
+    max: Vec2,
+    from_slice: f32,
+}
+
 pub(crate) struct Toybox {
     world: World<EuclideanR4>,
     toys: Vec<ToyBody>,
@@ -349,6 +357,25 @@ impl Toybox {
         let grab = self.grab.as_ref()?;
         let body = &self.world.bodies[self.toys[grab.toy].body];
         Some((body.position + body.orientation.rotation.apply(grab.lever_local)).truncate())
+    }
+
+    pub(crate) fn drop_footprint(&self) -> Option<DropFootprint> {
+        let grab = self.grab.as_ref()?;
+        let toy = &self.toys[grab.toy];
+        let body = &self.world.bodies[toy.body];
+        let mut min = Vec2::splat(f32::INFINITY);
+        let mut max = Vec2::splat(f32::NEG_INFINITY);
+        for vertex in toy.polytope.topology().vertices.iter() {
+            let posed = body.position + BODY_SIZE * body.orientation.rotation.apply(*vertex);
+            let xz = Vec2::new(posed.x, posed.z);
+            min = min.min(xz);
+            max = max.max(xz);
+        }
+        Some(DropFootprint {
+            min,
+            max,
+            from_slice: (body.position.w - self.slice).abs(),
+        })
     }
 
     pub(crate) fn slice_marks(&self) -> impl Iterator<Item = SliceMark> + '_ {
@@ -520,6 +547,15 @@ impl Toybox {
         if angular > MAX_ANGULAR_SPEED {
             body.angular_velocity = body.angular_velocity * (MAX_ANGULAR_SPEED / angular);
         }
+    }
+
+    pub(crate) fn throw(&mut self, toy: usize, velocity: Vec4) {
+        if self.grab.as_ref().is_some_and(|grab| grab.toy == toy) {
+            self.grab = None;
+        }
+        self.wake(toy);
+        let body = &mut self.world.bodies[self.toys[toy].body];
+        body.velocity = clamp_length(velocity, MAX_RELEASE_SPEED);
     }
 
     /// The drawn cross-section, not the bounding ball; an invisible body falls back to its ball.
@@ -942,6 +978,30 @@ fn append_arena_outline(mesh: &mut LineMesh<3>) {
     }
 }
 
+fn append_drop_footprint(mesh: &mut LineMesh<3>, footprint: &DropFootprint) {
+    let near = 1.0 - (footprint.from_slice / WIREFRAME_W_FADE).clamp(0.0, 1.0);
+    let lit = WIREFRAME_MIN_SHADE + (1.0 - WIREFRAME_MIN_SHADE) * near;
+    let [r, g, b, a] = GRAB_HANDLE_COLOR;
+    let color = [r * lit, g * lit, b * lit, a];
+    let (lo, hi) = (footprint.min, footprint.max);
+    let corners = [
+        Vec3::new(lo.x, FLOOR_Y, lo.y),
+        Vec3::new(hi.x, FLOOR_Y, lo.y),
+        Vec3::new(hi.x, FLOOR_Y, hi.y),
+        Vec3::new(lo.x, FLOOR_Y, hi.y),
+    ];
+    for (index, from) in corners.iter().enumerate() {
+        push_overlay_segment(
+            mesh,
+            *from,
+            corners[(index + 1) % corners.len()],
+            color,
+            color,
+            ARENA_OUTLINE_WIDTH_PX,
+        );
+    }
+}
+
 fn clear_mesh(mesh: &mut TriangleMesh<3>) {
     mesh.vertices.clear();
     mesh.colors.clear();
@@ -1193,6 +1253,8 @@ pub(crate) struct ToyboxControls {
     w_labels: bool,
     environment: Environment,
     rig: loam_app::camera_rig::CameraRig,
+    /// Queued by the `throw` verb, applied by the scene before its next ticks.
+    pending_throws: Vec<(usize, Vec4)>,
 }
 
 impl Default for ToyboxControls {
@@ -1206,8 +1268,33 @@ impl Default for ToyboxControls {
             w_labels: false,
             environment: Environment::default(),
             rig: loam_app::camera_rig::CameraRig::default(),
+            pending_throws: Vec::new(),
         }
     }
+}
+
+fn parse_throw(args: &[&str]) -> Result<(usize, Vec4)> {
+    let usage = "usage: throw <toy> <vx> <vy> <vz> [vw]";
+    let (toy, rest) = args.split_first().ok_or_else(|| anyhow!("{usage}"))?;
+    let toy: usize = toy
+        .parse()
+        .map_err(|_| anyhow!("throw: `{toy}` is not a toy index ({usage})"))?;
+    if toy >= TOYS.len() {
+        return Err(anyhow!(
+            "throw: toy {toy} does not exist (0..{})",
+            TOYS.len()
+        ));
+    }
+    if !(3..=4).contains(&rest.len()) {
+        return Err(anyhow!("{usage}"));
+    }
+    let mut velocity = [0.0f32; 4];
+    for (slot, text) in velocity.iter_mut().zip(rest) {
+        *slot = text
+            .parse()
+            .map_err(|_| anyhow!("throw: `{text}` is not a number ({usage})"))?;
+    }
+    Ok((toy, Vec4::from_array(velocity)))
 }
 
 pub(crate) fn register_toybox_commands(console: &mut Console<ToyboxControls>) {
@@ -1218,6 +1305,16 @@ pub(crate) fn register_toybox_commands(console: &mut Console<ToyboxControls>) {
     register_ground_command(console, |c| &mut c.environment);
     register_floor_command(console, |c| &mut c.environment);
     loam_app::camera_rig::register_camera_command(console, |c| &mut c.rig);
+    console.register(loam_egui::cmd::<ToyboxControls, _>(
+        "throw",
+        "throw <toy> <vx> <vy> <vz> [vw]: set a toy's velocity in world units per second",
+        |args, controls, out| {
+            let (toy, velocity) = parse_throw(args)?;
+            controls.pending_throws.push((toy, velocity));
+            out.line(format!("throw: toy {toy} at {velocity}"));
+            Ok(())
+        },
+    ));
     console.register(
         loam_egui::cmd::<ToyboxControls, _>(
             "wlabels",
@@ -1570,6 +1667,9 @@ impl ToyboxScene {
         arena.colors.clear();
         arena.widths.clear();
         append_arena_outline(&mut arena);
+        if let Some(footprint) = self.toybox.drop_footprint() {
+            append_drop_footprint(&mut arena, &footprint);
+        }
         self.arena_node.set_camera(
             &rd.queue,
             view_proj,
@@ -1671,6 +1771,10 @@ impl loam_app::shell::Scene for ToyboxScene {
         if dir != 0.0 {
             self.toybox
                 .scrub_slice(dir, ctx.n_ticks as f32 / TICK_HZ as f32);
+        }
+
+        for (toy, velocity) in self.controls.pending_throws.drain(..) {
+            self.toybox.throw(toy, velocity);
         }
 
         if !self.paused {
@@ -3447,5 +3551,63 @@ mod tests {
             warm, 0,
             "a warm contact overlay asked the allocator for {warm} bytes"
         );
+    }
+
+    #[test]
+    fn a_held_toy_marks_its_floor_footprint_under_itself() {
+        let mut toybox = settled();
+        assert!(toybox.drop_footprint().is_none());
+        assert!(grab_centre(&mut toybox, 0));
+        let footprint = toybox.drop_footprint().expect("held");
+        let centre = toybox.position(0);
+        let mid = (footprint.min + footprint.max) * 0.5;
+        assert!((mid - Vec2::new(centre.x, centre.z)).length() < 1e-4);
+        let half = (footprint.max - footprint.min) * 0.5;
+        assert!(
+            half.x > 0.5 * BODY_SIZE && half.x <= BODY_SIZE + 1e-4,
+            "{half}"
+        );
+        assert!(
+            half.y > 0.5 * BODY_SIZE && half.y <= BODY_SIZE + 1e-4,
+            "{half}"
+        );
+
+        let target = centre.truncate() + Vec3::new(1.0, 0.0, 0.0);
+        for _ in 0..FLICK_TICKS * 6 {
+            drag_frame(&mut toybox, target, GrabAxis::Slice);
+        }
+        let after = toybox.drop_footprint().expect("still held");
+        let moved = (after.min + after.max) * 0.5 - mid;
+        assert!(
+            moved.x > 0.3,
+            "the footprint stayed put while the toy moved: {moved}"
+        );
+    }
+
+    #[test]
+    fn a_throw_wakes_a_sleeping_toy_and_sets_its_velocity() {
+        let mut toybox = settled();
+        assert!(toybox.toys[1].asleep);
+        toybox.throw(1, Vec4::new(0.0, 3.0, 0.0, 0.0));
+        assert!(!toybox.toys[1].asleep);
+        let start = toybox.position(1);
+        toybox.tick();
+        assert!(toybox.position(1).y > start.y);
+    }
+
+    #[test]
+    fn throw_parses_an_optional_w_and_rejects_a_missing_toy() {
+        assert_eq!(
+            parse_throw(&["2", "1", "2", "3"]).expect("three components"),
+            (2, Vec4::new(1.0, 2.0, 3.0, 0.0))
+        );
+        assert_eq!(
+            parse_throw(&["0", "1", "2", "3", "4"])
+                .expect("four components")
+                .1,
+            Vec4::new(1.0, 2.0, 3.0, 4.0)
+        );
+        assert!(parse_throw(&["9", "0", "0", "0"]).is_err());
+        assert!(parse_throw(&["0", "0", "0"]).is_err());
     }
 }

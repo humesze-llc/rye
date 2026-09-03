@@ -278,6 +278,7 @@ pub struct SceneShell<R: SceneRegistry> {
     perf: crate::trace::PerfOverlay,
     /// `Some` while the restart confirmation is on screen.
     confirm: Option<Cow<'static, str>>,
+    script: Option<crate::script::ScriptDriver>,
     registry: PhantomData<fn() -> R>,
 }
 
@@ -398,7 +399,9 @@ fn resolve_boot(scenes: &[SceneEntry], args: &Args) -> (usize, bool) {
 
 impl<R: SceneRegistry> App for SceneShell<R> {
     fn setup(ctx: &mut SetupCtx<'_>) -> Result<Self> {
-        let (active, embed) = resolve_boot(R::SCENES, &Args::current());
+        let args = Args::current();
+        let (active, embed) = resolve_boot(R::SCENES, &args);
+        let script = crate::script::driver_from_args(&args)?;
         let mut shader_db = ShaderDb::new(ctx.rd.device.clone());
         let scenes = build_boot_only(R::SCENES.len(), active, || {
             let mut setup = SetupCtx {
@@ -420,6 +423,7 @@ impl<R: SceneRegistry> App for SceneShell<R> {
             capture_panel: crate::capture::CapturePanel::new(),
             perf: crate::trace::PerfOverlay::new(),
             confirm: None,
+            script,
             registry: PhantomData,
         })
     }
@@ -438,6 +442,12 @@ impl<R: SceneRegistry> App for SceneShell<R> {
     }
 
     fn update(&mut self, ctx: &mut FrameCtx<'_>) {
+        if let Some(driver) = self.script.as_mut() {
+            if driver.advance() == crate::script::ScriptStatus::Finished {
+                self.script = None;
+                crate::script::request_exit();
+            }
+        }
         self.active_scene().update(ctx);
     }
 

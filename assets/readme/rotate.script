@@ -1,7 +1,0 @@
-# One full turn of the default row in the default plane, recorded at 30 fps.
-# cargo run --release -p polytope_playground -- --script=assets/readme/rotate.script
-0 fps 60
-0 controls
-1 spin
-90 capture apng pre captures fps=30 scale=800
-290 capture stop

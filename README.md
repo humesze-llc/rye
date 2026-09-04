@@ -1,11 +1,12 @@
-# Loam
-
-Loam is an engine for exploring geometry beyond ordinary 3D space.
-Scenes choose their geometry, including Euclidean, spherical, and hyperbolic spaces.
-
 ![Letters tumbling into the Loam wordmark](assets/readme/hero.webp)
+Loam is an engine for exploring geometry beyond ordinary 3D space!
 
 [![CI](https://github.com/throgsoft/loam/actions/workflows/ci.yml/badge.svg)](https://github.com/throgsoft/loam/actions/workflows/ci.yml)
+
+## Goals
+
+I'm building Loam for games where the shape of space is part of play: higher dimensions, curved worlds, and spaces that connect in unusual ways.
+The playground is the starting point. I want to build toward 4D simulations, better authoring tools, and eventually a horror game in a multiply-connected world.
 
 ## Polytope Playground
 
@@ -17,7 +18,7 @@ Or pick them up and throw them around the 4D Toybox, directly inspired by [Marc 
 
 ![Polychora dropped into a box under 4D gravity, picked up and thrown](assets/readme/toybox.webp)
 
-## Build and run
+## Play
 
 Install Rust with [rustup](https://rust-lang.org/tools/install/). On Windows, run the installer and accept the C++ build tools prompt. On macOS or Linux:
 

@@ -267,10 +267,12 @@ mod tests {
     fn characters_the_font_lacks_are_rejected() {
         let Some(bytes) = system_font() else { return };
         let font = FontRef::try_from_slice(&bytes).expect("parse font");
-        let error = layout_word(&font, "LO\u{1F600}AM", &params()).unwrap_err();
+        let missing = '\u{10FFFF}';
+        assert_eq!(font.glyph_id(missing), GlyphId(0));
+        let error = layout_word(&font, &format!("LO{missing}AM"), &params()).unwrap_err();
         assert_eq!(
             error,
-            GlyphError::NoGlyph { ch: '\u{1F600}' },
+            GlyphError::NoGlyph { ch: missing },
             "expected a loud failure, got {error}"
         );
     }

@@ -3,8 +3,8 @@
 //! probes stay so the trade can be re-priced. Both need an adapter.
 use loam_math::Rotor4;
 use loam_render::raymarch::{
-    polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
-    SHAPE_24CELL, SHAPE_PENTATOPE, SHAPE_TESSERACT,
+    polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL, SHAPE_24CELL,
+    SHAPE_PENTATOPE, SHAPE_TESSERACT,
 };
 use loam_render::Viewport;
 use wgpu::*;

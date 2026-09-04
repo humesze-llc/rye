@@ -1,7 +1,7 @@
+[![CI](https://github.com/throgsoft/loam/actions/workflows/ci.yml/badge.svg)](https://github.com/throgsoft/loam/actions/workflows/ci.yml)
+
 ![Letters tumbling into the Loam wordmark](assets/readme/hero.webp)
 Loam is an engine for exploring geometry beyond ordinary 3D space!
-
-[![CI](https://github.com/throgsoft/loam/actions/workflows/ci.yml/badge.svg)](https://github.com/throgsoft/loam/actions/workflows/ci.yml)
 
 ## Goals
 

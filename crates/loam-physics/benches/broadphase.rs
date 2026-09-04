@@ -1,29 +1,6 @@
-//! What the sort-and-sweep broadphase costs and what it prunes, at three body
-//! counts. `cargo bench -p loam-physics`.
-//!
-//! Three timings per size, because "the sweep is Nx faster" means two different
-//! things depending on the denominator.
-//!
-//! `ap_ns` is the broadphase the sweep replaced: every pair that is not two
-//! static bodies, with no distance test and no sort. A speedup claim for the
-//! sweep is a claim over this, and it is also what the narrowphase used to be
-//! handed, so `ap/emitted` is the factor by which the narrowphase's input
-//! shrank. That is where the win lives, since the narrowphase runs GJK per
-//! emitted pair.
-//!
-//! `scan_ns` is the harder denominator: the sweep's own candidate predicate
-//! with no acceleration structure, radii hoisted out of the quadratic loop so
-//! the comparison is structure against no structure and not one loop forgetting
-//! to hoist. The scan already does the culling the sweep is credited for above,
-//! so `scan/sweep` isolates what the sort buys over identical output.
-//!
-//! Both denominators fill caller-owned buffers, because the code the sweep
-//! replaced filled the world's retained `pair_order` rather than a fresh `Vec`.
-//! Timing them against an owned allocation inflates them in proportion to their
-//! output, and at 131x the emitted count that is most of the measurement. The
-//! sweep is deliberately left on `World::broadphase`, which allocates its two
-//! scratch buffers and its output per call where a step reuses all three, so
-//! `sweep_ns` is an upper bound and every ratio below is a floor.
+//! `ap_ns` is the broadphase the sweep replaced. `scan_ns` is the sweep's own
+//! candidate predicate with no acceleration structure, radii hoisted out of the
+//! quadratic loop so the comparison is structure against no structure.
 //!
 //! Measured on a 13th Gen Intel Core i9-13980HX, Windows 11 Pro 10.0.26200,
 //! rustc 1.95.0, `cargo bench` (opt-level 3, no debug assertions). Each cell is
@@ -37,19 +14,9 @@
 //!    401      611     80200     63976    91855  113825        1.4x      1.8x        131x
 //! ```
 //!
-//! The sweep does not pay for itself in wall-clock time at these sizes. It is
-//! slower than the broadphase it replaced at 101 bodies, break-even at 201, and
-//! only 1.8x ahead at 401; against the identical-predicate scan it crosses over
-//! later still. The ratios do grow with body count, which is the acceleration
-//! structure doing what it is for, but 400 bodies is well short of where that
-//! growth pays the sort back.
-//!
-//! What the sweep actually buys is `ap/emitted`: 32x to 131x fewer pairs handed
-//! to the narrowphase, which runs GJK on each one. That is the number the
-//! change was worth making for, and it is the one that is not close.
-//!
-//! Whether the interval sort or the active-list churn dominates the sweep's own
-//! overhead is unmeasured.
+//! The sweep does not pay for itself in wall-clock time at these sizes. What
+//! it buys is `ap/emitted`: 32x to 131x fewer pairs handed to the narrowphase,
+//! which runs GJK on each one.
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -66,22 +33,19 @@ use loam_physics::world::PairKey;
 use loam_physics::World;
 
 const BODY_COUNTS: [usize; 3] = [100, 200, 400];
-/// Half-width of the spawn box at 100 bodies, scaled as the cube root of the
-/// count so the scene's density does not drift across the three sizes.
+// Half-width of the spawn box at 100 bodies, scaled as the cube root of the
+// count so the scene's density does not drift across the three sizes.
 const SPREAD_AT_100: f32 = 6.0;
-/// Long enough for the scene to fall and rest, so the timings describe the
-/// contact-rich configuration a running world spends its time in.
 const SETTLE_STEPS: usize = 240;
 const DT: f32 = 1.0 / 240.0;
 const GRAVITY_Y: f32 = -9.8;
-/// Arbitrary but fixed, so a run reproduces.
 const SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 const REPS: u32 = 200;
-/// Odd, so the reported median is a batch that was actually observed.
+// Odd, so the reported median is a batch that was actually observed.
 const BATCHES: usize = 9;
 
-/// xorshift64 (Marsaglia 2003, "Xorshift RNGs", J. Stat. Soft. 8(14), the
-/// 13/7/17 triple).
+// xorshift64 (Marsaglia 2003, "Xorshift RNGs", J. Stat. Soft. 8(14), the
+// 13/7/17 triple).
 struct Xorshift(u64);
 
 impl Xorshift {
@@ -97,18 +61,16 @@ impl Xorshift {
         self.0
     }
 
-    /// Uniform in `[lo, hi)` off the top 24 bits, which is the whole f32
-    /// significand.
+    // The top 24 bits are the whole f32 significand.
     fn range(&mut self, lo: f32, hi: f32) -> f32 {
         let unit = (self.next_u64() >> 40) as f32 / (1u32 << 24) as f32;
         lo + (hi - lo) * unit
     }
 }
 
-/// `count` seeded spheres and boxes over one static floor, settled. The mix
-/// matters: a polytope's bounding radius is a fold over its vertices, so a
-/// scene of spheres alone would understate what the quadratic scan pays per
-/// pair and overstate what it pays per body.
+// A polytope's bounding radius is a fold over its vertices, so a scene of
+// spheres alone would understate what the quadratic scan pays per pair and
+// overstate what it pays per body.
 fn settled_scene(count: usize) -> World<EuclideanR3> {
     let spread = SPREAD_AT_100 * (count as f32 / 100.0).cbrt();
     let mut rng = Xorshift::new(SEED);
@@ -159,8 +121,6 @@ fn bounding_radius(collider: &Collider) -> f32 {
     }
 }
 
-/// The candidate definition without an acceleration structure: every pair that
-/// is not two static bodies and whose bounding balls overlap.
 fn scan(world: &World<EuclideanR3>, radii: &mut Vec<f32>, pairs: &mut Vec<PairKey>) {
     radii.clear();
     radii.extend(
@@ -185,10 +145,9 @@ fn scan(world: &World<EuclideanR3>, radii: &mut Vec<f32>, pairs: &mut Vec<PairKe
     pairs.sort_unstable();
 }
 
-/// The broadphase the sweep replaced: every pair that is not two static bodies,
-/// with no bounding test and no sort. The scene never despawns, so handles
-/// ascend with storage order and this emission is already sorted; dropping the
-/// sort is faithful to the original rather than a head start.
+// Every pair that is not two static bodies, with no bounding test and no sort.
+// The scene never despawns, so handles ascend with storage order and the
+// emission is already sorted: dropping the sort is faithful, not a head start.
 fn all_pairs(world: &World<EuclideanR3>, pairs: &mut Vec<PairKey>) {
     pairs.clear();
     let n = world.bodies.len();
@@ -210,11 +169,10 @@ fn canonical(a: BodyId, b: BodyId) -> PairKey {
     }
 }
 
-/// Median batch mean. A single batch mean is not reportable here: the all-pairs
-/// emitter grows its output `Vec` from empty on every call, and the mean of one
-/// batch of that moved by 4x between process runs. Taking the median across
-/// batches holds 201 and 401 bodies to 1.7x and 1.2x; 101 stays bimodal, so the
-/// spread there is stated with the number rather than averaged away.
+// Median batch mean. A single batch mean is not reportable: the all-pairs
+// emitter grows its output `Vec` from empty on every call, and one batch of
+// that moved 4x between process runs. The median holds 201 and 401 bodies to
+// 1.7x and 1.2x; 101 stays bimodal.
 fn median_nanos(mut body: impl FnMut()) -> f64 {
     let mut batches = [0.0_f64; BATCHES];
     for batch in &mut batches {
@@ -260,9 +218,6 @@ fn main() {
             "{count}: the sweep emits a pair the baseline never did, so the              ratio below is not a pruning factor"
         );
 
-        // One untimed pass each, so the timed loop measures a warm cache and
-        // not the scene's first-touch faults, and so both denominators enter
-        // the timed region with their buffers already at steady size.
         black_box(world.broadphase());
         scan(&world, &mut radii, &mut scan_out);
         all_pairs(&world, &mut ap_out);

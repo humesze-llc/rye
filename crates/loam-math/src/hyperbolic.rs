@@ -1,36 +1,19 @@
-//! Hyperbolic 3-space (H³), curvature `K = -1`.
-//!
 //! Dual representation: points in the **Poincaré ball** (`Vec3`, `|p| < 1`,
 //! conformal and shader-compatible); isometries as 4×4 Lorentz matrices acting
 //! on the **hyperboloid** model so composition is matmul (see [`Iso3H`]).
 //! `iso_apply` round-trips Poincaré -> hyperboloid -> matmul -> Poincaré.
-//!
-//! Domain: Poincaré points must satisfy `|p| < 1`; the boundary sphere is the
-//! point at infinity where distances diverge. Out-of-domain input is clamped
-//! internally to a degraded-but-finite result rather than panicking; keeping
-//! points interior is the caller's responsibility.
 
 use std::borrow::Cow;
 
 use glam::{Mat4, Quat, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslSpace};
 
-/// Max `|p|²` before the conformal factor `λ = 2/(1-|p|²)` saturates. `1 - 1e-7`
-/// keeps `λ ≲ 2 × 10⁷`, well inside f32 dynamic range.
+// Max `|p|²` before the conformal factor `λ = 2/(1-|p|²)` saturates.
 const POINCARE_R2_MAX: f32 = 1.0 - 1e-7;
 
-/// Clamp an out-of-domain point onto the saturation shell. Never NaN or panic.
-///
-/// The scale factor is two square roots, a divide and three products, each
-/// rounding, so `p * (sqrt(R2MAX)/sqrt(r2))` lands outside the shell for about
-/// a third of out-of-ball directions, overshooting `|q|² = 1` by up to 2.4e-7.
-/// That is enough for a caller to see `1 + a·b` round to exactly zero, which
-/// is why the postcondition is enforced rather than assumed: downstream code
-/// derives its own bounds from `|q|² <= POINCARE_R2_MAX` and divides by them.
-/// The loop is a nudge of one ulp per pass and terminates in at most two on
-/// the out-of-domain path.
+// Clamp an out-of-domain point onto the saturation shell. Never NaN or panic.
 fn clamp_to_ball(p: Vec3) -> Vec3 {
     let r2 = p.length_squared();
     if r2 <= POINCARE_R2_MAX {
@@ -50,6 +33,9 @@ fn clamp_to_ball(p: Vec3) -> Vec3 {
 /// Composition is matmul; inverse is `J Mᵀ J`, `J = diag(-1, -1, -1, +1)`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3H {
+    /// Lorentz matrix in hyperboloid coordinates, column-major per `glam`.
+    /// Membership in SO⁺(3,1) is a precondition, not checked on use; a matrix
+    /// outside the group silently moves points off the hyperboloid.
     pub matrix: Mat4,
 }
 
@@ -90,7 +76,6 @@ impl Iso3H {
         let sh = rapidity.sinh();
         let k = ch - 1.0;
         let (dx, dy, dz) = (dir.x, dir.y, dir.z);
-        // Symmetric boost: spatial block I + k·dir⊗dir, coupling sh·dir, tt ch.
         Self {
             matrix: Mat4::from_cols(
                 Vec4::new(1.0 + k * dx * dx, k * dx * dy, k * dx * dz, sh * dx),
@@ -102,15 +87,12 @@ impl Iso3H {
     }
 }
 
-/// Hyperbolic 3-space, Poincaré ball model, `K = -1`. Stateless unit struct; see
-/// the [module docs](self) for the dual representation and domain constraint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HyperbolicH3;
 
 impl Space for HyperbolicH3 {
     type Point = Vec3;
     type Vector = Vec3;
-    type Iso = Iso3H;
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         // Möbius (artanh) form, not acosh: acosh(1 + δ) quantizes small distances
@@ -147,13 +129,16 @@ impl Space for HyperbolicH3 {
     }
 
     fn parallel_transport(&self, from: Vec3, to: Vec3, v: Vec3) -> Vec3 {
-        // Geodesic PT: (λ_from / λ_to) · gyr[to, −from] v. Conformal factor
-        // rescales for the metric at source vs destination.
+        // Geodesic PT: (λ_from / λ_to) · gyr[to, −from] v.
         let from = clamp_to_ball(from);
         let to = clamp_to_ball(to);
         let conformal = (1.0 - to.length_squared()) / (1.0 - from.length_squared());
         conformal * gyr_apply(to, -from, v)
     }
+}
+
+impl IsometryGroup for HyperbolicH3 {
+    type Iso = Iso3H;
 
     fn iso_identity(&self) -> Iso3H {
         Iso3H::IDENTITY
@@ -188,13 +173,8 @@ impl Space for HyperbolicH3 {
     }
 
     fn iso_transport(&self, iso: Iso3H, at: Vec3, v: Vec3) -> Vec3 {
-        // The differential of `iso_apply`, taken on the hyperboloid where the
-        // action is the linear map `iso.matrix` and therefore an exact Lorentz
-        // isometry of the tangent. `log(M·at, M·exp(at, v))` is the same map in
-        // exact arithmetic, but it pays `exp`'s tanh saturation and `log`'s
-        // artanh conditioning once each, and both worsen with `|v|` as well as
-        // with `|at|`: the round trip misstates the metric norm by 23% at
-        // `|at| = 0.8` and by 220% past 0.99.
+        // The differential of `iso_apply`, taken on the hyperboloid, where the
+        // action is the linear map `iso.matrix`.
         let at = clamp_to_ball(at);
         let h = poincare_to_hyperboloid(at);
         let dh = poincare_to_hyperboloid_tangent(at, v);
@@ -208,9 +188,7 @@ impl WgslSpace for HyperbolicH3 {
     }
 }
 
-// distance / exp / log / parallel_transport are the v0 WGSL ABI. Iso3H layout is
-// absent: Lorentz matrices need a uniform-buffer binding decision before
-// `iso_apply` can run in shaders.
+// distance / exp / log / parallel_transport are the v0 WGSL ABI.
 const WGSL_IMPL: &str = r#"
 // loam-math :: HyperbolicH3 (v0 Space WGSL ABI)
 const LOAM_MAX_ARC: f32 = 1e9;
@@ -302,17 +280,13 @@ fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> 
 }
 "#;
 
-// ---- helpers --------------------------------------------------------
-
-/// `artanh(x)`. Caller ensures `|x| < 1`; boundary saturation is handled at the
-/// call sites.
 fn artanh(x: f32) -> f32 {
     0.5 * ((1.0 + x) / (1.0 - x)).ln()
 }
 
-/// Möbius addition `a ⊕ b` in the Poincaré ball, K = -1. Non-associative; the
-/// failure of associativity is the gyration. (Ungar, *From Möbius to
-/// Gyrogroups*, Amer. Math. Monthly 115, 2008, §4, Def. 3.)
+// Möbius addition `a ⊕ b` in the Poincaré ball, K = -1. Non-associative; the
+// failure of associativity is the gyration. (Ungar, *From Möbius to
+// Gyrogroups*, Amer. Math. Monthly 115, 2008, §4, Def. 3.)
 fn mobius_add(a: Vec3, b: Vec3) -> Vec3 {
     let ab = a.dot(b);
     let aa = a.length_squared();
@@ -326,46 +300,9 @@ fn mobius_add(a: Vec3, b: Vec3) -> Vec3 {
     }
 }
 
-/// Möbius gyration `gyr[a, b] v`, the rotation from Möbius non-associativity
-/// (Ungar, *From Möbius to Gyrogroups*, Amer. Math. Monthly 115, 2008, §4,
-/// Def. 4), evaluated as the rotation it is: conjugation by the quaternion
-/// `A = 1 - ab` for pure-imaginary `a`, `b`, whose scalar part is `1 + a·b`
-/// and whose vector part is `-(a × b)`, applied by Rodrigues.
-///
-/// That closed form is a theorem and not the cited definition, so it carries
-/// its own derivation. Read `a`, `b`, `v` as pure-imaginary quaternions, where
-/// `xy = -x·y + x×y` and conjugation `x ↦ -x` negates the vector part. Def. 3's
-/// Möbius addition is then the right quotient `a ⊕ x = (a + x)(1 - ax)⁻¹`,
-/// which is the disk automorphism of the one-dimensional case with quaternion
-/// division: expanding the quotient against `|1 - ax|² = 1 + 2a·x + |a|²|x|²`
-/// reproduces [`mobius_add`] term for term. Composing two of them gives
-/// `a ⊕ (b ⊕ v) = (a ⊕ b) ⊕ (A v A⁻¹)`, and the left gyroassociative law
-/// `a ⊕ (b ⊕ v) = (a ⊕ b) ⊕ gyr[a, b] v` (same source, §4) identifies the
-/// second factor. Conjugation rather than a unimodular multiplier because the
-/// quaternions do not commute.
-///
-/// Ungar's defining form `⊖(a ⊕ b) ⊕ (a ⊕ (b ⊕ v))` subtracts two points that
-/// agree to within the size of `v`, and its Möbius denominator
-/// `1 + 2a·b + |a|²|b|²` falls off like `(1 - |a|²)²` as the operands approach
-/// the ideal boundary together, so the surviving mantissa shrinks with the
-/// distance to the boundary rather than with the answer. It also feeds `v`
-/// through `mobius_add`, which is defined only for ball elements while a
-/// tangent has no norm bound. Conjugation is orthogonal by construction, so
-/// the transported norm survives at any radius, and it is linear in `v`.
-/// `gyration_matches_ungars_four_addition_definition` pins the two forms
-/// against each other where the defining form is still trustworthy.
-///
-/// Unfloored. Both callers keep the operands inside the ball:
-/// [`HyperbolicH3::parallel_transport`] clamps them, and
-/// `gyration_matches_ungars_four_addition_definition` passes constants of
-/// radius under 0.5. So `|a·b| ≤ POINCARE_R2_MAX` and
-/// `|A|² ≥ (1 - POINCARE_R2_MAX)² = 1.4e-14`, a bound
-/// `parallel_transport_is_exact_where_the_clamp_conditions_the_gyration_worst`
-/// pins as attained and survivable; a floor below it can only fire for an
-/// operand the clamp did not produce, and the one such input that reaches
-/// here, a NaN, compares false against any floor and propagates regardless.
-/// The WGSL twin keeps its floor because `loam_gyr_apply` is a prelude entry
-/// point that a shader author can call directly with anything.
+// Möbius gyration `gyr[a, b] v`, evaluated as conjugation by the quaternion
+// `A = 1 - ab` (Ungar, *From Möbius to Gyrogroups*, Amer. Math. Monthly 115,
+// 2008, §4, Def. 4).
 fn gyr_apply(a: Vec3, b: Vec3, v: Vec3) -> Vec3 {
     let scalar = 1.0 + a.dot(b);
     let axis = -a.cross(b);
@@ -373,8 +310,6 @@ fn gyr_apply(a: Vec3, b: Vec3, v: Vec3) -> Vec3 {
     v + (2.0 / norm2) * (scalar * axis.cross(v) + axis.cross(axis.cross(v)))
 }
 
-/// Lift a Poincaré point (`|p|² = r²`) to the hyperboloid:
-/// `(2p / (1 − r²), (1 + r²) / (1 − r²))`.
 fn poincare_to_hyperboloid(p: Vec3) -> Vec4 {
     let r2 = p.length_squared().min(POINCARE_R2_MAX);
     let den = 1.0 - r2;
@@ -386,16 +321,14 @@ fn poincare_to_hyperboloid(p: Vec3) -> Vec4 {
     )
 }
 
-/// Project a hyperboloid point back to the Poincaré ball: `(x, y, z) / (1 + w)`.
-/// The floor on `1 + w` keeps off-sheet inputs finite.
+// The floor on `1 + w` keeps off-sheet inputs finite.
 fn hyperboloid_to_poincare(h: Vec4) -> Vec3 {
     let den = (1.0 + h.w).max(1e-7);
     Vec3::new(h.x / den, h.y / den, h.z / den)
 }
 
-/// Differential of [`poincare_to_hyperboloid`] at `p`, applied to `v`. The
-/// time-like component and the radial part of the space-like one share the
-/// factor `4 (p·v) / (1 - r²)²`.
+// The time-like component and the radial part of the space-like one share the
+// factor `4 (p·v) / (1 - r²)²`.
 fn poincare_to_hyperboloid_tangent(p: Vec3, v: Vec3) -> Vec4 {
     let r2 = p.length_squared().min(POINCARE_R2_MAX);
     let den = 1.0 - r2;
@@ -404,8 +337,7 @@ fn poincare_to_hyperboloid_tangent(p: Vec3, v: Vec3) -> Vec4 {
     Vec4::new(space.x, space.y, space.z, radial)
 }
 
-/// Differential of [`hyperboloid_to_poincare`] at `h`, applied to `dh`. Same
-/// floor on `1 + w`, for the same reason.
+// Same floor on `1 + w`, for the same reason.
 fn hyperboloid_to_poincare_tangent(h: Vec4, dh: Vec4) -> Vec3 {
     let den = (1.0 + h.w).max(1e-7);
     let space = Vec3::new(h.x, h.y, h.z);
@@ -416,7 +348,6 @@ fn hyperboloid_to_poincare_tangent(h: Vec4, dh: Vec4) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tangent::Tangent;
     use approx::assert_relative_eq;
 
     fn h3() -> HyperbolicH3 {
@@ -443,31 +374,6 @@ mod tests {
         assert_relative_eq!(moved.x, target.x, epsilon = 1e-5);
         assert_relative_eq!(moved.y, target.y, epsilon = 1e-5);
         assert_relative_eq!(moved.z, target.z, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn parallel_transport_preserves_hyperbolic_norm() {
-        let s = h3();
-        let from = Vec3::new(0.0, 0.0, 0.0);
-        let to = Vec3::new(0.3, 0.0, 0.0);
-        let v = Vec3::new(0.05, 0.05, 0.0);
-        let v_at_to = s.parallel_transport(from, to, v);
-        let n_from = lambda(from) * v.length();
-        let n_to = lambda(to) * v_at_to.length();
-        assert_relative_eq!(n_from, n_to, epsilon = 1e-4);
-    }
-
-    #[test]
-    fn iso_transport_preserves_hyperbolic_norm() {
-        let s = h3();
-        let iso = Iso3H::from_translation(Vec3::new(0.2, 0.1, 0.0));
-        let at = Vec3::new(0.05, 0.0, 0.0);
-        let v = Vec3::new(0.02, 0.03, 0.0);
-        let n_before = lambda(at) * v.length();
-        let new_at = s.iso_apply(iso, at);
-        let new_v = s.iso_transport(iso, at, v);
-        let n_after = lambda(new_at) * new_v.length();
-        assert_relative_eq!(n_before, n_after, epsilon = 1e-4);
     }
 
     #[test]
@@ -515,19 +421,6 @@ mod tests {
     }
 
     #[test]
-    fn tangent_exp_matches_raw_exp() {
-        let s = h3();
-        let at = Vec3::new(0.1, 0.0, 0.0);
-        let v = Vec3::new(0.05, 0.05, 0.0);
-        let t = Tangent::<HyperbolicH3>::new(at, v);
-        let via_tangent = t.exp(&s);
-        let via_raw = s.exp(at, v);
-        assert_relative_eq!(via_tangent.x, via_raw.x, epsilon = 1e-6);
-        assert_relative_eq!(via_tangent.y, via_raw.y, epsilon = 1e-6);
-        assert_relative_eq!(via_tangent.z, via_raw.z, epsilon = 1e-6);
-    }
-
-    #[test]
     fn out_of_domain_distance_does_not_panic() {
         let s = h3();
         let inside = Vec3::new(0.5, 0.0, 0.0);
@@ -542,7 +435,6 @@ mod tests {
     #[test]
     fn wgsl_impl_is_non_empty() {
         assert!(!h3().wgsl_impl().is_empty());
-        // The prelude must define the four `loam_*` ABI functions.
         let src = h3().wgsl_impl();
         assert!(src.contains("fn loam_distance"));
         assert!(src.contains("fn loam_exp"));
@@ -550,14 +442,8 @@ mod tests {
         assert!(src.contains("fn loam_parallel_transport"));
     }
 
-    /// Radii and directions spanning the ball out to the last shell the chart
-    /// represents without clamping (`|p|² < 1 - 1e-7`). Fixed, not sampled: the
-    /// failure this covers is radial, so a seeded sampler would only make the
-    /// coverage harder to read.
-    ///
-    /// 11 radii by 5 directions, so 55 points, of which the 5 at `r = 0`
-    /// coincide at the origin. The norm sweeps cross those with the 3
-    /// `SWEEP_TANGENTS`.
+    // Radii and directions spanning the ball out to the last shell the chart
+    // represents without clamping (`|p|² < 1 - 1e-7`).
     fn ball_sweep() -> Vec<Vec3> {
         let radii = [
             0.0f32, 0.1, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 0.9999,
@@ -586,19 +472,9 @@ mod tests {
         Vec3::new(2.0, -1.0, 0.5),
     ];
 
-    /// Chord between unit vectors, so it reads as an angle directly: a twist of
-    /// `θ` about the direction of travel registers as `2 sin(θ/2)`, and 0.1 rad
-    /// registers as 9.99e-2, two decades above this bound.
-    ///
-    /// The bound is set by the radial case, measured worst 2.6e-5 against 1.9e-7
-    /// for the plane normal. There the gyration axis `b × a` vanishes in exact
-    /// arithmetic but not in f32, and its rounding is divided by the scalar part
-    /// `1 - a·b`, which falls to 2e-4 between the two outermost shells.
+    // Chord between unit vectors: a twist of 0.1 rad registers as 9.99e-2.
     const TWIST_CHORD_TOLERANCE: f32 = 1e-3;
 
-    /// The closed form is Ungar's gyration and not merely something
-    /// norm-preserving. Compared where the four-addition definition is still
-    /// trustworthy, which is what the closed form exists to escape.
     #[test]
     fn gyration_matches_ungars_four_addition_definition() {
         let four_addition = |a: Vec3, b: Vec3, v: Vec3| {
@@ -625,9 +501,8 @@ mod tests {
         ];
         for (a, b, v) in cases {
             let residual = (gyr_apply(a, b, v) - four_addition(a, b, v)).length();
-            // Measured worst 1.3e-6 relative, which is the four Möbius
-            // additions' own accumulated rounding at these radii, not a
-            // disagreement between the two formulas.
+            // Measured worst 1.3e-6 relative, the four Möbius additions'
+            // own accumulated rounding at these radii.
             assert!(
                 residual <= 1e-5 * v.length(),
                 "gyr[{a:?}, {b:?}] disagrees with its definition by {residual}"
@@ -635,13 +510,6 @@ mod tests {
         }
     }
 
-    /// The gyration carries no degeneracy floor, so the worst-conditioned
-    /// operands the clamp can hand it have to come out right unaided. Two
-    /// out-of-ball points clamp onto the same saturation shell, and there
-    /// `gyr[to, -from]` takes its minimum squared norm `(1 - POINCARE_R2_MAX)²`
-    /// with an axis `to × -from` that is identically zero, so the smallest
-    /// denominator the clamp can produce meets an exactly zero numerator and
-    /// the transport is the identity to the bit.
     #[test]
     fn parallel_transport_is_exact_where_the_clamp_conditions_the_gyration_worst() {
         let s = h3();
@@ -664,10 +532,6 @@ mod tests {
         }
     }
 
-    /// Parallel transport is an isometry of the tangent spaces at every radius
-    /// the chart represents, not only at the shell the conformance fixture
-    /// samples. Evaluating the gyration by Ungar's four Möbius additions
-    /// misstates the norm by a factor of 19 at `|p| = 0.99`.
     #[test]
     fn parallel_transport_preserves_the_metric_norm_across_the_whole_ball() {
         let s = h3();
@@ -687,16 +551,6 @@ mod tests {
         }
     }
 
-    /// A geodesic's own velocity field is parallel along it, so transporting
-    /// `log(a, b)` from `a` must land on the forward tangent at `b`, which
-    /// points along `-log(b, a)`. This is the half a norm assertion cannot see,
-    /// the rotation: with the four-addition gyration the transported direction
-    /// comes back exactly reversed at the outer shells.
-    ///
-    /// Directions only. `log`'s magnitude saturates against `artanh` near the
-    /// ideal boundary independently of transport, and folding that in would
-    /// make this item report the chart's conditioning instead of the
-    /// gyration's.
     #[test]
     fn parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic() {
         let s = h3();
@@ -721,23 +575,13 @@ mod tests {
         }
     }
 
-    /// The metric-norm pin and the geodesic-tangent pin are both blind to a
-    /// rotation about the direction of travel: it preserves every norm and it
-    /// fixes the tangent it turns about, which is the one they check. The plane
-    /// spanned by `a`, `b` and the ball origin contains the geodesic through
-    /// `a` and `b`, and reflection in that plane is an isometry of the ball
-    /// fixing that geodesic pointwise. Transport is
-    /// natural under isometries, so the transported normal has to sit in the
-    /// reflection's `-1` eigenspace, which is the normal's own line; a twist of
-    /// angle `θ` tilts it off by `2 sin(θ/2)`.
     #[test]
     fn parallel_transport_fixes_the_normal_of_the_geodesic_plane() {
         let s = h3();
         let points = ball_sweep();
         for &a in &points {
             for &b in &points {
-                // Radial pairs span no plane. Their stronger pin, over the
-                // whole orthogonal complement, is the next test.
+                // Radial pairs span no plane.
                 let spread = a.normalize_or_zero().cross(b.normalize_or_zero());
                 if spread.length() < 1e-3 {
                     continue;
@@ -753,11 +597,6 @@ mod tests {
         }
     }
 
-    /// When `a` and `b` share a line through the origin every plane containing
-    /// that line carries the reflection argument, so transport fixes the whole
-    /// orthogonal complement pointwise and not merely one distinguished normal.
-    /// A twist about the direction of travel rotates that complement inside
-    /// itself, which is exactly the motion no norm or tangency assertion sees.
     #[test]
     fn parallel_transport_along_a_radial_geodesic_fixes_the_orthogonal_plane() {
         let s = h3();
@@ -784,20 +623,14 @@ mod tests {
         }
     }
 
-    /// The last degree of freedom of the transported frame. Norm, geodesic
-    /// tangent and plane normal are all fixed by the reflection through the
-    /// plane those last two span, so they admit a mirrored frame; the sign of
-    /// the determinant does not. Transport is a rotation scaled by the positive
-    /// conformal ratio, so the determinant is that ratio cubed. Measured worst
-    /// 3.3e-7 relative over a sweep whose determinants span 23 decades; the
-    /// bound is loose against that because the sign is the property here and
-    /// the norm sweep already owns the magnitude.
     #[test]
     fn parallel_transport_preserves_tangent_orientation() {
         let s = h3();
         let points = ball_sweep();
         for &a in &points {
             for &b in &points {
+                // Transport is a rotation scaled by the positive conformal
+                // ratio, so the determinant is that ratio cubed.
                 let frame = glam::Mat3::from_cols(
                     s.parallel_transport(a, b, Vec3::X),
                     s.parallel_transport(a, b, Vec3::Y),
@@ -814,20 +647,11 @@ mod tests {
         }
     }
 
-    /// The differential of an isometry is a linear isometry of tangent spaces,
-    /// and it stays one out to the last shell the chart represents. Routing it
-    /// through `log(M·at, M·exp(at, v))` instead inherits `exp`'s saturation
-    /// and `log`'s conditioning: that form is off by 23% of the norm at
-    /// `|at| = 0.8` and by more than the vector itself past 0.99.
-    ///
-    /// The residual bound is the derived one, not a flat number. The lift's
-    /// radial term carries `(1 - |at|²)⁻²` against the tangent's `(1 - |at|²)⁻¹`
-    /// and the two are summed, so the relative error grows like the conformal
-    /// factor `λ = 2/(1 - |at|²)`. Measured worst over this sweep is
-    /// `7.6 λ ε`; `16 λ ε` is that with a factor of two, which at the outermost
-    /// shell (`λ = 10⁴`) still admits only 2%.
     #[test]
     fn iso_transport_norm_error_stays_within_the_conformal_factor() {
+        // The lift's radial term carries `(1 - |at|²)⁻²` against the
+        // tangent's `(1 - |at|²)⁻¹` and the two are summed, so the relative
+        // error grows like the conformal factor `λ = 2/(1 - |at|²)`.
         let s = h3();
         let isos = [
             Iso3H::from_translation(Vec3::new(0.15, 0.0, 0.0)),

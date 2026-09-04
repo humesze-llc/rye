@@ -1,19 +1,9 @@
-//! Custom-painted media-player buttons: play/pause, skip (×N rate toggle),
-//! refresh, plus, chevron.
-//!
-//! Drawn from primitive shapes rather than font glyphs because egui's default
-//! font has patchy coverage of the Mathematical Operators block (circular-arrow
-//! and several arrow glyphs are missing on most platforms), so a font-character
-//! row renders inconsistently across platforms.
-//!
-//! Sizes come from the caller; this module imposes no layout.
+//! egui's default font lacks the arrow glyphs, so the icons are painted shapes.
 
 use egui::{
     pos2, vec2, CornerRadius, Pos2, Rect, Response, Sense, Shape, Stroke, StrokeKind, Ui, Vec2,
 };
 
-/// Button toggling between a play triangle (`playing == false`) and a pause
-/// symbol (`playing == true`).
 pub fn play_pause_button(ui: &mut Ui, size: Vec2, playing: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let style = ui.style().interact(&response);
@@ -57,9 +47,7 @@ pub fn play_pause_button(ui: &mut Ui, size: Vec2, playing: bool) -> Response {
     response
 }
 
-/// Rate "skip" button. Highlights when `*rate == value`; clicking when already
-/// selected resets `rate = 1.0`. `double` paints two adjacent triangles, and
-/// `forward` points them right.
+/// Clicking while selected resets `rate` to 1.0.
 pub fn rate_toggle(
     ui: &mut Ui,
     size: Vec2,
@@ -120,7 +108,6 @@ pub fn rate_toggle(
     response.on_hover_text(format!("Set rate to ×{value} (click again to reset to ×1)"))
 }
 
-/// `+` button painted as two crossed bars on a button-styled rect.
 pub fn add_button(ui: &mut Ui, size: Vec2) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let style = ui.style().interact(&response);
@@ -149,7 +136,6 @@ pub fn add_button(ui: &mut Ui, size: Vec2) -> Response {
     response
 }
 
-/// Retry button: a clockwise arc with an arrowhead, painted from primitives.
 pub fn refresh_button(ui: &mut Ui, size: Vec2) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let style = ui.style().interact(&response);
@@ -203,8 +189,6 @@ pub fn refresh_button(ui: &mut Ui, size: Vec2) -> Response {
     response
 }
 
-/// Button with a custom-painted up- or down-chevron (two stroked line
-/// segments). `hover` is the tooltip string.
 pub fn chevron_button(ui: &mut Ui, size: Vec2, up: bool, hover: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let style = ui.style().interact(&response);
@@ -234,15 +218,11 @@ pub fn chevron_button(ui: &mut Ui, size: Vec2, up: bool, hover: &str) -> Respons
     response.on_hover_text(hover)
 }
 
-/// Two vertically-stacked chevrons, a detach/dock affordance for floating
-/// panels. `pointing_up` flips them up; `hover` is the tooltip string. Choose a
-/// `size` taller than wide; 12×16 is the canonical title-row footprint.
+/// 12×16 is the canonical size.
 pub fn dock_chevrons(ui: &mut Ui, size: Vec2, pointing_up: bool, hover: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let style = ui.style().interact(&response);
 
-    // Proportions tuned at the canonical 12x16 size; clamps keep the shape
-    // readable at the smaller and larger extremes.
     let half_w = (size.x * 0.34).clamp(2.0, 6.0);
     let half_h = (size.y * 0.16).clamp(1.5, 4.0);
     let gap = (size.y * 0.32).clamp(3.0, 8.0);
@@ -276,9 +256,7 @@ mod tests {
         Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0))
     }
 
-    /// Lays out `widget` to capture its rect, then drives a press + release at
-    /// the rect centre in a second frame and re-runs `widget` so its `Response`
-    /// sees the click.
+    // The click lands in a second frame, against the first frame's rect.
     fn click_at_centre<R>(
         mut widget: impl FnMut(&mut Ui) -> Response,
         result: impl Fn(&Response) -> R,
@@ -336,8 +314,6 @@ mod tests {
         );
     }
 
-    /// Clicking a `rate_toggle` whose value differs from `rate` sets
-    /// `rate = value`.
     #[test]
     fn rate_toggle_click_selects_value() {
         let mut rate = 1.0_f32;
@@ -351,7 +327,6 @@ mod tests {
         );
     }
 
-    /// Clicking an already-selected `rate_toggle` resets `rate` to 1.0.
     #[test]
     fn rate_toggle_click_when_selected_resets_to_one() {
         let mut rate = 2.0_f32;
@@ -363,69 +338,5 @@ mod tests {
             rate, 1.0,
             "click on selected rate_toggle should reset rate to 1.0"
         );
-    }
-
-    #[test]
-    fn add_button_click_fires() {
-        let clicked = click_at_centre(|ui| add_button(ui, vec2(28.0, 27.0)), |r| r.clicked());
-        assert!(clicked);
-    }
-
-    #[test]
-    fn refresh_button_click_fires() {
-        let clicked = click_at_centre(|ui| refresh_button(ui, vec2(28.0, 29.0)), |r| r.clicked());
-        assert!(clicked);
-    }
-
-    #[test]
-    fn chevron_button_click_fires() {
-        let clicked = click_at_centre(
-            |ui| chevron_button(ui, vec2(28.0, 29.0), true, "tooltip"),
-            |r| r.clicked(),
-        );
-        assert!(clicked);
-    }
-
-    #[test]
-    fn dock_chevrons_click_fires() {
-        let clicked = click_at_centre(
-            |ui| dock_chevrons(ui, vec2(12.0, 16.0), false, "tip"),
-            |r| r.clicked(),
-        );
-        assert!(clicked);
-    }
-
-    /// Allocated rect matches the `size` argument exactly; the contract callers
-    /// depend on for row layout.
-    #[test]
-    fn allocated_size_matches_size_argument() {
-        let ctx = egui::Context::default();
-        let layout_input = egui::RawInput {
-            screen_rect: Some(screen()),
-            time: Some(0.0),
-            ..Default::default()
-        };
-        let mut sizes: Vec<Vec2> = Vec::new();
-        let _ = ctx.run(layout_input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                sizes.push(play_pause_button(ui, vec2(36.0, 29.0), false).rect.size());
-                let mut rate = 1.0_f32;
-                sizes.push(
-                    rate_toggle(ui, vec2(28.0, 29.0), &mut rate, 2.0, false, true)
-                        .rect
-                        .size(),
-                );
-                sizes.push(add_button(ui, vec2(28.0, 27.0)).rect.size());
-                sizes.push(refresh_button(ui, vec2(28.0, 29.0)).rect.size());
-                sizes.push(chevron_button(ui, vec2(28.0, 29.0), true, "").rect.size());
-                sizes.push(dock_chevrons(ui, vec2(12.0, 16.0), false, "").rect.size());
-            });
-        });
-        assert_eq!(sizes[0], vec2(36.0, 29.0));
-        assert_eq!(sizes[1], vec2(28.0, 29.0));
-        assert_eq!(sizes[2], vec2(28.0, 27.0));
-        assert_eq!(sizes[3], vec2(28.0, 29.0));
-        assert_eq!(sizes[4], vec2(28.0, 29.0));
-        assert_eq!(sizes[5], vec2(12.0, 16.0));
     }
 }

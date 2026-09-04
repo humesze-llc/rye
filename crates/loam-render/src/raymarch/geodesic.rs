@@ -1,5 +1,3 @@
-//! [`GeodesicRayMarchNode`]: semantic wrapper for curved-space ray march.
-
 use anyhow::Result;
 use wgpu::*;
 
@@ -7,17 +5,10 @@ use crate::device::RenderDevice;
 use crate::graph::RenderNode;
 use crate::raymarch::{RayMarchNode, RayMarchUniforms};
 
-/// A render node that draws a fullscreen triangle using a geodesic march shader assembled from
-/// four layers: `[Space prelude] + [scene SDF] + [march kernel] + [user shading]`.
-///
-/// Build the compiled `ShaderModule` with `loam_shader::ShaderDb::load_geodesic_scene`, then
-/// pass it to [`GeodesicRayMarchNode::from_module`].
+/// Build the module with `loam_shader::ShaderDb::load_geodesic_scene`.
 pub struct GeodesicRayMarchNode(RayMarchNode);
 
 impl GeodesicRayMarchNode {
-    /// Construct from a pre-compiled geodesic shader module. `sample_count` must match the
-    /// render target's sample count; use [`crate::device::RenderDevice::sample_count`] in app
-    /// code.
     pub fn from_module(
         device: &Device,
         surface_format: TextureFormat,
@@ -48,6 +39,15 @@ impl GeodesicRayMarchNode {
         self.0.flush_uniforms(queue);
     }
 
+    pub fn record_in_viewport(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        viewport: crate::Viewport,
+    ) {
+        self.0.record_in_viewport(encoder, view, viewport);
+    }
+
     pub fn execute_panel(
         &mut self,
         rd: &RenderDevice,
@@ -58,6 +58,14 @@ impl GeodesicRayMarchNode {
         self.0.execute_panel(rd, view, clear, scissor)
     }
 }
+
+const _: fn(
+    &mut GeodesicRayMarchNode,
+    &RenderDevice,
+    &wgpu::TextureView,
+    bool,
+    [u32; 4],
+) -> Result<()> = GeodesicRayMarchNode::execute_panel;
 
 impl RenderNode for GeodesicRayMarchNode {
     fn name(&self) -> &'static str {

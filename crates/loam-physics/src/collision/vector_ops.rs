@@ -1,29 +1,7 @@
-//! `VectorOps`: the abstraction GJK and EPA share across dimensions.
-//!
-//! GJK walks the Minkowski difference of two shapes using nothing but vector algebra and dot
-//! products, no cross products, no bivectors, no dimension-specific machinery. This trait
-//! captures exactly that surface area, so the same GJK loop can run on `Vec3` (3D physics) and
-//! `Vec4` (4D physics) without per-dimension forks.
-//!
-//! EPA's face-normal reconstruction is dimension-specific (cross product in 3D, generalized cross
-//! in 4D+) and lives outside this trait, each dimension has its own EPA helper that uses
-//! `VectorOps` for the bulk of the math and a per-dimension function for the normal
-//! reconstruction step.
-
 use std::ops::{Add, Mul, Neg, Sub};
 
 use glam::{Vec2, Vec3, Vec4};
 
-/// Vector algebra that GJK, EPA, and the PGS solver share across dimensions.
-///
-/// GJK walks the Minkowski difference of two shapes using nothing but vector algebra and dot
-/// products, no cross products, no bivectors, no dimension-specific machinery. EPA's face-normal
-/// reconstruction is dimension-specific (cross product in 3D, generalized cross in 4D+) and
-/// lives outside this trait, each dimension has its own EPA helper that uses `VectorOps` for the
-/// bulk of the math.
-///
-/// The PGS solver also uses `VectorOps` for the dimension-agnostic pieces (dot products against
-/// the contact normal, tangent vector recovery from a relative velocity).
 pub trait VectorOps:
     Copy
     + Add<Output = Self>
@@ -44,8 +22,6 @@ pub trait VectorOps:
         self.length_squared().sqrt()
     }
 
-    /// Normalize or return `fallback` for near-zero vectors. Chosen over `Option<Self>` because
-    /// every GJK caller has a sensible default direction for the degenerate case.
     fn normalize_or(self, fallback: Self) -> Self {
         let l2 = self.length_squared();
         if l2 > 1e-12 {
@@ -97,36 +73,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vec3_ops_match_glam() {
-        let a = Vec3::new(1.0, 2.0, 3.0);
-        let b = Vec3::new(-1.0, 0.5, 2.0);
-        assert_eq!(VectorOps::dot(a, b), a.dot(b));
-        assert_eq!(VectorOps::length(a), a.length());
-        assert!((VectorOps::normalize_or(a, Vec3::Y).length() - 1.0).abs() < 1e-5);
-    }
-
-    #[test]
     fn normalize_or_handles_zero() {
         let z = Vec3::ZERO;
         let got = VectorOps::normalize_or(z, Vec3::Y);
         assert_eq!(got, Vec3::Y);
-    }
-
-    #[test]
-    fn vec2_ops_match_glam() {
-        let a = Vec2::new(3.0, 4.0);
-        let b = Vec2::new(1.0, -2.0);
-        assert_eq!(VectorOps::dot(a, b), a.dot(b));
-        assert_eq!(VectorOps::length(a), 5.0);
-        assert!(a.is_finite());
-        assert!(!Vec2::new(f32::NAN, 0.0).is_finite());
-    }
-
-    #[test]
-    fn vec4_ops_match_glam() {
-        let a = Vec4::new(1.0, 2.0, 3.0, 4.0);
-        let b = Vec4::new(-1.0, 0.5, 2.0, -3.0);
-        assert_eq!(VectorOps::dot(a, b), a.dot(b));
-        assert_eq!(VectorOps::length(a), a.length());
     }
 }

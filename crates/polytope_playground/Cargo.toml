@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Polytope Playground: interactive 4D rotation over Polytope4 with active-set and composer rotor UIs. Native + wasm32."
+description = "Polytope Playground: rotate the regular 4-polytopes, cut exact cross-sections, and throw them around a 4D toybox. Native and browser."
 keywords = ["4d", "polytope", "rotation", "demo", "wgpu"]
 categories = ["game-development", "graphics", "visualization"]
 
@@ -17,19 +17,29 @@ categories = ["game-development", "graphics", "visualization"]
 [dependencies]
 anyhow.workspace = true
 glam.workspace = true
-tracing.workspace = true
 winit.workspace = true
 wgpu.workspace = true
 
-loam-app     = { path = "../loam-app", default-features = false }
-loam-camera  = { path = "../loam-camera" }
-loam-egui    = { path = "../loam-egui" }
-loam-math    = { path = "../loam-math" }
-loam-physics = { path = "../loam-physics" }
-loam-render  = { path = "../loam-render" }
-loam-scene   = { path = "../loam-scene" }
-loam-shape   = { path = "../loam-shape" }
-loam-time    = { path = "../loam-time" }
+loam-app     = { path = "../loam-app",     version = "0.1.0", default-features = false }
+loam-camera  = { path = "../loam-camera",  version = "0.1.0" }
+loam-egui    = { path = "../loam-egui",    version = "0.1.0" }
+loam-math    = { path = "../loam-math",    version = "0.1.0" }
+loam-physics = { path = "../loam-physics", version = "0.1.0" }
+loam-render  = { path = "../loam-render",  version = "0.1.0" }
+loam-scene   = { path = "../loam-scene",   version = "0.1.0" }
+loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
+loam-text    = { path = "../loam-text",    version = "0.1.0" }
+loam-time    = { path = "../loam-time",    version = "0.1.0" }
+
+# Raw TTF bytes for the loam-text HUD atlas. Pure asset crate (no egui code),
+# already in the tree under egui's `default_fonts`, so this adds a dependency
+# edge rather than a committed font.
+epaint_default_fonts = "0.33"
+
+[dev-dependencies]
+# Headless device request in the `build_cost` measurement. Dev-only: the demo
+# itself gets its device from the runner.
+pollster.workspace = true
 
 [features]
 # Default to capture-on for native dev (matches the previous `cargo run --example`

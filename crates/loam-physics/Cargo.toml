@@ -6,15 +6,19 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Loam rigid-body physics: Space-generic integration, narrowphase dispatch, impulse solver."
+description = "Loam rigid-body physics: Space-generic integration, GJK and EPA narrowphase, contact manifolds, impulse solver."
 keywords = ["physics", "rigid-body", "collision", "non-euclidean", "gamedev"]
 categories = ["game-development", "simulation"]
 
 [dependencies]
 glam.workspace = true
 tracing.workspace = true
-loam-math  = { path = "../loam-math" }
-loam-shape = { path = "../loam-shape" }
+loam-math  = { path = "../loam-math",  version = "0.1.0" }
+loam-shape = { path = "../loam-shape", version = "0.1.0" }
+# `StateHash` and `Tape`. A recorder and a verifier have to share one mixer and
+# one tape format, and neither of those belongs to physics. `frame-trace` is off
+# because nothing here instruments frames.
+loam-time  = { path = "../loam-time",  version = "0.1.0", default-features = false }
 
 [[bench]]
 name = "broadphase"

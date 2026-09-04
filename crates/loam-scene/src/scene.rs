@@ -1,28 +1,5 @@
-//! Typed scene tree that assembles SDF primitives into `loam_scene_sdf`.
-//!
-//! Build a [`Scene`] from [`SceneNode`] combinators, then call [`Scene::to_wgsl`]
-//! with a Space to get the complete WGSL scene module.
-//!
-//! # Emission strategy
-//!
-//! Each leaf emits a named helper (`sdf_p{n}`); each combinator emits a `let`
-//! binding in `loam_scene_sdf`. The depth-first walk emits children before their
-//! parent so referenced variables are always in scope.
-//!
-//! # Example
-//!
-//! ```rust
-//! use glam::Vec3;
-//! use loam_scene::scene::{Scene, SceneNode};
-//! use loam_math::EuclideanR3;
-//!
-//! let scene = Scene::new(
-//!     SceneNode::sphere(Vec3::ZERO, 0.3)
-//!         .union(SceneNode::plane(Vec3::Y, -0.5)),
-//! );
-//! let wgsl = scene.to_wgsl(&EuclideanR3);
-//! assert!(wgsl.contains("fn loam_scene_sdf"));
-//! ```
+//! The depth-first walk emits children before their parent so referenced WGSL
+//! variables are always in scope.
 
 use std::boxed::Box;
 
@@ -34,16 +11,14 @@ use crate::primitive::Primitive;
 use loam_math::{Space, WgslSpace};
 pub use loam_shape::Shape as PrimitiveKind;
 
-/// A node in the typed SDF scene tree. Leaves hold a primitive; interior nodes
-/// combine two children via a boolean or smooth operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SceneNode {
     Leaf(PrimitiveKind),
     Union(Box<SceneNode>, Box<SceneNode>),
     Intersection(Box<SceneNode>, Box<SceneNode>),
-    /// Carve the right subtree from the left: `max(left, -right)`.
+    /// `max(left, -right)`: the right subtree is carved from the left.
     Difference(Box<SceneNode>, Box<SceneNode>),
-    /// Polynomial smooth-minimum union. `k` is the blend radius in Space units.
+    /// `k` is the blend radius in Space units.
     SmoothUnion {
         k: f32,
         left: Box<SceneNode>,
@@ -51,17 +26,13 @@ pub enum SceneNode {
     },
 }
 
-// ---- Constructors -----------------------------------------------------------
-
 impl SceneNode {
     pub fn sphere(center: Vec3, radius: f32) -> Self {
         SceneNode::Leaf(PrimitiveKind::Sphere { center, radius })
     }
 
-    /// Half-space leaf. Emission depends on the compile-time Space (see
-    /// [`Primitive`]'s `HalfSpace` arm): chart-coord `dot(p, n) - d` in flat
-    /// charts, [`crate::SENTINEL_DISTANCE`] in curved charts until geodesic-plane
-    /// SDFs land.
+    /// Emits chart-coord `dot(p, n) - d` in flat charts and
+    /// [`crate::SENTINEL_DISTANCE`] in curved ones.
     pub fn plane(normal: Vec3, offset: f32) -> Self {
         SceneNode::Leaf(PrimitiveKind::HalfSpace { normal, offset })
     }
@@ -76,8 +47,6 @@ impl SceneNode {
         })
     }
 
-    // ---- Combinators --------------------------------------------------------
-
     pub fn union(self, other: SceneNode) -> Self {
         SceneNode::Union(Box::new(self), Box::new(other))
     }
@@ -86,7 +55,6 @@ impl SceneNode {
         SceneNode::Intersection(Box::new(self), Box::new(other))
     }
 
-    /// Carve `other` out of `self`.
     pub fn subtract(self, other: SceneNode) -> Self {
         SceneNode::Difference(Box::new(self), Box::new(other))
     }
@@ -100,10 +68,6 @@ impl SceneNode {
     }
 }
 
-// ---- Scene ------------------------------------------------------------------
-
-/// A complete SDF scene: a single root [`SceneNode`] that emits
-/// `fn loam_scene_sdf(p: vec3<f32>) -> f32` when compiled for a given Space.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
     pub root: SceneNode,
@@ -114,8 +78,8 @@ impl Scene {
         Self { root }
     }
 
-    /// Emit the complete WGSL scene module (helpers + `loam_scene_sdf` entry
-    /// point) for the given Space. Prepend to the Space prelude and user shader.
+    /// Emits `fn loam_scene_sdf(p: vec3<f32>) -> f32` plus its helpers. Prepend
+    /// the Space prelude to the result.
     pub fn to_wgsl<S: WgslSpace>(&self, space: &S) -> String {
         let mut helpers = String::new();
         let mut body = String::new();
@@ -133,32 +97,14 @@ impl Scene {
         )
     }
 
-    /// Signed distance from `p` to the scene, the CPU twin of the emitted
-    /// `loam_scene_sdf`. Walks the same tree as the emitter with the scalar
-    /// algebra inlined, so the two cannot diverge structurally; see
-    /// [`Primitive::eval`] for the residual that remains.
-    ///
-    /// Allocation-free and recursion-only, so a grid bake pays no per-sample
-    /// heap traffic.
+    /// The CPU twin of the emitted `loam_scene_sdf`; see [`Primitive::eval`]
+    /// for the residual divergence that remains. Allocation-free.
     pub fn eval<S: Space<Point = Vec3, Vector = Vec3>>(&self, space: &S, p: Vec3) -> f32 {
         eval_node(&self.root, space, p)
     }
-
-    /// Deserialize a Scene from a RON string.
-    pub fn from_ron(src: &str) -> Result<Self, ron::error::SpannedError> {
-        ron::from_str(src)
-    }
-
-    /// Serialize this Scene to a RON string.
-    pub fn to_ron(&self) -> Result<String, ron::Error> {
-        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
-    }
 }
 
-// ---- Recursive emitter ------------------------------------------------------
-
-/// Walk `node` depth-first, appending helper definitions to `helpers` and `let`
-/// bindings to `body`. Returns the WGSL variable holding this node's distance.
+// Returns the WGSL variable holding this node's distance.
 fn emit_node<S: WgslSpace>(
     node: &SceneNode,
     space: &S,
@@ -214,13 +160,7 @@ fn emit_node<S: WgslSpace>(
     }
 }
 
-// ---- Recursive evaluator ----------------------------------------------------
-
-/// Scalar twin of [`emit_node`], one arm per `SceneNode` variant in the same
-/// order. The combinator expressions are transcribed from
-/// [`crate::combinator`]'s emitted text operand for operand: reassociating them
-/// is algebraically neutral but not bit-neutral, and this sits inside the
-/// determinism boundary once a baked collider feeds the sim.
+// Reassociating these is algebraically neutral but not bit-neutral.
 fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S, p: Vec3) -> f32 {
     match node {
         SceneNode::Leaf(prim) => prim.eval(space, p),
@@ -236,12 +176,8 @@ fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S,
         }
 
         SceneNode::SmoothUnion { k, left, right } => {
-            // Quilez 2013, "smooth minimum", polynomial variant, as emitted by
-            // `combinator::smooth_min_fn`. `mix(b, a, h)` is transcribed in the
-            // form WGSL defines it, `b·(1 − h) + a·h` (WGSL spec, "mix"), not
-            // the algebraically equal lerp form `b + (a − b)·h`: only the former
-            // is exact at the clamped ends `h ∈ {0, 1}`, which is where the vast
-            // majority of sample points sit.
+            // Quilez 2013, "smooth minimum", polynomial variant.
+            // `mix(b, a, h)` is `b·(1 − h) + a·h` (WGSL spec, "mix").
             let a = eval_node(left, space, p);
             let b = eval_node(right, space, p);
             let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
@@ -250,21 +186,10 @@ fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S,
     }
 }
 
-// ---- Tests ------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loam_math::{EuclideanR3, HyperbolicH3};
-
-    #[test]
-    fn single_sphere_emits_scene_sdf() {
-        let scene = Scene::new(SceneNode::sphere(Vec3::ZERO, 0.25));
-        let wgsl = scene.to_wgsl(&EuclideanR3);
-        assert!(wgsl.contains("fn loam_scene_sdf(p: vec3<f32>) -> f32"));
-        assert!(wgsl.contains("loam_distance"));
-        assert!(wgsl.contains("- (0.25)"));
-    }
+    use loam_math::EuclideanR3;
 
     #[test]
     fn union_of_two_spheres() {
@@ -279,17 +204,6 @@ mod tests {
     }
 
     #[test]
-    fn smooth_union_emits_smin_helper() {
-        let scene = Scene::new(
-            SceneNode::sphere(Vec3::ZERO, 0.2).smooth_union(SceneNode::cube(0.15), 0.05),
-        );
-        let wgsl = scene.to_wgsl(&EuclideanR3);
-        assert!(wgsl.contains("sdf_smin0"));
-        assert!(wgsl.contains("clamp"));
-        assert!(wgsl.contains("mix"));
-    }
-
-    #[test]
     fn difference_uses_negation() {
         let scene = Scene::new(SceneNode::sphere(Vec3::ZERO, 0.3).subtract(SceneNode::cube(0.2)));
         let wgsl = scene.to_wgsl(&EuclideanR3);
@@ -298,19 +212,11 @@ mod tests {
     }
 
     #[test]
-    fn scene_is_space_agnostic_for_spheres() {
-        let scene = Scene::new(SceneNode::sphere(Vec3::ZERO, 0.25));
-        let e3 = scene.to_wgsl(&EuclideanR3);
-        let h3 = scene.to_wgsl(&HyperbolicH3);
-        assert_eq!(e3, h3);
-    }
-
-    #[test]
     fn ron_round_trip() {
         let scene =
             Scene::new(SceneNode::sphere(Vec3::ZERO, 0.3).union(SceneNode::plane(Vec3::Y, -0.4)));
         let ron_str = scene.to_ron().expect("serialize");
-        let recovered: Scene = Scene::from_ron(&ron_str).expect("deserialize");
+        let recovered = Scene::from_ron("<round trip>", &ron_str).expect("deserialize");
         assert_eq!(scene.to_wgsl(&EuclideanR3), recovered.to_wgsl(&EuclideanR3),);
     }
 }

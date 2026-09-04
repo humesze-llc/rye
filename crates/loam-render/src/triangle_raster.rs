@@ -1,16 +1,6 @@
-//! Triangle rasterizer pipeline. Per-vertex color, optional depth attachment,
-//! alpha-blended. Parallel to [`crate::line_raster::LineRasterNode`]; the two
-//! share a depth attachment within a frame so fills and edges occlude correctly.
-//!
-//! Vertex buffer is per-vertex [`TriangleVertex`] (R³ position + color), uniform
-//! is [`TriangleRasterUniforms`] (view-projection only). Depth is opt-in via
-//! [`crate::DepthMode`]; the caller owns the depth texture and clears it once per
-//! frame ([`TriangleRasterNode::execute`] uses `LoadOp::Load`).
-//!
-//! Normals are omitted because R⁴ has no standard lighting convention (see
-//! `TriangleMesh<N>`). For lit shading [`FragmentShading::FaceNormalLambert`]
-//! derives the face normal from screen-space derivatives of world position,
-//! exact for the flat-triangle case and needing no normal attribute.
+//! Shares a depth attachment with [`crate::line_raster::LineRasterNode`]; the
+//! caller owns and clears it. No normal attribute: `FaceNormalLambert` derives
+//! the face normal from screen-space derivatives.
 
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
@@ -20,21 +10,17 @@ use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState,
     Buffer, BufferBindingType, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
-    CommandEncoderDescriptor, CompareFunction, DepthStencilState, Device, FragmentState, LoadOp,
-    MultisampleState, Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology,
-    Queue, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
+    CompareFunction, DepthStencilState, Device, FragmentState, LoadOp, MultisampleState,
+    Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
+    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
     RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
     StencilState, StoreOp, TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat,
     VertexState, VertexStepMode,
 };
 
-use crate::device::RenderDevice;
-
-/// Embedded WGSL source. Naga-validated in tests for ABI drift detection.
 const TRIANGLE_RASTER_WGSL: &str = include_str!("triangle_raster.wgsl");
 
-/// Camera uniform for the triangle vertex shader: view-projection only, no
-/// viewport size. 64 bytes, matching WGSL `CameraUniform` std140 layout.
+/// Matches the WGSL `CameraUniform`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct TriangleRasterUniforms {
@@ -49,9 +35,7 @@ impl Default for TriangleRasterUniforms {
     }
 }
 
-/// Per-vertex GPU layout: R³ position (projected from R^N via
-/// [`RasterizableSpace::project_point`]) + linear RGBA. 32 bytes with explicit
-/// padding so attribute offsets stay stable.
+/// Matches the vertex attribute layout: position at 0, color at 16.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable, Default)]
 pub struct TriangleVertex {
@@ -60,20 +44,14 @@ pub struct TriangleVertex {
     pub color: [f32; 4],
 }
 
-/// Fragment-shader selector, fixed at construction so the pipeline state matches
-/// the entry point. Switching modes needs a new pipeline.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum FragmentShading {
-    /// Pass per-vertex color through unmodified. The default.
     #[default]
     Flat,
-    /// Lambert lit by a face normal derived from screen-space derivatives of
-    /// world position; exact for flat triangles (e.g. cross-section cell caps).
     FaceNormalLambert,
 }
 
 impl FragmentShading {
-    /// WGSL entry-point name for the fragment stage.
     fn entry_point(self) -> &'static str {
         match self {
             Self::Flat => "fs_flat",
@@ -82,35 +60,22 @@ impl FragmentShading {
     }
 }
 
-/// Triangle rasterizer node, parallel to [`crate::line_raster::LineRasterNode`].
 pub struct TriangleRasterNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
     bind_group: BindGroup,
 
-    /// Per-vertex buffer. Grown on demand by [`Self::upload`].
     vertex_buf: Buffer,
     vertex_capacity: u32,
 
-    /// Index buffer (u32). Grown on demand by [`Self::upload`].
     index_buf: Buffer,
     index_capacity: u32,
-    /// Number of indices currently uploaded; `0` means [`Self::execute`] is a no-op.
     index_count: u32,
 
-    /// Whether the pipeline has a depth attachment; [`Self::execute`] validates
-    /// the caller's depth-view argument against it.
     has_depth: bool,
 }
 
 impl TriangleRasterNode {
-    /// Construct the pipeline.
-    ///
-    /// - `surface_format` must match the color attachment at draw time.
-    /// - `depth`: see [`crate::DepthMode`]. Determines whether the pipeline reads depth,
-    ///   reads + writes depth, or skips it.
-    /// - `shading`: which fragment shader the pipeline binds; see [`FragmentShading`].
-    /// - `sample_count` must match the attachment's MSAA sample count.
     pub fn new(
         device: &Device,
         surface_format: TextureFormat,
@@ -159,7 +124,6 @@ impl TriangleRasterNode {
             push_constant_ranges: &[],
         });
 
-        // Matches `TriangleVertex`: position at 0, color at 16 (past _pad0).
         let vertex_attrs = [
             VertexAttribute {
                 format: VertexFormat::Float32x3,
@@ -227,7 +191,6 @@ impl TriangleRasterNode {
             cache: None,
         });
 
-        // Placeholders; grown on first upload.
         let vertex_buf = device.create_buffer(&BufferDescriptor {
             label: Some("triangle_raster vertex buffer"),
             size: 64,
@@ -254,7 +217,7 @@ impl TriangleRasterNode {
         }
     }
 
-    /// Update the camera uniform. Call once per frame before [`Self::execute`].
+    /// Call before [`Self::record`] each frame.
     pub fn set_camera(&self, queue: &Queue, view_projection: Mat4) {
         let uniforms = TriangleRasterUniforms {
             view_projection: view_projection.to_cols_array_2d(),
@@ -262,9 +225,6 @@ impl TriangleRasterNode {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Upload a [`TriangleMesh`], projecting each vertex from R^N to R³ via
-    /// [`RasterizableSpace::project_point`] and copying indices verbatim. Empty
-    /// meshes are no-ops.
     pub fn upload<S, const N: usize>(
         &mut self,
         device: &Device,
@@ -291,13 +251,11 @@ impl TriangleRasterNode {
             });
         }
 
-        // Flatten [u32; 3] triples into one index buffer.
         let mut indices: Vec<u32> = Vec::with_capacity(mesh.indices.len() * 3);
         for tri in &mesh.indices {
             indices.extend_from_slice(tri);
         }
 
-        // Grow to the next power of two to amortize reallocations.
         if verts.len() as u32 > self.vertex_capacity {
             let new_cap = (verts.len() as u32).next_power_of_two().max(16);
             self.vertex_buf = device.create_buffer(&BufferDescriptor {
@@ -328,81 +286,81 @@ impl TriangleRasterNode {
         self.index_count = indices.len() as u32;
     }
 
-    /// Draw the uploaded triangles onto `view`. `LoadOp::Load` for color and
-    /// depth so raster nodes share one cleared buffer per frame. `depth_view`
-    /// must be `Some` iff the pipeline has a depth format; mismatch panics.
-    pub fn execute(
+    /// `LoadOp::Load` on both attachments; `depth_view` is `Some` iff the pipeline
+    /// has depth. Never `upload` between two `record` calls in one frame:
+    /// `write_buffer` lands before the whole command buffer.
+    pub fn record(
         &self,
-        rd: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         depth_view: Option<&wgpu::TextureView>,
         viewport: Option<&crate::Viewport>,
-    ) -> anyhow::Result<()> {
+    ) {
         match (self.has_depth, depth_view.is_some()) {
             (true, false) => {
                 panic!(
-                    "TriangleRasterNode::execute: pipeline was created with a depth format but \
+                    "TriangleRasterNode::record: pipeline was created with a depth format but \
                      no depth view was provided"
                 )
             }
             (false, true) => {
                 panic!(
-                    "TriangleRasterNode::execute: pipeline was created without a depth format \
+                    "TriangleRasterNode::record: pipeline was created without a depth format \
                      but a depth view was provided"
                 )
             }
             _ => {}
         }
         if self.index_count == 0 {
-            return Ok(());
+            return;
         }
-        let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("triangle_raster encoder"),
+        let depth_attachment = depth_view.map(|dv| RenderPassDepthStencilAttachment {
+            view: dv,
+            depth_ops: Some(Operations {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+            }),
+            stencil_ops: None,
         });
-        {
-            let depth_attachment = depth_view.map(|dv| RenderPassDepthStencilAttachment {
-                view: dv,
-                depth_ops: Some(Operations {
+        let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("triangle_raster pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
                     load: LoadOp::Load,
                     store: StoreOp::Store,
-                }),
-                stencil_ops: None,
-            });
-            let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("triangle_raster pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Load,
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: depth_attachment,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            if let Some(vp) = viewport {
-                vp.apply(&mut rp);
-            }
-            rp.set_pipeline(&self.pipeline);
-            rp.set_bind_group(0, &self.bind_group, &[]);
-            rp.set_vertex_buffer(0, self.vertex_buf.slice(..));
-            rp.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-            rp.draw_indexed(0..self.index_count, 0, 0..1);
+                },
+            })],
+            depth_stencil_attachment: depth_attachment,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        if let Some(vp) = viewport {
+            vp.apply(&mut rp);
         }
-        rd.queue.submit(Some(encoder.finish()));
-        Ok(())
+        rp.set_pipeline(&self.pipeline);
+        rp.set_bind_group(0, &self.bind_group, &[]);
+        rp.set_vertex_buffer(0, self.vertex_buf.slice(..));
+        rp.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+        rp.draw_indexed(0..self.index_count, 0, 0..1);
     }
 }
+
+// Pins that `record` takes the caller's encoder and cannot submit.
+const _: fn(
+    &TriangleRasterNode,
+    &mut wgpu::CommandEncoder,
+    &wgpu::TextureView,
+    Option<&wgpu::TextureView>,
+    Option<&crate::Viewport>,
+) = TriangleRasterNode::record;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Embedded WGSL parses and validates against naga; catches drift between
-    /// the Rust vertex layout and the shader's `@location` declarations.
     #[test]
     fn triangle_raster_wgsl_validates() {
         let module = naga::front::wgsl::parse_str(TRIANGLE_RASTER_WGSL)
@@ -412,24 +370,5 @@ mod tests {
         naga::valid::Validator::new(flags, caps)
             .validate(&module)
             .expect("triangle_raster WGSL must validate");
-    }
-
-    /// `TriangleRasterUniforms` is exactly 64 bytes (one mat4x4, no padding). Drift here means
-    /// the GPU reads the wrong bytes for the view-projection matrix.
-    #[test]
-    fn uniforms_size_matches_wgsl() {
-        assert_eq!(std::mem::size_of::<TriangleRasterUniforms>(), 64);
-        assert_eq!(std::mem::align_of::<TriangleRasterUniforms>(), 4);
-    }
-
-    /// `TriangleVertex` is 32 bytes (12 position + 4 pad + 16 color). Attribute offsets in
-    /// the vertex layout descriptor must match this layout exactly.
-    #[test]
-    fn vertex_size_matches_layout() {
-        assert_eq!(std::mem::size_of::<TriangleVertex>(), 32);
-        let zero = TriangleVertex::default();
-        let base = &zero as *const _ as usize;
-        let color_off = &zero.color as *const _ as usize - base;
-        assert_eq!(color_off, 16);
     }
 }

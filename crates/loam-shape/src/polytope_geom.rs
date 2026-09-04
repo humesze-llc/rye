@@ -1,21 +1,12 @@
-//! Convex regular 4-polytope vertex / face-plane generators and the Wolfe SDF.
-//! Factored out of the physics layer so the rasterizer and topology can build
-//! shapes without depending on loam-physics. Origin-centered, circumradius `r`.
+//! Every generator here is origin-centered at circumradius `r`.
 
 use glam::Vec4;
 
-// 4D regular polytopes. Every generator returns origin-centered vertices scaled
-// so the circumradius equals `r`; the caller translates.
-
-/// **5-cell / pentatope** (4D simplex): 5 vertices, 10 edges, 10 faces, 5
-/// tetrahedral cells. The 4D analogue of the tetrahedron.
 pub fn pentatope_vertices(r: f32) -> Vec<Vec4> {
-    // Regular tetrahedron in the `w = -r/4` hyperplane plus an apex at
-    // `(0, 0, 0, r)`, base circumradius `r·sqrt(15)/4` chosen for equal edges.
+    // Base circumradius `r·sqrt(15)/4` chosen for equal edges.
     let k = r;
     let base_w = -r * 0.25;
     let base_r = r * (15.0_f32).sqrt() / 4.0;
-    // Use a regular tetrahedron's vertex set for the base, scaled.
     let t = base_r / 3.0_f32.sqrt();
     vec![
         Vec4::new(0.0, 0.0, 0.0, k),
@@ -26,8 +17,7 @@ pub fn pentatope_vertices(r: f32) -> Vec<Vec4> {
     ]
 }
 
-/// **Tesseract / 8-cell** (hypercube): 16 vertices, 32 edges, 24 square faces,
-/// 8 cubic cells. Vertices `(±r/2, ±r/2, ±r/2, ±r/2)` give circumradius `r`.
+/// `(±r/2, ±r/2, ±r/2, ±r/2)` gives circumradius `r`.
 pub fn tesseract_vertices(r: f32) -> Vec<Vec4> {
     let a = r * 0.5;
     let mut v = Vec::with_capacity(16);
@@ -43,8 +33,6 @@ pub fn tesseract_vertices(r: f32) -> Vec<Vec4> {
     v
 }
 
-/// **16-cell / hexadecachoron** (cross-polytope): 8 vertices, 24 edges, 32
-/// triangular faces, 16 tetrahedral cells. Vertices are `±r` on each axis.
 pub fn cell16_vertices(r: f32) -> Vec<Vec4> {
     vec![
         Vec4::new(r, 0.0, 0.0, 0.0),
@@ -58,9 +46,7 @@ pub fn cell16_vertices(r: f32) -> Vec<Vec4> {
     ]
 }
 
-/// **24-cell / icositetrachoron**: 24 vertices, 96 edges, 96 triangle faces, 24
-/// octahedral cells. Unique to 4D (no 3D analogue). Vertices are all 24
-/// permutations of `(±r/√2, ±r/√2, 0, 0)`.
+/// All 24 permutations of `(±r/√2, ±r/√2, 0, 0)`.
 pub fn cell24_vertices(r: f32) -> Vec<Vec4> {
     let k = r / 2.0_f32.sqrt();
     let mut v = Vec::with_capacity(24);
@@ -79,13 +65,10 @@ pub fn cell24_vertices(r: f32) -> Vec<Vec4> {
     v
 }
 
-/// The 12 even permutations (alternating group A₄) of a 4-tuple, used by the
-/// 600-cell and 120-cell vertex orbits. Result `[i]` is `arr[σ(i)]`.
+// The alternating group A₄. Result `[i]` is `arr[σ(i)]`.
 fn even_permutations_4<T: Copy>(arr: [T; 4]) -> [[T; 4]; 12] {
     [
-        // Identity
         [arr[0], arr[1], arr[2], arr[3]],
-        // 3-cycles (8 of them)
         [arr[1], arr[2], arr[0], arr[3]], // (012)
         [arr[2], arr[0], arr[1], arr[3]], // (021)
         [arr[1], arr[3], arr[2], arr[0]], // (013)
@@ -94,19 +77,13 @@ fn even_permutations_4<T: Copy>(arr: [T; 4]) -> [[T; 4]; 12] {
         [arr[3], arr[1], arr[0], arr[2]], // (032)
         [arr[0], arr[2], arr[3], arr[1]], // (123)
         [arr[0], arr[3], arr[1], arr[2]], // (132)
-        // (2,2)-cycles (3 of them)
         [arr[1], arr[0], arr[3], arr[2]], // (01)(23)
         [arr[2], arr[3], arr[0], arr[1]], // (02)(13)
         [arr[3], arr[2], arr[1], arr[0]], // (03)(12)
     ]
 }
 
-/// **600-cell / hexacosichoron**: 120 vertices, 720 edges, 1200 triangle faces,
-/// 600 tetrahedral cells. H₄ symmetry; dual of the 120-cell.
-///
-/// Vertex set at circumradius 1 (Wikipedia "600-cell"): 8 axial `(±1, 0, 0, 0)`,
-/// 16 `(±1/2, ±1/2, ±1/2, ±1/2)`, and 96 even permutations of
-/// `(0, ±1/2, ±φ/2, ±1/(2φ))`. Total 120.
+/// Vertex set at circumradius 1 (Wikipedia "600-cell").
 pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
     let mut v = Vec::with_capacity(120);
@@ -151,15 +128,7 @@ pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
     v
 }
 
-/// **120-cell / hecatonicosachoron**: 600 vertices, 1200 edges, 720 pentagonal
-/// faces, 120 dodecahedral cells. H₄ symmetry; dual of the 600-cell.
-///
-/// Vertex set at circumradius `2√2` before rescaling (Wikipedia "120-cell"):
-/// - 24: permutations of `(0, 0, ±2, ±2)`.
-/// - 64 each: `(±1, ±1, ±1, ±√5)`, `(±1/φ, ±1/φ, ±1/φ, ±φ²)`,
-///   `(±1/φ², ±φ, ±φ, ±φ)`, with the odd-one-out in any of 4 positions.
-/// - 96 each: even perms of `(0, ±1/φ², ±1, ±φ²)` and `(0, ±1/φ, ±φ, ±√5)`.
-/// - 192: even permutations of `(±1/φ, ±1, ±φ, ±2)`.
+/// Vertex set at circumradius `2√2` before rescaling (Wikipedia "120-cell").
 pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
     let phi2 = phi * phi;
@@ -183,8 +152,7 @@ pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
         }
     }
 
-    // `special` at one of 4 positions, `common` at the other 3, all signs
-    // independent: 4·16 = 64 vertices.
+    // `special` at one of 4 positions, `common` at the other 3: 4·16 = 64.
     let mut emit_one_special = |special: f32, common: f32| {
         for special_pos in 0..4 {
             for sm in 0..16u32 {
@@ -249,39 +217,28 @@ pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
     v
 }
 
-/// Inradius of the 120-cell and 600-cell at unit circumradius. Equal by polar
-/// duality: `φ² / (2√2) = (3 + √5) / (4√2) ≈ 0.92562`.
+/// `φ² / (2√2) = (3 + √5) / (4√2) ≈ 0.92562`, shared by polar duality.
 pub fn icosian_inradius_unit() -> f32 {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
     phi * phi / (2.0 * 2.0_f32.sqrt())
 }
 
-/// Face hyperplanes of the 120-cell at unit circumradius. Returns `(normals,
-/// offset)`: 120 unit normals (the 600-cell's vertices, the dual) and the
-/// inradius. Inside iff `dot(n_i, p) <= offset` for all i.
-// BUG: dual-vertex normals are exact for the 24 axial + 16 tesseract-corner
-// orbits but only approximate for the 96 golden-ratio orbits, so the SDF
-// surface is a slightly-truncated 120-cell. Forward path: rasterized
-// cross-section faces replace the SDF for this polytope's surface.
+/// `(normals, offset)`: inside iff `dot(n_i, p) <= offset` for all i.
+// BUG: dual-vertex normals are only approximate for the 96 golden-ratio orbits,
+// so the SDF surface is a slightly-truncated 120-cell.
 pub fn cell120_face_planes() -> (Vec<Vec4>, f32) {
     (cell600_vertices(1.0), icosian_inradius_unit())
 }
 
-/// Face hyperplanes of the 600-cell at unit circumradius. Returns `(normals,
-/// offset)`: the 600 unit normals are the 120-cell's vertices.
-// BUG: same approximation as [`cell120_face_planes`]. The true normals are the
-// 600 tetrahedral-cell centroids; the dual vertices diverge on the 96
-// golden-ratio orbits. Same rasterized-section forward path.
+/// Same contract as [`cell120_face_planes`], with the roles swapped.
+// BUG: same approximation as [`cell120_face_planes`].
 pub fn cell600_face_planes() -> (Vec<Vec4>, f32) {
     (cell120_vertices(1.0), icosian_inradius_unit())
 }
 
-/// Exact signed Euclidean distance from `p` to a convex polytope of
-/// uniform-distance face hyperplanes (`dot(n_i, x) = inradius`, `n_i` unit).
-///
-/// Wolfe's greedy hyperplane projection: add the most-violated plane to the
-/// active set, project onto the intersection via Lagrange multipliers, repeat
-/// until no violations remain or |S|=4 (a vertex).
+/// Exact signed Euclidean distance to a convex polytope of uniform-distance
+/// face hyperplanes (`dot(n_i, x) = inradius`, `n_i` unit), by Wolfe's greedy
+/// hyperplane projection.
 pub fn polytope_sdf_wolfe(p: Vec4, face_normals: &[Vec4], inradius: f32) -> f32 {
     let mut max_d = f32::NEG_INFINITY;
     let mut active_idx = [0usize; 4];
@@ -293,16 +250,15 @@ pub fn polytope_sdf_wolfe(p: Vec4, face_normals: &[Vec4], inradius: f32) -> f32 
         }
     }
     if max_d <= 0.0 {
-        return max_d; // inside
+        return max_d;
     }
     let mut active_count = 1usize;
 
-    // Cache active normals so the 4-level projection doesn't re-index.
     let mut active = [Vec4::ZERO; 4];
     active[0] = face_normals[active_idx[0]];
 
     let tol = 1e-6_f32;
-    let mut q = p - max_d * active[0]; // |S|=1 projection
+    let mut q = p - max_d * active[0];
 
     while active_count < 4 {
         let mut next_d = tol;
@@ -328,9 +284,7 @@ pub fn polytope_sdf_wolfe(p: Vec4, face_normals: &[Vec4], inradius: f32) -> f32 
     (p - q).length()
 }
 
-/// Project `p` onto the intersection of `count` active hyperplanes (`dot(active[i], x) =
-/// inradius` for `i in 0..count`) via Lagrange multipliers. Solves `G λ = b` where `G` is the
-/// Gram matrix of the active normals; closed-form for each `count` in `1..=4`.
+// Lagrange multipliers: solves `G λ = b` with `G` the Gram matrix.
 fn project_onto_active_planes(p: Vec4, active: &[Vec4; 4], count: usize, inradius: f32) -> Vec4 {
     let b = [
         active[0].dot(p) - inradius,
@@ -375,9 +329,7 @@ fn project_onto_active_planes(p: Vec4, active: &[Vec4; 4], count: usize, inradiu
             p - l0 * active[0] - l1 * active[1] - l2 * active[2]
         }
         4 => {
-            // The 4-plane intersection is a single vertex q = M⁻¹·inradius·1 with
-            // M.row(i) = active[i]. glam::Mat4 is column-major, so transpose at
-            // build: column j holds component j of each active normal.
+            // glam::Mat4 is column-major, so transpose at build.
             let m = glam::Mat4::from_cols(
                 Vec4::new(active[0].x, active[1].x, active[2].x, active[3].x),
                 Vec4::new(active[0].y, active[1].y, active[2].y, active[3].y),

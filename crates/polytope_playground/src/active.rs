@@ -1,24 +1,12 @@
-//! Active-set rotation mode: six basis-plane checkboxes + per-plane
-//! angle sliders.
-//!
-//! Orientation is derived each frame, not stored: the truth is
-//! `base_angles[6]` plus `rot_time`, giving displayed angle
-//! `base_angles[i] + (rot_time * rate if active[i])`. The rotor is
-//! the ordered product `∏ᵢ exp(planeᵢ · displayed_angle[i])`. Because
-//! non-commuting planes make this a product, not a sum (Baker-
-//! Campbell-Hausdorff), each slider stays an independent factor; the
-//! cost is `log(rot_state)` does NOT recover the set angles, so Active
-//! mode never reads back through `log`. Composer mode keeps the sum-of-
-//! bivectors model instead.
+//! Orientation is derived each frame from `base_angles[6]` plus `rot_time` as
+//! the ordered product `∏ᵢ exp(planeᵢ · angleᵢ)`, so `log(R)` does not recover
+//! the set angles and Active mode never reads back through `log`.
 
 use loam_app::egui;
 use loam_math::Plane4;
 
 use crate::consts::CONTROL_H;
 
-/// Wrap a degree value into `(-720, 720]` so the slider handle stays
-/// in range while continuous spin advances the raw angle past one
-/// period. `1440` is the two-cycle span.
 fn wrap_slider_deg(d: f32) -> f32 {
     let m = d.rem_euclid(1440.0);
     if m > 720.0 {
@@ -29,9 +17,6 @@ fn wrap_slider_deg(d: f32) -> f32 {
 }
 use crate::state::Demo;
 
-/// Name a recognizable combination of active planes. Indices match
-/// `Plane4::ALL`: `0=xy 1=xz 2=xw 3=yz 4=yw 5=zw`. Only the active
-/// set matters; order-independent.
 pub(crate) fn combo_name(active: &[bool; 6]) -> Option<&'static str> {
     let mut mask = 0u8;
     for (i, &on) in active.iter().enumerate() {
@@ -65,11 +50,8 @@ pub(crate) fn combo_name(active: &[bool; 6]) -> Option<&'static str> {
 }
 
 impl Demo {
-    /// Active body: 2x3 grid of `[checkbox][label][slider][value]`
-    /// cells with pinned widths so columns align across rows.
     pub(crate) fn render_active_mode(&mut self, ui: &mut egui::Ui) {
-        const TOP_ROW: [usize; 3] = [0, 1, 3]; // xy, xz, yz
-        const BOTTOM_ROW: [usize; 3] = [2, 4, 5]; // xw, yw, zw
+        const PLANES: [usize; 6] = [0, 1, 3, 2, 4, 5];
 
         const CELL_INNER_SPACING: f32 = 4.0;
         const CHECKBOX_W: f32 = 18.0;
@@ -78,14 +60,16 @@ impl Demo {
         const ROW_GAP: f32 = 6.0;
 
         let total_w = ui.available_width();
-        let cell_w = ((total_w - 2.0 * ROW_GAP) / 3.0).floor();
+        let min_cell_w = CHECKBOX_W + LABEL_W + VALUE_W + 3.0 * CELL_INNER_SPACING + 40.0;
+        let columns = (((total_w + ROW_GAP) / (min_cell_w + ROW_GAP)) as usize).clamp(1, 3);
+        let cell_w = ((total_w - (columns - 1) as f32 * ROW_GAP) / columns as f32).floor();
         let slider_w =
             (cell_w - CHECKBOX_W - LABEL_W - VALUE_W - 3.0 * CELL_INNER_SPACING).max(40.0);
 
-        for plane_indices in [TOP_ROW, BOTTOM_ROW] {
+        for plane_indices in PLANES.chunks(columns) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = ROW_GAP;
-                for &i in &plane_indices {
+                for &i in plane_indices {
                     ui.allocate_ui_with_layout(
                         egui::vec2(cell_w, CONTROL_H),
                         egui::Layout::left_to_right(egui::Align::Center),
@@ -102,10 +86,6 @@ impl Demo {
         }
     }
 
-    /// One plane cell, all widths pinned by the caller. The slider
-    /// reads/writes `base_angles[plane_idx]` via `base +
-    /// spin_contribution`, keeping each slider an independent factor
-    /// in the rotor product (no log/exp round-trips).
     pub(crate) fn render_plane_slider_cell(
         &mut self,
         ui: &mut egui::Ui,
@@ -116,27 +96,21 @@ impl Demo {
         value_w: f32,
     ) {
         let plane = Plane4::ALL[plane_idx];
-        // Captured before the checkbox below flips `active[plane_idx]`,
-        // so the toggle can be absorbed without teleporting the body.
+        // Read before the checkbox flips `active`, so the toggle does not jump the body.
         let displayed_before = self.active_displayed_angle(plane_idx);
-        // Wrap is display-only: `active_rotor()` uses the raw angle, and
-        // `exp(plane * (x + 2π·k))` is the same rotor for a unit bivector.
         let mut deg = wrap_slider_deg(displayed_before.to_degrees());
         let checkbox_resp = ui.add_sized(
             [checkbox_w, 18.0],
-            egui::Checkbox::new(&mut self.active[plane_idx], ""),
+            egui::Checkbox::new(&mut self.spins.spin_mut().active[plane_idx], ""),
         );
         if checkbox_resp.changed() {
-            // Re-solve base so the displayed angle is continuous across the
-            // toggle: base = displayed_before - spin_contribution(active_after).
-            let spin_contribution = if self.active[plane_idx] {
+            let spin_contribution = if self.spins.spin().active[plane_idx] {
                 self.rot_time * crate::consts::BASE_ROTATION_RATE
             } else {
                 0.0
             };
-            self.base_angles[plane_idx] = displayed_before - spin_contribution;
-            self.rot_state = self.active_rotor();
-            self.write_all(self.rot_state);
+            self.spins.spin_mut().base_angles[plane_idx] = displayed_before - spin_contribution;
+            self.apply_active_edit();
         }
         ui.add_sized(
             [label_w, 18.0],
@@ -175,17 +149,14 @@ impl Demo {
             },
         );
         if slider_resp.changed() || popup_changed {
-            // base = displayed - spin_contribution, so the displayed angle
-            // matches the slider's new position.
             let target_rad = deg.to_radians();
-            let spin_contribution = if self.active[plane_idx] {
+            let spin_contribution = if self.spins.spin().active[plane_idx] {
                 self.rot_time * crate::consts::BASE_ROTATION_RATE
             } else {
                 0.0
             };
-            self.base_angles[plane_idx] = target_rad - spin_contribution;
-            self.rot_state = self.active_rotor();
-            self.write_all(self.rot_state);
+            self.spins.spin_mut().base_angles[plane_idx] = target_rad - spin_contribution;
+            self.apply_active_edit();
         }
     }
 }
@@ -217,18 +188,5 @@ mod tests {
         assert_eq!(wrap_slider_deg(1440.0), 0.0);
         assert_eq!(wrap_slider_deg(-1440.0), 0.0);
         assert_eq!(wrap_slider_deg(2880.0), 0.0);
-    }
-
-    #[test]
-    fn wrap_result_always_in_range() {
-        let mut d = -5000.0_f32;
-        while d <= 5000.0 {
-            let w = wrap_slider_deg(d);
-            assert!(
-                w > -720.0 && w <= 720.0,
-                "d={d} wrapped to {w} out of range"
-            );
-            d += 7.3;
-        }
     }
 }

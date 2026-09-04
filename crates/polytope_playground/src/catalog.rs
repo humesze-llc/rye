@@ -1,18 +1,9 @@
-//! 4D shape catalog: the single source of truth for shape names,
-//! colors, and tooltips. Holds per-polytope metadata, the default
-//! startup row, the categorized catalog, the `+`-menu helper, and the
-//! `shapes` argument parser.
-
 use anyhow::{anyhow, Result};
 use loam_app::args::Args;
 use loam_app::egui;
-use loam_physics::polytope::Polytope4;
 use loam_render::raymarch::RaymarchShape;
+use loam_shape::polytope::Polytope4;
 
-/// One polytope's metadata. `body_color` drives `BodyUniform.color`
-/// on the GPU, not the (uniformly grey) card color. `long_name` uses
-/// the `pentachoron`/`tesseract`/`hexadecachoron` family, not the
-/// dimension-generalized `*-plex` aliases.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub(crate) struct ShapeEntry {
     pub(crate) shape: RaymarchShape,
@@ -21,8 +12,12 @@ pub(crate) struct ShapeEntry {
     pub(crate) long_name: &'static str,
 }
 
-/// Default row when no `shapes` argument is given. 24-cell first (most
-/// 4D-distinct cross-section), then visually contrasting shapes.
+impl ShapeEntry {
+    pub(crate) fn collider_polytope(&self) -> Option<Polytope4> {
+        self.shape.polytope4()
+    }
+}
+
 pub(crate) const DEFAULT_ROW: &[ShapeEntry] = &[
     ShapeEntry {
         shape: RaymarchShape::Polytope(Polytope4::Cell24),
@@ -50,9 +45,7 @@ pub(crate) const DEFAULT_ROW: &[ShapeEntry] = &[
     },
 ];
 
-/// Every shipped 4D shape: the six convex regular polychora plus four
-/// smooth solids (3-sphere, duocylinder, Clifford torus, spherinder).
-/// `body_color` channels pass straight to the WGSL kernel.
+// `body_color` channels pass straight to the WGSL kernel.
 pub(crate) const SHAPE_CATALOG: &[ShapeEntry] = &[
     ShapeEntry {
         shape: RaymarchShape::Polytope(Polytope4::Pentatope),
@@ -116,9 +109,6 @@ pub(crate) const SHAPE_CATALOG: &[ShapeEntry] = &[
     },
 ];
 
-/// Category-grouped shape menu: top level lists [`SHAPE_CATEGORIES`],
-/// each a submenu of shapes with a `long_name` hover tooltip.
-/// `on_select` fires on click; the helper closes the menu.
 pub(crate) fn render_shape_catalog_menu(ui: &mut egui::Ui, mut on_select: impl FnMut(ShapeEntry)) {
     for cat in SHAPE_CATEGORIES {
         ui.menu_button(cat.name, |ui| {
@@ -136,9 +126,6 @@ pub(crate) fn render_shape_catalog_menu(ui: &mut egui::Ui, mut on_select: impl F
     }
 }
 
-/// Half-open index ranges into [`SHAPE_CATALOG`] that group menu
-/// entries under a header. Ranges (not nested slices) keep flat
-/// `SHAPE_CATALOG[i]` lookups working.
 struct ShapeCategory {
     name: &'static str,
     start: usize,
@@ -158,8 +145,6 @@ const SHAPE_CATEGORIES: &[ShapeCategory] = &[
     },
 ];
 
-/// Resolve a shape name. Both `n-cell` math names and Platonic-slice
-/// aliases (`tetrahedron`, `cube`, ...) map to the same shape.
 pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
     let n = name.to_lowercase();
     let needle: &str = n.as_str();
@@ -168,7 +153,6 @@ pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
             return Ok(*entry);
         }
     }
-    // Common aliases not in the catalog's `label` / `long_name`.
     Ok(match needle {
         "5cell" | "pentatope" | "tetrahedron" => SHAPE_CATALOG[0],
         "8cell" | "hypercube" | "cube" => SHAPE_CATALOG[1],
@@ -192,10 +176,7 @@ pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
     })
 }
 
-/// Parse the comma-separated `shapes` key (`--shapes=a,b` natively,
-/// `?shapes=a,b` in the browser). Returns [`DEFAULT_ROW`] when the key
-/// is absent, and an error for the space-separated `--shapes a,b` form,
-/// whose value never reaches `args`.
+// The space-separated `--shapes a,b` form never reaches `args`, so it errors.
 pub(crate) fn parse_row(args: &Args) -> Result<Vec<ShapeEntry>> {
     if args.has_bare_flag("shapes") {
         return Err(anyhow!(
@@ -220,8 +201,6 @@ mod tests {
 
     #[test]
     fn row_comes_from_the_args_value_not_the_process_environment() {
-        // The wasm defect this pins: reading the environment yielded
-        // DEFAULT_ROW in the browser no matter what the URL said.
         assert_eq!(parse_row(&Args::default()).unwrap(), DEFAULT_ROW);
         assert_eq!(
             parse_row(&Args::from_pairs([("seed", "42")])).unwrap(),
@@ -242,7 +221,6 @@ mod tests {
         let err = parse_row(&args).unwrap_err().to_string();
         assert!(err.contains("--shapes="), "{err}");
 
-        // A trailing `--shapes` with nothing after it is the same mistake.
         assert!(parse_row(&Args::from_argv(["--seed=42", "--shapes"])).is_err());
     }
 

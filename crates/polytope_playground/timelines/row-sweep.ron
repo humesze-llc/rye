@@ -1,0 +1,33 @@
+// Four seconds at 60 fps: the slice sweeps out and back while slot 0 turns
+// two quarter-turns in the xw plane. Every other slot is left unnamed, so the
+// row keeps its UI spin and the two clocks are visible side by side.
+//
+// Rotor keys are (cos(theta/2), sin(theta/2)) on the xw component: theta = 0,
+// pi/2, pi. Run it with
+//   cargo run -p polytope_playground --
+//     --director=crates/polytope_playground/timelines/row-sweep.ron
+//
+// The path is resolved against the working directory, not the crate, so
+// the crate-relative form only works from inside crates/polytope_playground.
+(
+    fps: 60,
+    frames: 241,
+    w_slice: Some([
+        (t: 0.0, value: -1.2),
+        (t: 2.0, value: 1.2, ease: InOutCubic),
+        (t: 4.0, value: -1.2, ease: InOutCubic),
+    ]),
+    bodies: [
+        (
+            name: "slot0",
+            orientation: Some([
+                (t: 0.0, value: (s: 1.0, xy: 0.0, xz: 0.0, xw: 0.0,
+                                 yz: 0.0, yw: 0.0, zw: 0.0, xyzw: 0.0)),
+                (t: 2.0, value: (s: 0.70710678, xy: 0.0, xz: 0.0, xw: 0.70710678,
+                                 yz: 0.0, yw: 0.0, zw: 0.0, xyzw: 0.0), ease: InOutCubic),
+                (t: 4.0, value: (s: 0.0, xy: 0.0, xz: 0.0, xw: 1.0,
+                                 yz: 0.0, yw: 0.0, zw: 0.0, xyzw: 0.0), ease: InOutCubic),
+            ]),
+        ),
+    ],
+)

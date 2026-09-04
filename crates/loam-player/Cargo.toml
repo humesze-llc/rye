@@ -12,5 +12,5 @@ categories = ["game-development"]
 
 [dependencies]
 glam.workspace = true
-loam-input = { path = "../loam-input" }
-loam-math  = { path = "../loam-math" }
+loam-input = { path = "../loam-input", version = "0.1.0" }
+loam-math  = { path = "../loam-math",  version = "0.1.0" }

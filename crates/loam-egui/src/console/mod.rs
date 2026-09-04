@@ -1,47 +1,26 @@
-//! egui frontend for [`loam_console::Console`]: per-frame key routing plus the
-//! half-screen drop-down and detached-window panels.
-//!
-//! The registry, scrollback, tokenizer, completion and dispatch live in
-//! `loam-console` and know nothing about egui. This module owns everything that
-//! does: the [`Key`] to `egui::Key` table, the input plumbing, and the paint.
-//!
-//! Console keys are intercepted via `egui::InputState::consume_key` before
-//! `TextEdit::singleline` sees them, so the toggle key and Tab don't leak into the
-//! input box or move focus. Enter is detected via the TextEdit response in the panel
-//! module to preserve `lost_focus`-on-submit semantics.
+//! Console keys are consumed via `InputState::consume_key` before `TextEdit` sees them.
 
 mod key;
 mod panel;
 
 pub use loam_console::{
-    cmd, console_echo_enabled, set_console_echo, subcommands, Command, Console, ConsoleWriter,
-    FnCommand, HistoryLine, Key, LineKind, SubcommandSet, MAX_HISTORY_LINES, MAX_INPUT_HISTORY,
+    cmd, console_echo_enabled, parse_line, render_line, set_console_echo, subcommands, Command,
+    Console, ConsoleWriter, FnCommand, HistoryLine, Key, LineKind, SubcommandSet,
+    MAX_HISTORY_LINES, MAX_INPUT_HISTORY,
 };
 
-/// Slide-down animation duration.
 pub const ANIM_DURATION_SECS: f32 = 0.15;
 
-/// Fraction of the viewport height the open console occupies (Quake convention).
+/// Half the viewport height, the Quake convention.
 pub const PANEL_HEIGHT_FRACTION: f32 = 0.5;
 
-/// Drives and paints a [`Console`] inside an egui pass.
-///
-/// ```ignore
-/// use loam_egui::ConsoleUi;
-///
-/// // per frame:
-/// console.ui(&egui_ctx, &mut my_ctx);
-/// ```
-pub trait ConsoleUi<Ctx> {
-    /// Per-frame entry point: toggle key, binds (when closed), in-panel keys (when
-    /// open), animation, and panel render. Call once per frame from the egui pass.
-    fn ui(&mut self, egui_ctx: &egui::Context, ctx: &mut Ctx);
+pub trait ConsoleUi {
+    fn ui(&mut self, egui_ctx: &egui::Context);
 }
 
-impl<Ctx: 'static> ConsoleUi<Ctx> for Console<Ctx> {
-    fn ui(&mut self, egui_ctx: &egui::Context, ctx: &mut Ctx) {
-        // Toggle key. `consume_key` strips the Key event, but a printable key also
-        // emits a Text event TextEdit reads; strip that too or it leaks into the input.
+impl<Ctx: 'static> ConsoleUi for Console<Ctx> {
+    fn ui(&mut self, egui_ctx: &egui::Context) {
+        // A printable key also emits a Text event; strip it or it leaks into the input.
         let toggle = self.toggle_key();
         let toggle_text = key::key_text(toggle);
         let toggle_pressed = egui_ctx.input_mut(|i| {
@@ -58,7 +37,6 @@ impl<Ctx: 'static> ConsoleUi<Ctx> for Console<Ctx> {
             self.toggle();
         }
 
-        // Bound keys fire only when closed (avoid hijacking typing).
         if !self.is_open() {
             let mut fired: Vec<String> = Vec::new();
             egui_ctx.input_mut(|i| {
@@ -69,16 +47,14 @@ impl<Ctx: 'static> ConsoleUi<Ctx> for Console<Ctx> {
                 }
             });
             for line in fired {
-                self.execute(&line, ctx);
+                self.execute(&line);
             }
         }
 
-        // In-panel keys (consume before TextEdit sees them).
         if self.is_open() {
             handle_panel_keys(self, egui_ctx);
         }
 
-        // Animate panel height (docked only); detached mode shows/hides instantly.
         let target = if self.is_open() { 1.0 } else { 0.0 };
         let progress = egui_ctx.animate_value_with_time(
             egui::Id::new("loam_console_open_progress"),
@@ -92,7 +68,7 @@ impl<Ctx: 'static> ConsoleUi<Ctx> for Console<Ctx> {
             progress > 0.0
         };
         if visible {
-            panel::draw(self, egui_ctx, ctx, progress);
+            panel::draw(self, egui_ctx, progress);
         }
     }
 }

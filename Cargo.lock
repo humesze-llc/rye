@@ -965,6 +965,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
+name = "hero"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "anyhow",
+ "glam",
+ "loam-app",
+ "loam-egui",
+ "loam-math",
+ "loam-physics",
+ "loam-render",
+ "loam-shape",
+ "loam-text",
+ "loam-time",
+ "tracing",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1335,6 +1355,7 @@ dependencies = [
  "loam-shape",
  "loam-text",
  "loam-time",
+ "toml_edit",
 ]
 
 [[package]]
@@ -1438,6 +1459,7 @@ dependencies = [
  "glam",
  "loam-math",
  "loam-shape",
+ "loam-time",
  "tracing",
 ]
 
@@ -1480,6 +1502,7 @@ dependencies = [
  "naga",
  "ron",
  "serde",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1517,7 +1540,12 @@ dependencies = [
  "ab_glyph",
  "anyhow",
  "bytemuck",
+ "glam",
+ "loam-math",
+ "loam-physics",
+ "loam-shape",
  "pollster",
+ "thiserror 1.0.69",
  "tracing",
  "wgpu",
 ]
@@ -1526,6 +1554,11 @@ dependencies = [
 name = "loam-time"
 version = "0.1.0"
 dependencies = [
+ "glam",
+ "loam-math",
+ "ron",
+ "serde",
+ "thiserror 1.0.69",
  "tracing",
  "web-time",
 ]
@@ -2184,6 +2217,7 @@ name = "polytope_playground"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "epaint_default_fonts",
  "glam",
  "loam-app",
  "loam-camera",
@@ -2193,8 +2227,9 @@ dependencies = [
  "loam-render",
  "loam-scene",
  "loam-shape",
+ "loam-text",
  "loam-time",
- "tracing",
+ "pollster",
  "wgpu",
  "winit",
 ]
@@ -2726,7 +2761,6 @@ dependencies = [
  "loam-camera",
  "loam-egui",
  "loam-math",
- "loam-physics",
  "loam-render",
  "loam-shape",
  "loam-time",

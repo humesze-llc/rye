@@ -1,8 +1,3 @@
-//! Shape-row UI: a horizontal row of shape cards with `+`-button
-//! menu, drag-and-drop reorder, and per-card "Remove from row"
-//! context menu. Drives `self.row` (the visible polytopes in
-//! `Shapes` view mode); mutations here trigger `rebuild_bodies()`.
-
 use loam_app::egui;
 use loam_egui::{
     dnd::{
@@ -12,20 +7,16 @@ use loam_egui::{
     },
     media::add_button,
 };
-use loam_physics::polytope::Polytope4;
 use loam_render::raymarch::RaymarchShape;
+use loam_shape::polytope::Polytope4;
 
 use crate::catalog::{render_shape_catalog_menu, ShapeEntry};
 use crate::consts::{CARD_ITEM_SPACING_X, CONTROL_H, CONTROL_W, MAX_ROW_LEN, SHAPE_CARD_WIDTH};
 use crate::state::Demo;
 
 impl Demo {
-    /// Shape row + add-menu + drag-and-drop reorder, called from both
-    /// rotation modes.
     pub(crate) fn render_shapes_section(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        // The 120/600-cell is heavy only on the SDF raymarch path; the
-        // raster and Off paths stay at vsync, so warn only for SDF.
         let has_heavy_sdf = self.surface_mode.uses_sdf_for_polychora()
             && self.row.iter().any(|e| {
                 matches!(
@@ -44,8 +35,6 @@ impl Demo {
         let mut remove_idx: Option<usize> = None;
         let row_len = self.row.len();
         let row_h = CONTROL_H;
-        // Drop slot, computed once from the cursor and last frame's row
-        // rect so every slot agrees on the target.
         let row_rect_id = ui.make_persistent_id("shape-row-rect");
         let last_row_rect: Option<egui::Rect> = ui.ctx().memory(|m| m.data.get_temp(row_rect_id));
         let dragging_shape = egui::DragAndDrop::payload::<usize>(ui.ctx()).is_some();
@@ -59,8 +48,7 @@ impl Demo {
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
                         ui.spacing_mut().item_spacing.x = CARD_ITEM_SPACING_X;
 
-                        // Apply the reorder before rendering so the loop
-                        // sees the new order and gaps close this frame.
+                        // Before the loop, so gaps close this frame.
                         if dnd_apply_drop_pre_pass::<ShapeEntry, usize>(
                             ui,
                             &mut self.row,
@@ -108,10 +96,6 @@ impl Demo {
                                 });
                             });
                         }
-                        // Snap per-index pickup animation to default so
-                        // cards shifting into old slots don't inherit the
-                        // prior occupant's pickup_t/ghost-fade. Done in
-                        // this scope so the ids match those rendered.
                         if remove_idx.is_some() {
                             let ctx = ui.ctx();
                             for i in 0..=MAX_ROW_LEN {
@@ -132,16 +116,10 @@ impl Demo {
         }
         if row_changed {
             self.rebuild_bodies();
-            // A row edit can change the leading polychoron the Schlegel
-            // diagram projects through; re-resolve so a stale cache can't
-            // index the wrong polytope's face planes.
             self.resolve_schlegel_cache();
         }
     }
 
-    /// One shape card: reorder drag source, hover-name tooltip,
-    /// right-click remove. Returns `true` on Remove so the caller can
-    /// defer removal past the row's iteration.
     fn render_shape_card(ui: &mut egui::Ui, i: usize, entry: &ShapeEntry, row_len: usize) -> bool {
         let card_id = ui.make_persistent_id(("shape-card", i));
         let pickup_t = drag_pickup_t(ui.ctx(), card_id);
@@ -179,8 +157,6 @@ impl Demo {
             .on_hover_cursor(egui::CursorIcon::Grab)
             .on_hover_text(entry.long_name)
             .interact(egui::Sense::click());
-        // Right-click removes, but only above one card (keep-at-least-
-        // one invariant).
         row_len > 1 && resp.clicked_by(egui::PointerButton::Secondary)
     }
 }

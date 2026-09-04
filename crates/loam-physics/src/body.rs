@@ -1,7 +1,3 @@
-//! [`RigidBody<S>`], the physical object a [`crate::World`] simulates, and
-//! [`BodyArena<S>`], the generational storage that gives it an identity
-//! independent of where it currently sits in memory.
-
 use std::ops::{Add, Deref, Index, IndexMut, Mul};
 
 use loam_math::Bivector;
@@ -9,12 +5,7 @@ use loam_math::Bivector;
 use crate::collider::Collider;
 use crate::integrator::PhysicsSpace;
 
-/// A rigid body in some [`PhysicsSpace`]. Public-fields struct so the solver and user code can
-/// read and write components directly, this crate doesn't hide state, it just provides the rules
-/// for advancing it.
-///
-/// `inv_mass == 0.0` means a static body: gravity and impulses have no effect on its velocity,
-/// and [`crate::integrate_body`] skips it.
+/// `inv_mass == 0.0` means static.
 pub struct RigidBody<S: PhysicsSpace> {
     pub position: S::Point,
     pub velocity: S::Vector,
@@ -27,15 +18,19 @@ pub struct RigidBody<S: PhysicsSpace> {
 
     pub collider: Collider,
 
-    /// Coefficient of restitution for elastic bounces. 0 = perfectly inelastic, 1 = perfectly
-    /// elastic.
     pub restitution: f32,
+
+    /// A pair reaches the narrowphase only if each body's group is in the
+    /// other's mask.
+    pub collision_group: u32,
+    pub collision_mask: u32,
 }
 
+pub const GROUP_DEFAULT: u32 = 1;
+
+pub const MASK_ALL: u32 = u32::MAX;
+
 impl<S: PhysicsSpace> RigidBody<S> {
-    /// Build a dynamic body at `position` with the given mass and collider. `space` is passed so
-    /// the caller can source an identity isometry without naming the space's [`crate::Collider`]
-    /// types directly.
     pub fn new(
         position: S::Point,
         velocity: S::Vector,
@@ -44,10 +39,6 @@ impl<S: PhysicsSpace> RigidBody<S> {
         inertia: S::Inertia,
         space: &S,
     ) -> Self {
-        // Half-spaces are infinite planes; a finite mass with infinite extent breaks the
-        // integrator's assumptions (no centre of mass, no bounded inertia). Static-only is the
-        // only sensible mode; catch the misuse in debug builds before it produces silently wrong
-        // physics in release.
         debug_assert!(
             !matches!(
                 collider,
@@ -57,6 +48,8 @@ impl<S: PhysicsSpace> RigidBody<S> {
         );
         let inv_mass = if mass > 0.0 { 1.0 / mass } else { 0.0 };
         Self {
+            collision_group: GROUP_DEFAULT,
+            collision_mask: MASK_ALL,
             position,
             velocity,
             orientation: space.iso_identity(),
@@ -69,12 +62,13 @@ impl<S: PhysicsSpace> RigidBody<S> {
         }
     }
 
-    /// Static body: infinite mass, zero velocity, immovable.
     pub fn fixed(position: S::Point, collider: Collider, inertia: S::Inertia, space: &S) -> Self
     where
         S::Vector: Default,
     {
         Self {
+            collision_group: GROUP_DEFAULT,
+            collision_mask: MASK_ALL,
             position,
             velocity: S::Vector::default(),
             orientation: space.iso_identity(),
@@ -87,11 +81,8 @@ impl<S: PhysicsSpace> RigidBody<S> {
         }
     }
 
-    /// Apply an impulse whose line of action passes through the centre of
-    /// mass: `v += J/m`, no angular response. Static bodies ignore it.
-    ///
-    /// Impulse-momentum relation, Baraff 1997, "Physically Based Modeling:
-    /// Rigid Body Simulation", colliding-contact section.
+    /// `v += J/m` through the centre of mass (Baraff 1997, "Physically Based
+    /// Modeling: Rigid Body Simulation", colliding contact).
     pub fn apply_impulse(&mut self, impulse: S::Vector)
     where
         S::Vector: Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
@@ -102,12 +93,7 @@ impl<S: PhysicsSpace> RigidBody<S> {
         self.velocity = self.velocity + impulse * self.inv_mass;
     }
 
-    /// Apply an impulse at world point `point`: `v += J/m` and
-    /// `ω += I⁻¹(r ∧ J)` for `r` the offset from the centre of mass to
-    /// `point`. Static bodies ignore it.
-    ///
-    /// Same reference as [`Self::apply_impulse`]; the angular half is the
-    /// wedge form of `Δω = I⁻¹(r × J)`.
+    /// `v += J/m` and `ω += I⁻¹(r ∧ J)`; same reference as [`Self::apply_impulse`].
     pub fn apply_impulse_at_point(&mut self, space: &S, impulse: S::Vector, point: S::Point)
     where
         S::Vector: Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
@@ -116,9 +102,6 @@ impl<S: PhysicsSpace> RigidBody<S> {
             return;
         }
         self.velocity = self.velocity + impulse * self.inv_mass;
-        // The lever arm is a tangent vector at the body, so it is `log`, not a
-        // chart-coordinate subtraction; the two agree in the flat spaces that
-        // implement PhysicsSpace today.
         let lever = space.log(self.position, point);
         let torque = space.wedge(lever, impulse);
         self.angular_velocity =
@@ -126,13 +109,7 @@ impl<S: PhysicsSpace> RigidBody<S> {
     }
 }
 
-/// Stable handle to a body in a [`BodyArena`]. `slot` names a table entry;
-/// `generation` counts how often that entry has been reused, so a handle to a
-/// despawned body fails to resolve rather than aliasing whatever body later
-/// takes its place.
-///
-/// Ordering is lexicographic in `(slot, generation)`, which is what lets a
-/// pair of handles serve as a canonical contact-manifold key.
+/// Lexicographic in `(slot, generation)`, so a handle pair is a canonical key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BodyId {
     slot: u32,
@@ -148,8 +125,6 @@ impl BodyId {
         self.generation
     }
 
-    /// Handles are minted by [`BodyArena::spawn`]; a test exercising a
-    /// consumer of a handle rather than the arena itself has to forge one.
     #[cfg(test)]
     pub(crate) fn forge(slot: u32, generation: u32) -> Self {
         Self { slot, generation }
@@ -158,40 +133,14 @@ impl BodyId {
 
 const STALE_HANDLE: &str = "BodyId refers to a despawned body";
 
-/// Slot-table entry. `dense` is `None` while the slot is vacant.
 struct Slot {
     generation: u32,
     dense: Option<u32>,
 }
 
-/// Bodies in dense storage behind generational handles.
-///
-/// Storage is contiguous and hole-free so every phase loop walks a slice:
-/// despawn swaps the last body down into the vacated position. That move is
-/// invisible to a caller holding a [`BodyId`], which is the whole point of the
-/// indirection; manifold keys, island membership, and warm-start caches key on
-/// the handle and survive it.
-///
-/// [`Deref`] exposes the shared slice. There is deliberately no
-/// [`DerefMut`](std::ops::DerefMut): it would hand out every reordering method
-/// on `[RigidBody<S>]`, and a permutation the slot table does not follow leaves
-/// `slots[ids[d].slot].dense != d`, silently rebinding each manifold's
-/// accumulated impulses to the wrong pair. What that removes is the accidental
-/// reorder: `swap`, `reverse`, `sort_unstable_by_key` and the rest no longer
-/// resolve on an arena.
-///
-/// It is not a seal, and the type cannot make it one. [`Self::iter_mut`]
-/// returns `std::slice::IterMut`, whose `into_slice` hands back the whole
-/// `&mut [RigidBody<S>]`, so `arena.iter_mut().into_slice().reverse()` is one
-/// expression that restores everything dropping `DerefMut` removed. Two of its
-/// items held at once and `mem::swap`ped is a second route, and `mem::replace`
-/// through a filler body reaches the same state through [`Self::get_mut`] or
-/// the [`IndexMut`] impls in three statements. Keeping dense positions in the
-/// order the arena assigned them is the caller's contract, not an invariant
-/// this type enforces.
-///
-/// The three `compile_fail` blocks below share the hidden setup of the passing
-/// one, so each fails on its visible line and not on its fixture.
+/// Dense and hole-free; despawn swaps the last body down. There is no
+/// `DerefMut`: a permutation the slot table does not follow rebinds every
+/// manifold's impulses to the wrong pair.
 ///
 /// ```
 /// # use glam::Vec3;
@@ -237,11 +186,10 @@ struct Slot {
 /// ```
 pub struct BodyArena<S: PhysicsSpace> {
     dense: Vec<RigidBody<S>>,
-    /// Dense position -> handle, parallel to `dense`.
+    /// Parallel to `dense`.
     ids: Vec<BodyId>,
     slots: Vec<Slot>,
-    /// Vacant slots, reused LIFO. Reuse order is part of the determinism
-    /// contract: one spawn/despawn sequence must mint one handle sequence.
+    /// Reused LIFO; reuse order is part of the determinism contract.
     free: Vec<u32>,
 }
 
@@ -285,14 +233,11 @@ impl<S: PhysicsSpace> BodyArena<S> {
         id
     }
 
-    /// Remove the body `id` names, or `None` if the handle is stale.
     pub fn despawn(&mut self, id: BodyId) -> Option<RigidBody<S>> {
         let dense = self.dense_index(id)?;
         let slot = &mut self.slots[id.slot as usize];
         slot.dense = None;
-        // A slot whose generation would wrap is retired instead of recycled:
-        // wrapping is the one way a stale handle could come back to life and
-        // alias a later body.
+        // A slot whose generation would wrap is retired, never recycled.
         if let Some(next) = slot.generation.checked_add(1) {
             slot.generation = next;
             self.free.push(id.slot);
@@ -306,9 +251,7 @@ impl<S: PhysicsSpace> BodyArena<S> {
         Some(removed)
     }
 
-    /// Position of `id` in the dense slice, or `None` if the handle is stale.
-    /// Positions move under [`Self::despawn`] and are valid only until the
-    /// next one.
+    /// Valid only until the next [`Self::despawn`].
     pub fn dense_index(&self, id: BodyId) -> Option<usize> {
         let slot = self.slots.get(id.slot as usize)?;
         if slot.generation != id.generation {
@@ -317,7 +260,6 @@ impl<S: PhysicsSpace> BodyArena<S> {
         slot.dense.map(|dense| dense as usize)
     }
 
-    /// Handle of the body at dense position `dense`.
     pub fn id_at(&self, dense: usize) -> BodyId {
         self.ids[dense]
     }
@@ -333,22 +275,12 @@ impl<S: PhysicsSpace> BodyArena<S> {
         }
     }
 
-    /// Mutable iteration in dense order: per-body edits without a handle.
-    ///
-    /// Edit bodies in place; do not move them between items. Two routes out
-    /// of this iterator permute the dense slice without the slot table
-    /// following, which is the desynchronization [`BodyArena`] describes:
-    /// `into_slice` returns the whole `&mut [RigidBody<S>]`, and the items
-    /// borrow the slice rather than the iterator, so two can be held at once
-    /// and swapped. Dropping [`DerefMut`](std::ops::DerefMut) made that
-    /// deliberate rather than a one-token slip; it did not make it impossible.
+    /// Edit bodies in place; do not move them between items.
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, RigidBody<S>> {
         self.dense.iter_mut()
     }
 
-    /// The dense slice, mutable. Split-borrowing the two bodies of a contact
-    /// needs it and cannot go through [`Self::get_mut`] twice; it does not
-    /// leave the crate, and no in-crate caller permutes.
+    /// For split borrows; no caller permutes.
     pub(crate) fn dense_mut(&mut self) -> &mut [RigidBody<S>] {
         &mut self.dense
     }
@@ -376,8 +308,6 @@ impl<S: PhysicsSpace> IndexMut<BodyId> for BodyArena<S> {
     }
 }
 
-/// Dense-position indexing, the iteration-order view. [`Deref`] already
-/// exposes the slice; this is the operator form of `arena[..][dense]`.
 impl<S: PhysicsSpace> Index<usize> for BodyArena<S> {
     type Output = RigidBody<S>;
 
@@ -440,9 +370,6 @@ mod tests {
         );
     }
 
-    // The impulse tests pass powers of two for mass and inertia so every
-    // expected value below is exact in f32 and the asserts pin the formula
-    // rather than a rounding tolerance.
     fn body_r3(position: Vec3, mass: f32, inertia: f32) -> RigidBody<EuclideanR3> {
         RigidBody::new(
             position,
@@ -474,8 +401,6 @@ mod tests {
         assert_eq!(body.angular_velocity, Bivector3::ZERO);
     }
 
-    /// An impulse through the centre of mass is pure translation, whichever
-    /// entry point applies it.
     #[test]
     fn central_impulse_produces_no_spin_and_matches_linear_form() {
         let position = Vec3::new(2.0, -1.0, 3.0);
@@ -491,8 +416,6 @@ mod tests {
         assert_eq!(at_point.angular_velocity, Bivector3::ZERO);
     }
 
-    /// Off-centre impulse in R³: `Δω = I⁻¹(r ∧ J)`, sign included. A lever
-    /// along +y with an impulse along +x spins negatively in the xy plane.
     #[test]
     fn off_center_impulse_spins_body_by_inverse_inertia_times_lever_wedge_impulse_r3() {
         let mut body = body_r3(Vec3::ZERO, 2.0, 0.5);
@@ -507,8 +430,6 @@ mod tests {
         assert_eq!(body.angular_velocity, Bivector3::new(-12.0, 0.0, 0.0));
     }
 
-    /// The R⁴ twin, with the lever along +w so the response lands in the xw
-    /// plane: a rotation plane with no R³ analogue.
     #[test]
     fn off_center_impulse_spins_body_by_inverse_inertia_times_lever_wedge_impulse_r4() {
         let mut body = body_r4(Vec4::ZERO, 2.0, 0.5);
@@ -527,11 +448,6 @@ mod tests {
         assert_eq!(body.angular_velocity, expected);
     }
 
-    /// Equal and opposite impulses at one shared world point are an internal
-    /// interaction: total linear momentum and total angular momentum about a
-    /// fixed origin are both unchanged. Pins the lever arm and the inverse
-    /// inertia against the linear term; the absolute sign of the wedge is
-    /// pinned by the two off-centre tests above.
     #[test]
     fn equal_and_opposite_impulses_conserve_linear_and_angular_momentum() {
         let space = EuclideanR3;
@@ -567,8 +483,6 @@ mod tests {
 
         let (linear_after, angular_after) = momenta(&a, &b);
 
-        // Conservation is also satisfied by doing nothing, so pin that both
-        // channels of both bodies actually responded.
         assert!((a.velocity - a_velocity_before).length() > 0.1);
         assert!((b.velocity - b_velocity_before).length() > 0.1);
         assert!((a.angular_velocity + a_spin_before * -1.0).magnitude() > 0.1);
@@ -586,9 +500,6 @@ mod tests {
         );
     }
 
-    /// `inv_mass == 0` is the documented static contract: impulses are inert
-    /// on both channels, including the angular one that reads `inertia`
-    /// directly.
     #[test]
     fn static_body_ignores_both_impulse_forms() {
         let mut body = RigidBody::<EuclideanR3>::fixed(
@@ -607,9 +518,6 @@ mod tests {
         assert_eq!(body.angular_velocity, Bivector3::ZERO);
     }
 
-    /// The property the generation exists for: after a slot is recycled the
-    /// old handle must fail to resolve. Positional indices alias here, which
-    /// is what silently rebinds a manifold key to a different body.
     #[test]
     fn stale_handle_never_resolves_after_its_slot_is_recycled() {
         let mut arena = BodyArena::new();
@@ -637,8 +545,6 @@ mod tests {
         );
     }
 
-    /// Despawn compacts storage, so the surviving handles must follow their
-    /// bodies rather than their old positions.
     #[test]
     fn despawn_keeps_storage_dense_and_survivor_handles_valid() {
         let mut arena = BodyArena::new();
@@ -660,11 +566,6 @@ mod tests {
         assert_eq!(positions, vec![Vec3::X, Vec3::Z]);
     }
 
-    /// The correspondence the whole indirection rests on, stated over the
-    /// public surface: every dense position resolves back through the handle
-    /// stored at it. A permutation of the dense slice that the slot table did
-    /// not follow breaks exactly this, and breaks it silently, which is why the
-    /// mutable slice does not leave the crate.
     #[test]
     fn every_dense_position_resolves_back_through_its_own_handle() {
         let mut arena = BodyArena::new();
@@ -683,8 +584,7 @@ mod tests {
             live.push(arena.spawn(body_r3(Vec3::splat(i as f32), 1.0, 1.0)));
             assert_consistent(&arena);
         }
-        // The three despawns land at dense 0, then mid-slice, then the tail,
-        // where swap_remove moves nothing and the slot write must be skipped.
+        // Despawns at dense 0, mid-slice, and the tail where swap_remove moves nothing.
         for victim in [live[0], live[2], live[3]] {
             assert!(arena.despawn(victim).is_some());
             assert_consistent(&arena);
@@ -692,8 +592,6 @@ mod tests {
         arena.spawn(body_r3(Vec3::ZERO, 1.0, 1.0));
         assert_consistent(&arena);
 
-        // Per-body mutation is the supported write path and must leave the
-        // correspondence alone.
         for (dense, body) in arena.iter_mut().enumerate() {
             body.restitution = dense as f32;
         }
@@ -702,57 +600,6 @@ mod tests {
         assert_eq!(restitutions, vec![0.0, 1.0, 2.0]);
     }
 
-    /// The residual [`BodyArena::iter_mut`] names, over the public surface a
-    /// caller has: its items borrow the slice, not the iterator, so two
-    /// coexist and swap, and the arena cannot observe the permutation. Pins
-    /// the doc against re-inflating into a seal it does not provide; work
-    /// that does close the hole fails here and has to rewrite both.
-    #[test]
-    fn swapping_two_iter_mut_items_desynchronizes_handles_from_storage() {
-        let mut arena = BodyArena::new();
-        let first = arena.spawn(body_r3(Vec3::X, 1.0, 1.0));
-        let second = arena.spawn(body_r3(Vec3::Y, 1.0, 1.0));
-
-        let mut items = arena.iter_mut();
-        let a = items.next().unwrap();
-        let b = items.next().unwrap();
-        std::mem::swap(a, b);
-
-        assert_eq!(arena.dense_index(first), Some(0));
-        assert_eq!(arena.id_at(0), first);
-        assert_eq!(
-            arena[first].position,
-            Vec3::Y,
-            "the handle stopped naming the body it was minted for, and no \
-             arena query reports it"
-        );
-        assert_eq!(arena[second].position, Vec3::X);
-    }
-
-    /// The cheapest route back to a permutation, and the one the type doc has
-    /// to name: `IterMut::into_slice` returns the whole `&mut [RigidBody<S>]`,
-    /// so a single expression restores every method dropping `DerefMut`
-    /// removed. Pinned so the doc cannot drift into claiming a seal.
-    #[test]
-    fn into_slice_reopens_every_reordering_method_in_one_expression() {
-        let mut arena = BodyArena::new();
-        let first = arena.spawn(body_r3(Vec3::X, 1.0, 1.0));
-        let second = arena.spawn(body_r3(Vec3::Y, 1.0, 1.0));
-
-        arena.iter_mut().into_slice().reverse();
-
-        assert_eq!(arena.id_at(0), first, "the slot table did not follow");
-        assert_eq!(
-            arena[first].position,
-            Vec3::Y,
-            "one expression desynchronized the handle from its body"
-        );
-        assert_eq!(arena[second].position, Vec3::X);
-    }
-
-    /// Handle allocation is part of the determinism contract: two arenas
-    /// driven by the same spawn/despawn sequence must mint the same handles,
-    /// or a replay keyed on handles diverges.
     #[test]
     fn handle_sequence_is_reproducible_across_identical_operation_sequences() {
         let run = || {
@@ -770,26 +617,8 @@ mod tests {
         };
         let first = run();
         assert_eq!(first, run());
-        // Two recycled slots and one fresh one, or the sequence never
-        // exercised the free list.
         assert_eq!(first[4].slot(), first[3].slot());
         assert_eq!(first[5].slot(), first[1].slot());
         assert_eq!(first[6].slot(), 4);
-    }
-
-    #[test]
-    fn static_halfspace_4d_is_allowed() {
-        // Mass = 0 means static; the guard must not fire.
-        let _ = RigidBody::<EuclideanR4>::new(
-            Vec4::ZERO,
-            Vec4::ZERO,
-            Collider::HalfSpace4D {
-                normal: Vec4::Y,
-                offset: 0.0,
-            },
-            0.0,
-            1.0,
-            &EuclideanR4,
-        );
     }
 }

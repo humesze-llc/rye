@@ -1,19 +1,14 @@
-//! Euclidean R², the 2D flat-space [`Space`] impl.
-//!
-//! Parallel to [`EuclideanR3`](crate::euclidean::EuclideanR3), but with `Point = Vec2` and
-//! orientation represented by [`Rotor2`] (a unit complex number) rather than a quaternion.
-//! Used by 2D physics demos and any drop-in 2D simulation.
-
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::bivector::{Rotor, Rotor2};
-use crate::space::Space;
+use crate::space::{IsometryGroup, Space};
 
 /// A rigid motion of R²: a rotation followed by a translation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso2 {
     pub rotation: Rotor2,
+    /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec2,
 }
 
@@ -44,8 +39,6 @@ impl Default for Iso2 {
     }
 }
 
-// Rotor2 needs Serialize/Deserialize for Iso2's derive. Add a thin impl that piggybacks on
-// serde via a plain pair.
 impl Serialize for Rotor2 {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         (self.a, self.b).serialize(s)
@@ -59,14 +52,12 @@ impl<'de> Deserialize<'de> for Rotor2 {
     }
 }
 
-/// Euclidean R² with the standard metric. Stateless unit struct.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EuclideanR2;
 
 impl Space for EuclideanR2 {
     type Point = Vec2;
     type Vector = Vec2;
-    type Iso = Iso2;
 
     fn distance(&self, a: Vec2, b: Vec2) -> f32 {
         (a - b).length()
@@ -84,13 +75,19 @@ impl Space for EuclideanR2 {
         v
     }
 
+    fn is_chart_flat(&self) -> bool {
+        true
+    }
+}
+
+impl IsometryGroup for EuclideanR2 {
+    type Iso = Iso2;
+
     fn iso_identity(&self) -> Iso2 {
         Iso2::IDENTITY
     }
 
     fn iso_compose(&self, a: Iso2, b: Iso2) -> Iso2 {
-        // (R_a, t_a) ∘ (R_b, t_b) applied to p:
-        //   R_a (R_b p + t_b) + t_a = (R_a R_b) p + (R_a t_b + t_a)
         Iso2 {
             rotation: a.rotation * b.rotation,
             translation: a.rotation.apply(b.translation) + a.translation,
@@ -110,14 +107,7 @@ impl Space for EuclideanR2 {
     }
 
     fn iso_transport(&self, iso: Iso2, _at: Vec2, v: Vec2) -> Vec2 {
-        // Translation drops out for tangent vectors; rotation acts.
         iso.rotation.apply(v)
-    }
-
-    /// ℝ² is globally flat: chart-coord SDFs (half-planes, axis-aligned boxes) are
-    /// mathematically correct.
-    fn is_chart_flat(&self) -> bool {
-        true
     }
 }
 

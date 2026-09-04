@@ -1,38 +1,17 @@
-//! egui + wgpu + winit integration owned by `loam-app::Runner`.
-//!
-//! Per-frame lifecycle: window events feed
-//! `egui_winit::State::on_window_event`; [`UiIntegration::begin_frame`]
-//! drains input before `App::ui`; [`UiIntegration::paint`] overlays the
-//! egui output onto the scene pass's color attachment.
-
 use std::sync::Arc;
 
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use winit::window::Window;
 
-/// Per-window egui state, owned by `loam-app::Runner`.
 pub struct UiIntegration {
     ctx: egui::Context,
     winit_state: egui_winit::State,
     renderer: Renderer,
-    /// Pixels-per-point cached at the most recent `begin_frame`.
     pixels_per_point: f32,
-    /// Last frame's `wants_pointer_input || wants_keyboard_input`.
-    last_focus: bool,
 }
 
 impl UiIntegration {
-    /// Construct from the device and window. `surface_format` is the format of
-    /// the view [`UiIntegration::paint`] will be handed, which is not
-    /// necessarily the swapchain's; callers pass `RenderDevice::ui_format`.
-    ///
-    /// An sRGB format selects egui-wgpu's linear-framebuffer fragment entry
-    /// point (and its warning), blending the feathered alpha ramp in linear
-    /// space so hairlines read thin. That is the fallback where the adapter
-    /// cannot reinterpret a view, and the composite path for every surface
-    /// format whose offscreen target has an sRGB sibling to take; the
-    /// direct-to-swapchain path passes the non-sRGB twin and gets gamma-space
-    /// blending.
+    /// `surface_format` must be the format of the view [`UiIntegration::paint`] receives.
     pub fn new(
         device: &wgpu::Device,
         window: &Arc<Window>,
@@ -62,11 +41,9 @@ impl UiIntegration {
             winit_state,
             renderer,
             pixels_per_point,
-            last_focus: false,
         }
     }
 
-    /// Forward a winit event to egui.
     pub fn handle_event(
         &mut self,
         window: &Window,
@@ -75,13 +52,8 @@ impl UiIntegration {
         self.winit_state.on_window_event(window, event)
     }
 
-    /// Force egui-wgpu's lazy pipeline compilation up front to kill the
-    /// first-paint stall, by running one minimal frame into a 1×1 dummy
-    /// attachment.
-    ///
-    /// `target_format` and `sample_count` MUST match the values
-    /// `UiIntegration::new` was constructed with, or the warm compiles the
-    /// wrong pipeline variant and warms nothing.
+    /// `target_format` and `sample_count` must match the values passed to
+    /// [`UiIntegration::new`], or the warm compiles the wrong pipeline variant.
     pub fn warm_pipelines(
         &mut self,
         device: &wgpu::Device,
@@ -106,7 +78,6 @@ impl UiIntegration {
         });
         let dummy_view = dummy_color.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // MSAA needs a separate single-sample resolve target.
         let resolve_tex = if sample_count > 1 {
             Some(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("loam-egui::warm resolve"),
@@ -133,8 +104,7 @@ impl UiIntegration {
             label: Some("loam-egui::warm encoder"),
         });
 
-        // Text, filled rect, and line stroke cover the lazily-compiled
-        // egui-wgpu pipeline variants the demo set needs.
+        // Text, filled rect and line stroke cover the pipeline variants the demos use.
         let ctx = self.begin_frame(window);
         let ctx = ctx.clone();
         egui::Area::new(egui::Id::new("loam-egui::warm")).show(&ctx, |ui| {
@@ -158,7 +128,7 @@ impl UiIntegration {
         queue.submit(Some(encoder.finish()));
     }
 
-    /// Drain accumulated input and start a fresh egui frame.
+    /// Refreshes the hit test [`crate::UiCapture`] reads; call before `App::update`.
     pub fn begin_frame(&mut self, window: &Window) -> &egui::Context {
         let raw_input = self.winit_state.take_egui_input(window);
         self.pixels_per_point = window.scale_factor() as f32;
@@ -166,23 +136,8 @@ impl UiIntegration {
         &self.ctx
     }
 
-    /// Finish the egui frame and paint onto `view`; pairs with `begin_frame`.
-    /// Overlays with `LoadOp::Load`, so the caller must have already rendered
-    /// the scene into the same attachment. `viewport` is `(width_px,
-    /// height_px)`.
-    ///
-    /// `view` is the caller's UI-pass view of that attachment and carries the
-    /// format `new` was constructed with: on the direct-to-swapchain paths a
-    /// non-sRGB reinterpretation, of the multisampled attachment with MSAA on
-    /// and of the swapchain texture with MSAA off; on the composite path the
-    /// offscreen scene texture's own view, the one the scene pass drew
-    /// through, with the swapchain reached later by the composite pass rather
-    /// than here.
-    ///
-    /// `resolve_target` is `Some` exactly when `view` is multisampled: this
-    /// pass runs last, so it carries the frame's deferred MSAA resolve. Under
-    /// the windowed runner that target is a single-sampled view of the
-    /// swapchain texture.
+    /// Loads the attachment, so the scene must already be in `view`. `viewport`
+    /// is in pixels; `resolve_target` is `Some` only when `view` is multisampled.
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &mut self,
@@ -195,9 +150,7 @@ impl UiIntegration {
         viewport: (u32, u32),
     ) {
         let full_output = self.ctx.end_pass();
-        self.last_focus = self.ctx.wants_pointer_input() || self.ctx.wants_keyboard_input();
 
-        // Forward platform output (cursor changes, clipboard, open-link).
         self.winit_state
             .handle_platform_output(window, full_output.platform_output);
 
@@ -241,11 +194,5 @@ impl UiIntegration {
         for id in &full_output.textures_delta.free {
             self.renderer.free_texture(id);
         }
-    }
-
-    /// `true` if egui wants pointer or keyboard input; gate gameplay input on
-    /// `!ui_has_focus()`.
-    pub fn ui_has_focus(&self) -> bool {
-        self.last_focus
     }
 }

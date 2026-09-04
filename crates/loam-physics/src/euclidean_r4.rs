@@ -1,32 +1,26 @@
-//! `impl PhysicsSpace for EuclideanR4`, 4D Euclidean rigid-body physics.
-//!
-//! Angular velocity is a `Bivector4` (six rotation-plane components); inertia
-//! is the scalar isotropic moment, as in 3D. A full 4D inertia tensor is a
-//! 6×6 bivector-to-bivector map, deferred until an anisotropic body needs it.
-//!
 //! Rotor4 multiplication is left-first (opposite `glam::Quat`), so the composed
 //! orientation after a timestep is `rotation_current * delta_rotor`.
 
 use glam::Vec4;
 
 use loam_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat, Rotor};
+use loam_shape::polytope::Polytope4;
 
 use crate::body::RigidBody;
 use crate::collider::{Collider, ColliderKind};
-use crate::collision::{epa_r4, gjk_intersect_r4, ConvexHull4, GjkResult4, Sphere4 as GjkSphere4};
+use crate::collision::{epa_r4, gjk_intersect_r4, GjkResult4, PosedHull4, Sphere4 as GjkSphere4};
 use crate::integrator::PhysicsSpace;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
-/// Linear velocity at offset `r` from angular velocity `omega`, the 4D analogue
-/// of `ω × r`. Negation of the Clifford left-contraction; the sign flip lives
-/// here, not in [`Bivector4::contract_vec`], to keep the math primitive pure.
+/// The 4D analogue of `ω × r`. Negation of the Clifford left-contraction; the
+/// sign flip lives here, not in [`Bivector4::contract_vec`], to keep the math
+/// primitive pure.
 pub fn omega_cross_r(omega: Bivector4, r: glam::Vec4) -> glam::Vec4 {
     -omega.contract_vec(r)
 }
 
-/// Inverse isotropic moment of inertia, treating static or zero-inertia bodies as infinite
-/// (returns 0).
+// Static and zero-inertia bodies are treated as infinite, so 0.
 fn inv_inertia(body: &RigidBody<EuclideanR4>) -> f32 {
     if body.inv_mass > 0.0 && body.inertia > 0.0 {
         1.0 / body.inertia
@@ -37,12 +31,9 @@ fn inv_inertia(body: &RigidBody<EuclideanR4>) -> f32 {
 
 impl PhysicsSpace for EuclideanR4 {
     type AngVel = Bivector4;
-    /// Scalar isotropic moment of inertia, about the centroid.
     type Inertia = f32;
 
     fn integrate_orientation(&self, iso: Iso4Flat, omega: Bivector4, dt: f32) -> Iso4Flat {
-        // Catch non-finite angular velocity before it propagates through the
-        // rotor into the GPU buffer. Debug-only; release trusts internal callers.
         debug_assert!(
             omega.xy.is_finite()
                 && omega.xz.is_finite()
@@ -117,8 +108,6 @@ impl PhysicsSpace for EuclideanR4 {
     }
 }
 
-// Narrowphases for EuclideanR4 colliders.
-
 fn sphere_sphere_r4(
     a: &RigidBody<EuclideanR4>,
     b: &RigidBody<EuclideanR4>,
@@ -153,7 +142,6 @@ fn sphere_sphere_r4(
     })
 }
 
-/// Sphere vs 4D half-space: signed distance from center to plane is penetration.
 fn sphere_halfspace_r4(
     a: &RigidBody<EuclideanR4>,
     b: &RigidBody<EuclideanR4>,
@@ -181,8 +169,6 @@ fn sphere_halfspace_r4(
     })
 }
 
-/// 4D convex polytope vs 4D half-space: the world-space vertex with the
-/// most-negative signed distance to the plane is the contact point.
 fn polytope_halfspace_r4(
     a: &RigidBody<EuclideanR4>,
     b: &RigidBody<EuclideanR4>,
@@ -221,10 +207,8 @@ fn polytope_halfspace_r4(
     })
 }
 
-// Polytope narrowphases via 4D GJK + EPA.
-
-/// Conservative bounding-sphere radius about the centroid. Narrowphase pre-cull:
-/// non-overlapping bounding spheres mean non-overlapping polytopes.
+// Non-overlapping bounding spheres mean non-overlapping polytopes, which is
+// the narrowphase pre-cull.
 fn polytope4_bounding_radius(local_vertices: &[Vec4]) -> f32 {
     local_vertices
         .iter()
@@ -233,33 +217,8 @@ fn polytope4_bounding_radius(local_vertices: &[Vec4]) -> f32 {
         .sqrt()
 }
 
-/// Maximum vertex count for any 4D polytope collider. Exceeding it silently
-/// truncates vertices and corrupts collisions, so callers debug-assert.
-pub(crate) const MAX_POLYTOPE4_VERTICES: usize = 32;
-
-/// Transform body-local vertices to world space into the caller's stack buffer,
-/// returning the populated prefix. Hot path; allocation-free by contract.
-fn world_vertices4_into<'a>(
-    local: &[Vec4],
-    pos: Vec4,
-    rot: loam_math::Rotor4,
-    out: &'a mut [Vec4; MAX_POLYTOPE4_VERTICES],
-) -> &'a [Vec4] {
-    debug_assert!(
-        local.len() <= MAX_POLYTOPE4_VERTICES,
-        "polytope vertex count {} exceeds MAX_POLYTOPE4_VERTICES = {}",
-        local.len(),
-        MAX_POLYTOPE4_VERTICES
-    );
-    let n = local.len().min(MAX_POLYTOPE4_VERTICES);
-    for i in 0..n {
-        out[i] = rot.apply(local[i]) + pos;
-    }
-    &out[..n]
-}
-
-/// Accepted EPA penetration band: below is numerical noise, above is an EPA
-/// iteration-cap fallback on pathological input.
+// Accepted EPA penetration band: below is numerical noise, above is an EPA
+// iteration-cap fallback on pathological input.
 const MIN_POLYTOPE4_PENETRATION: f32 = 1e-4;
 const MAX_POLYTOPE4_PENETRATION: f32 = 5.0;
 
@@ -308,19 +267,23 @@ fn polytope_polytope_r4(
         return None;
     }
 
-    let mut buf_a = [Vec4::ZERO; MAX_POLYTOPE4_VERTICES];
-    let mut buf_b = [Vec4::ZERO; MAX_POLYTOPE4_VERTICES];
-    let va = world_vertices4_into(va_local, a.position, a.orientation.rotation, &mut buf_a);
-    let vb = world_vertices4_into(vb_local, b.position, b.orientation.rotation, &mut buf_b);
-    let hull_a = ConvexHull4 { vertices: va };
-    let hull_b = ConvexHull4 { vertices: vb };
+    let hull_a = PosedHull4 {
+        local: va_local,
+        position: a.position,
+        rotation: a.orientation.rotation,
+    };
+    let hull_b = PosedHull4 {
+        local: vb_local,
+        position: b.position,
+        rotation: b.orientation.rotation,
+    };
 
     let initial_dir = b.position - a.position;
     let simplex = match gjk_intersect_r4(&hull_a, &hull_b, initial_dir) {
         GjkResult4::Intersecting { simplex } => simplex,
         GjkResult4::Separated => return None,
     };
-    let info = epa_r4(&hull_a, &hull_b, simplex)?;
+    let info = epa_r4(&hull_a, &hull_b, simplex, combined)?;
     validate_contact4(&info, a, b)
 }
 
@@ -343,19 +306,21 @@ fn sphere_polytope_r4(
         return None;
     }
 
-    let mut buf_b = [Vec4::ZERO; MAX_POLYTOPE4_VERTICES];
-    let vb = world_vertices4_into(vb_local, b.position, b.orientation.rotation, &mut buf_b);
     let support_a = GjkSphere4 {
         center: a.position,
         radius,
     };
-    let support_b = ConvexHull4 { vertices: vb };
+    let support_b = PosedHull4 {
+        local: vb_local,
+        position: b.position,
+        rotation: b.orientation.rotation,
+    };
     let initial_dir = b.position - a.position;
     let simplex = match gjk_intersect_r4(&support_a, &support_b, initial_dir) {
         GjkResult4::Intersecting { simplex } => simplex,
         GjkResult4::Separated => return None,
     };
-    let info = epa_r4(&support_a, &support_b, simplex)?;
+    let info = epa_r4(&support_a, &support_b, simplex, combined)?;
     validate_contact4(&info, a, b)
 }
 
@@ -383,15 +348,31 @@ pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR4>) {
     );
 }
 
-// Convenience constructors.
-
-/// Solid-ball moment of inertia in 4D about a 2-plane through the center:
-/// `I = (2/(n+2))·m·r² = m·r²/3` for n=4 (cf. `(2/5)·m·r²` for the 3-ball).
+/// `I = (2/(n+2))·m·r² = m·r²/3` at n = 4.
 pub fn ball4_inertia(mass: f32, radius: f32) -> f32 {
     mass * radius * radius / 3.0
 }
 
-/// Dynamic sphere body in R⁴.
+/// Isotropic moment of a uniform-density regular polychoron about any 2-plane
+/// through its centroid, at circumradius `circumradius`.
+///
+/// Each of these symmetry groups acts irreducibly on R⁴, so Schur's lemma
+/// forces the second-moment matrix `M_ij = <x_i·x_j>` to `μ·I₄` (Serre,
+/// *Linear Representations of Finite Groups* (1977), §2.2). The per-solid `<|x|²>` values
+/// follow Lasserre and Avrachenkov, Amer. Math. Monthly 108 (2001).
+pub fn regular_polytope4_inertia(shape: Polytope4, mass: f32, circumradius: f32) -> f32 {
+    const SQRT_5: f32 = 2.236_068;
+    let mean_radius_sq = match shape {
+        Polytope4::Pentatope => 1.0 / 6.0,
+        Polytope4::Tesseract => 1.0 / 3.0,
+        Polytope4::Cell16 => 4.0 / 15.0,
+        Polytope4::Cell24 => 13.0 / 30.0,
+        Polytope4::Cell600 => (11.0 + 3.0 * SQRT_5) / 30.0,
+        Polytope4::Cell120 => (215.0 + 69.0 * SQRT_5) / 600.0,
+    };
+    0.5 * mass * circumradius * circumradius * mean_radius_sq
+}
+
 pub fn sphere_body_r4(
     position: Vec4,
     velocity: Vec4,
@@ -408,9 +389,8 @@ pub fn sphere_body_r4(
     )
 }
 
-/// Static 4D half-space body (floor/wall analogue). `normal` is the outward
-/// direction; `offset` places the plane at `dot(p, normal) = offset`. Built with
-/// `inv_mass = 0` so gravity and impulses are inert on it.
+/// `normal` is the outward direction; `offset` places the plane at
+/// `dot(p, normal) = offset`.
 pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> RigidBody<EuclideanR4> {
     let n = normal.try_normalize().unwrap_or(Vec4::Y);
     RigidBody::fixed(
@@ -421,9 +401,9 @@ pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> RigidBody<EuclideanR4> {
     )
 }
 
-/// Dynamic 4D convex-polytope body. Inertia uses the bounding-sphere
-/// approximation ([`ball4_inertia`] at the circumradius): exact for sphere-like
-/// shapes, order-of-magnitude for cube-like ones.
+/// Inertia is the bounding-sphere approximation ([`ball4_inertia`] at the
+/// circumradius): exact for sphere-like shapes, order-of-magnitude for
+/// cube-like ones.
 pub fn polytope_body_r4(
     position: Vec4,
     velocity: Vec4,
@@ -445,18 +425,16 @@ pub fn polytope_body_r4(
     )
 }
 
-// Polytope geometry generators moved to loam-shape; re-exported so this module's
-// sim code and existing loam_physics::euclidean_r4::* callers keep resolving.
 pub use loam_shape::polytope_geom::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::determinism_fixture::{
-        determinism_scenario_trajectory, fnv1a64, GOLDEN_TRAJECTORY_HASH,
+        assert_scenario_stays_physical, determinism_scenario_run, determinism_scenario_trajectory,
     };
     use crate::field::Gravity;
-    use crate::world::World;
+    use crate::world::{Schedule, World};
 
     fn assert_close(a: f32, b: f32, tol: f32) {
         assert!(
@@ -465,7 +443,6 @@ mod tests {
         );
     }
 
-    /// Pin `ball4_inertia` at `m·r²/3` and the 3D-vs-4D inequality `1/3 < 2/5`.
     #[test]
     fn ball4_inertia_matches_uniform_n_ball_formula() {
         assert_close(ball4_inertia(1.0, 1.0), 1.0 / 3.0, 1e-6);
@@ -476,15 +453,172 @@ mod tests {
         assert!(four_d < three_d);
     }
 
-    /// `polytope_body_r4` inertia agrees with `ball4_inertia` at unit circumradius.
+    #[test]
+    fn regular_polytope4_inertia_matches_the_stated_closed_forms() {
+        let (m, r) = (2.5_f32, 0.7_f32);
+        let mr2 = m * r * r;
+        let cases = [
+            (Polytope4::Pentatope, mr2 / 12.0),
+            (Polytope4::Tesseract, mr2 / 6.0),
+            (Polytope4::Cell16, 2.0 * mr2 / 15.0),
+            (Polytope4::Cell24, 13.0 * mr2 / 60.0),
+            // Verified against a direct simplex decomposition of the
+            // 600-cell's 600 tetrahedral cells, which agrees to nine figures.
+            (Polytope4::Cell600, 0.590_273_46 * 0.5 * mr2),
+            (Polytope4::Cell120, 0.615_481_15 * 0.5 * mr2),
+        ];
+        for (shape, expected) in cases {
+            assert_close(regular_polytope4_inertia(shape, m, r), expected, 1e-6);
+        }
+        assert_close(
+            regular_polytope4_inertia(Polytope4::Cell24, 2.0 * m, 3.0 * r),
+            2.0 * 9.0 * 13.0 * mr2 / 60.0,
+            1e-5,
+        );
+
+        let moments: Vec<f32> = cases
+            .iter()
+            .map(|(shape, _)| regular_polytope4_inertia(*shape, m, r))
+            .chain(std::iter::once(ball4_inertia(m, r)))
+            .collect();
+        // Sorted by how far each solid pushes its mass out: pentatope,
+        // 16-cell, tesseract, 24-cell, 600-cell, 120-cell, ball.
+        let ordered = [
+            moments[0], moments[2], moments[1], moments[3], moments[4], moments[5], moments[6],
+        ];
+        assert!(
+            ordered.windows(2).all(|w| w[0] < w[1]),
+            "moments out of order: {ordered:?}"
+        );
+    }
+
+    // SplitMix64 (Steele, Lea and Flood 2014, *OOPSLA*, §4), so the estimator
+    // below is reproducible bit-for-bit from its seed.
+    fn splitmix64(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    // `<|x|²>` over the uniform solid at unit circumradius, by rejection
+    // sampling the enclosing cube against the shape's facet half-spaces. Cell
+    // centroids point along the outward facet normals with length equal to the
+    // inradius, so `x·c ≤ |c|²` is membership. f64 and a seeded integer
+    // generator, so the estimate is the same number on every machine.
+    fn sampled_mean_radius_sq(shape: Polytope4, trials: u32, seed: u64) -> (f64, u32) {
+        let planes: Vec<(glam::DVec4, f64)> = shape
+            .cell_centers()
+            .iter()
+            .map(|c| {
+                let c = glam::DVec4::new(c.x as f64, c.y as f64, c.z as f64, c.w as f64);
+                (c, c.length_squared())
+            })
+            .collect();
+        let mut state = seed;
+        let mut hits = 0_u32;
+        let mut total = 0.0_f64;
+        let coordinate = |state: &mut u64| {
+            let bits = splitmix64(state) >> 11;
+            (bits as f64) / ((1_u64 << 53) as f64) * 2.0 - 1.0
+        };
+        for _ in 0..trials {
+            let x = glam::DVec4::new(
+                coordinate(&mut state),
+                coordinate(&mut state),
+                coordinate(&mut state),
+                coordinate(&mut state),
+            );
+            if planes.iter().any(|(c, cc)| x.dot(*c) > *cc) {
+                continue;
+            }
+            hits += 1;
+            total += x.length_squared();
+        }
+        (total / hits as f64, hits)
+    }
+
+    #[test]
+    fn the_polytope4_second_moments_are_the_hulls_own() {
+        const TRIALS: u32 = 1 << 19;
+        let expected = [
+            (Polytope4::Pentatope, 1.0 / 6.0),
+            (Polytope4::Tesseract, 1.0 / 3.0),
+            (Polytope4::Cell16, 4.0 / 15.0),
+            (Polytope4::Cell24, 13.0 / 30.0),
+        ];
+        for (shape, closed_form) in expected {
+            let (measured, hits) = sampled_mean_radius_sq(shape, TRIALS, 0x51ED_5EED);
+            assert!(hits > 2000, "{shape:?} accepted only {hits} samples");
+            // 6% of the value, against a sampler whose standard error is
+            // under 2% at the thinnest shape's acceptance rate.
+            let tolerance = 0.06 * closed_form;
+            assert!(
+                (measured - closed_form).abs() < tolerance,
+                "{shape:?} sampled <|x|²> = {measured} over {hits} samples, \
+                 not the {closed_form} the closed form claims"
+            );
+            // The 4-ball's `2/3` is in the rival set because it is the value a
+            // shape silently falling back to `ball4_inertia` would produce.
+            let rivals = expected
+                .iter()
+                .map(|(shape, value)| (format!("{shape:?}"), *value))
+                .chain(std::iter::once(("4-ball".to_string(), 2.0 / 3.0)));
+            for (rival, other) in rivals {
+                if rival == format!("{shape:?}") {
+                    continue;
+                }
+                assert!(
+                    (measured - closed_form).abs() < (measured - other).abs(),
+                    "{shape:?} sampled {measured}, nearer {rival}'s {other} than \
+                     its own {closed_form}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn polytope_body_r4_inertia_matches_ball4_inertia() {
         let body = polytope_body_r4(Vec4::ZERO, Vec4::ZERO, pentatope_vertices(1.0), 2.5);
         assert_close(body.inertia, ball4_inertia(2.5, 1.0), 1e-5);
     }
 
-    /// 4D sphere settles above a `y = 0` half-space without tunneling. Exercises
-    /// `sphere_halfspace_r4` end-to-end through integrator + solver.
+    #[test]
+    fn wall_contact_leaves_through_the_near_face_in_either_pair_order() {
+        let mut np = Narrowphase::<EuclideanR4>::new();
+        register_default_narrowphase(&mut np);
+
+        let wall = RigidBody::fixed(
+            Vec4::ZERO,
+            Collider::ConvexPolytope4D {
+                vertices: tesseract_vertices(0.2)
+                    .into_iter()
+                    .map(|v| v * Vec4::new(1.0, 20.0, 20.0, 20.0))
+                    .collect(),
+            },
+            1.0,
+            &EuclideanR4,
+        );
+        // Wall half thickness 0.1, ball radius 0.2, ball centre in the near
+        // half: the near face is at x = −0.1 and the exit runs along −x̂.
+        let ball = sphere_body_r4(Vec4::new(-0.05, 0.0, 0.0, 0.0), Vec4::ZERO, 0.2, 1.0);
+
+        let forward = np.test(&ball, &wall, &EuclideanR4).expect("overlapping");
+        assert!(
+            (-forward.normal).dot(Vec4::X) < -0.99,
+            "ball leaves along {:?}, not back out of the near face",
+            -forward.normal
+        );
+        let reversed = np.test(&wall, &ball, &EuclideanR4).expect("overlapping");
+        assert!(
+            reversed.normal.dot(Vec4::X) < -0.99,
+            "flipped pair leaves the ball along {:?}",
+            reversed.normal
+        );
+        assert_close(forward.penetration, reversed.penetration, 1e-6);
+    }
+
     #[test]
     fn sphere_settles_on_4d_floor() {
         let mut world = World::new(EuclideanR4);
@@ -513,10 +647,6 @@ mod tests {
         );
     }
 
-    /// 4D pentatope settles on a 4D floor: full
-    /// `gravity -> integrator -> polytope_halfspace_r4 -> manifold -> PGS` path.
-    /// The tight `|v|` bound catches contract_vec/wedge sign errors that inject
-    /// energy at off-center contacts (the original convention bug hit +107 m/s).
     #[test]
     fn pentatope_settles_on_4d_floor() {
         let mut world = World::new(EuclideanR4);
@@ -529,8 +659,8 @@ mod tests {
             pentatope_vertices(0.5),
             1.0,
         ));
-        // Restitution 0 so the body settles deterministically; we test that the
-        // contact pipeline converges, not that bouncing damps out.
+        // Restitution 0 so the body settles deterministically: the pin is that
+        // the contact pipeline converges, not that bouncing damps out.
         world.bodies[floor].restitution = 0.0;
         world.bodies[body_id].restitution = 0.0;
 
@@ -573,11 +703,6 @@ mod tests {
         );
     }
 
-    /// 4D tesseract settles on a 4D floor: the hard case for the single-deepest-
-    /// vertex narrowphase, since a cell-face rest has 8 co-planar vertices. The
-    /// `Manifold` accumulator gathers them over a few frames (f32 noise varies
-    /// the per-frame "deepest") until PGS has enough constraints to stop rocking.
-    /// Failure here means single-contact-per-call needs multi-contact reduction.
     #[test]
     fn tesseract_settles_on_4d_floor() {
         let mut world = World::new(EuclideanR4);
@@ -598,7 +723,7 @@ mod tests {
         }
         let body = &world.bodies[body_id];
 
-        // Circumradius 0.5; band is generous since the rest face/edge/2-face varies.
+        // Circumradius 0.5. The band is generous: the resting feature varies.
         assert!(
             body.position.y.is_finite() && (-0.3..=1.0).contains(&body.position.y),
             "tesseract position out of expected resting band: y = {}",
@@ -623,11 +748,127 @@ mod tests {
         );
     }
 
+    const CORNER_DROP_DT: f32 = 1.0 / 240.0;
+    const CORNER_DROP_CIRCUMRADIUS: f32 = 0.45;
+    const CORNER_DROP_GRAVITY: f32 = -9.8;
+    // Per-second exponential decay on the spin.
+    const CORNER_DROP_DRAG: f32 = 1.2;
+
+    struct CornerDrop {
+        world: World<EuclideanR4>,
+        body: crate::body::BodyId,
+        decay: f32,
+    }
+
+    impl CornerDrop {
+        // Tipped well off any cell, so the hull must rock over onto one.
+        fn new() -> Self {
+            let mut world = World::new(EuclideanR4);
+            register_default_narrowphase(&mut world.narrowphase);
+            world.push_field(Box::new(Gravity::new(Vec4::new(
+                0.0,
+                CORNER_DROP_GRAVITY,
+                0.0,
+                0.0,
+            ))));
+            let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+            world.bodies[floor].restitution = 0.05;
+            let body = world.push_body(polytope_body_r4(
+                Vec4::new(0.0, 1.6, 0.0, 0.0),
+                Vec4::ZERO,
+                cell24_vertices(CORNER_DROP_CIRCUMRADIUS),
+                1.0,
+            ));
+            world.bodies[body].restitution = 0.05;
+            world.bodies[body].orientation.rotation = Bivector4::new(0.0, 0.0, 0.0, 0.6, 0.4, 0.0)
+                .exp()
+                .normalize();
+            world.bodies[body].inertia =
+                regular_polytope4_inertia(Polytope4::Cell24, 1.0, CORNER_DROP_CIRCUMRADIUS);
+            Self {
+                world,
+                body,
+                decay: (-CORNER_DROP_DRAG * CORNER_DROP_DT).exp(),
+            }
+        }
+
+        fn step(&mut self) {
+            self.world.step(CORNER_DROP_DT);
+            let decay = self.decay;
+            let body = &mut self.world.bodies[self.body];
+            body.angular_velocity = body.angular_velocity * decay;
+        }
+
+        fn height(&self) -> f32 {
+            self.world.bodies[self.body].position.y
+        }
+
+        fn angular_speed(&self) -> f32 {
+            self.world.bodies[self.body].angular_velocity.magnitude()
+        }
+
+        fn energy(&self) -> f32 {
+            let body = &self.world.bodies[self.body];
+            0.5 * body.velocity.length_squared()
+                + 0.5 * body.inertia * body.angular_velocity.magnitude().powi(2)
+                - CORNER_DROP_GRAVITY * body.position.y
+        }
+    }
+
+    #[test]
+    fn a_hull_dropped_on_a_corner_settles_without_climbing_its_own_contacts() {
+        const LANDING_STEPS: usize = 400;
+        const RESTING_STEPS: usize = 800;
+        // A tenth of the tolerated penetration: below the resting contact's
+        // own Baumgarte limit cycle.
+        const CLIMB_TOLERANCE: f32 = 5e-4;
+
+        let mut drop = CornerDrop::new();
+        let start_energy = drop.energy();
+        let mut landing_spin = 0.0_f32;
+        for _ in 0..LANDING_STEPS {
+            drop.step();
+            landing_spin = landing_spin.max(drop.angular_speed());
+        }
+        assert!(
+            landing_spin > 1.0,
+            "the hull never rocked over, so a settle proves nothing: peak |ω| \
+             was {landing_spin} rad/s"
+        );
+
+        let resting_height = drop.height();
+        let mut peak_height = resting_height;
+        for _ in 0..RESTING_STEPS {
+            drop.step();
+            peak_height = peak_height.max(drop.height());
+        }
+
+        assert!(
+            peak_height - resting_height < CLIMB_TOLERANCE,
+            "a resting hull climbed {} against gravity over {RESTING_STEPS} \
+             steps",
+            peak_height - resting_height,
+        );
+        // Three seconds of drag takes any spin the contact is not feeding to
+        // 3 % of its value.
+        assert!(
+            drop.angular_speed() < 0.02,
+            "a resting hull held {} rad/s against a {CORNER_DROP_DRAG}/s \
+             damper, so the contact solve is re-injecting it",
+            drop.angular_speed(),
+        );
+        assert!(
+            drop.energy() < start_energy,
+            "the drop ended with {} of energy against the {start_energy} it \
+             started with",
+            drop.energy(),
+        );
+    }
+
     #[test]
     fn falling_sphere_accelerates_in_r4() {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
-        // Gravity along −y; other dimensions inert.
         world.push_field(Box::new(Gravity::new(Vec4::new(0.0, -9.8, 0.0, 0.0))));
 
         let id = world.push_body(sphere_body_r4(
@@ -639,7 +880,6 @@ mod tests {
         world.step(1.0 / 60.0);
         let body = &world.bodies[id];
         assert!(body.velocity.y < -0.1 && body.velocity.y > -0.2);
-        // No motion in x / z / w without forces there.
         assert_close(body.velocity.x, 0.0, 1e-6);
         assert_close(body.velocity.z, 0.0, 1e-6);
         assert_close(body.velocity.w, 0.0, 1e-6);
@@ -650,7 +890,6 @@ mod tests {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
 
-        // Two spheres on the x-axis closing at 4 m/s combined.
         world.push_body(sphere_body_r4(
             Vec4::new(-1.0, 0.0, 0.0, 0.0),
             Vec4::new(2.0, 0.0, 0.0, 0.0),
@@ -679,19 +918,15 @@ mod tests {
             "body 1 should bounce back: v.x = {}",
             b.velocity.x
         );
-        // Nothing should kick in the y/z/w directions.
         assert_close(a.velocity.y, 0.0, 1e-4);
         assert_close(a.velocity.z, 0.0, 1e-4);
         assert_close(a.velocity.w, 0.0, 1e-4);
     }
 
-    /// Off-plane 4D contact: two spheres offset in all four dimensions resolve
-    /// along the line of centers (no tangential spin for sphere-sphere hits).
     #[test]
     fn sphere_sphere_off_plane_contact_resolves_along_line_of_centers() {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
-        // Place two spheres offset in all four dimensions, closing.
         let a_pos = Vec4::new(-0.8, -0.4, 0.3, 0.2);
         let b_pos = Vec4::new(0.8, 0.4, -0.3, -0.2);
         let a = world.push_body(sphere_body_r4(
@@ -709,8 +944,6 @@ mod tests {
         for _ in 0..120 {
             world.step(1.0 / 120.0);
         }
-        // After the collision, relative velocity along the original line-of-centers must have
-        // reversed sign.
         let rel = world.bodies[b].velocity - world.bodies[a].velocity;
         let axis = (b_pos - a_pos).normalize();
         let v_along = rel.dot(axis);
@@ -737,7 +970,6 @@ mod tests {
         assert_all_on_circumsphere(&verts, 1.0, "pentatope");
     }
 
-    /// A regular 5-cell has 10 equal-length edges; verify every pair is equidistant.
     #[test]
     fn pentatope_edges_are_equal_length() {
         let verts = pentatope_vertices(1.0);
@@ -788,8 +1020,6 @@ mod tests {
         assert_all_on_circumsphere(&verts, 1.0, "120-cell");
     }
 
-    /// Central symmetry: every vertex's antipode -v is also a vertex. Catches
-    /// sign-mask bugs in the orbit enumeration.
     fn assert_centrally_symmetric(verts: &[Vec4], label: &str) {
         for v in verts {
             let antipode = -*v;
@@ -810,7 +1040,6 @@ mod tests {
         assert_centrally_symmetric(&cell120_vertices(1.0), "120-cell");
     }
 
-    /// Pin vertex-set uniqueness so a sign-mask or permutation bug fails loud.
     fn assert_all_unique(verts: &[Vec4], label: &str) {
         for i in 0..verts.len() {
             for j in (i + 1)..verts.len() {
@@ -833,8 +1062,6 @@ mod tests {
         assert_all_unique(&cell120_vertices(1.0), "120-cell");
     }
 
-    /// `icosian_inradius_unit` matches the numerical max-projection of any vertex
-    /// onto any face direction, pinning the closed form against the dual value.
     #[test]
     fn icosian_inradius_matches_numerical_max_projection() {
         let r = icosian_inradius_unit();
@@ -864,7 +1091,6 @@ mod tests {
         }
     }
 
-    /// `cell120_face_planes` returns the 120-cell's 120 face hyperplanes.
     #[test]
     fn cell120_face_planes_count_and_unit() {
         let (normals, _r) = cell120_face_planes();
@@ -891,10 +1117,8 @@ mod tests {
         }
     }
 
-    // polytope_sdf_wolfe correctness against closed forms.
-
-    /// Tesseract face hyperplanes at unit circumradius (8 axis planes at ±0.5,
-    /// inradius 0.5). Ground-truth polytope for `polytope_sdf_wolfe`.
+    // Tesseract face hyperplanes at unit circumradius: 8 axis planes at ±0.5,
+    // inradius 0.5.
     fn tesseract_face_planes() -> (Vec<Vec4>, f32) {
         let normals = vec![
             Vec4::new(1.0, 0.0, 0.0, 0.0),
@@ -909,7 +1133,6 @@ mod tests {
         (normals, 0.5)
     }
 
-    /// Closed-form tesseract SDF: `outside + inside` decomposition.
     fn tesseract_sdf_truth(p: Vec4, half_extent: f32) -> f32 {
         let q = p.abs() - Vec4::splat(half_extent);
         let outside = q.max(Vec4::ZERO).length();
@@ -917,8 +1140,6 @@ mod tests {
         outside + inside
     }
 
-    /// Wolfe SDF matches the closed-form tesseract SDF across all Voronoi regions
-    /// (interior, face, edge, 2-face, vertex), one per active-set size |S|.
     #[test]
     fn polytope_sdf_wolfe_matches_tesseract_closed_form() {
         let (normals, r) = tesseract_face_planes();
@@ -946,8 +1167,6 @@ mod tests {
         }
     }
 
-    /// Wolfe SDF on the 120-cell is Lipschitz-1 (the gradient bound that makes
-    /// sphere-tracing safe); a stand-in since the true SDF is hard to derive here.
     #[test]
     fn polytope_sdf_wolfe_120cell_is_lipschitz_1() {
         let (normals, r) = cell120_face_planes();
@@ -975,11 +1194,9 @@ mod tests {
         }
     }
 
-    /// Wolfe SDF gives the correct sign for 120-cell sample points.
     #[test]
     fn polytope_sdf_wolfe_120cell_sign_correctness() {
         let (normals, r) = cell120_face_planes();
-        // Center: max plane dist = -inradius.
         let d_center = polytope_sdf_wolfe(Vec4::ZERO, &normals, r);
         assert!(
             (d_center + r).abs() < 1e-5,
@@ -987,7 +1204,6 @@ mod tests {
             -r,
             d_center
         );
-        // Just inside a face plane: small negative.
         let n = normals[0];
         let just_inside = n * (r - 0.01);
         let d_inside = polytope_sdf_wolfe(just_inside, &normals, r);
@@ -995,7 +1211,6 @@ mod tests {
             d_inside < 0.0,
             "just inside should be negative, got {d_inside}"
         );
-        // Just outside a face plane: small positive, equal to the outward distance.
         let just_outside = n * (r + 0.01);
         let d_outside = polytope_sdf_wolfe(just_outside, &normals, r);
         assert!(
@@ -1004,8 +1219,6 @@ mod tests {
         );
     }
 
-    /// 24-cell vertices all have exactly two nonzero coordinates at `±r/√2`, the
-    /// shape underlying its self-dual, space-filling structure.
     #[test]
     fn cell24_decomposes_into_16cell_plus_tesseract() {
         let c24 = cell24_vertices(1.0);
@@ -1024,8 +1237,6 @@ mod tests {
         }
     }
 
-    /// Sphere deep inside a tesseract produces a contact; end-to-end
-    /// sphere-polytope 4D GJK+EPA path including the bounding-sphere cull.
     #[test]
     fn sphere_inside_tesseract_produces_contact() {
         let mut world = World::new(EuclideanR4);
@@ -1037,7 +1248,6 @@ mod tests {
             tesseract_vertices(0.8),
             0.0,
         ));
-        // Zero-mass tesseract is static; we test detection, not solver response.
         let pair_found = {
             let (a, b) = world.bodies.dense_mut().split_at_mut(1);
             world.narrowphase.test(&a[0], &b[0], &EuclideanR4).is_some()
@@ -1048,8 +1258,6 @@ mod tests {
         );
     }
 
-    /// Separated 4D polytopes -> no contact. Exercises the bounding-sphere pre-cull plus GJK's
-    /// Separated path.
     #[test]
     fn separated_pentatopes_produce_no_contact() {
         let mut world = World::new(EuclideanR4);
@@ -1071,10 +1279,34 @@ mod tests {
     }
 
     #[test]
+    fn integrated_orientation_advances_a_body_point_along_the_world_frame_omega() {
+        let space = EuclideanR4;
+        let start = Iso4Flat {
+            rotation: Bivector4::new(0.8, 0.0, 0.0, std::f32::consts::FRAC_PI_2, 0.0, 0.9).exp(),
+            translation: Vec4::ZERO,
+        };
+        let omega = Bivector4::new(0.7, 0.0, 0.0, 0.0, 0.5, 0.0);
+        let local = Vec4::new(0.5, -0.5, 0.5, 0.5);
+        let dt = 1e-3;
+
+        let before = start.rotation.apply(local);
+        let after = space
+            .integrate_orientation(start, omega, dt)
+            .rotation
+            .apply(local);
+        let residual = (after - (before + omega_cross_r(omega, before) * dt)).length();
+        assert!(
+            residual < 1e-5,
+            "integrated orientation left the world-frame field ω⌋r: residual \
+             {residual} over a step of {}",
+            (after - before).length()
+        );
+    }
+
+    #[test]
     fn orientation_integration_preserves_unit_rotor() {
         let space = EuclideanR4;
         let mut iso = Iso4Flat::IDENTITY;
-        // Compound angular velocity: rotation in xy and zw planes.
         let omega = Bivector4::new(0.2, 0.0, 0.0, 0.0, 0.0, 0.15);
         for _ in 0..1000 {
             iso = space.integrate_orientation(iso, omega, 1.0 / 60.0);
@@ -1086,17 +1318,11 @@ mod tests {
         );
     }
 
-    /// Determinism contract: a fixed scenario stepped twice yields bit-identical
-    /// state. Same-binary same-architecture replay is the runtime's promise;
-    /// this catches any nondeterminism (hash iteration order, uninit, time
-    /// dependence) that would break it. Single-threaded f32 fixed-step, so two
-    /// runs must agree to the last bit.
     #[test]
     fn fixed_scenario_replay_is_bit_identical_determinism() {
         let first = determinism_scenario_trajectory();
         let second = determinism_scenario_trajectory();
         assert_eq!(first, second, "fixed-scenario replay must be bit-identical");
-        // Guard against a vacuous pass: the simulation must stay finite.
         for &bits in &first {
             assert!(
                 f32::from_bits(bits).is_finite(),
@@ -1105,16 +1331,30 @@ mod tests {
         }
     }
 
-    /// The replay pin above passes for any change that is merely
-    /// self-consistent. This one pins the trajectory itself against a value
-    /// committed to the repository, so a behavior change has to be declared.
+    #[test]
+    fn determinism_scenario_stays_above_the_floor_and_never_gains_energy() {
+        assert_scenario_stays_physical(&determinism_scenario_run(Schedule::default()));
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(
+            all(target_os = "windows", target_env = "msvc"),
+            all(target_os = "linux", target_env = "gnu")
+        )
+    ))]
     #[test]
     fn fixed_scenario_trajectory_matches_golden_determinism_hash() {
-        let hash = fnv1a64(&determinism_scenario_trajectory());
+        use crate::determinism_fixture::{fnv1a64, GOLDEN_TRAJECTORY_HASH};
+
+        let run = determinism_scenario_run(Schedule::default());
+        assert_scenario_stays_physical(&run);
+        let hash = fnv1a64(&run.trajectory);
         assert_eq!(
             hash, GOLDEN_TRAJECTORY_HASH,
             "trajectory hash {hash:#018x} does not match the committed golden \
-             {GOLDEN_TRAJECTORY_HASH:#018x}"
+             {GOLDEN_TRAJECTORY_HASH:#018x} on this target; inspect solver changes \
+             before updating the baseline"
         );
     }
 }

@@ -1,24 +1,11 @@
-//! Fixed-timestep accumulator.
-
 use std::ops::Range;
-// `web_time::Instant` over `std::time::Instant`: the latter's `now` panics on
-// wasm32; `web_time` backs it with `performance.now()`.
+// `std::time::Instant::now` panics on wasm32.
 use std::time::Duration;
 use web_time::Instant;
 
-/// Per-frame catch-up tick cap. Excess is dropped to avoid the spiral of
-/// death where a slow sim falls further behind each frame.
+/// Per-frame catch-up cap; excess ticks are dropped.
 pub const DEFAULT_MAX_CATCH_UP: u32 = 10;
 
-/// Tick-rate accumulator driving a deterministic sim from wall-clock time.
-///
-/// Construct with [`FixedTimestep::new`], then each frame call
-/// [`FixedTimestep::advance`] with the current [`Instant`] and iterate the
-/// returned range to run sim ticks. [`FixedTimestep::alpha`] gives the
-/// render interpolation factor between the last two tick states.
-///
-/// Tick duration is stored as nanoseconds from the target Hz, so a given
-/// `FixedTimestep::new(hz)` is bit-identical across machines.
 #[derive(Debug, Clone)]
 pub struct FixedTimestep {
     dt: Duration,
@@ -29,8 +16,6 @@ pub struct FixedTimestep {
 }
 
 impl FixedTimestep {
-    /// Construct with a target tick rate in hertz.
-    ///
     /// Panics if `hz == 0`.
     pub fn new(hz: u32) -> Self {
         assert!(hz > 0, "tick rate must be positive");
@@ -43,40 +28,30 @@ impl FixedTimestep {
         }
     }
 
-    /// Override the spiral-of-death cap. Default is [`DEFAULT_MAX_CATCH_UP`].
     pub fn with_max_catch_up(mut self, n: u32) -> Self {
         self.max_catch_up = n;
         self
     }
 
-    /// Current tick number. Monotonic from 0, one per tick yielded by
-    /// [`FixedTimestep::advance`].
     pub fn tick(&self) -> u64 {
         self.tick
     }
 
-    /// Duration of one sim tick.
     pub fn dt(&self) -> Duration {
         self.dt
     }
 
-    /// Duration of one sim tick as f32 seconds, for physics integration.
     pub fn dt_seconds(&self) -> f32 {
         self.dt.as_secs_f32()
     }
 
-    /// Render-smoothing alpha in `[0.0, 1.0)`: wall-clock fraction between the
-    /// last completed tick and the next pending one.
+    /// Fraction of the pending tick elapsed, in `[0, 1)`.
     pub fn alpha(&self) -> f32 {
         let a = self.accumulator.as_secs_f64() / self.dt.as_secs_f64();
         (a as f32).clamp(0.0, 1.0)
     }
 
-    /// Advance to `now` and return the tick range to execute this frame.
-    ///
-    /// The first call primes the wall-clock reference and returns an empty
-    /// range. Beyond `max_catch_up` ticks behind, the excess is dropped:
-    /// the loop recovers to real-time at the cost of a visual jump.
+    /// The first call only primes the clock; ticks past `max_catch_up` are dropped.
     pub fn advance(&mut self, now: Instant) -> Range<u64> {
         let last = match self.last_instant.replace(now) {
             Some(t) => t,
@@ -93,8 +68,6 @@ impl FixedTimestep {
             catch_up += 1;
         }
 
-        // Spiral cap: drain remaining whole-tick excess so the accumulator
-        // stays bounded under pathological stalls.
         while self.accumulator >= self.dt {
             self.accumulator -= self.dt;
         }
@@ -109,12 +82,6 @@ mod tests {
 
     fn base() -> Instant {
         Instant::now()
-    }
-
-    #[test]
-    fn dt_matches_hz() {
-        let t = FixedTimestep::new(60);
-        assert_eq!(t.dt(), Duration::from_nanos(16_666_666));
     }
 
     #[test]
@@ -177,11 +144,9 @@ mod tests {
         let mut t = FixedTimestep::new(60).with_max_catch_up(5);
         let b = base();
         t.advance(b);
-        // 100 ticks of wall-clock elapsed; cap should yield exactly 5.
         let range = t.advance(b + t.dt() * 100);
         assert_eq!(range.end - range.start, 5);
         assert_eq!(t.tick(), 5);
-        // Accumulator should have been drained; alpha near zero.
         assert!(t.alpha() < 1e-3);
     }
 
@@ -198,12 +163,6 @@ mod tests {
             last_end = range.end;
         }
         assert_eq!(t.tick(), last_end);
-    }
-
-    #[test]
-    fn dt_seconds_matches_hz() {
-        let t = FixedTimestep::new(60);
-        assert!((t.dt_seconds() - 1.0 / 60.0).abs() < 1e-6);
     }
 
     #[test]

@@ -1,12 +1,3 @@
-//! Composer mode: typed-formula parser + sequence-of-terms UI.
-//!
-//! The user builds a `Vec<RotorTerm>` by typing a single-term
-//! expression (`90° (xy + zw)`) or appending basis-plane chips into a
-//! draft. Terms render as draggable cards that reorder via DnD, with
-//! cross-term plane migration via plane pills. The scrub slider
-//! projects `log(rot_state)` onto the seq's net bivector direction so
-//! scrubbing preserves any perpendicular rotation already applied.
-
 use loam_app::egui;
 use loam_egui::{
     dnd::{
@@ -19,16 +10,10 @@ use loam_egui::{
 use loam_math::{Bivector, Plane4, Rotor};
 
 use crate::consts::{CARD_ITEM_SPACING_X, CONTROL_H, MINI_BUTTON_W};
+use crate::director::Playback;
 use crate::state::{render_plane_sum, DeferredAction, Demo, DragPayload, RotorTerm};
 
-// ---------------------------------------------------------------------------
-// Formula parser
-// ---------------------------------------------------------------------------
-
-/// Parse one term like `90° (xy + zw)`, `90 xy`, `0.5 rad xy` into a
-/// [`RotorTerm`]. Degrees default; `rad` overrides. The `*` / `·`
-/// separator and outer parens are optional. One expression per call;
-/// rotor multiplication across terms lives in the seq.
+// Degrees unless `rad`; `*`, `·` and outer parens are optional.
 pub(crate) fn parse_formula_term(input: &str) -> Result<RotorTerm, String> {
     let normalized = input.trim().replace('·', "*").replace('°', "deg ");
     let s = normalized.trim();
@@ -101,16 +86,10 @@ fn parse_plane(s: &str) -> Result<Plane4, String> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Composer-mode rendering
-// ---------------------------------------------------------------------------
-
 impl Demo {
     pub(crate) fn render_composer_mode(&mut self, ui: &mut egui::Ui) {
         ui.separator();
 
-        // `f: [text input] [Add] [+xy] ... [+zw]`. Chips append to the
-        // draft; the text input takes a full expression.
         ui.horizontal_wrapped(|ui| {
             ui.label("f:");
             let resp = ui.add(
@@ -162,7 +141,6 @@ impl Demo {
             );
         }
 
-        // Draft preview as a card; Add commits to seq, × discards.
         if !self.draft.is_empty() {
             egui::Frame::group(ui.style())
                 .inner_margin(4.0)
@@ -198,11 +176,7 @@ impl Demo {
         self.render_composer_scrub_slider(ui);
     }
 
-    /// Slide-to-rotate slider along the seq's net bivector direction.
-    /// Slider value is the projection of `log(rot_state)` onto unit
-    /// `D = compose_omega()/|compose_omega()|`, in degrees; the
-    /// perpendicular component is preserved on drag so other rotations
-    /// stay put. Hidden when the seq's net bivector is zero.
+    // A drag moves only the `log(R)` component along `compose_omega()`.
     pub(crate) fn render_composer_scrub_slider(&mut self, ui: &mut egui::Ui) {
         let omega = self.compose_omega();
         let mag_sq = omega.magnitude_squared();
@@ -210,11 +184,13 @@ impl Demo {
             return;
         }
         let unit = omega * (1.0 / mag_sq.sqrt());
-        let bivec = self.rot_state.log();
+        let bivec = self.spins.row_rotor().log();
         let proj_rad = bivec.dot(unit);
         let mut proj_deg = proj_rad.to_degrees();
 
         const VALUE_CELL_W: f32 = 86.0;
+        // pi*sqrt(2) in degrees: the largest |log| any rotor returns.
+        const COMPOSE_PROJ_LIMIT_DEG: f32 = 254.558_44;
         let avail = ui.available_width();
         let spacing = ui.spacing().item_spacing.x;
         let slider_w = (avail - VALUE_CELL_W - spacing).max(140.0);
@@ -222,14 +198,12 @@ impl Demo {
         let row_size = egui::vec2(avail, CONTROL_H);
         let row_layout = egui::Layout::left_to_right(egui::Align::Center);
 
-        // -360..360 for the Spin(4) double cover: 360° lands at the
-        // negative rotor -1, 720° returns to identity.
         let formatted = format!("f {proj_deg:>+6.1}°");
         ui.allocate_ui_with_layout(row_size, row_layout, |ui| {
             let interaction = slider_with_edit(
                 ui,
                 &mut proj_deg,
-                -360.0..=360.0,
+                -COMPOSE_PROJ_LIMIT_DEG..=COMPOSE_PROJ_LIMIT_DEG,
                 &formatted,
                 "°",
                 1,
@@ -239,17 +213,14 @@ impl Demo {
                 let new_proj = proj_deg.to_radians();
                 let old_proj = bivec.dot(unit);
                 let new_b = bivec + unit * (new_proj - old_proj);
-                self.rot_state = new_b.exp();
-                self.write_all(self.rot_state);
+                let directed = self.playback.as_ref().map_or(&[][..], Playback::directed);
+                self.spins.set_row_rotor(new_b.exp(), directed);
+                self.rebuild_bodies();
             }
         });
     }
 
-    /// Composer's seq-card row. Each [`RotorTerm`] card is both a drag
-    /// source (Term payload, reorders the seq) and a drop zone (Entry
-    /// payload, cross-term plane migration). Mutations are gathered
-    /// during rendering and applied at the end so the loop can borrow
-    /// `self.seq` immutably in flight.
+    // Deferred so the loop can borrow `self.seq` immutably.
     pub(crate) fn render_composer_seq_cards(&mut self, ui: &mut egui::Ui) {
         let mut entry_moves: Vec<(usize, usize, usize)> = Vec::new();
         let mut remove_term: Option<usize> = None;
@@ -340,8 +311,6 @@ impl Demo {
                                     ui.horizontal(|ui| {
                                         let term = &self.seq[term_idx];
                                         if let Some(phi) = term.scalar {
-                                            // Inline DragValue: drag to adjust,
-                                            // click to type.
                                             let phi_color = egui::Color32::from_rgb(255, 150, 150);
                                             let mut deg = phi.to_degrees();
                                             let drag_resp = ui
@@ -417,8 +386,6 @@ impl Demo {
                     let scalar_now = self.seq[term_idx].scalar;
                     let menu_resp = card_resp.interact(egui::Sense::click());
                     menu_resp.context_menu(|ui| {
-                        // Scalar editing is inline above; the menu owns only
-                        // add/remove-scalar and delete-term.
                         if scalar_now.is_some() {
                             if ui.button("Remove scalar (φ)").clicked() {
                                 remove_scalar = Some(term_idx);
@@ -457,7 +424,6 @@ impl Demo {
             });
         }
 
-        // Apply deferred mutations in an order that keeps indices valid.
         if let Some(i) = add_scalar {
             if let Some(t) = self.seq.get_mut(i) {
                 t.scalar = Some(std::f32::consts::FRAC_PI_2);
@@ -475,8 +441,7 @@ impl Demo {
                 }
             }
         }
-        // Sort by (source term, plane idx descending) so removals don't
-        // shift earlier indices.
+        // Descending plane index, so a removal cannot shift a later one.
         entry_moves.sort_by_key(|(from, idx, _)| (*from, std::cmp::Reverse(*idx)));
         for (from_t, idx, to_t) in entry_moves {
             if let Some(src) = self.seq.get_mut(from_t) {
@@ -488,12 +453,47 @@ impl Demo {
                 }
             }
         }
-        // Drop emptied terms (after entry moves).
         self.seq.retain(|t| !t.planes.is_empty());
         if let Some(i) = remove_term {
             if i < self.seq.len() {
                 self.seq.remove(i);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use loam_math::{Bivector, Bivector4, Rotor};
+    use std::f32::consts::{PI, SQRT_2};
+
+    #[test]
+    fn the_scrub_range_never_exceeds_what_log_can_return() {
+        const LIMIT_DEG: f32 = 254.558_44;
+        assert!(
+            LIMIT_DEG.to_radians() <= PI * SQRT_2,
+            "the slider reaches past every rotor's log; a drag there snaps back"
+        );
+
+        let unit = Bivector4 {
+            xy: 1.0,
+            ..Default::default()
+        };
+        for deg in [10.0f32, 90.0, 179.0] {
+            let round_tripped = (unit * deg.to_radians()).exp().log().dot(unit).to_degrees();
+            assert!(
+                (round_tripped - deg).abs() < 1e-2,
+                "{deg}° read back as {round_tripped}°, so the slider would jump"
+            );
+        }
+        let past = (unit * 360.0f32.to_radians())
+            .exp()
+            .log()
+            .dot(unit)
+            .to_degrees();
+        assert!(
+            past.abs() < 1.0,
+            "360° should collapse toward identity under the minimal branch, got {past}"
+        );
     }
 }

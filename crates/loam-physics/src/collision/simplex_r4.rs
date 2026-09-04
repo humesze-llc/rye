@@ -1,29 +1,17 @@
-//! Closest-point-on-simplex for GJK in R⁴.
-//!
-//! The 3D Voronoi-region approach doesn't generalize to 4D, so this computes
-//! the closest point on the simplex hull to the origin via Gram-matrix
-//! projection onto each sub-simplex's affine hull, keeping the smallest-distance
-//! one with all barycentric weights non-negative. O(2^k · k³), at most ~2000
-//! f32 ops for k ≤ 4. Trades speed for dimension-agnostic correctness; the
-//! signed-volumes method (Montanari-Petrinic 2018) is the faster alternative.
+//! Gram-matrix projection onto each sub-simplex's affine hull, O(2^k · k³).
+//! Signed volumes (Montanari and Petrinic 2018) is the faster alternative.
 
 use glam::Vec4;
 
-/// Closest point on the simplex hull to the origin, plus the realizing
-/// sub-simplex.
 #[derive(Debug, Clone)]
 pub struct Closest {
-    /// World-space closest point, `Σ weight_i · simplex_i`.
     pub point: Vec4,
-    /// Barycentric weights over the input simplex; entries not in `kept` are
-    /// zero. Weights in `kept` are ≥ 0 and sum to 1 within f32 tolerance.
+    /// Zero outside `kept`, otherwise ≥ 0 and summing to 1.
     pub weights: Vec<f32>,
-    /// Non-zero-weight vertex indices; the sub-simplex GJK carries forward.
     pub kept: Vec<usize>,
 }
 
-/// Closest point on the convex hull of `simplex` to the origin, with its
-/// barycentric decomposition. `simplex.len()` must be in `1..=5`.
+/// `simplex.len()` must be in `1..=5`.
 pub fn closest_to_origin(simplex: &[Vec4]) -> Closest {
     let n = simplex.len();
     debug_assert!((1..=5).contains(&n), "simplex size {n} out of 1..=5");
@@ -39,7 +27,6 @@ pub fn closest_to_origin(simplex: &[Vec4]) -> Closest {
         kept: vec![0],
     };
 
-    // All non-empty subsets (at most 2⁵ − 1 = 31).
     for mask in 1u32..(1u32 << n) {
         let subset: Vec<usize> = (0..n).filter(|i| mask & (1 << i) != 0).collect();
 
@@ -47,8 +34,6 @@ pub fn closest_to_origin(simplex: &[Vec4]) -> Closest {
             continue;
         };
 
-        // All-non-negative weights means the projection lies inside the
-        // sub-simplex. Tolerance covers f32 boundary cases.
         if !weights.iter().all(|&w| w >= -1e-6) {
             continue;
         }
@@ -71,15 +56,8 @@ pub fn closest_to_origin(simplex: &[Vec4]) -> Closest {
     best
 }
 
-/// Project the origin onto the affine hull of sub-simplex `subset`. Returns the
-/// point and barycentric weights, or `None` when the sub-simplex is degenerate.
-///
-/// `min_α |v₀ + Σ αᵢ (vᵢ − v₀)|²` reduces to the normal equations `G α = −Dᵀv₀`
-/// with Gram matrix `Dᵢⱼ = (vᵢ − v₀) · (vⱼ − v₀)`.
-///
-/// Weights sum to 1 but are unclamped: they go negative when the projection
-/// falls outside the sub-simplex, which is what makes this an affine
-/// decomposition rather than a convex one.
+/// Affine, not convex: weights sum to 1 and go negative outside the
+/// sub-simplex. `None` for a degenerate sub-simplex.
 pub(super) fn project_origin_onto_affine_hull(
     subset: &[usize],
     simplex: &[Vec4],
@@ -105,7 +83,6 @@ pub(super) fn project_origin_onto_affine_hull(
         }
     }
 
-    // `None` when singular (collinear / coplanar sub-simplex).
     let alphas = solve_spd_system(&mut g, &mut b, k)?;
 
     let mut weights = Vec::with_capacity(n);
@@ -121,11 +98,9 @@ pub(super) fn project_origin_onto_affine_hull(
     Some((point, weights))
 }
 
-/// Gauss-Jordan solve of a small SPSD system `G · α = b`, in-place on the
-/// augmented matrix. `None` if any pivot is too small to trust (degenerate).
+// Gauss-Jordan on the augmented matrix; `None` on an untrustworthy pivot.
 fn solve_spd_system(g: &mut [[f32; 4]; 4], b: &mut [f32; 4], k: usize) -> Option<Vec<f32>> {
     for i in 0..k {
-        // Partial pivot: largest |g[row][i]| at or below the diagonal.
         let mut pivot = i;
         for r in (i + 1)..k {
             if g[r][i].abs() > g[pivot][i].abs() {
@@ -139,7 +114,7 @@ fn solve_spd_system(g: &mut [[f32; 4]; 4], b: &mut [f32; 4], k: usize) -> Option
 
         let piv = g[i][i];
         if piv.abs() < 1e-10 {
-            return None; // degenerate
+            return None;
         }
 
         let inv_piv = 1.0 / piv;
@@ -148,8 +123,6 @@ fn solve_spd_system(g: &mut [[f32; 4]; 4], b: &mut [f32; 4], k: usize) -> Option
         }
         b[i] *= inv_piv;
 
-        // Cache the pivot row (Copy) so other rows can be mutated without
-        // splitting the borrow.
         let pivot_row = g[i];
         let pivot_b = b[i];
         for r in 0..k {
@@ -226,7 +199,6 @@ mod tests {
 
     #[test]
     fn tetrahedron_in_3d_subspace_containing_origin() {
-        // Standard tetrahedron containing origin, embedded at w = 0.
         let c = closest_to_origin(&[
             Vec4::new(1.0, 1.0, 1.0, 0.0),
             Vec4::new(1.0, -1.0, -1.0, 0.0),
@@ -238,7 +210,6 @@ mod tests {
 
     #[test]
     fn pentatope_containing_origin() {
-        // Symmetric 4-simplex (5 vertices) enclosing the origin.
         let c = closest_to_origin(&[
             Vec4::new(1.0, 1.0, 1.0, -1.0 / 5.0_f32.sqrt()),
             Vec4::new(1.0, -1.0, -1.0, -1.0 / 5.0_f32.sqrt()),
@@ -251,7 +222,6 @@ mod tests {
 
     #[test]
     fn triangle_projects_to_edge() {
-        // Origin outside the triangle, nearest the AB edge.
         let a = Vec4::new(1.0, 0.0, 0.0, 0.0);
         let b = Vec4::new(0.0, 1.0, 0.0, 0.0);
         let c_vert = Vec4::new(2.0, 2.0, 0.0, 0.0);

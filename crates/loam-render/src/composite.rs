@@ -1,20 +1,6 @@
-//! Final composite pass for browser-WebGPU: sample the offscreen scene texture
-//! and write gamma-encoded values to a linear swapchain.
-//!
-//! Native (D3D/Vulkan/Metal) swapchains advertise sRGB formats, so the GPU
-//! encodes linear output on write and no pass is needed; `RenderDevice::new`
-//! skips the [`CompositeNode`] there. Browser WebGPU (Chrome 2026-05) only
-//! advertises linear canvas formats, so direct writes display ~2.2x dark.
-//! Instead the scene renders into an offscreen target carrying the canvas
-//! format's sRGB sibling (`Bgra8Unorm` -> `Bgra8UnormSrgb`), or the canvas
-//! format itself where it has none (`Rgba16Float`), and this pass samples it,
-//! applies `linear_to_srgb`, and writes the sRGB-encoded bits the compositor
-//! expects. Scene texels read back linear either way, by sampler decode or by
-//! storage; egui-painted texels do not on the no-sibling arm, where egui-wgpu
-//! writes encoded values that this pass then encodes twice.
-//!
-//! Cost: one fullscreen-triangle pass per frame, single-digit microseconds
-//! at 1080p; negligible vs. the polytope SDF raymarch.
+//! Browser WebGPU advertises only linear canvas formats, so the scene renders
+//! offscreen and this pass sRGB-encodes it into the swapchain. Native sRGB
+//! swapchains skip it.
 
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
@@ -26,20 +12,14 @@ use wgpu::{
     TextureView, TextureViewDimension, VertexState,
 };
 
-/// Final-pass gamma encoder. The bind group is rebuilt on resize, since the
-/// scene texture view changes when the surface resizes.
 pub struct CompositeNode {
     pipeline: RenderPipeline,
     sampler: Sampler,
     bind_group_layout: BindGroupLayout,
-    /// `None` until the first `set_scene_view`; rebuilt whenever the scene
-    /// target is reallocated.
     bind_group: Option<BindGroup>,
 }
 
 impl CompositeNode {
-    /// Build a composite node that writes to `target_format`. Reused for the
-    /// device's lifetime.
     pub fn new(device: &Device, target_format: TextureFormat) -> Self {
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("loam-render::composite::shader"),
@@ -122,8 +102,7 @@ impl CompositeNode {
         }
     }
 
-    /// Refresh the cached bind group when the scene-target view changes, e.g.
-    /// after a resize reallocates the scene texture.
+    /// Call after a resize reallocates the scene texture.
     pub fn set_scene_view(&mut self, device: &Device, scene_view: &TextureView) {
         let bg = device.create_bind_group(&BindGroupDescriptor {
             label: Some("loam-render::composite::bg"),
@@ -142,8 +121,7 @@ impl CompositeNode {
         self.bind_group = Some(bg);
     }
 
-    /// Read the bound scene texture and write gamma-encoded RGBA to
-    /// `target_view`. No-op before the first `set_scene_view`.
+    /// No-op before the first `set_scene_view`.
     pub fn run(&self, encoder: &mut CommandEncoder, target_view: &TextureView) {
         let Some(bind_group) = self.bind_group.as_ref() else {
             return;

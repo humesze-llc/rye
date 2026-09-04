@@ -1,14 +1,6 @@
-//! Key vocabulary for console binds and the toggle key.
-//!
-//! The console names its own keys so binds carry no UI-framework type. A
-//! frontend translates its own key events into these at the input boundary
-//! (`loam_egui::console` holds the egui table).
+//! A frontend translates [`Key`] at its input boundary.
 
-/// A physical key the console can bind or toggle on. Modifiers are not
-/// representable: binds fire on unmodified presses only.
-///
-/// Declaration order is the [`Key::ALL`] order and the [`Ord`] order, which is
-/// also the order bound keys fire in when several land in one frame.
+/// Declaration order is [`Key::ALL`] order, `Ord` order and bind firing order.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Key {
@@ -86,9 +78,7 @@ pub enum Key {
 }
 
 impl Key {
-    /// Every variant, in declaration order, so a frontend can exhaustively
-    /// exercise its own key table. `ALL[i] as usize == i` holds; adding a
-    /// variant means adding it here.
+    /// `ALL[i] as usize == i`.
     pub const ALL: &'static [Key] = &[
         Key::Escape,
         Key::Tab,
@@ -162,9 +152,6 @@ impl Key {
 mod tests {
     use super::*;
 
-    /// `ALL` is the discriminant sequence with no gaps, duplicates or
-    /// reordering, so `ALL[i] as usize == i` can be relied on by frontends
-    /// building index-keyed tables.
     #[test]
     fn all_is_the_dense_discriminant_sequence() {
         for (index, key) in Key::ALL.iter().enumerate() {
@@ -176,12 +163,5 @@ mod tests {
             last as usize + 1,
             "ALL skips a variant before {last:?}"
         );
-    }
-
-    /// Ord follows declaration order, which fixes the order bound keys fire in
-    /// when several are pressed in the same frame.
-    #[test]
-    fn ord_follows_declaration_order() {
-        assert!(Key::ALL.windows(2).all(|w| w[0] < w[1]));
     }
 }

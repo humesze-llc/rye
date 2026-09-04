@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Loam math primitives: the Space trait and concrete geometries (Euclidean, hyperbolic, spherical, 4D)."
+description = "Loam math: the Space trait and its geometries (Euclidean R2 to R4, H3, S3, quotients, a blended metric), bivectors and rotors."
 keywords = ["geometry", "non-euclidean", "hyperbolic", "4d", "manifold"]
 categories = ["mathematics", "game-development"]
 

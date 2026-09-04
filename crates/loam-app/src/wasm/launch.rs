@@ -1,36 +1,10 @@
-//! Wasm32-only helpers for the browser embedding lifecycle. Demos opt into
-//! click-to-start by marking the host element in `index.html`:
-//!
-//! ```html
-//! <div id="loam-canvas-host" data-mode="manual">
-//!   <canvas id="loam-canvas" width="1280" height="800"></canvas>
-//! </div>
-//! ```
-//!
-//! [`inject_launch_overlay`] creates the launch button as a sibling of the
-//! canvas plus a `<style>` carrying [`LAUNCH_OVERLAY_CSS`], so demos ship one
-//! line of HTML instead of the button markup + CSS. The wasm download happens
-//! regardless; click-to-start only defers the per-frame wgpu work.
-//!
-//! The `<style>` is keyed on a fixed id so several embeds on one page share
-//! one copy. Demos theme by shipping a later-cascade stylesheet or
-//! pre-creating their own `<button id="...">`, which
-//! [`inject_launch_overlay`] reuses.
-//!
-//! After launch, the embed lifecycle in `main_launcher` enforces
-//! one-active-demo-per-page: clicking outside the host pauses the worker
-//! and restores this overlay via [`show_resume_overlay`]. Pause-on-
-//! scroll-out remains a JS embed-wrapper concern (an `IntersectionObserver`
-//! posting `pause`), which the worker's pause/resume messages support.
+//! Demos opt into click-to-start by marking the host element in `index.html`.
 
 use anyhow::{anyhow, Context, Result};
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{HtmlButtonElement, HtmlStyleElement};
 
-/// Default CSS for the click-to-start overlay, injected once per page by
-/// [`inject_launch_overlay`]. The blur reads the canvas underneath, so the
-/// worker's preview frame shows as a softened thumbnail until the click.
 const LAUNCH_OVERLAY_CSS: &str = r#"
 /* Base: shared chrome (positioning, blur, font, transitions). The
    overlay is injected with no state class, so the chip is hidden and
@@ -97,21 +71,14 @@ const LAUNCH_OVERLAY_CSS: &str = r#"
 
 const OVERLAY_STYLE_ID: &str = "loam-launch-overlay-styles";
 
-/// Inject a launch-overlay `<button>` under `host_id` plus a `<style>`
-/// carrying [`LAUNCH_OVERLAY_CSS`] into `<head>` (the style is idempotent,
-/// keyed on a fixed id). Returns the button for the caller to wire; reuses
-/// an existing `button_id` element if the demo shipped its own.
-///
 /// No state class: CSS shows only the blurred backdrop until the worker's
-/// `preview_ready` adds `.ready` and reveals the click affordance. The
-/// `#loam-page-loader` element carries the spinner until then.
+/// `preview_ready` adds `.ready`.
 pub fn inject_launch_overlay(host_id: &str, button_id: &str) -> Result<HtmlButtonElement> {
     overlay_button(host_id, button_id, "loam-demo-launch", "Launch demo")
 }
 
-/// (Re)create the overlay as the paused-state affordance (`.ready.resume`:
-/// immediately clickable, a paused demo is warm). The launch flow removed
-/// the original button, so this usually creates a fresh element.
+/// The paused-state affordance (`.ready.resume`: immediately clickable, a paused
+/// demo is warm).
 pub fn show_resume_overlay(host_id: &str, button_id: &str) -> Result<HtmlButtonElement> {
     overlay_button(
         host_id,
@@ -121,8 +88,6 @@ pub fn show_resume_overlay(host_id: &str, button_id: &str) -> Result<HtmlButtonE
     )
 }
 
-/// Idempotent style injection plus reuse-or-create of `button_id`. A reused
-/// element gets its class list overwritten (launch -> resume transitions).
 fn overlay_button(
     host_id: &str,
     button_id: &str,
@@ -176,8 +141,8 @@ fn overlay_button(
     Ok(button)
 }
 
-/// True if the host element has `data-mode="manual"`. False on missing
-/// element / attribute / any other value (default = auto-launch).
+/// False on a missing element, missing attribute, or any other value, which is
+/// the auto-launch default.
 pub fn is_manual_mode(host_id: &str) -> bool {
     let Some(window) = web_sys::window() else {
         return false;
@@ -193,9 +158,7 @@ pub fn is_manual_mode(host_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Attach a one-shot click handler to the button. On click the button
-/// removes itself (so a double-click can't fire twice) and invokes
-/// `on_click`. `FnOnce` because launching is one-time.
+/// On click the button removes itself, so a double-click cannot fire twice.
 pub fn wait_for_launch(button_id: &str, on_click: impl FnOnce() + 'static) -> Result<()> {
     let window = web_sys::window().ok_or_else(|| anyhow!("no global window"))?;
     let document = window
@@ -207,8 +170,6 @@ pub fn wait_for_launch(button_id: &str, on_click: impl FnOnce() + 'static) -> Re
     let button_for_click = button.clone();
 
     let cb = Closure::once(Box::new(move || {
-        // Remove the button before the closure so any RAF / event loop it
-        // spins up doesn't fight the DOM node.
         button_for_click.remove();
         on_click();
     }) as Box<dyn FnOnce()>);
@@ -221,14 +182,9 @@ pub fn wait_for_launch(button_id: &str, on_click: impl FnOnce() + 'static) -> Re
     Ok(())
 }
 
-/// Sample the V8 JS heap in bytes, or `None` where
-/// `performance.memory.usedJSHeapSize` is absent (Chromium exposes it as a
-/// non-standard extension; Firefox + Safari do not).
-///
-/// Registered into `loam_time::frame_trace::set_heap_sampler` for per-frame
-/// heap deltas. V8 buckets the value to ~25-100ms, fine for multi-MB GC
-/// jumps, not for single allocations. Uses `js_sys::Reflect` because
-/// `web-sys` doesn't surface the non-standard `Performance::memory`.
+/// `None` where `performance.memory.usedJSHeapSize` is absent: Chromium exposes
+/// it as a non-standard extension, Firefox and Safari do not, and `web-sys` does
+/// not surface it, hence `js_sys::Reflect`.
 pub fn js_heap_sampler() -> Option<u64> {
     let window = web_sys::window()?;
     let performance = window.performance()?;

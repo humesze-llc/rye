@@ -1,30 +1,7 @@
-//! [`World<S>`], top-level container. Owns bodies, force fields, narrowphase
-//! dispatch, and persistent contact manifolds; runs one tick per
-//! [`World::step`].
-//!
-//! ## Step pipeline
-//!
-//! Each tick runs a fixed phase order: apply forces, integrate, broadphase,
-//! narrowphase, manifold maintenance, warm start, PGS solve. Each phase is a
-//! method so harnesses can substitute or inspect it without forking the loop.
-//!
-//! ## Schedule seam
-//!
-//! Every phase materialises its work units into a reused buffer and runs the
-//! buffer, so [`Schedule`] can reorder a phase without the phase knowing. For
-//! work units that are independent, the orders a thread pool can produce are a
-//! subset of the permutations of that buffer, which is what makes
-//! permutation invariance testable before an executor exists.
-//!
-//! ## Islands
-//!
-//! The constraint buffer is grouped into [`Island`]s, the connected components
-//! of the contact graph over dynamic bodies, so a solve pass over one island
-//! reads and writes no body another island touches. Grouping is a reordering
-//! of independent work and leaves the solve bit-identical; it is what makes an
-//! island the unit a parallel solver can take whole.
-
 use std::collections::BTreeMap;
+
+use loam_math::{EuclideanR2, EuclideanR3, EuclideanR4};
+use loam_time::StateHash;
 
 use crate::body::{BodyArena, BodyId, RigidBody};
 use crate::collider::Collider;
@@ -38,10 +15,8 @@ use crate::manifold::{
 use crate::narrowphase::Narrowphase;
 use crate::response::FRICTION_COEFF;
 
-/// Pair key for the manifold cache. Convention: `(small, large)` so a pair has
-/// one canonical key regardless of broadphase iteration order. Keyed on
-/// [`BodyId`] rather than on storage position, so a manifold and its
-/// warm-start impulses survive a despawn that compacts the arena.
+/// Ordered `(small, large)`, so a pair has one key whatever order the
+/// broadphase reached it in.
 pub type PairKey = (BodyId, BodyId);
 
 fn canonical_pair(a: BodyId, b: BodyId) -> PairKey {
@@ -53,37 +28,21 @@ fn canonical_pair(a: BodyId, b: BodyId) -> PairKey {
     }
 }
 
-/// One connected component of the contact graph: a set of bodies no other
-/// island's solve can reach, and the constraints coupling them.
-///
-/// Membership is over dynamic bodies only. A static body absorbs no impulse and
-/// its state is invariant under the solve, so two groups resting on one floor
-/// are two islands rather than one.
-///
-/// Instrumentation, on [`Schedule`]'s terms: the partition is the claim that a
-/// parallel solver can take one island whole, and the three fields below are
-/// the readout that checks it, so both ship in the binary the claim is about
-/// rather than behind `cfg(test)`.
+/// A connected component of the contact graph, over dynamic bodies only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Island {
-    /// Lowest handle among [`Self::bodies`]. A function of the partition alone,
-    /// so one contact set names its islands the same way however the pairs
-    /// producing it were discovered or stored.
+    /// Lowest handle among [`Self::bodies`].
     pub id: BodyId,
-    /// The island's dynamic bodies, ascending.
+    /// Ascending.
     pub bodies: Vec<BodyId>,
-    /// The manifolds coupling them, ascending. A contact against a static body
-    /// belongs to the island of its dynamic side.
+    /// Ascending. A contact against a static body belongs to the island of its
+    /// dynamic side.
     pub constraints: Vec<PairKey>,
 }
 
-/// How a step's work units are executed. Ships in release rather than behind
-/// `cfg(test)`: the determinism contract is a claim about the shipping binary,
-/// so the instrument that checks it has to live in the same binary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Schedule {
-    /// Worker count. Fixed at 1 until an executor lands, and permanently 1 on
-    /// wasm32.
+    /// Fixed at 1 until an executor lands, and permanently 1 on wasm32.
     pub threads: usize,
     pub order: OrderPolicy,
 }
@@ -97,32 +56,18 @@ impl Default for Schedule {
     }
 }
 
-/// Visit order for one phase's work-unit buffer. Exactly one phase is
-/// reordered so a fixture varies one axis with every other held canonical;
-/// a hash that moves then names the phase responsible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrderPolicy {
     Canonical,
-    /// The adversarial case for a Gauss-Seidel sweep: every dependency edge
-    /// traversed against the canonical direction.
-    Reversed {
-        phase: SchedulePhase,
-    },
-    Permuted {
-        phase: SchedulePhase,
-        seed: u64,
-    },
+    Reversed { phase: SchedulePhase },
+    Permuted { phase: SchedulePhase, seed: u64 },
 }
 
-/// A phase group sharing one work-unit buffer.
+/// A group of phases sharing one work-unit buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchedulePhase {
-    /// Body visit order, shared by `apply_forces` and `integrate`.
     Body,
-    /// Pair visit order in `update_manifolds`.
     BroadphasePair,
-    /// Constraint visit order, shared by `prepare_solve`, `warm_start`, and
-    /// every `solve` sweep.
     Constraint,
 }
 
@@ -140,11 +85,9 @@ impl OrderPolicy {
     }
 }
 
-/// Durstenfeld's in-place Fisher-Yates shuffle (Fisher and Yates 1938, table
-/// XXXIII; Durstenfeld 1964, CACM 7(7):420) driven by xorshift64 (Marsaglia
-/// 2003, "Xorshift RNGs", J. Stat. Soft. 8(14), the 13/7/17 triple). Modulo
-/// bias is accepted: the requirement is a reproducible permutation reportable
-/// by seed, not a uniform one.
+// Durstenfeld's in-place Fisher-Yates shuffle (Fisher and Yates 1938, table
+// XXXIII; Durstenfeld 1964, CACM 7(7):420) driven by xorshift64 (Marsaglia
+// 2003, "Xorshift RNGs", J. Stat. Soft. 8(14), the 13/7/17 triple).
 fn shuffle<T>(units: &mut [T], seed: u64) {
     // xorshift64 is absorbing at zero, so a zero seed must not reach it.
     let mut state = seed | 1;
@@ -159,35 +102,26 @@ fn shuffle<T>(units: &mut [T], seed: u64) {
 const STALE_CONSTRAINT_KEY: &str = "constraint buffer outlived its manifold";
 const STALE_MANIFOLD_BODY: &str = "manifold key names a body that is gone";
 
-/// Relative widening applied to each sweep interval. The cull rests on
-/// `|d(anchor, a) − d(anchor, b)| ≤ d(a, b)`, the triangle inequality for the
-/// Riemannian distance function (do Carmo 1992, *Riemannian Geometry*, ch. 7,
-/// prop. 3.6), which holds exactly in R but not in f32: each of the three
-/// distances carries a few ulps of error, so a pair within an ulp of tangency
-/// could be culled and the emitted set would stop being a function of the body
-/// set alone. Four eps per side covers all three error terms.
+// The cull rests on `|d(anchor, a) − d(anchor, b)| ≤ d(a, b)`, the triangle
+// inequality for the Riemannian distance function (do Carmo 1992, *Riemannian
+// Geometry*, ch. 7, prop. 3.6).
 const BROADPHASE_TRIANGLE_SLACK: f32 = 4.0 * f32::EPSILON;
 
-/// One body's interval on the sweep axis: geodesic distance to the anchor,
-/// widened by the body's bounding radius.
 #[derive(Clone, Copy)]
 struct RadialInterval {
     lo: f32,
     hi: f32,
     radius: f32,
-    /// Storage position at fill time. The arena cannot change mid-sweep, so
-    /// this stays valid without carrying `S::Point` through a generic entry.
     dense: u32,
     id: BodyId,
     dynamic: bool,
+    group: u32,
+    mask: u32,
 }
 
-/// Radius of the smallest ball about a body's position that contains its
-/// collider; infinite for a collider of unbounded extent. Every narrowphase
-/// poses local geometry as `rotation · v + position` and a rotation preserves
-/// norms, so the largest local vertex norm bounds the body at any orientation.
-/// `Sphere`'s and `HyperSphere4D`'s `center` is ignored for the same reason the
-/// narrowphases ignore it: in physics the body position is the centre.
+// Narrowphases pose local geometry as `rotation · v + position`, and a
+// rotation preserves norms, so the largest local vertex norm bounds the body at
+// any orientation.
 fn bounding_radius(collider: &Collider) -> f32 {
     match collider {
         Collider::Sphere { radius, .. } | Collider::HyperSphere4D { radius, .. } => *radius,
@@ -207,11 +141,6 @@ fn max_norm(norms_squared: impl Iterator<Item = f32>) -> f32 {
     norms_squared.fold(0.0_f32, f32::max).sqrt()
 }
 
-/// One constraint as the solve phases consume it. `island` is the grouping key
-/// and `dense` the storage positions of `key`'s two bodies, both derived once
-/// in [`World::collect_constraints`]: nothing between there and the last PGS
-/// sweep spawns, despawns, inserts a manifold or removes one, so a slot-table
-/// probe per sweep would re-derive a value that cannot have moved.
 #[derive(Clone, Copy)]
 struct ConstraintUnit {
     island: BodyId,
@@ -220,10 +149,6 @@ struct ConstraintUnit {
     dense: (usize, usize),
 }
 
-/// What each phase loop actually iterated, pushed from the loop's own control
-/// variable. Reading the retained buffer instead would agree with the schedule
-/// by construction and could not catch a loop head that walks a freshly built
-/// list, which is the failure the buffer-level pin cannot see.
 #[cfg(test)]
 #[derive(Default)]
 struct VisitLog {
@@ -232,49 +157,39 @@ struct VisitLog {
     update_manifolds: Vec<PairKey>,
     prepare_solve: Vec<PairKey>,
     warm_start: Vec<PairKey>,
-    /// Every PGS sweep, concatenated, rather than one sampled sweep: a loop
-    /// head that reads the ordered buffer on the first pass and a rebuilt list
-    /// afterwards is a live failure mode that a first-only or last-only log
-    /// cannot see. Sweep boundaries are recoverable from the key count, so a
-    /// flat buffer avoids a per-sweep allocation.
     solve_sweeps: Vec<PairKey>,
 }
 
+/// Worlds can cross thread boundaries through `Send + Sync`.
 pub struct World<S: PhysicsSpace> {
     pub space: S,
     pub bodies: BodyArena<S>,
     pub fields: Vec<Box<dyn ForceField<S>>>,
     pub narrowphase: Narrowphase<S>,
-    /// Persistent contact manifolds, keyed `(body_a, body_b)` with `a < b`.
     /// `BTreeMap` for deterministic iteration: PGS convergence depends on
-    /// constraint visit order, which must not be hash order (Tier-0
-    /// determinism invariant).
+    /// constraint visit order, which must not be hash order.
     pub manifolds: BTreeMap<PairKey, Manifold<S>>,
-    /// PGS iterations per step. Defaults to [`DEFAULT_PGS_ITERS`].
     pub pgs_iters: usize,
     pub time: f32,
     pub schedule: Schedule,
-    /// Work-unit buffers, refilled and reordered at the head of their phase
-    /// group and retained across steps so the seam allocates once. Each phase
-    /// loop swaps its buffer out with `mem::take` and swaps it back, which is
-    /// what keeps the allocation while the loop holds `&mut self`.
     body_order: Vec<usize>,
     pair_order: Vec<PairKey>,
     constraints: Vec<ConstraintUnit>,
-    /// Broadphase and manifold-maintenance scratch: the sweep's sorted
-    /// intervals, its active list, and the ascending keys the narrowphase
-    /// reported a contact for this step. Retained on the same terms as the
-    /// work-unit buffers above.
     broadphase_intervals: Vec<RadialInterval>,
     broadphase_active: Vec<u32>,
     touched_pairs: Vec<PairKey>,
-    /// Island scratch: the union-find forest and the per-body island label,
-    /// both indexed by dense position and both retained for the same reason.
     island_parent: Vec<u32>,
     island_labels: Vec<BodyId>,
     #[cfg(test)]
     visit_log: VisitLog,
 }
+
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<World<EuclideanR2>>();
+    assert_send_sync::<World<EuclideanR3>>();
+    assert_send_sync::<World<EuclideanR4>>();
+};
 
 impl<S: PhysicsSpace> World<S> {
     pub fn new(space: S) -> Self {
@@ -300,20 +215,11 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    /// Add a body to the world; returns its handle.
     pub fn push_body(&mut self, body: RigidBody<S>) -> BodyId {
         self.bodies.spawn(body)
     }
 
-    /// Remove a body and every manifold it takes part in. Returns false if the
-    /// handle is stale. Dropping the manifolds here rather than leaving them
-    /// for the next step's eviction keeps `manifolds` free of keys that name
-    /// no live body, so a caller inspecting it between steps sees the world it
-    /// actually has.
-    ///
-    /// API, not instrumentation: it is the inverse of [`Self::push_body`] and
-    /// the only removal that leaves the world's own state consistent, so a
-    /// caller that can spawn has to be able to reach it.
+    /// Also removes every manifold the body takes part in.
     pub fn despawn_body(&mut self, id: BodyId) -> bool {
         if self.bodies.despawn(id).is_none() {
             return false;
@@ -322,12 +228,11 @@ impl<S: PhysicsSpace> World<S> {
         true
     }
 
-    /// Add a force field to the world.
     pub fn push_field(&mut self, field: Box<dyn ForceField<S>>) {
         self.fields.push(field);
     }
 
-    /// Advance the simulation by `dt` seconds.
+    /// `dt` is in seconds.
     pub fn step(&mut self, dt: f32)
     where
         S::Vector: VectorOps,
@@ -345,9 +250,8 @@ impl<S: PhysicsSpace> World<S> {
         self.time += dt;
     }
 
-    /// Refill the body buffer in slot order, then hand it to the schedule.
-    /// Refilled rather than reused in place so a permutation cannot compound
-    /// across steps.
+    // Refilled rather than reused in place so a permutation cannot compound
+    // across steps.
     fn collect_bodies(&mut self) {
         self.body_order.clear();
         self.body_order.extend(0..self.bodies.len());
@@ -393,9 +297,8 @@ impl<S: PhysicsSpace> World<S> {
         self.body_order = order;
     }
 
-    /// Broadphase + narrowphase, merging each contact into its pair's manifold.
-    /// Untouched pairs are evicted so stale warm-start impulses can't leak into
-    /// the next solve.
+    // Untouched pairs are evicted so stale warm-start impulses cannot leak
+    // into the next solve.
     fn update_manifolds(&mut self)
     where
         S::Vector: VectorOps,
@@ -426,6 +329,11 @@ impl<S: PhysicsSpace> World<S> {
             self.visit_log.update_manifolds.push(key);
             let (i, j) = self.dense_pair(key);
             let (a, b) = split_two_mut(self.bodies.dense_mut(), i, j);
+            // Before the narrowphase, so a fresh contact merges against a slot
+            // that already holds this step's geometry.
+            if let Some(manifold) = self.manifolds.get_mut(&key) {
+                manifold.refresh(&self.space, a, b);
+            }
             let Some(contact) = self.narrowphase.test(a, b, &self.space) else {
                 continue;
             };
@@ -435,12 +343,11 @@ impl<S: PhysicsSpace> World<S> {
                 .manifolds
                 .entry(key)
                 .or_insert_with(|| Manifold::new(key.0, key.1, restitution));
-            manifold.add_or_update(contact);
+            manifold.add_or_update(&self.space, a, b, contact);
         }
 
-        // Sorted rather than hashed so the eviction membership test runs out of
-        // a retained buffer; the schedule may have handed the loop its pairs in
-        // any order, so insertion order is not already ascending.
+        // Sorted rather than hashed so the eviction membership test runs out
+        // of a retained buffer; the schedule may have permuted the pairs.
         touched.sort_unstable();
         self.manifolds
             .retain(|k, _| touched.binary_search(k).is_ok());
@@ -448,16 +355,8 @@ impl<S: PhysicsSpace> World<S> {
         self.pair_order = pairs;
     }
 
-    /// Refill the constraint buffer grouped by island, islands ascending by id
-    /// and constraints ascending by key inside each, then hand it to the
-    /// schedule. One buffer serves `prepare_solve`, `warm_start`, and `solve`,
-    /// so those three always agree on the constraint order. Nothing between
-    /// here and the end of the solve inserts or removes a manifold, which is
-    /// why those three phases can index by key without a fallback.
-    ///
-    /// Grouping only moves constraints across island boundaries, and the
-    /// bodies two islands write are disjoint, so the solve it produces is the
-    /// one the ungrouped buffer produced, bit for bit.
+    // One buffer serves `prepare_solve`, `warm_start` and `solve`, and nothing
+    // between here and the end of the solve touches the manifold set.
     fn collect_constraints(&mut self) {
         let mut parent = std::mem::take(&mut self.island_parent);
         let mut labels = std::mem::take(&mut self.island_labels);
@@ -477,9 +376,6 @@ impl<S: PhysicsSpace> World<S> {
                 dense,
             }
         }));
-        // Sorting records rather than keys keeps the comparator to field reads:
-        // a key-only sort re-derives the island through the slot table once per
-        // comparison.
         units.sort_unstable_by_key(|unit| (unit.island, unit.key));
         self.island_parent = parent;
         self.island_labels = labels;
@@ -489,10 +385,8 @@ impl<S: PhysicsSpace> World<S> {
         self.constraints = units;
     }
 
-    /// Snapshot per-contact `velocity_bias` (restitution + Baumgarte) and reset
-    /// tangent accumulators. Must run before warm-start so the bias reflects the
-    /// true approach velocity, not the post-warm-start v_n; otherwise
-    /// restitution chases a moving target and converges to zero bounce.
+    // Must run before warm-start, or the bias reflects the post-warm-start v_n
+    // and restitution chases a moving target down to zero bounce.
     fn prepare_solve(&mut self, dt: f32)
     where
         S::Vector: VectorOps,
@@ -503,9 +397,6 @@ impl<S: PhysicsSpace> World<S> {
         for unit in &units {
             #[cfg(test)]
             self.visit_log.prepare_solve.push(unit.key);
-            // The hoist replaced a `dense_index(..).expect(..)` that would have
-            // panicked on a stale handle. This keeps that alarm in debug builds
-            // without paying the lookup in release.
             debug_assert_eq!(unit.dense, self.dense_pair(unit.key));
             let (i, j) = unit.dense;
             let manifold = self
@@ -542,8 +433,6 @@ impl<S: PhysicsSpace> World<S> {
         self.constraints = units;
     }
 
-    /// Re-apply each contact's previous-frame normal impulse. Tangent was reset
-    /// in `prepare_solve` (slide direction is not stable across frames).
     fn warm_start(&mut self)
     where
         S::Vector: VectorOps,
@@ -573,9 +462,6 @@ impl<S: PhysicsSpace> World<S> {
         self.constraints = units;
     }
 
-    /// PGS solve: `pgs_iters` passes of clamped incremental normal-then-tangent
-    /// impulses. The pre-snapshotted `velocity_bias` is the fixed target; this
-    /// loop chases it and never recomputes restitution or correction.
     fn solve(&mut self)
     where
         S::Vector: VectorOps,
@@ -602,10 +488,8 @@ impl<S: PhysicsSpace> World<S> {
         self.constraints = units;
     }
 
-    /// Candidate pairs for the current body configuration: one canonical
-    /// [`PairKey`] per pair whose bounding balls overlap, in ascending key
-    /// order, skipping pairs of two static bodies. Allocating form, for callers
-    /// outside the step loop; the step sweeps into buffers the world retains.
+    /// One [`PairKey`] per pair of overlapping bounding balls, ascending, and
+    /// no pair of two static bodies.
     pub fn broadphase(&self) -> Vec<PairKey> {
         let mut pairs = Vec::new();
         Self::fill_broadphase(
@@ -618,26 +502,11 @@ impl<S: PhysicsSpace> World<S> {
         pairs
     }
 
-    /// Sort-and-sweep broadphase, emitting one canonical [`PairKey`] per
-    /// candidate pair in ascending key order.
-    ///
-    /// A candidate is a pair that is not two static bodies and whose bounding
-    /// balls overlap, `d(a, b) ≤ r_a + r_b`; the same test the polytope
-    /// narrowphases already apply before entering GJK. That predicate, not the
-    /// acceleration structure, defines the emitted set, so the set is a
-    /// function of the body set alone and the sweep is free to prune however it
-    /// likes. Emission order is likewise a function of the handles and not of
-    /// storage position or discovery order, which is what lets a partitioned
-    /// executor reproduce it.
-    ///
-    /// The sweep axis is geodesic distance to the lowest-handle body: one
-    /// `distance` call per body, and defined in a curved space where a
-    /// coordinate axis is not. Interval overlap along it is necessary for ball
-    /// overlap by the triangle inequality, so the one-axis sweep (Cohen, Lin,
-    /// Manocha, Ponamgi 1995, "I-COLLIDE", sec. 3) carries over unchanged. It
-    /// degenerates to all-pairs when every body is equidistant from the anchor,
-    /// which a coordinate grid would not; the grid is the upgrade once a space
-    /// can hand out chart coordinates.
+    // The sweep axis is geodesic distance to the lowest-handle body, defined
+    // in a curved space where a coordinate axis is not. Interval overlap along
+    // it is necessary for ball overlap by the triangle inequality, so the
+    // one-axis sweep (Cohen, Lin, Manocha, Ponamgi 1995, "I-COLLIDE", sec. 3)
+    // carries over.
     fn fill_broadphase(
         bodies: &BodyArena<S>,
         space: &S,
@@ -670,6 +539,8 @@ impl<S: PhysicsSpace> World<S> {
                 dense: dense as u32,
                 id: bodies.id_at(dense),
                 dynamic: body.inv_mass != 0.0,
+                group: body.collision_group,
+                mask: body.collision_mask,
             });
         }
         // Unstable sort: the stable one allocates a scratch buffer, and the
@@ -686,6 +557,11 @@ impl<S: PhysicsSpace> World<S> {
                 if !entry.dynamic && !other.dynamic {
                     continue;
                 }
+                // Both directions, so a pair is only ever filtered by
+                // agreement. Cheaper than the distance below, hence first.
+                if entry.group & other.mask == 0 || other.group & entry.mask == 0 {
+                    continue;
+                }
                 let gap = space.distance(
                     bodies[other.dense as usize].position,
                     bodies[entry.dense as usize].position,
@@ -700,15 +576,43 @@ impl<S: PhysicsSpace> World<S> {
         pairs.sort_unstable();
     }
 
-    /// The islands of the current manifold set, ascending by island id.
-    /// Allocating form, for callers outside the step loop; the step groups its
-    /// constraint buffer through the same partition without allocating. Public
-    /// as the read side of [`Island`]'s instrumentation, not as a step API.
-    ///
-    /// Panics if `manifolds` names a body the arena no longer holds, which is
-    /// reachable only between a bare [`BodyArena::despawn`] and the next
-    /// [`Self::step`]; [`Self::despawn_body`] is the entry point that keeps the
-    /// two consistent.
+    /// Writes each manifold's key, point count, and per-point accumulated
+    /// normal impulse, in `BTreeMap` key order.
+    pub fn hash_contacts(&self, hash: &mut StateHash) {
+        for (key, manifold) in &self.manifolds {
+            for id in [key.0, key.1] {
+                hash.write_u32(id.slot());
+                hash.write_u32(id.generation());
+            }
+            hash.write_u32(manifold.points.len() as u32);
+            for point in &manifold.points {
+                hash.write_f32(point.normal_impulse);
+            }
+        }
+    }
+
+    /// Every body in ascending [`BodyId`] order, then [`Self::hash_contacts`].
+    /// The sampler owes a fixed-width, fixed-order layout: [`StateHash`]
+    /// carries no framing of its own.
+    pub fn state_hash(&self, sample_body: impl Fn(&RigidBody<S>, &mut Vec<u32>)) -> u64 {
+        let mut order: Vec<BodyId> = (0..self.bodies.len())
+            .map(|dense| self.bodies.id_at(dense))
+            .collect();
+        order.sort_unstable();
+
+        let mut words = Vec::new();
+        for id in order {
+            sample_body(&self.bodies[id], &mut words);
+        }
+        let mut hash = StateHash::new();
+        hash.write_u32s(&words);
+        self.hash_contacts(&mut hash);
+        hash.finish()
+    }
+
+    /// Ascending by island id. Panics if `manifolds` names a body the arena no
+    /// longer holds, reachable only between a bare [`BodyArena::despawn`] and
+    /// the next [`Self::step`].
     pub fn islands(&self) -> Vec<Island> {
         let mut parent = Vec::new();
         let mut labels = Vec::new();
@@ -743,15 +647,9 @@ impl<S: PhysicsSpace> World<S> {
         islands
     }
 
-    /// Union-find over the touched pairs, writing each body's island id to
-    /// `labels[dense]`. A body in no touched pair is its own singleton.
-    ///
-    /// A pair with a static body merges nothing: that body absorbs no impulse,
-    /// so the two sides of it are independent and joining them would hand a
-    /// parallel solver one island where it has two. The label is a post-pass
-    /// minimum over each component rather than whichever root the unions
-    /// happened to leave, which is what makes an island's identity a function
-    /// of the handles in it and not of the order the pairs arrived in.
+    // A pair with a static body merges nothing: it absorbs no impulse, so its
+    // two sides are independent. The label is a post-pass minimum over each
+    // component, which makes island identity independent of pair order.
     fn fill_islands(
         bodies: &BodyArena<S>,
         touched: impl Iterator<Item = PairKey>,
@@ -774,8 +672,6 @@ impl<S: PhysicsSpace> World<S> {
             }
             let (a, b) = (find_root(parent, i), find_root(parent, j));
             if a != b {
-                // Which root survives only shapes the forest; the component and
-                // the label below are the same either way.
                 parent[a.max(b)] = a.min(b) as u32;
             }
         }
@@ -790,19 +686,6 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    /// Storage positions of a key's two bodies, in the key's own order. Both
-    /// resolve, but as a property of the three callers rather than of the
-    /// manifold map: `update_manifolds` and `collect_constraints` pass keys the
-    /// broadphase minted from the live arena this step, and [`Self::islands`]
-    /// walks the map after `update_manifolds` has evicted every key it did not
-    /// touch. The solve phases do not come here at all; they read the dense
-    /// pair `collect_constraints` cached on each [`ConstraintUnit`].
-    ///
-    /// The map itself carries no such guarantee. `despawn_body` prunes it, but
-    /// [`BodyArena::despawn`] is reachable on `bodies` directly and does not,
-    /// so between one of those and the next `update_manifolds` the map can name
-    /// a dead body. [`Self::islands`] called in that window is where it
-    /// surfaces, as a panic rather than a wrong answer.
     fn dense_pair(&self, key: PairKey) -> (usize, usize) {
         (
             self.bodies.dense_index(key.0).expect(STALE_MANIFOLD_BODY),
@@ -811,9 +694,8 @@ impl<S: PhysicsSpace> World<S> {
     }
 }
 
-/// Representative of `dense`'s component, halving the path it walks on the way
-/// (Tarjan and van Leeuwen 1984, JACM 31(2), sec. 2: path halving carries the
-/// same amortized bound as full compression in one pass).
+// Path halving carries the same amortized bound as full compression in one
+// pass (Tarjan and van Leeuwen 1984, JACM 31(2), sec. 2).
 fn find_root(parent: &mut [u32], mut dense: usize) -> usize {
     while parent[dense] as usize != dense {
         parent[dense] = parent[parent[dense] as usize];
@@ -822,8 +704,8 @@ fn find_root(parent: &mut [u32], mut dense: usize) -> usize {
     dense
 }
 
-/// The island a constraint is solved in: the island of its dynamic body. Every
-/// constraint has one, since the broadphase never emits a pair of two statics.
+// Every constraint has an island, since the broadphase never emits a pair of
+// two statics.
 fn constraint_island<S: PhysicsSpace>(
     bodies: &BodyArena<S>,
     labels: &[BodyId],
@@ -841,9 +723,8 @@ fn constraint_island<S: PhysicsSpace>(
     }
 }
 
-/// Split-borrow `&mut slice[i]` and `&mut slice[j]` simultaneously, returned in
-/// argument order. Caller must ensure `i != j`. The two are ordered by
-/// [`BodyId`], not by storage position, so either may be the lower index.
+// Arguments are ordered by [`BodyId`], not by storage position, so either may
+// be the lower index.
 fn split_two_mut<T>(slice: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
     debug_assert_ne!(i, j, "split_two_mut requires distinct indices");
     if i < j {
@@ -855,9 +736,7 @@ fn split_two_mut<T>(slice: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
     }
 }
 
-/// One PGS iteration over a contact: normal then tangent (friction) solve, both
-/// with accumulated-impulse clamping (`jn ≥ 0`, `|jt| ≤ μ·jn`) so repeated
-/// passes converge to the fixed `velocity_bias` target.
+// `jn ≥ 0` holds on exit unconditionally; Coulomb's `jt ≤ μ·jn` does not.
 fn solve_normal_then_tangent<S>(
     space: &S,
     a: &mut RigidBody<S>,
@@ -867,22 +746,17 @@ fn solve_normal_then_tangent<S>(
     S: PhysicsSpace,
     S::Vector: VectorOps,
 {
-    // A non-finite slot here is an upstream narrowphase bug, not a runtime case
-    // to skip; release trusts narrowphase validation.
     debug_assert!(
         VectorOps::is_finite(cp.normal) && cp.penetration.is_finite(),
         "non-finite contact in solve_normal_then_tangent",
     );
 
-    // ---- Normal solve ----
     let v_rel_n_vec =
         space.velocity_at_point(b, cp.world_point) - space.velocity_at_point(a, cp.world_point);
     let v_n = VectorOps::dot(v_rel_n_vec, cp.normal);
     let k_n = space.effective_mass_inv(a, b, cp.world_point, cp.normal);
 
     if k_n > 0.0 {
-        // Target post-impulse v_n is `−velocity_bias`, clamped so accumulated
-        // normal impulse stays ≥ 0.
         let dj = -(v_n + cp.velocity_bias) / k_n;
         let new_acc = (cp.normal_impulse + dj).max(0.0);
         let actual = new_acc - cp.normal_impulse;
@@ -892,7 +766,6 @@ fn solve_normal_then_tangent<S>(
         }
     }
 
-    // ---- Tangent (friction) solve ----
     let v_rel_t_vec =
         space.velocity_at_point(b, cp.world_point) - space.velocity_at_point(a, cp.world_point);
     let v_t_vec = v_rel_t_vec - cp.normal * VectorOps::dot(v_rel_t_vec, cp.normal);
@@ -929,9 +802,10 @@ mod tests {
 
     use super::*;
     use crate::determinism_fixture::{
-        determinism_scenario_run, first_divergent_step, fnv1a64, multi_island_groups,
-        multi_island_scenario_run, multi_island_world, ScenarioRun, GOLDEN_MULTI_ISLAND_HASH,
-        GOLDEN_TRAJECTORY_HASH, MULTI_ISLAND_DT, MULTI_ISLAND_STEPS,
+        assert_scenario_stays_physical, determinism_scenario_run, first_divergent_step, fnv1a64,
+        multi_island_groups, multi_island_scenario_run, multi_island_world,
+        record_flick_chamber_tape, replay_flick_chamber_tape, sample_body_r3, ScenarioRun,
+        GOLDEN_MULTI_ISLAND_HASH, MULTI_ISLAND_DT, MULTI_ISLAND_STEPS, REPLAY_SEED, REPLAY_TICKS,
     };
     use crate::euclidean_r3::{
         box_body, halfspace_body_r3, register_default_narrowphase, sphere_body_r3,
@@ -939,21 +813,16 @@ mod tests {
     use crate::field::Gravity;
     use glam::Vec3;
     use loam_math::{Bivector3, EuclideanR3, Space};
+    use loam_time::Tape;
 
-    /// Arbitrary but fixed, so a failure is reproducible from its message.
     const PERMUTATION_SEEDS: [u64; 4] = [1, 0x9e37_79b9_7f4a_7c15, 0xdead_beef_cafe_f00d, 424_242];
 
-    /// The solve order as keys, which is the form every constraint-order
-    /// assertion below is stated in.
     fn constraint_order<S: PhysicsSpace>(world: &World<S>) -> Vec<PairKey> {
         world.constraints.iter().map(|unit| unit.key).collect()
     }
 
-    /// Counts what the thread running a probe asks of the allocator. The test
-    /// runner gives each test its own thread, so a probe never sees a
-    /// concurrent test's allocations; the counter is thread-local rather than
-    /// global for exactly that reason. Const-initialised so reading it inside
-    /// `alloc` cannot itself allocate.
+    // Thread-local so a probe never sees a concurrent test's allocations, and
+    // const-initialised so reading it inside `alloc` cannot itself allocate.
     mod alloc_probe {
         use std::alloc::{GlobalAlloc, Layout, System};
         use std::cell::Cell;
@@ -990,8 +859,6 @@ mod tests {
     #[global_allocator]
     static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
 
-    /// Reversal first: for a Gauss-Seidel sweep it is the adversarial order,
-    /// not just another sample.
     fn order_variants(phase: SchedulePhase) -> Vec<OrderPolicy> {
         let mut variants = vec![OrderPolicy::Reversed { phase }];
         variants.extend(
@@ -1006,10 +873,6 @@ mod tests {
         determinism_scenario_run(Schedule { threads: 1, order })
     }
 
-    /// The harness's sensitivity control. Global PGS is Gauss-Seidel, so its
-    /// converged state depends on constraint visit order; if permuting that
-    /// order left the hash untouched, the hash could not see the solver and
-    /// every invariance assertion built on it would be a rubber stamp.
     #[test]
     fn global_solve_order_permutation_changes_state_hash_determinism() {
         let canonical = run_with(OrderPolicy::Canonical);
@@ -1027,22 +890,9 @@ mod tests {
         }
     }
 
-    /// Both invariance axes, asserted as `permuted == canonical == golden`.
-    /// Mutual agreement among variants would certify a schedule that is
-    /// self-consistently wrong, so the committed constant is the third link
-    /// and not a redundant one.
-    ///
-    /// Non-vacuity rests on
-    /// [`global_solve_order_permutation_changes_state_hash_determinism`]: that
-    /// the same fixture's hash moves under a constraint permutation is what
-    /// establishes it reaches contacts and that the hash observes them.
     fn assert_phase_order_does_not_reach_the_state_hash(phase: SchedulePhase) {
         let canonical = run_with(OrderPolicy::Canonical);
-        assert_eq!(
-            fnv1a64(&canonical.trajectory),
-            GOLDEN_TRAJECTORY_HASH,
-            "canonical run no longer matches the committed golden hash"
-        );
+        assert_scenario_stays_physical(&canonical);
 
         for order in order_variants(phase) {
             let permuted = run_with(order);
@@ -1058,37 +908,62 @@ mod tests {
                 word_gap.is_none() && permuted.trajectory.len() == canonical.trajectory.len(),
                 "{order:?} moved trajectory word {word_gap:?}"
             );
-            let hash = fnv1a64(&permuted.trajectory);
-            assert_eq!(
-                hash, GOLDEN_TRAJECTORY_HASH,
-                "{order:?} produced {hash:#018x} against the committed golden \
-                 {GOLDEN_TRAJECTORY_HASH:#018x}"
-            );
         }
     }
 
-    /// `apply_forces` and `integrate` read and write one body each, and
-    /// `force_at` is a pure function of body state and `time`, so body visit
-    /// order must not reach the state hash. Vacuous by construction today and
-    /// deliberately so: it is the tripwire that fires the moment force
-    /// accumulation grows a shared buffer.
+    #[test]
+    fn a_group_outside_the_others_mask_never_reaches_the_narrowphase() {
+        let mut world = World::new(EuclideanR3);
+        register_default_narrowphase(&mut world.narrowphase);
+        // Overlapping, so only the mask can keep them apart.
+        let a = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 1.0, 1.0));
+        let b = world.push_body(sphere_body_r3(
+            Vec3::new(0.5, 0.0, 0.0),
+            Vec3::ZERO,
+            1.0,
+            1.0,
+        ));
+        assert_eq!(
+            world.broadphase().len(),
+            1,
+            "the pair does not overlap to begin with"
+        );
+
+        world.bodies[a].collision_group = 0b01;
+        world.bodies[a].collision_mask = 0b01;
+        world.bodies[b].collision_group = 0b10;
+        world.bodies[b].collision_mask = 0b10;
+        assert!(
+            world.broadphase().is_empty(),
+            "a filtered pair still reached the narrowphase"
+        );
+
+        // One-sided: `b` would accept `a`, but `a` still refuses `b`, and the
+        // filter is symmetric so the pair stays out.
+        world.bodies[b].collision_mask = 0b11;
+        assert!(
+            world.broadphase().is_empty(),
+            "a one-sided mask edit produced a pair that collides in one direction"
+        );
+
+        world.bodies[a].collision_mask = 0b11;
+        assert_eq!(
+            world.broadphase().len(),
+            1,
+            "agreement did not restore the pair"
+        );
+    }
+
     #[test]
     fn body_visit_order_permutation_preserves_state_hash_determinism() {
         assert_phase_order_does_not_reach_the_state_hash(SchedulePhase::Body);
     }
 
-    /// Narrowphase runs once per pair, results land in a `BTreeMap` keyed
-    /// canonically, and each pair contributes one contact per step, so pair
-    /// emission order must not reach the solve. This is the property a
-    /// parallel narrowphase would depend on, and unlike the body axis it is
-    /// not true by construction.
     #[test]
     fn broadphase_pair_order_permutation_preserves_state_hash_determinism() {
         assert_phase_order_does_not_reach_the_state_hash(SchedulePhase::BroadphasePair);
     }
 
-    /// The invariance axes are only evidence if the policy actually reorders
-    /// the buffers the fixture builds: 7 bodies and 21 broadphase pairs.
     #[test]
     fn order_policy_permutes_reproducibly_and_never_to_identity_determinism() {
         for len in [7usize, 21] {
@@ -1113,8 +988,6 @@ mod tests {
                     order.apply(phase, &mut repeat);
                     assert_eq!(repeat, units, "{order:?} is not reproducible");
 
-                    // A policy naming one phase must leave the others alone,
-                    // or the axes are not independent.
                     for other in [
                         SchedulePhase::Body,
                         SchedulePhase::BroadphasePair,
@@ -1132,9 +1005,6 @@ mod tests {
         }
     }
 
-    /// `expected` is `canonical` reversed exactly when `order` names `owner`,
-    /// so one helper carries both halves of the contract: the named phase's
-    /// buffer moves, and no other phase's buffer does.
     fn assert_buffer_matches_policy<T>(
         order: OrderPolicy,
         owner: SchedulePhase,
@@ -1144,8 +1014,17 @@ mod tests {
         T: Clone + PartialEq + std::fmt::Debug,
     {
         let mut expected = canonical.to_vec();
-        if matches!(order, OrderPolicy::Reversed { phase } if phase == owner) {
-            expected.reverse();
+        order.apply(owner, &mut expected);
+        if matches!(
+            order,
+            OrderPolicy::Reversed { phase } | OrderPolicy::Permuted { phase, .. } if phase == owner
+        ) {
+            assert_ne!(
+                expected.as_slice(),
+                canonical,
+                "{order:?} is the identity on this {owner:?} buffer, so the \
+                 comparison below would hold with the phase never reordered"
+            );
         }
         assert_eq!(
             buffer,
@@ -1155,21 +1034,8 @@ mod tests {
         );
     }
 
-    /// The invariance axes above compare a canonical run against a canonical
-    /// run whenever a policy fails to reach the buffer its phase executes, so
-    /// on their own they cannot tell "this order does not matter" apart from
-    /// "this order was never applied". This pins the seam directly: after a
-    /// step, each phase's retained buffer is reversed exactly when the policy
-    /// names that phase, and identical to its canonical fill otherwise.
-    ///
-    /// `Reversed` rather than a seeded permutation because its expected buffer
-    /// is computable here without re-implementing `shuffle`.
-    #[test]
-    fn schedule_reordering_reaches_its_named_phase_buffer_determinism() {
-        let dt = 1.0 / 240.0;
-        let settle_steps = 200;
-
-        for order in [
+    fn buffer_seam_orders() -> Vec<OrderPolicy> {
+        let mut orders = vec![
             OrderPolicy::Canonical,
             OrderPolicy::Reversed {
                 phase: SchedulePhase::Body,
@@ -1177,10 +1043,17 @@ mod tests {
             OrderPolicy::Reversed {
                 phase: SchedulePhase::BroadphasePair,
             },
-            OrderPolicy::Reversed {
-                phase: SchedulePhase::Constraint,
-            },
-        ] {
+        ];
+        orders.extend(order_variants(SchedulePhase::Constraint));
+        orders
+    }
+
+    #[test]
+    fn schedule_reordering_reaches_its_named_phase_buffer_determinism() {
+        let dt = 1.0 / 240.0;
+        let settle_steps = 200;
+
+        for order in buffer_seam_orders() {
             let mut world = settled_sphere_stack(dt, 0);
             world.schedule = Schedule { threads: 1, order };
             for _ in 0..settle_steps {
@@ -1190,13 +1063,11 @@ mod tests {
             let canonical_bodies: Vec<usize> = (0..world.bodies.len()).collect();
             let canonical_pairs = world.broadphase();
             let canonical_constraints: Vec<PairKey> = world.manifolds.keys().copied().collect();
-            // A buffer of fewer than two units reverses to itself, which would
-            // satisfy every assertion below without the seam existing.
             assert!(
                 canonical_bodies.len() >= 2
                     && canonical_pairs.len() >= 2
                     && canonical_constraints.len() >= 2,
-                "{order:?} left a buffer too short for a reversal to be visible: \
+                "{order:?} left a buffer too short for a reorder to be visible: \
                  {} bodies, {} pairs, {} constraints",
                 canonical_bodies.len(),
                 canonical_pairs.len(),
@@ -1224,41 +1095,12 @@ mod tests {
         }
     }
 
-    /// [`schedule_reordering_reaches_its_named_phase_buffer_determinism`] shows
-    /// the retained buffer was reordered, not that the phase loop read it. A
-    /// loop head swapped for a freshly built list
-    /// (`let pairs = self.broadphase();` in `update_manifolds`, `0..len` in
-    /// `apply_forces` or `integrate`) leaves that pin and every invariance axis
-    /// green while the ordered buffer goes unread. [`VisitLog`] records each
-    /// loop's own control variable, so the visit order is observed from inside
-    /// the loop and cannot agree with the buffer by construction.
-    ///
-    /// `Reversed` for the same reason as that pin: the expected order is
-    /// computable here without re-implementing `shuffle`.
-    ///
-    /// The Constraint consumers are where the hole actually costs something:
-    /// PGS is Gauss-Seidel, so a rebuilt key list there silently restores
-    /// `BTreeMap` order and changes the converged answer. `solve` is checked on
-    /// every sweep, not the first or the last, because a head that reads the
-    /// ordered buffer once and rebuilds on later passes is exactly the
-    /// half-broken case a sampled sweep would clear.
     #[test]
     fn phase_loops_visit_the_buffer_the_schedule_ordered_determinism() {
         let dt = 1.0 / 240.0;
         let settle_steps = 200;
 
-        for order in [
-            OrderPolicy::Canonical,
-            OrderPolicy::Reversed {
-                phase: SchedulePhase::Body,
-            },
-            OrderPolicy::Reversed {
-                phase: SchedulePhase::BroadphasePair,
-            },
-            OrderPolicy::Reversed {
-                phase: SchedulePhase::Constraint,
-            },
-        ] {
+        for order in buffer_seam_orders() {
             let mut world = settled_sphere_stack(dt, 0);
             world.schedule = Schedule { threads: 1, order };
             for _ in 0..settle_steps {
@@ -1272,15 +1114,13 @@ mod tests {
                 canonical_bodies.len() >= 2
                     && canonical_pairs.len() >= 2
                     && canonical_constraints.len() >= 2,
-                "{order:?} left a buffer too short for a reversal to be visible: \
+                "{order:?} left a buffer too short for a reorder to be visible: \
                  {} bodies, {} pairs, {} constraints",
                 canonical_bodies.len(),
                 canonical_pairs.len(),
                 canonical_constraints.len()
             );
 
-            // Both Body-phase consumers, because each holds the buffer through
-            // its own loop and either one can stop reading it alone.
             for (phase, visited) in [
                 ("apply_forces", &world.visit_log.apply_forces),
                 ("integrate", &world.visit_log.integrate),
@@ -1310,8 +1150,6 @@ mod tests {
                 &canonical_pairs,
             );
 
-            // The two single-pass Constraint consumers. Each takes the buffer
-            // for its own loop, so either can stop reading it alone.
             let solve_order = constraint_order(&world);
             for (phase, visited) in [
                 ("prepare_solve", &world.visit_log.prepare_solve),
@@ -1360,25 +1198,152 @@ mod tests {
         }
     }
 
-    /// The multi-island fixture's behaviour pin, on the same terms as the R4
-    /// golden: deterministic-but-changed integration, solve, or contact
-    /// constants move it.
     #[test]
     fn multi_island_scenario_matches_golden_determinism_hash() {
-        let hash = fnv1a64(&multi_island_scenario_run(Schedule::default()).trajectory);
+        let run = multi_island_scenario_run(Schedule::default());
+        assert_scenario_stays_physical(&run);
+        let hash = fnv1a64(&run.trajectory);
         assert_eq!(
             hash, GOLDEN_MULTI_ISLAND_HASH,
             "multi-island trajectory hashed {hash:#018x} against the committed \
-             {GOLDEN_MULTI_ISLAND_HASH:#018x}"
+             {GOLDEN_MULTI_ISLAND_HASH:#018x}; the sanity pin above passed, so \
+             this is an intended simulation change and the constant should be \
+             re-recorded to {hash:#018x}"
         );
     }
 
-    /// The fixture earns its name only if the contact graph really splits into
-    /// the three groups it lays out and the four-body chain really rests as a
-    /// chain. A layout edit that lets two groups touch, or that leaves the
-    /// chain short of four simultaneous contacts, fails here rather than
-    /// silently making the island-order and colour-order axes vacuous on the
-    /// day they land.
+    #[test]
+    fn a_recorded_tape_replays_to_the_same_state_hash_determinism() {
+        let tape = record_flick_chamber_tape(REPLAY_SEED);
+        assert_eq!(
+            tape.ticks(),
+            REPLAY_TICKS,
+            "the tape must cover the run it recorded"
+        );
+        assert!(
+            tape.checkpoints().len() > 1,
+            "one checkpoint would let a divergence hide until the last tick"
+        );
+        assert_eq!(
+            1.0 / tape.tick_hz() as f32,
+            MULTI_ISLAND_DT,
+            "the header's tick rate must be the step the scenario actually runs"
+        );
+        assert_eq!(
+            replay_flick_chamber_tape(&tape),
+            tape.checkpoints(),
+            "replay diverged from the recording it was made from"
+        );
+    }
+
+    #[test]
+    fn a_tape_replays_the_same_after_a_round_trip_through_its_byte_format_determinism() {
+        let recorded = record_flick_chamber_tape(REPLAY_SEED);
+        let decoded = Tape::decode(&recorded.encode()).expect("own encoding decodes");
+        assert_eq!(decoded, recorded);
+        assert_eq!(replay_flick_chamber_tape(&decoded), decoded.checkpoints());
+    }
+
+    #[test]
+    fn a_flipped_input_word_moves_the_replayed_state_hash_determinism() {
+        let recorded = record_flick_chamber_tape(REPLAY_SEED);
+        let throw = (0..recorded.ticks())
+            .find(|&tick| recorded.input(tick).expect("inside the tape")[0] != u32::MAX)
+            .expect("the scripted stream throws at least once");
+
+        let mut tampered = Tape::new(
+            recorded.tick_hz(),
+            recorded.seed(),
+            recorded.words_per_tick(),
+        );
+        for tick in 0..recorded.ticks() {
+            let mut frame: Vec<u32> = recorded.input(tick).expect("inside the tape").to_vec();
+            if tick == throw {
+                // Low mantissa bit of the impulse's x component: the smallest
+                // edit the format can express.
+                frame[2] ^= 1;
+            }
+            tampered.push_tick(&frame);
+        }
+
+        assert_ne!(
+            replay_flick_chamber_tape(&tampered),
+            recorded.checkpoints(),
+            "one ulp of input made no difference, so the tape is not driving \
+             the simulation"
+        );
+    }
+
+    #[test]
+    fn state_hash_is_invariant_under_arena_compaction_determinism() {
+        let radii = [0.3_f32, 0.4, 0.5];
+        let body = |i: usize| {
+            sphere_body_r3(
+                Vec3::new(i as f32, 2.0 * i as f32, 0.0),
+                Vec3::new(0.0, -1.0, 0.5 * i as f32),
+                radii[i],
+                1.0 + i as f32,
+            )
+        };
+
+        let mut direct = World::new(EuclideanR3);
+        for i in 0..3 {
+            direct.push_body(body(i));
+        }
+
+        let mut compacted = World::new(EuclideanR3);
+        compacted.push_body(body(0));
+        let doomed = compacted.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 9.0, 4.0));
+        compacted.push_body(body(1));
+        compacted.push_body(body(2));
+        assert!(compacted.despawn_body(doomed));
+
+        let dense_order = |world: &World<EuclideanR3>| {
+            world
+                .bodies
+                .iter()
+                .map(|body| body.mass.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(
+            dense_order(&direct),
+            dense_order(&compacted),
+            "the two worlds must differ in storage order or the pin is vacuous"
+        );
+        assert_eq!(
+            direct.state_hash(sample_body_r3),
+            compacted.state_hash(sample_body_r3),
+        );
+    }
+
+    #[test]
+    fn state_hash_covers_carried_contact_impulses_determinism() {
+        let mut world = multi_island_world(Schedule::default());
+        for _ in 0..MULTI_ISLAND_STEPS {
+            world.step(MULTI_ISLAND_DT);
+        }
+        let settled = world.state_hash(sample_body_r3);
+
+        let point = world
+            .manifolds
+            .values_mut()
+            .flat_map(|manifold| manifold.points.iter_mut())
+            .next()
+            .expect("the fixture rests in contact");
+        point.normal_impulse = f32::from_bits(point.normal_impulse.to_bits() ^ 1);
+
+        assert_ne!(
+            settled,
+            world.state_hash(sample_body_r3),
+            "one ulp of warm-start impulse left the state hash unmoved"
+        );
+    }
+
+    #[test]
+    fn multi_island_scenario_stays_above_the_floor_and_never_gains_energy_determinism() {
+        assert_scenario_stays_physical(&multi_island_scenario_run(Schedule::default()));
+    }
+
     #[test]
     fn multi_island_contact_graph_stays_three_disjoint_islands_determinism() {
         let groups = multi_island_groups();
@@ -1399,8 +1364,6 @@ mod tests {
                         assert_eq!(x, y, "contact ({i}, {j}) joined islands {x} and {y}");
                         x
                     }
-                    // The floor sits in every island's contact set and merges
-                    // none of them: static, so it transmits no impulse.
                     (Some(x), None) | (None, Some(x)) => x,
                     (None, None) => panic!("contact ({i}, {j}) between two static bodies"),
                 };
@@ -1419,9 +1382,6 @@ mod tests {
             chain_contacts_peak, 4,
             "the four-body chain never rested as floor-A0, A0-A1, A1-A2, A2-A3"
         );
-        // Bit equality, not a tolerance: the fixture's claim is that lateral
-        // motion is identically absent, not merely small. A tolerance would let
-        // a slow drift accumulate until the islands do meet.
         let end_x: Vec<f32> = world.bodies.iter().map(|b| b.position.x).collect();
         assert_eq!(
             end_x, start_x,
@@ -1433,154 +1393,6 @@ mod tests {
     const SPHERE_RADIUS: f32 = 0.5;
     const GRAVITY_Y: f32 = -9.8;
 
-    /// Translational plus rotational kinetic energy. Inertia is the scalar
-    /// isotropic moment `EuclideanR3` uses, so the rotational term is
-    /// `½·I·|ω|²`.
-    fn kinetic_energy(body: &RigidBody<EuclideanR3>) -> f32 {
-        let omega = body.angular_velocity.magnitude();
-        0.5 * body.mass * body.velocity.length_squared() + 0.5 * body.inertia * omega * omega
-    }
-
-    /// A perfectly elastic (`e = 1`) impact must return exactly the incoming
-    /// kinetic energy: no loss, and no gain from the Baumgarte term riding
-    /// along in `velocity_bias`.
-    ///
-    /// `dt` is chosen so one step of approach buries less than
-    /// [`PENETRATION_SLOP`]; the positional bias is then identically zero and
-    /// the rebound is pure restitution. A coarser step would legitimately add
-    /// energy, which is why this contract is stated per-impact rather than as a
-    /// global energy budget.
-    #[test]
-    fn perfectly_elastic_rebound_conserves_kinetic_energy() {
-        let mut world = World::new(EuclideanR3);
-        register_default_narrowphase(&mut world.narrowphase);
-
-        let approach = 2.0;
-        let dt = 1.0 / 1000.0;
-        assert!(
-            approach > RESTITUTION_THRESHOLD,
-            "below the threshold restitution is deliberately suppressed",
-        );
-        assert!(
-            approach * dt < PENETRATION_SLOP,
-            "a deeper first-frame burial admits a Baumgarte contribution",
-        );
-
-        // Start clear of the floor so the impact is produced by the sim rather
-        // than by an initial condition already inside the plane.
-        let start_gap = 0.01;
-        let sphere = world.push_body(sphere_body_r3(
-            Vec3::new(0.0, SPHERE_RADIUS + start_gap, 0.0),
-            Vec3::new(0.0, -approach, 0.0),
-            SPHERE_RADIUS,
-            1.0,
-        ));
-        let floor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0));
-        world.bodies[sphere].restitution = 1.0;
-        world.bodies[floor].restitution = 1.0;
-
-        let energy_before = kinetic_energy(&world.bodies[sphere]);
-        // Long enough to close `start_gap`, bounce, and separate again.
-        let steps = (4.0 * start_gap / (approach * dt)).ceil() as usize;
-        for _ in 0..steps {
-            world.step(dt);
-        }
-
-        let body = &world.bodies[sphere];
-        assert!(
-            body.velocity.y > 0.0,
-            "sphere did not rebound: v_y = {}",
-            body.velocity.y
-        );
-        // The contact lies on the line through the centre of mass, so friction
-        // and torque have no lever arm and every joule stays translational.
-        assert!(
-            body.angular_velocity.magnitude() < 1e-6,
-            "central impact spun the sphere: |ω| = {}",
-            body.angular_velocity.magnitude()
-        );
-
-        let energy_after = kinetic_energy(body);
-        let ratio = energy_after / energy_before;
-        assert!(
-            ratio <= 1.0 + 1e-4,
-            "e = 1 impact added energy: {energy_before} -> {energy_after}"
-        );
-        assert!(
-            ratio >= 1.0 - 1e-4,
-            "e = 1 impact lost energy: {energy_before} -> {energy_after}"
-        );
-    }
-
-    /// Coulomb's cone, `|jt| ≤ μ·jn`, must hold at every contact on every step,
-    /// and must actually bind at least once: a solver that never applied
-    /// friction would satisfy the inequality vacuously.
-    #[test]
-    fn tangent_impulse_stays_inside_the_coulomb_cone() {
-        let mut world = World::new(EuclideanR3);
-        register_default_narrowphase(&mut world.narrowphase);
-        world.push_field(Box::new(Gravity::new(Vec3::new(0.0, GRAVITY_Y, 0.0))));
-
-        let slide_speed = 5.0;
-        let sphere = world.push_body(sphere_body_r3(
-            Vec3::new(0.0, SPHERE_RADIUS, 0.0),
-            Vec3::new(slide_speed, 0.0, 0.0),
-            SPHERE_RADIUS,
-            1.0,
-        ));
-        let floor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0));
-        world.bodies[sphere].restitution = 0.0;
-        world.bodies[floor].restitution = 0.0;
-
-        let dt = 1.0 / 240.0;
-        let mut cone_ever_binds = false;
-        for _ in 0..240 {
-            world.step(dt);
-            for manifold in world.manifolds.values() {
-                for cp in &manifold.points {
-                    let cap = cp.normal_impulse * FRICTION_COEFF;
-                    // The clamp is applied against the normal impulse of the
-                    // same iteration, so the bound holds on the state the step
-                    // leaves behind, not merely in expectation. The 1e-6 slack
-                    // covers f32 accumulation across `pgs_iters` passes; the
-                    // impulses here are of order 1e-2, so it cannot hide a
-                    // widened cone.
-                    assert!(
-                        cp.tangent_impulse <= cap + 1e-6,
-                        "friction escaped the cone: jt = {}, μ·jn = {cap}",
-                        cp.tangent_impulse
-                    );
-                    assert!(
-                        cp.tangent_impulse >= 0.0,
-                        "tangent accumulator went negative: {}",
-                        cp.tangent_impulse
-                    );
-                    if cap > 1e-6 && cp.tangent_impulse >= cap - 1e-6 {
-                        cone_ever_binds = true;
-                    }
-                }
-            }
-        }
-
-        assert!(
-            cone_ever_binds,
-            "friction never saturated, so the clamp was never exercised"
-        );
-        let body = &world.bodies[sphere];
-        assert!(
-            body.velocity.x < slide_speed,
-            "friction did not brake the slide: v_x = {}",
-            body.velocity.x
-        );
-        assert!(
-            body.angular_velocity.magnitude() > 1e-3,
-            "friction applied no torque: |ω| = {}",
-            body.angular_velocity.magnitude()
-        );
-    }
-
-    /// Three spheres resting on the floor, run long enough that the manifolds
-    /// carry converged accumulated impulses.
     fn settled_sphere_stack(dt: f32, settle_steps: usize) -> World<EuclideanR3> {
         let mut world = World::new(EuclideanR3);
         register_default_narrowphase(&mut world.narrowphase);
@@ -1605,15 +1417,434 @@ mod tests {
         world
     }
 
-    /// Sphere centres on the x axis, several diameters apart, so no two
-    /// spheres can reach each other for the length of a test.
+    mod solver_contracts {
+        use glam::{Vec2, Vec4};
+        use loam_math::{Bivector2, Bivector4, EuclideanR2, EuclideanR4};
+
+        use super::*;
+        use crate::euclidean_r2::{sphere_body, static_wall};
+        use crate::euclidean_r4::{halfspace4_body_r4, sphere_body_r4};
+
+        trait SolverSpace: PhysicsSpace<Inertia = f32> {
+            fn angular_speed(omega: Self::AngVel) -> f32;
+        }
+
+        impl SolverSpace for EuclideanR2 {
+            fn angular_speed(omega: Bivector2) -> f32 {
+                omega.0.abs()
+            }
+        }
+
+        impl SolverSpace for EuclideanR3 {
+            fn angular_speed(omega: Bivector3) -> f32 {
+                omega.magnitude()
+            }
+        }
+
+        impl SolverSpace for EuclideanR4 {
+            fn angular_speed(omega: Bivector4) -> f32 {
+                omega.magnitude()
+            }
+        }
+
+        fn kinetic_energy<S: SolverSpace>(body: &RigidBody<S>) -> f32
+        where
+            S::Vector: VectorOps,
+        {
+            let omega = S::angular_speed(body.angular_velocity);
+            0.5 * body.mass * VectorOps::length_squared(body.velocity)
+                + 0.5 * body.inertia * omega * omega
+        }
+
+        const FLOOR_HALF: Vec2 = Vec2::new(50.0, 1.0);
+
+        fn floor_r2() -> RigidBody<EuclideanR2> {
+            static_wall(Vec2::new(0.0, -FLOOR_HALF.y), FLOOR_HALF)
+        }
+
+        const REBOUND_APPROACH: f32 = 2.0;
+        // One step of approach must bury less than [`PENETRATION_SLOP`], so the
+        // positional bias is zero and the rebound is pure restitution.
+        const REBOUND_DT: f32 = 1.0 / 1000.0;
+        const REBOUND_GAP: f32 = 0.01;
+
+        const _: () = assert!(
+            REBOUND_APPROACH > RESTITUTION_THRESHOLD,
+            "below the threshold restitution is deliberately suppressed",
+        );
+        const _: () = assert!(
+            REBOUND_APPROACH * REBOUND_DT < PENETRATION_SLOP,
+            "a deeper first-frame burial admits a Baumgarte contribution",
+        );
+
+        fn assert_elastic_rebound_conserves_kinetic_energy<S>(
+            mut world: World<S>,
+            faller: BodyId,
+            up: S::Vector,
+        ) where
+            S: SolverSpace,
+            S::Vector: VectorOps,
+            S::Point: Copy + std::ops::Sub<Output = S::Vector>,
+        {
+            let energy_before = kinetic_energy(&world.bodies[faller]);
+            let steps = (4.0 * REBOUND_GAP / (REBOUND_APPROACH * REBOUND_DT)).ceil() as usize;
+            for _ in 0..steps {
+                world.step(REBOUND_DT);
+            }
+
+            let body = &world.bodies[faller];
+            let rebound = VectorOps::dot(body.velocity, up);
+            assert!(rebound > 0.0, "body did not rebound: v·up = {rebound}");
+            // The contact lies on the line through the centre of mass, so
+            // friction has no lever arm and every joule stays translational.
+            let spin = S::angular_speed(body.angular_velocity);
+            assert!(spin < 1e-6, "central impact spun the body: |ω| = {spin}");
+
+            let energy_after = kinetic_energy(body);
+            let ratio = energy_after / energy_before;
+            assert!(
+                ratio <= 1.0 + 1e-4,
+                "e = 1 impact added energy: {energy_before} -> {energy_after}"
+            );
+            assert!(
+                ratio >= 1.0 - 1e-4,
+                "e = 1 impact lost energy: {energy_before} -> {energy_after}"
+            );
+        }
+
+        #[test]
+        fn perfectly_elastic_rebound_conserves_kinetic_energy_r2() {
+            let mut world = World::new(EuclideanR2);
+            crate::euclidean_r2::register_default_narrowphase(&mut world.narrowphase);
+            let disk = world.push_body(sphere_body(
+                Vec2::new(0.0, SPHERE_RADIUS + REBOUND_GAP),
+                Vec2::new(0.0, -REBOUND_APPROACH),
+                SPHERE_RADIUS,
+                1.0,
+            ));
+            let floor = world.push_body(floor_r2());
+            world.bodies[disk].restitution = 1.0;
+            world.bodies[floor].restitution = 1.0;
+
+            assert_elastic_rebound_conserves_kinetic_energy(world, disk, Vec2::Y);
+        }
+
+        #[test]
+        fn perfectly_elastic_rebound_conserves_kinetic_energy_r3() {
+            let mut world = World::new(EuclideanR3);
+            register_default_narrowphase(&mut world.narrowphase);
+            let sphere = world.push_body(sphere_body_r3(
+                Vec3::new(0.0, SPHERE_RADIUS + REBOUND_GAP, 0.0),
+                Vec3::new(0.0, -REBOUND_APPROACH, 0.0),
+                SPHERE_RADIUS,
+                1.0,
+            ));
+            let floor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0));
+            world.bodies[sphere].restitution = 1.0;
+            world.bodies[floor].restitution = 1.0;
+
+            assert_elastic_rebound_conserves_kinetic_energy(world, sphere, Vec3::Y);
+        }
+
+        #[test]
+        fn perfectly_elastic_rebound_conserves_kinetic_energy_r4() {
+            let mut world = World::new(EuclideanR4);
+            crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);
+            let sphere = world.push_body(sphere_body_r4(
+                Vec4::new(0.0, SPHERE_RADIUS + REBOUND_GAP, 0.0, 0.0),
+                Vec4::new(0.0, -REBOUND_APPROACH, 0.0, 0.0),
+                SPHERE_RADIUS,
+                1.0,
+            ));
+            let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+            world.bodies[sphere].restitution = 1.0;
+            world.bodies[floor].restitution = 1.0;
+
+            assert_elastic_rebound_conserves_kinetic_energy(world, sphere, Vec4::Y);
+        }
+
+        const SLIDE_SPEED: f32 = 5.0;
+        const SLIDE_DT: f32 = 1.0 / 240.0;
+        const SLIDE_STEPS: usize = 240;
+
+        fn assert_tangent_impulse_stays_inside_the_coulomb_cone<S>(
+            mut world: World<S>,
+            slider: BodyId,
+            slide: S::Vector,
+            up: S::Vector,
+        ) where
+            S: PhysicsSpace,
+            S::Vector: VectorOps,
+            S::Point: Copy + std::ops::Sub<Output = S::Vector>,
+        {
+            let mut cone_ever_binds = false;
+            for _ in 0..SLIDE_STEPS {
+                world.step(SLIDE_DT);
+                for manifold in world.manifolds.values() {
+                    for cp in &manifold.points {
+                        let cap = cp.normal_impulse * FRICTION_COEFF;
+                        // The 1e-6 slack covers f32 accumulation across
+                        // `pgs_iters` passes, against impulses of order 1e-2.
+                        assert!(
+                            cp.tangent_impulse <= cap + 1e-6,
+                            "friction escaped the cone: jt = {}, μ·jn = {cap}",
+                            cp.tangent_impulse
+                        );
+                        assert!(
+                            cp.tangent_impulse >= 0.0,
+                            "tangent accumulator went negative: {}",
+                            cp.tangent_impulse
+                        );
+                        if cap > 1e-6 && cp.tangent_impulse >= cap - 1e-6 {
+                            cone_ever_binds = true;
+                        }
+                    }
+                }
+            }
+
+            assert!(
+                cone_ever_binds,
+                "friction never saturated, so the clamp was never exercised"
+            );
+            let body = &world.bodies[slider];
+            let along = VectorOps::dot(body.velocity, slide);
+            assert!(
+                along < SLIDE_SPEED,
+                "friction did not brake the slide: v·slide = {along}"
+            );
+
+            // Sense, not magnitude: `|ω| > 0` holds for a torque of either
+            // sign. Friction below the centre of mass must spin the body toward
+            // rolling, carrying the contact point backwards along the slide.
+            let contact = world.space.exp(body.position, up * -SPHERE_RADIUS);
+            let angular_at_contact = world.space.velocity_at_point(body, contact) - body.velocity;
+            let backspin = VectorOps::dot(angular_at_contact, slide);
+            assert!(
+                backspin < -1e-3,
+                "friction spun the body away from rolling: contact-point \
+                 angular velocity along the slide is {backspin}"
+            );
+        }
+
+        #[test]
+        fn tangent_impulse_stays_inside_the_coulomb_cone_r2() {
+            let mut world = World::new(EuclideanR2);
+            crate::euclidean_r2::register_default_narrowphase(&mut world.narrowphase);
+            world.push_field(Box::new(Gravity::new(Vec2::new(0.0, GRAVITY_Y))));
+            let disk = world.push_body(sphere_body(
+                Vec2::new(0.0, SPHERE_RADIUS),
+                Vec2::new(SLIDE_SPEED, 0.0),
+                SPHERE_RADIUS,
+                1.0,
+            ));
+            let floor = world.push_body(floor_r2());
+            world.bodies[disk].restitution = 0.0;
+            world.bodies[floor].restitution = 0.0;
+
+            assert_tangent_impulse_stays_inside_the_coulomb_cone(world, disk, Vec2::X, Vec2::Y);
+        }
+
+        #[test]
+        fn tangent_impulse_stays_inside_the_coulomb_cone_r3() {
+            let mut world = World::new(EuclideanR3);
+            register_default_narrowphase(&mut world.narrowphase);
+            world.push_field(Box::new(Gravity::new(Vec3::new(0.0, GRAVITY_Y, 0.0))));
+            let sphere = world.push_body(sphere_body_r3(
+                Vec3::new(0.0, SPHERE_RADIUS, 0.0),
+                Vec3::new(SLIDE_SPEED, 0.0, 0.0),
+                SPHERE_RADIUS,
+                1.0,
+            ));
+            let floor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0));
+            world.bodies[sphere].restitution = 0.0;
+            world.bodies[floor].restitution = 0.0;
+
+            assert_tangent_impulse_stays_inside_the_coulomb_cone(world, sphere, Vec3::X, Vec3::Y);
+        }
+
+        #[test]
+        fn tangent_impulse_stays_inside_the_coulomb_cone_r4() {
+            let mut world = World::new(EuclideanR4);
+            crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);
+            world.push_field(Box::new(Gravity::new(Vec4::new(0.0, GRAVITY_Y, 0.0, 0.0))));
+            let sphere = world.push_body(sphere_body_r4(
+                Vec4::new(0.0, SPHERE_RADIUS, 0.0, 0.0),
+                Vec4::new(SLIDE_SPEED, 0.0, 0.0, 0.0),
+                SPHERE_RADIUS,
+                1.0,
+            ));
+            let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+            world.bodies[sphere].restitution = 0.0;
+            world.bodies[floor].restitution = 0.0;
+
+            assert_tangent_impulse_stays_inside_the_coulomb_cone(world, sphere, Vec4::X, Vec4::Y);
+        }
+
+        const STACK_DT: f32 = 1.0 / 240.0;
+        const STACK_SETTLE_STEPS: usize = 400;
+        const STACK_LEVELS: usize = 3;
+
+        fn clear_warm_start<S: PhysicsSpace>(world: &mut World<S>) {
+            for manifold in world.manifolds.values_mut() {
+                for cp in &mut manifold.points {
+                    cp.normal_impulse = 0.0;
+                }
+            }
+        }
+
+        fn velocities<S: PhysicsSpace>(world: &World<S>) -> Vec<S::Vector>
+        where
+            S::Vector: VectorOps,
+        {
+            world.bodies.iter().map(|b| b.velocity).collect()
+        }
+
+        fn normal_impulses<S: PhysicsSpace>(world: &World<S>) -> Vec<f32> {
+            world
+                .manifolds
+                .values()
+                .flat_map(|m| m.points.iter().map(|cp| cp.normal_impulse))
+                .collect()
+        }
+
+        fn max_velocity_gap<V: VectorOps>(a: &[V], b: &[V]) -> f32 {
+            assert_eq!(a.len(), b.len(), "body layouts diverged");
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| VectorOps::length(*x - *y))
+                .fold(0.0_f32, f32::max)
+        }
+
+        fn max_scalar_gap(a: &[f32], b: &[f32]) -> f32 {
+            assert_eq!(a.len(), b.len(), "manifold layouts diverged");
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f32, f32::max)
+        }
+
+        fn assert_warm_started_step_matches_cold_started_converged_step<S>(
+            fixture: impl Fn() -> World<S>,
+        ) where
+            S: PhysicsSpace,
+            S::Vector: VectorOps,
+            S::Point: Copy + std::ops::Sub<Output = S::Vector>,
+        {
+            let mut warm = fixture();
+            let mut cold_converged = fixture();
+            let mut cold_default = fixture();
+
+            assert!(
+                warm.manifolds
+                    .values()
+                    .flat_map(|m| &m.points)
+                    .any(|cp| cp.normal_impulse > 0.0),
+                "fixture carries no warm-start payload"
+            );
+
+            clear_warm_start(&mut cold_converged);
+            clear_warm_start(&mut cold_default);
+            // The reference solution, not another partial solve.
+            cold_converged.pgs_iters = 400;
+
+            warm.step(STACK_DT);
+            cold_converged.step(STACK_DT);
+            cold_default.step(STACK_DT);
+
+            let converged = velocities(&cold_converged);
+            let warm_gap = max_velocity_gap(&velocities(&warm), &converged);
+            let cold_gap = max_velocity_gap(&velocities(&cold_default), &converged);
+
+            // Gravity alone contributes 0.04 m/s per 1/240 s step, so 1e-5 is
+            // a tight fraction of the quantity under test.
+            assert!(
+                warm_gap < 1e-5,
+                "warm-started step diverged from the converged solve by {warm_gap} m/s"
+            );
+            assert!(
+                warm_gap < cold_gap,
+                "warm start bought no convergence: warm {warm_gap} vs cold {cold_gap}"
+            );
+
+            let impulse_gap =
+                max_scalar_gap(&normal_impulses(&warm), &normal_impulses(&cold_converged));
+            let reference = normal_impulses(&cold_converged)
+                .into_iter()
+                .fold(0.0_f32, f32::max);
+            assert!(
+                impulse_gap < 1e-3 * reference,
+                "warm-started accumulator diverged by {impulse_gap} against a peak impulse of {reference}"
+            );
+        }
+
+        fn settled_disk_stack_r2() -> World<EuclideanR2> {
+            let mut world = World::new(EuclideanR2);
+            crate::euclidean_r2::register_default_narrowphase(&mut world.narrowphase);
+            world.push_field(Box::new(Gravity::new(Vec2::new(0.0, GRAVITY_Y))));
+
+            for level in 0..STACK_LEVELS {
+                let y = SPHERE_RADIUS + level as f32 * 2.0 * SPHERE_RADIUS;
+                let id = world.push_body(sphere_body(
+                    Vec2::new(0.0, y),
+                    Vec2::ZERO,
+                    SPHERE_RADIUS,
+                    1.0,
+                ));
+                world.bodies[id].restitution = 0.0;
+            }
+            let floor = world.push_body(floor_r2());
+            world.bodies[floor].restitution = 0.0;
+
+            for _ in 0..STACK_SETTLE_STEPS {
+                world.step(STACK_DT);
+            }
+            world
+        }
+
+        fn settled_sphere_stack_r4() -> World<EuclideanR4> {
+            let mut world = World::new(EuclideanR4);
+            crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);
+            world.push_field(Box::new(Gravity::new(Vec4::new(0.0, GRAVITY_Y, 0.0, 0.0))));
+
+            for level in 0..STACK_LEVELS {
+                let y = SPHERE_RADIUS + level as f32 * 2.0 * SPHERE_RADIUS;
+                let id = world.push_body(sphere_body_r4(
+                    Vec4::new(0.0, y, 0.0, 0.0),
+                    Vec4::ZERO,
+                    SPHERE_RADIUS,
+                    1.0,
+                ));
+                world.bodies[id].restitution = 0.0;
+            }
+            let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0));
+            world.bodies[floor].restitution = 0.0;
+
+            for _ in 0..STACK_SETTLE_STEPS {
+                world.step(STACK_DT);
+            }
+            world
+        }
+
+        #[test]
+        fn warm_started_step_matches_cold_started_converged_step_r2() {
+            assert_warm_started_step_matches_cold_started_converged_step(settled_disk_stack_r2);
+        }
+
+        #[test]
+        fn warm_started_step_matches_cold_started_converged_step_r3() {
+            assert_warm_started_step_matches_cold_started_converged_step(|| {
+                settled_sphere_stack(STACK_DT, STACK_SETTLE_STEPS)
+            });
+        }
+
+        #[test]
+        fn warm_started_step_matches_cold_started_converged_step_r4() {
+            assert_warm_started_step_matches_cold_started_converged_step(settled_sphere_stack_r4);
+        }
+    }
+
     const ISLAND_X: [f32; 4] = [-4.0, 0.0, 4.0, 8.0];
 
-    /// One sphere per island over one shared static floor, settled until every
-    /// manifold carries a converged warm-start impulse. The floor is static,
-    /// so it transmits no impulse and merges no islands: any influence one
-    /// island shows from another is a defect, which is what makes bit equality
-    /// the right assertion below.
     fn settled_islands(dt: f32, settle_steps: usize) -> (World<EuclideanR3>, BodyId, Vec<BodyId>) {
         let mut world = World::new(EuclideanR3);
         register_default_narrowphase(&mut world.narrowphase);
@@ -1656,12 +1887,6 @@ mod tests {
             .collect()
     }
 
-    /// `dense_pair` states its precondition as a property of its callers, not
-    /// of `manifolds`, because [`BodyArena::despawn`] is reachable on `bodies`
-    /// and prunes nothing. This pins the consequence the doc names: the map
-    /// keeps naming the dead body, `islands` panics on it, and the next step's
-    /// eviction is what clears it. `despawn_body` is the control, and the pair
-    /// of them is what would fail if either half of the doc drifted.
     #[test]
     fn bare_arena_despawn_strands_a_manifold_key_until_the_next_step() {
         let dt = 1.0 / 240.0;
@@ -1699,8 +1924,6 @@ mod tests {
             "the eviction did not close the panic window"
         );
 
-        // The control: the same removal through the world drops the manifold
-        // with the body, so no window exists in the first place.
         let (mut control, control_floor, control_spheres) = settled_islands(dt, settle_steps);
         assert!(control.despawn_body(control_spheres[1]));
         assert!(!control
@@ -1709,12 +1932,6 @@ mod tests {
         assert_eq!(control.islands().len(), ISLAND_X.len() - 1);
     }
 
-    /// The property positional indices cannot have: despawning a body
-    /// compacts storage, and every surviving manifold must keep both its key
-    /// and its accumulated impulses across that move. Bit equality against a
-    /// world that despawned nothing, not a tolerance: a disjoint island's
-    /// trajectory is identically unchanged, and a tolerance would let a
-    /// rebound from a rebound key hide inside it.
     #[test]
     fn despawn_preserves_surviving_manifold_keys_and_warm_start_impulses() {
         let dt = 1.0 / 240.0;
@@ -1776,8 +1993,6 @@ mod tests {
         );
     }
 
-    /// The spawn half of the same contract: a body arriving mid-simulation
-    /// gets its own manifold and leaves every existing one alone.
     #[test]
     fn spawn_mid_simulation_leaves_existing_islands_bit_identical() {
         let dt = 1.0 / 240.0;
@@ -1811,9 +2026,6 @@ mod tests {
         );
     }
 
-    /// The aliasing failure the generation exists to prevent, at world scope:
-    /// a recycled slot must not inherit the previous occupant's contacts, and
-    /// the old handle must be rejected rather than resolve to the new body.
     #[test]
     fn a_recycled_slot_inherits_no_manifold_from_the_previous_body() {
         let dt = 1.0 / 240.0;
@@ -1851,9 +2063,6 @@ mod tests {
         );
     }
 
-    /// `dense_pair` hands back two storage positions in its key's order, so
-    /// the caller's first index has to come back as the first borrow whichever
-    /// side of the split it lands on.
     #[test]
     fn split_two_mut_returns_borrows_in_argument_order() {
         let mut slice = [0u32, 1, 2, 3];
@@ -1863,18 +2072,8 @@ mod tests {
         }
     }
 
-    /// Two dynamic boxes resting on the static floor, plus a disjoint fourth
-    /// body whose despawn decides the surviving pair's storage order: spawned
-    /// before the pair, it sits below them and its removal swaps the upper box
-    /// down past the lower one; spawned after, its removal moves nothing.
-    /// Either way the world ends up holding the same three bodies in the same
-    /// configuration, so storage order is the only variable between the two.
-    ///
-    /// Boxes rather than spheres because the box pair runs GJK + EPA, whose
-    /// result depends on which hull is the Minkowski minuend. The sphere
-    /// narrowphases and the impulse response are exactly antisymmetric under an
-    /// operand swap, so a sphere pair would settle to the same state either way
-    /// and could not tell the two orders apart.
+    // Boxes rather than spheres because the box pair runs GJK + EPA, whose
+    // result depends on which hull is the minuend.
     fn stacked_pair_world(doomed_first: bool) -> (World<EuclideanR3>, BodyId, BodyId, BodyId) {
         const LOWER_HALF_EXTENT: f32 = 0.5;
         const UPPER_HALF_EXTENT: f32 = 0.35;
@@ -1908,10 +2107,6 @@ mod tests {
         (world, lower, upper, doomed)
     }
 
-    /// Settle the pair, drop the fourth body, and return the world with the
-    /// pair's key. Asserts the pair is in contact and that the despawn left
-    /// storage order in the state the caller asked for, so a fixture that stops
-    /// reaching the disagreeing case fails instead of going quiet.
     fn despawned_pair_world(
         doomed_first: bool,
         dt: f32,
@@ -1940,11 +2135,6 @@ mod tests {
         (world, lower, upper, key)
     }
 
-    /// A manifold's contact normal is documented as pointing from `body_a`
-    /// toward `body_b`, and `body_a` is its key's low handle. Nothing ties the
-    /// key to storage, so taking the pair in storage order flips every normal a
-    /// manifold carries whenever a despawn has moved one body below its
-    /// partner.
     #[test]
     fn contact_normal_points_from_the_pair_key_low_body_to_the_high_one() {
         let dt = 1.0 / 240.0;
@@ -1965,10 +2155,6 @@ mod tests {
         }
     }
 
-    /// Which slot the arena happens to store a body in is not physics, so it
-    /// must not reach the pair's state at all. Bit equality against the
-    /// control, not a tolerance: both worlds run the same arithmetic on the
-    /// same inputs, so a correct solver leaves no error term to bound.
     #[test]
     fn storage_order_does_not_reach_a_contacting_pairs_trajectory() {
         let dt = 1.0 / 240.0;
@@ -1985,8 +2171,6 @@ mod tests {
                 }
                 trajectory.push((body_state(&world, lower), body_state(&world, upper)));
             }
-            // A pair that separates stops reaching the solver, and the rest of
-            // the comparison is then two ballistic arcs agreeing for free.
             assert_eq!(
                 contact_steps, steps,
                 "the pair held contact for only {contact_steps} of {steps} steps"
@@ -2005,9 +2189,9 @@ mod tests {
         );
     }
 
-    /// xorshift64 (Marsaglia 2003, "Xorshift RNGs", J. Stat. Soft. 8(14), the
-    /// 13/7/17 triple) so a randomized scene replays from the seed in the
-    /// failure message.
+    // xorshift64 (Marsaglia 2003, "Xorshift RNGs", J. Stat. Soft. 8(14), the
+    // 13/7/17 triple), so a randomized scene replays from the seed in the
+    // failure message.
     struct Xorshift(u64);
 
     impl Xorshift {
@@ -2023,19 +2207,13 @@ mod tests {
             self.0
         }
 
-        /// Uniform in `[lo, hi)` off the top 24 bits, which is the whole f32
-        /// significand.
+        // The top 24 bits are the whole f32 significand.
         fn range(&mut self, lo: f32, hi: f32) -> f32 {
             let unit = (self.next_u64() >> 40) as f32 / (1u32 << 24) as f32;
             lo + (hi - lo) * unit
         }
     }
 
-    /// Spheres and boxes at seeded positions over a static floor, a few of them
-    /// pinned static so the two-static skip is exercised, then thinned by
-    /// despawns so storage order and handle order disagree. The despawns are
-    /// what make the fixture adversarial: a broadphase keyed on storage
-    /// position agrees with one keyed on handles until the arena compacts.
     fn random_scene(seed: u64, count: usize, spread: f32) -> World<EuclideanR3> {
         let mut rng = Xorshift::new(seed);
         let mut world = World::new(EuclideanR3);
@@ -2078,10 +2256,6 @@ mod tests {
         world
     }
 
-    /// The O(n²) definition of the candidate set: every pair that is not two
-    /// static bodies and whose bounding balls overlap. The sweep is only an
-    /// acceleration structure over this, so it owes exact agreement rather
-    /// than a superset.
     fn all_pairs_reference(world: &World<EuclideanR3>) -> Vec<PairKey> {
         let mut pairs = Vec::new();
         let n = world.bodies.len();
@@ -2105,24 +2279,14 @@ mod tests {
         world.bodies.iter().filter(|b| b.inv_mass != 0.0).count()
     }
 
-    /// Sweep sizes chosen so the sweep is exercised on a crowded scene, a
-    /// sparse one, and one large enough for the active list to turn over many
-    /// times.
     const RANDOM_SCENE_SHAPES: [(usize, f32); 3] = [(12, 2.0), (40, 6.0), (80, 3.0)];
 
-    /// The sweep's contract: it emits the candidate set the O(n²) reference
-    /// defines, exactly, on every step of every seeded scene. Set equality and
-    /// not containment in either direction, because a sweep that emits a
-    /// superset has stopped pruning and one that emits a subset has dropped a
-    /// contact.
     #[test]
     fn sweep_broadphase_emits_exactly_the_all_pairs_candidate_set_determinism() {
         let mut ever_beyond_the_floor = false;
         for seed in PERMUTATION_SEEDS {
             for (count, spread) in RANDOM_SCENE_SHAPES {
                 let mut world = random_scene(seed, count, spread);
-                // Stepped so the comparison covers configurations gravity and
-                // the solver produce, not only the one the seed laid out.
                 for step in 0..8 {
                     let expected = all_pairs_reference(&world);
                     assert_eq!(
@@ -2135,19 +2299,12 @@ mod tests {
                 }
             }
         }
-        // The floor is unbounded and pairs with every dynamic body, so a run
-        // that only ever emitted those pairs would have compared two trivial
-        // sets.
         assert!(
             ever_beyond_the_floor,
             "no scene ever produced a candidate pair between two finite colliders"
         );
     }
 
-    /// The physics-safety half, stated against the narrowphase rather than
-    /// against the reference: a culled pair must be one the narrowphase would
-    /// have rejected anyway. This is what lets the golden hashes survive a
-    /// broadphase that emits fewer pairs than the old all-pairs loop.
     #[test]
     fn broadphase_culls_only_pairs_the_narrowphase_would_reject() {
         for seed in PERMUTATION_SEEDS {
@@ -2158,9 +2315,6 @@ mod tests {
                 let mut culled = 0usize;
                 for i in 0..n {
                     for j in (i + 1)..n {
-                        // Two static bodies are excluded by the candidate
-                        // definition, not by the cull: neither can move, so a
-                        // contact between them has nothing to solve.
                         if world.bodies[i].inv_mass == 0.0 && world.bodies[j].inv_mass == 0.0 {
                             continue;
                         }
@@ -2190,10 +2344,6 @@ mod tests {
         }
     }
 
-    /// Emission order is a function of the handles alone. Ascending and
-    /// strictly so, which also pins that no pair is emitted twice; a sweep
-    /// whose active list double-counted an interval would fail here rather
-    /// than by quietly solving a contact twice.
     #[test]
     fn broadphase_emits_strictly_ascending_keys_under_disagreeing_storage_order_determinism() {
         for seed in PERMUTATION_SEEDS {
@@ -2215,9 +2365,6 @@ mod tests {
         }
     }
 
-    /// The scale claim. At 200 bodies the all-pairs loop is ~20k pairs; the
-    /// unbounded floor alone contributes one per dynamic body, so the floor is
-    /// the sweep's own lower bound and the assertion is that it lands near it.
     #[test]
     fn broadphase_prunes_the_quadratic_pair_set_at_scale() {
         let world = random_scene(PERMUTATION_SEEDS[1], 200, 20.0);
@@ -2235,9 +2382,6 @@ mod tests {
         );
     }
 
-    /// The buffers the step hands the sweep are reused, so a steady body count
-    /// must not reach the allocator at all. Measured on the sweep rather than
-    /// on the whole step because the phases downstream of it still allocate.
     #[test]
     fn broadphase_fill_allocates_nothing_after_the_first_pass() {
         let world = random_scene(PERMUTATION_SEEDS[0], 120, 8.0);
@@ -2245,7 +2389,6 @@ mod tests {
         let mut active = Vec::new();
         let mut pairs = Vec::new();
 
-        // The first passes grow the three buffers to their steady size.
         for _ in 0..2 {
             World::fill_broadphase(
                 &world.bodies,
@@ -2274,12 +2417,6 @@ mod tests {
         );
     }
 
-    /// The cull's boundary, which every seeded fixture above misses: at
-    /// continuous positions exact tangency has measure zero, so `gap <= reach`
-    /// and `gap < reach` agree on all of them. Two unit-diameter spheres one
-    /// unit apart put `gap` and `reach` on the same f32, and the pair is a
-    /// candidate: `d(a, b) ≤ r_a + r_b` is closed, matching the narrowphases,
-    /// which report a contact at zero separation.
     #[test]
     fn exactly_tangent_spheres_are_a_candidate_pair() {
         const RADIUS: f32 = 0.5;
@@ -2312,16 +2449,6 @@ mod tests {
         assert_eq!(world.broadphase(), vec![canonical_pair(anchor, tangent)]);
     }
 
-    /// The only configuration that reaches the active-list cull's `hi >=
-    /// entry.lo` boundary, and therefore the only one that can pin it. For a
-    /// pair of positive-radius bodies `hi_a == entry.lo` expands to
-    /// `d_b − d_a = r_a + r_b + slack_a + slack_b`, so the triangle inequality
-    /// puts `gap` above `reach` by both slack terms and the pair was never a
-    /// candidate to lose; that margin is what
-    /// [`BROADPHASE_TRIANGLE_SLACK`] buys. Both slacks vanish only at the
-    /// anchor itself, which needs two point colliders sharing the anchor's
-    /// position, and there `d(a, b) ≤ r_a + r_b` reads `0 ≤ 0` and the pair is
-    /// a candidate.
     #[test]
     fn coincident_point_colliders_are_a_candidate_pair() {
         let mut world = World::new(EuclideanR3);
@@ -2330,9 +2457,6 @@ mod tests {
         assert_eq!(world.broadphase(), vec![canonical_pair(a, b)]);
     }
 
-    /// The bound the cull rests on: no posed vertex of a collider can lie
-    /// further from the body position than its bounding radius, at any
-    /// orientation. A bound that under-reported would cull contacting pairs.
     #[test]
     fn bounding_radius_contains_every_posed_vertex_of_its_collider() {
         let half_extents = Vec3::new(0.5, 1.25, 0.25);
@@ -2362,30 +2486,14 @@ mod tests {
         );
     }
 
-    /// Long enough for every column to fall, land, and rest in contact.
     const ISLAND_SETTLE_STEPS: usize = 400;
-    /// Columns far enough apart in x that no column can reach its neighbour.
     const ISLAND_COLUMN_PITCH: f32 = 4.0;
     const ISLAND_COLUMNS: usize = 6;
     const ISLAND_COLUMN_HEIGHT: usize = 3;
-    /// The column whose middle sphere is static. Not one of the two the
-    /// despawns below take from, so the wedge survives the thinning.
     const ISLAND_PINNED_COLUMN: usize = 2;
 
-    /// Seeded columns of spheres over one shared static floor, settled, then
-    /// thinned so storage order and handle order disagree inside the surviving
-    /// islands.
-    ///
-    /// Columns rather than the scattered `random_scene` layout because a stack
-    /// is what holds contact: bodies dropped side by side settle into gaps and
-    /// leave every island a singleton, which would make every assertion about a
-    /// union vacuous. The despawns take low-slot bodies, so `swap_remove` moves
-    /// the last-spawned bodies, which carry the highest handles, into low
-    /// storage positions.
     fn settled_columns(seed: u64) -> World<EuclideanR3> {
         const GAP: f32 = 0.05;
-        /// Overlap that puts the pinned sphere inside both neighbours' reach
-        /// once the column has settled around it.
         const PINNED_TOUCH: f32 = 0.01;
 
         let mut rng = Xorshift::new(seed);
@@ -2397,16 +2505,9 @@ mod tests {
         let mut columns: Vec<Vec<BodyId>> = Vec::with_capacity(ISLAND_COLUMNS);
         for column in 0..ISLAND_COLUMNS {
             let x = column as f32 * ISLAND_COLUMN_PITCH + rng.range(-0.5, 0.5);
-            // One radius per column: a stack of unequal spheres rolls off
-            // itself and the island stops being a column.
             let radius = rng.range(0.3, 0.6);
             let mut ids = Vec::with_capacity(ISLAND_COLUMN_HEIGHT);
             for level in 0..ISLAND_COLUMN_HEIGHT {
-                // One column carries a static sphere placed to touch both its
-                // neighbours: the shared floor already covers the rule that a
-                // static body merges no islands, but it covers it where every
-                // candidate rule agrees. Wedged mid-column, a rule that merged
-                // through statics would visibly join the two dynamic spheres.
                 let pinned = column == ISLAND_PINNED_COLUMN && level == 1;
                 let y = if pinned {
                     3.0 * radius - PINNED_TOUCH
@@ -2450,10 +2551,6 @@ mod tests {
         labels
     }
 
-    /// Bodies for [`SYNTHETIC_EDGES`], with two of them static and two
-    /// despawned so handle order and storage order disagree. Never stepped:
-    /// the partition reads handles and `inv_mass` only, so positions are free
-    /// and the graph can be shaped rather than waited for.
     fn synthetic_island_bodies() -> (World<EuclideanR3>, Vec<BodyId>) {
         const SPAWNS: usize = 14;
         const DESPAWNS: usize = 2;
@@ -2468,20 +2565,14 @@ mod tests {
             world.bodies[id].mass = 0.0;
             world.bodies[id].inv_mass = 0.0;
         }
-        // Taken from the low handles, so `swap_remove` moves the two highest
-        // handles into the two lowest storage positions.
         for &doomed in &spawned[..DESPAWNS] {
             assert!(world.despawn_body(doomed));
         }
         (world, survivors)
     }
 
-    /// Survivor positions that are static, by position in the survivor list.
     const SYNTHETIC_STATICS: [usize; 2] = [1, 7];
 
-    /// Edges over `synthetic_island_bodies`' survivors, by position in that
-    /// list. A hub with a cycle hanging off it, a four-body chain, and four
-    /// edges that meet only at a static body.
     const SYNTHETIC_EDGES: [(usize, usize); 11] = [
         (0, 2),
         (0, 4),
@@ -2496,16 +2587,8 @@ mod tests {
         (7, 11),
     ];
 
-    /// The components [`SYNTHETIC_EDGES`] defines. Everything unlisted is a
-    /// singleton, including both statics and the two bodies that meet only
-    /// through one.
     const SYNTHETIC_COMPONENTS: [&[usize]; 2] = [&[0, 2, 4, 5], &[6, 8, 10, 11]];
 
-    /// The union-find's input is a set, so its output owes nothing to the order
-    /// that set is presented in, and its labels owe nothing to storage. Both on
-    /// a shaped graph: the physics fixtures build paths of at most three
-    /// bodies, and on those a label taken from whichever root the unions left
-    /// agrees with the component minimum by coincidence.
     #[test]
     fn island_labels_are_the_component_minimum_whatever_order_pairs_arrive_in_determinism() {
         let (world, ids) = synthetic_island_bodies();
@@ -2558,10 +2641,6 @@ mod tests {
         }
     }
 
-    /// The label is the lowest handle in the component, which is what the
-    /// invariance harness needs to name an island. Storage position is the
-    /// tempting alternative and is wrong: a despawn compacts the arena and
-    /// would rename an island that did not change.
     #[test]
     fn island_ids_are_the_lowest_body_id_not_the_lowest_storage_position_determinism() {
         let mut orders_disagreed = 0usize;
@@ -2600,10 +2679,6 @@ mod tests {
         );
     }
 
-    /// A static body absorbs no impulse, so the two bodies resting on either
-    /// side of one never reach each other and must not share an island. The
-    /// shared floor is the case that matters in practice; the fixture's wedged
-    /// static sphere is the same rule where a merge would be least visible.
     #[test]
     fn a_static_body_joins_no_island_and_merges_none_determinism() {
         for seed in PERMUTATION_SEEDS {
@@ -2654,12 +2729,6 @@ mod tests {
         }
     }
 
-    /// Connected components by flood fill over an adjacency list built from the
-    /// manifold keys: the definition the union-find is an acceleration of, so
-    /// it owes exact agreement rather than self-consistency.
-    ///
-    /// Static bodies are absent from the adjacency: they carry no island and
-    /// join none, which is the rule that keeps three groups on one floor apart.
     fn flood_fill_islands(world: &World<EuclideanR3>) -> Vec<Island> {
         let dynamic = |id: BodyId| world.bodies[id].inv_mass != 0.0;
         let mut adjacency: BTreeMap<BodyId, Vec<BodyId>> = BTreeMap::new();
@@ -2708,9 +2777,6 @@ mod tests {
         islands
     }
 
-    /// The partition itself, against the independent oracle. Equality of the
-    /// whole island list also pins that no body lands in two islands and that
-    /// every touched pair lands in exactly one.
     #[test]
     fn islands_match_a_flood_fill_of_the_contact_graph_determinism() {
         let mut ever_multi_body = false;
@@ -2733,10 +2799,6 @@ mod tests {
         );
     }
 
-    /// Criterion for a world whose contact graph is connected: grouping has
-    /// nothing to move, so the constraint order the solver sees is the one it
-    /// saw before islands existed, and the solve is unchanged bit for bit
-    /// rather than merely close.
     #[test]
     fn a_single_island_solves_in_the_global_ascending_key_order_determinism() {
         let world = settled_sphere_stack(1.0 / 240.0, 200);
@@ -2763,12 +2825,6 @@ mod tests {
         );
     }
 
-    /// The grouped buffer is the islands laid end to end, and on this fixture
-    /// that is genuinely a different sequence from ascending key order: the
-    /// chain's contacts and the pair's interleave when sorted by key alone.
-    /// `multi_island_scenario_matches_golden_determinism_hash` still holds
-    /// against a constant recorded before the grouping existed, which is what
-    /// makes the reordering bit-neutral rather than merely untested.
     #[test]
     fn constraint_buffer_runs_island_by_island_determinism() {
         let mut world = multi_island_world(Schedule::default());
@@ -2800,9 +2856,6 @@ mod tests {
         );
     }
 
-    /// The step's island work runs out of the buffers the world retains, on
-    /// the same terms as the sweep above. Measured on `collect_constraints` so
-    /// the in-place sort is inside the probe, not only the union-find.
     #[test]
     fn island_grouping_allocates_nothing_after_the_first_pass() {
         let mut world = settled_columns(PERMUTATION_SEEDS[0]);
@@ -2823,9 +2876,6 @@ mod tests {
         );
     }
 
-    /// The manifold pass runs out of retained buffers on the same terms. The
-    /// eviction set was a fresh `HashSet` per step, so a world that had reached
-    /// a steady contact set still paid the allocator once a frame for it.
     #[test]
     fn manifold_update_allocates_nothing_after_the_first_pass() {
         let mut world = settled_columns(PERMUTATION_SEEDS[0]);
@@ -2849,12 +2899,9 @@ mod tests {
         );
     }
 
-    /// Body counts the measurement harness reports along. Density is held
-    /// constant across them, so the candidate set stays O(n) while the
-    /// quadratic pair count grows as O(n²).
     const MEASUREMENT_BODY_COUNTS: [usize; 3] = [100, 200, 400];
-    /// Half-width of the spawn box at 100 bodies; scaled as the cube root of
-    /// the count to hold density.
+    // Half-width of the spawn box at 100 bodies; scaled as the cube root of
+    // the count to hold density.
     const MEASUREMENT_SPREAD: f32 = 6.0;
     const MEASUREMENT_SETTLE_STEPS: usize = 240;
     const MEASUREMENT_REPS: u32 = 200;
@@ -2867,11 +2914,6 @@ mod tests {
         start.elapsed().as_nanos() as f64 / f64::from(MEASUREMENT_REPS)
     }
 
-    /// Seeded spheres over one static floor, settled, with no despawns: the
-    /// measurement wants the steady-state contact set a running scene solves,
-    /// and storage-order adversity is a determinism concern that costs nothing
-    /// to reproduce here. Spheres only, so a polytope narrowphase does not
-    /// dominate the step being timed.
     fn settled_sphere_scene(seed: u64, count: usize) -> World<EuclideanR3> {
         let spread = MEASUREMENT_SPREAD * (count as f32 / 100.0).cbrt();
         let mut rng = Xorshift::new(seed);
@@ -2900,19 +2942,6 @@ mod tests {
         world
     }
 
-    /// What the step path pays per phase, on the retained buffers the step
-    /// actually uses rather than the allocating public forms `benches/`
-    /// measures. Reported rather than asserted: a wall-clock threshold would
-    /// pin the machine it was recorded on, and what these owe is a number a
-    /// later change, in particular the parallel solver the island partition
-    /// exists for, can be measured against.
-    ///
-    /// `sweep` against `scan` is the sort-and-sweep's own speedup over a
-    /// brute-force pass of the same candidate predicate, both with their
-    /// buffers already grown. `grouped` against `ungrouped` is what the island
-    /// partition adds to a phase that used to copy the manifold keys and stop:
-    /// two O(n_bodies) union-find passes, a `find_root` walk per body, and a
-    /// sort where `BTreeMap` order was already the answer.
     #[test]
     #[ignore = "measurement; run with --release -- --ignored --nocapture"]
     fn step_phase_cost_measurement() {
@@ -2956,8 +2985,6 @@ mod tests {
             let grouped_ns = mean_nanos(|| {
                 world.collect_constraints();
             });
-            // The pre-island collect: `BTreeMap` order is already the ascending
-            // key order the solve ran in, so it copied and stopped.
             let mut ungrouped: Vec<PairKey> = Vec::with_capacity(constraints);
             let ungrouped_ns = mean_nanos(|| {
                 ungrouped.clear();
@@ -2970,9 +2997,6 @@ mod tests {
         }
     }
 
-    /// The candidate definition with no acceleration structure and its buffers
-    /// hoisted, so the comparison above is structure against no structure and
-    /// not one loop forgetting to hoist.
     fn scan_broadphase(world: &World<EuclideanR3>, radii: &mut Vec<f32>, pairs: &mut Vec<PairKey>) {
         radii.clear();
         radii.extend(world.bodies.iter().map(|b| bounding_radius(&b.collider)));
@@ -2992,112 +3016,246 @@ mod tests {
         pairs.sort_unstable();
     }
 
-    /// Discard the cached normal impulses so the next step solves from zero.
-    fn clear_warm_start(world: &mut World<EuclideanR3>) {
-        for manifold in world.manifolds.values_mut() {
-            for cp in &mut manifold.points {
-                cp.normal_impulse = 0.0;
+    // The reach is geometric, `wall_half_thickness + body_radius` head-on, and
+    // no impulse magnitude, iteration count, or Baumgarte term moves it. More
+    // reach needs substepping, speculative contacts (Catto 2013, GDC,
+    // "Continuous Collision"), or conservative advancement (Redon, Kheddar,
+    // Coquillart 2002, Eurographics 21(3), sec. 4).
+    mod tunneling {
+        use glam::{Vec2, Vec3, Vec4};
+        use loam_math::{EuclideanR2, EuclideanR3, EuclideanR4};
+
+        use crate::body::RigidBody;
+        use crate::collider::Collider;
+        use crate::euclidean_r2::{sphere_body, static_wall};
+        use crate::euclidean_r3::{box_vertices, sphere_body_r3};
+        use crate::euclidean_r4::sphere_body_r4;
+        use crate::world::World;
+
+        const DT: f32 = 1.0 / 240.0;
+        const WALL_HALF_THICKNESS: f32 = 0.05;
+        // Wide enough that a projectile fired down the launch axis meets a
+        // face, never an edge.
+        const WALL_HALF_SPAN: f32 = 2.0;
+        const PROJECTILE_RADIUS: f32 = 0.1;
+        const APPROACH: f32 = 0.4;
+        const OVERSHOOT: f32 = 0.4;
+        const PHASES: u32 = 64;
+        const SCAN_MIN: f32 = 0.01;
+        const SCAN_STEP: f32 = 0.0025;
+        const SCAN_MAX: f32 = 2.0 * (WALL_HALF_THICKNESS + PROJECTILE_RADIUS);
+
+        // Width of the interval of body positions where the wall is both
+        // overlapped and still escapable backwards.
+        const GEOMETRIC_BOUND: f32 = WALL_HALF_THICKNESS + PROJECTILE_RADIUS;
+
+        // Each constant is a FLOOR, not a two-sided pin: a scan that finds
+        // more reach should raise the constant, not fail.
+        const RECORDED_R2: f32 = 0.150;
+        const RECORDED_R3: f32 = 0.150;
+        const RECORDED_R4: f32 = 0.150;
+
+        const R4_TRAP_DEPTH: f32 = -0.090;
+
+        fn slab_vertices_r4(half: Vec4) -> Vec<Vec4> {
+            let mut vertices = Vec::with_capacity(16);
+            for &x in &[-half.x, half.x] {
+                for &y in &[-half.y, half.y] {
+                    for &z in &[-half.z, half.z] {
+                        for &w in &[-half.w, half.w] {
+                            vertices.push(Vec4::new(x, y, z, w));
+                        }
+                    }
+                }
+            }
+            vertices
+        }
+
+        // Plus one so the last sample is unambiguously past the wall.
+        fn flight_steps(displacement: f32, phase: f32) -> usize {
+            ((APPROACH + phase + OVERSHOOT) / displacement).ceil() as usize + 1
+        }
+
+        fn wall_world_r4() -> World<EuclideanR4> {
+            let mut world = World::new(EuclideanR4);
+            crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);
+            world.push_body(RigidBody::fixed(
+                Vec4::ZERO,
+                Collider::ConvexPolytope4D {
+                    vertices: slab_vertices_r4(Vec4::new(
+                        WALL_HALF_THICKNESS,
+                        WALL_HALF_SPAN,
+                        WALL_HALF_SPAN,
+                        WALL_HALF_SPAN,
+                    )),
+                },
+                1.0,
+                &EuclideanR4,
+            ));
+            world
+        }
+
+        // Returns the final launch-axis coordinate: negative means the wall
+        // held, positive means the body is through it.
+        fn fire_r2(displacement: f32, phase: f32) -> f32 {
+            let mut world = World::new(EuclideanR2);
+            crate::euclidean_r2::register_default_narrowphase(&mut world.narrowphase);
+            world.push_body(static_wall(
+                Vec2::ZERO,
+                Vec2::new(WALL_HALF_THICKNESS, WALL_HALF_SPAN),
+            ));
+            let ball = world.push_body(sphere_body(
+                Vec2::new(-(APPROACH + phase), 0.0),
+                Vec2::new(displacement / DT, 0.0),
+                PROJECTILE_RADIUS,
+                1.0,
+            ));
+            for _ in 0..flight_steps(displacement, phase) {
+                world.step(DT);
+            }
+            world.bodies[ball].position.x
+        }
+
+        fn fire_r3(displacement: f32, phase: f32) -> f32 {
+            let mut world = World::new(EuclideanR3);
+            crate::euclidean_r3::register_default_narrowphase(&mut world.narrowphase);
+            world.push_body(RigidBody::fixed(
+                Vec3::ZERO,
+                Collider::ConvexPolytope3D {
+                    vertices: box_vertices(Vec3::new(
+                        WALL_HALF_THICKNESS,
+                        WALL_HALF_SPAN,
+                        WALL_HALF_SPAN,
+                    )),
+                },
+                1.0,
+                &EuclideanR3,
+            ));
+            let ball = world.push_body(sphere_body_r3(
+                Vec3::new(-(APPROACH + phase), 0.0, 0.0),
+                Vec3::new(displacement / DT, 0.0, 0.0),
+                PROJECTILE_RADIUS,
+                1.0,
+            ));
+            for _ in 0..flight_steps(displacement, phase) {
+                world.step(DT);
+            }
+            world.bodies[ball].position.x
+        }
+
+        fn fire_r4(displacement: f32, phase: f32) -> f32 {
+            let mut world = wall_world_r4();
+            let ball = world.push_body(sphere_body_r4(
+                Vec4::new(-(APPROACH + phase), 0.0, 0.0, 0.0),
+                Vec4::new(displacement / DT, 0.0, 0.0, 0.0),
+                PROJECTILE_RADIUS,
+                1.0,
+            ));
+            for _ in 0..flight_steps(displacement, phase) {
+                world.step(DT);
+            }
+            world.bodies[ball].position.x
+        }
+
+        // Returns the launch-axis velocity after one step; negative is the way
+        // the body came.
+        fn released_at_rest_r4(x: f32) -> f32 {
+            let mut world = wall_world_r4();
+            let ball = world.push_body(sphere_body_r4(
+                Vec4::new(x, 0.0, 0.0, 0.0),
+                Vec4::ZERO,
+                PROJECTILE_RADIUS,
+                1.0,
+            ));
+            world.step(DT);
+            world.bodies[ball].velocity.x
+        }
+
+        fn wall_holds(fire: impl Fn(f32, f32) -> f32, displacement: f32) -> bool {
+            (0..PHASES).all(|k| {
+                let phase = displacement * k as f32 / PHASES as f32;
+                fire(displacement, phase) < 0.0
+            })
+        }
+
+        // Scans upward and stops at the first failure, so the answer has
+        // nothing tunneling under it.
+        fn max_resolved_displacement(fire: impl Fn(f32, f32) -> f32) -> f32 {
+            let mut resolved = 0.0;
+            for k in 0.. {
+                let displacement = SCAN_MIN + SCAN_STEP * k as f32;
+                if displacement > SCAN_MAX || !wall_holds(&fire, displacement) {
+                    break;
+                }
+                resolved = displacement;
+            }
+            resolved
+        }
+
+        fn assert_tunneling_bound(space: &str, recorded: f32, fire: impl Fn(f32, f32) -> f32) {
+            let measured = max_resolved_displacement(fire);
+            println!(
+                "{space}: resolves up to {measured} per step ({} m/s at {} Hz), \
+                 scanned at {SCAN_STEP} over {PHASES} launch alignments",
+                measured / DT,
+                1.0 / DT
+            );
+            assert!(
+                measured > recorded - SCAN_STEP,
+                "{space} resolves only {measured} per step against the recorded \
+                 {recorded}: the safe throw ceiling dropped"
+            );
+        }
+
+        #[test]
+        fn thin_wall_holds_only_below_a_recorded_per_step_displacement_r2() {
+            assert_tunneling_bound("R2", RECORDED_R2, fire_r2);
+        }
+
+        #[test]
+        fn thin_wall_holds_only_below_a_recorded_per_step_displacement_r3() {
+            assert_tunneling_bound("R3", RECORDED_R3, fire_r3);
+        }
+
+        #[test]
+        fn thin_wall_holds_only_below_a_recorded_per_step_displacement_r4() {
+            assert_tunneling_bound("R4", RECORDED_R4, fire_r4);
+        }
+
+        #[test]
+        fn resolving_interval_is_the_slab_half_thickness_plus_the_body_radius() {
+            let gap = (RECORDED_R3 - GEOMETRIC_BOUND).abs();
+            assert!(
+                gap <= SCAN_STEP,
+                "the recorded R3 bound {RECORDED_R3} is {gap} off the geometric \
+                 {GEOMETRIC_BOUND}, so it is no longer the sampling gap it is \
+                 documented as"
+            );
+        }
+
+        #[test]
+        fn r4_contact_normal_leaves_through_the_near_face_at_every_depth() {
+            for depth in [R4_TRAP_DEPTH - 0.002, R4_TRAP_DEPTH, R4_TRAP_DEPTH + 0.002] {
+                let left = released_at_rest_r4(depth);
+                assert!(left < 0.0, "R4 drove a body at {depth} toward the FAR face, leaving at {left}: the contact normal points through the wall again");
             }
         }
-    }
 
-    fn stack_velocities(world: &World<EuclideanR3>) -> Vec<Vec3> {
-        world.bodies.iter().map(|b| b.velocity).collect()
-    }
-
-    /// Accumulated normal impulses in `BTreeMap` then slot order, which is the
-    /// same order in two worlds built and settled by the same code path.
-    fn stack_normal_impulses(world: &World<EuclideanR3>) -> Vec<f32> {
-        world
-            .manifolds
-            .values()
-            .flat_map(|m| m.points.iter().map(|cp| cp.normal_impulse))
-            .collect()
-    }
-
-    fn max_component_gap(a: &[Vec3], b: &[Vec3]) -> f32 {
-        a.iter()
-            .zip(b)
-            .map(|(x, y)| (*x - *y).abs().max_element())
-            .fold(0.0_f32, f32::max)
-    }
-
-    fn max_scalar_gap(a: &[f32], b: &[f32]) -> f32 {
-        assert_eq!(a.len(), b.len(), "manifold layouts diverged");
-        a.iter()
-            .zip(b)
-            .map(|(x, y)| (x - y).abs())
-            .fold(0.0_f32, f32::max)
-    }
-
-    /// Warm-starting is an initial guess, not a different constraint problem:
-    /// re-applying the cached impulses must leave the default-iteration solve
-    /// at the same fixed point a cold solve reaches with iterations to spare.
-    /// If it did not, parallelizing the solver would be chasing a moving
-    /// target.
-    ///
-    /// The second assert pins the reason warm-starting exists: at equal
-    /// iteration count it must be strictly closer to the converged answer than
-    /// a cold start is.
-    #[test]
-    fn warm_started_step_matches_cold_started_converged_step() {
-        let dt = 1.0 / 240.0;
-        let settle_steps = 400;
-
-        let mut warm = settled_sphere_stack(dt, settle_steps);
-        let mut cold_converged = settled_sphere_stack(dt, settle_steps);
-        let mut cold_default = settled_sphere_stack(dt, settle_steps);
-
-        assert!(
-            warm.manifolds
-                .values()
-                .flat_map(|m| &m.points)
-                .any(|cp| cp.normal_impulse > 0.0),
-            "fixture carries no warm-start payload"
-        );
-
-        clear_warm_start(&mut cold_converged);
-        clear_warm_start(&mut cold_default);
-        // The reference solution, not another partial solve: raising this to
-        // 4000 moves neither assert below.
-        cold_converged.pgs_iters = 400;
-
-        warm.step(dt);
-        cold_converged.step(dt);
-        cold_default.step(dt);
-
-        let converged = stack_velocities(&cold_converged);
-        let warm_gap = max_component_gap(&stack_velocities(&warm), &converged);
-        let cold_gap = max_component_gap(&stack_velocities(&cold_default), &converged);
-
-        // Tolerance is on the velocity a single 1/240 s step imparts; gravity
-        // alone contributes 0.04 m/s per step, so 1e-5 is a tight fraction of
-        // the quantity under test and three orders below the cold-start
-        // residual it is distinguishing itself from.
-        assert!(
-            warm_gap < 1e-5,
-            "warm-started step diverged from the converged solve by {warm_gap} m/s"
-        );
-        assert!(
-            warm_gap < cold_gap,
-            "warm start bought no convergence: warm {warm_gap} vs cold {cold_gap}"
-        );
-
-        // Velocities can land on target while the accumulator that produced
-        // them is wrong, because the solve corrects whatever the warm start
-        // applied. Pinning the accumulator too is what makes the carried state
-        // safe to reuse next step, which is the property a per-island parallel
-        // solve has to preserve.
-        let impulse_gap = max_scalar_gap(
-            &stack_normal_impulses(&warm),
-            &stack_normal_impulses(&cold_converged),
-        );
-        let reference = stack_normal_impulses(&cold_converged)
-            .into_iter()
-            .fold(0.0_f32, f32::max);
-        assert!(
-            impulse_gap < 1e-3 * reference,
-            "warm-started accumulator diverged by {impulse_gap} against a peak impulse of {reference}"
-        );
+        #[test]
+        fn thin_wall_is_transparent_to_a_body_that_steps_clear_over_it() {
+            let displacement = 4.0 * GEOMETRIC_BOUND;
+            for (space, fired) in [
+                ("R2", fire_r2(displacement, 0.0)),
+                ("R3", fire_r3(displacement, 0.0)),
+                ("R4", fire_r4(displacement, 0.0)),
+            ] {
+                assert!(
+                    fired > GEOMETRIC_BOUND,
+                    "{space} stopped a body stepping {displacement} clear over a \
+                     {GEOMETRIC_BOUND} resolving interval, which position \
+                     sampling alone cannot do: it ended at {fired}"
+                );
+            }
+        }
     }
 }

@@ -1,53 +1,64 @@
-# Loam
+![Letters tumbling into the Loam wordmark](assets/readme/hero.webp)
+Loam is an engine for exploring geometry beyond ordinary 3D space!
 
-**A geometry and physics substrate for spaces that are not flat 3D: higher dimensions and curved manifolds, real-time, in Rust on wgpu.**
+[![CI](https://github.com/throgsoft/loam/actions/workflows/ci.yml/badge.svg)](https://github.com/throgsoft/loam/actions/workflows/ci.yml)
 
-[![CI](https://github.com/humesze-llc/loam/actions/workflows/ci.yml/badge.svg)](https://github.com/humesze-llc/loam/actions/workflows/ci.yml)
+## Goals
 
-<!-- HERO SLOT: assets/readme/hero.webp
-     v1 capture: the playground's default polytope row under xw rotation,
-     exact cross-sections shaded, ~1200x675, loop-clean (one full rotation
-     period), dark background.
-     Planned replacement: volumetric LOAM letters falling to the ground,
-     polychora knocking them into 4D, then a scrub along w. Lands with the
-     playground's interactive-4D-physics milestone. -->
+I'm building Loam to provide tooling to build games where space is a gimmick. Higher dimensions, curved space, portals, weird topology, and compelling visual effects.
 
-What works today:
+## Polytope Playground
 
-- **4D rigid-body physics.** First-party geometric algebra (`Bivector4`/`Rotor4` with invariant-decomposition exponential), GJK and EPA lifted to R⁴ (EPA validated against analytical penetration depths), persistent contact manifolds, a warm-started projected Gauss-Seidel solver.
-- **Exact polychoral cross-sections.** All six regular convex 4-polytopes with exact topology at unit circumradius; sections are computed as geometry, not mesh approximations, alongside raymarched-SDF and wireframe render modes.
-- **Geometry as a type parameter.** The same scene renders in Euclidean, hyperbolic, and spherical 3-space through one `Space` trait, and both render paths (SDF raymarch, rasterizer) run on the same implementations.
-- **Determinism.** Simulation is bit-reproducible: same binary, same inputs, same bits. Pinned by tests that run in CI.
+Rotate 4D shapes and watch their 3D cross-sections change.
 
-## Run it
+![Regular 4-polytopes turning through a rotation plane while their 3D cross-sections change](assets/readme/rotate.webp)
 
+Or pick them up and throw them around the 4D Toybox, directly inspired by [Marc ten Bosch](https://marctenbosch.com/)'s [4D Toys](https://4dtoys.com/).
+
+![Polychora dropped into a box under 4D gravity, picked up and thrown](assets/readme/toybox.webp)
+
+## Play
+
+Install Rust with [rustup](https://rust-lang.org/tools/install/). On Windows, run the installer and accept the C++ build tools prompt. On macOS or Linux:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
-cargo run --release -p polytope_playground               # native
-cd crates/polytope_playground && trunk serve --release   # browser (local)
+
+Open a new terminal after installation. On macOS, install the command line tools with `xcode-select --install`.
+
+<details>
+<summary>Ubuntu / Debian build dependencies</summary>
+
+```sh
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config libwayland-dev \
+  libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxi-dev \
+  libxcursor-dev libxrandr-dev
 ```
 
-Stable Rust 1.95 or newer; any wgpu backend (Vulkan, DX12, Metal, WebGPU). The browser build needs [trunk](https://trunkrs.dev/). Controls live in the on-screen panels; backtick opens the debug console (`trace summary` prints per-section frame timings).
+</details>
 
-<!-- 600-CELL SLOT: assets/readme/600-cell.webp
-     The 600-cell rotating through the exact cross-section path, wireframe
-     overlay with signed-w depth colors. Same capture settings as hero. -->
+Clone the repository, then build and run the playground. Rustup installs the toolchain pinned by the project:
 
-## How it's built
+```sh
+git clone https://github.com/throgsoft/loam.git
+cd loam
+cargo run --release --locked -p polytope_playground
+```
 
-- A geometry is anything implementing `Space` (exp, log, distance, parallel transport, isometries). Everything downstream is an opt-in capability trait (`WgslSpace`, `RasterizableSpace`, `SectionableSpace`, `PhysicsSpace`), so a new geometry is wired in by implementing what it actually supports.
-- Scenes are typed SDF trees that emit WGSL on demand; the emit chain combines scene code with the selected space's shader prelude.
-- Correctness is enforced by an invariant test suite, not by inspecting rendered output: Gauss-Bonnet on geodesic triangles, isometry invariance of distance, transport length preservation, loop holonomy.
-- Apart from `glam` and `bytemuck`, the math layer is first-party. The crate-by-crate map lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- A variable-curvature `BlendedSpace` (a single Riemannian metric interpolating E³ to H³) exists as a validated reference implementation; its numerical geodesics do not yet meet a gameplay frame budget.
+Use the Demo menu to switch scenes. Space pauses rotation. Backtick opens the console.
 
-## Lineage
+For the browser build:
 
-Marc ten Bosch's *4D Toys* is the direct conceptual ancestor of the polytope playground: four-dimensional objects as inhabitants of a 4D space whose 3D slices the viewer inspects. Zeno Rogue's *HyperRogue*, CodeParade's HyperEngine/*Hyperbolica*, and Michael Walczyk's `polychora` shaped the non-Euclidean and 4D rendering choices. Textbook citations (Coxeter, Hestenes and Sobczyk, do Carmo, Foley et al., Knuth) live in the rustdocs at each use site.
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install --locked trunk
+trunk serve crates/polytope_playground/index.html
+```
 
-## Getting involved
-
-I use AI coding tools, primarily Claude Code, heavily; invariant tests gate every primitive regardless of authorship, and responsibility for what ships is mine. Single-maintainer project: reach out before starting anything at [humesze@proton.me](mailto:humesze@proton.me).
+[API documentation](https://throgsoft.github.io/loam/)
 
 ## License
 
-Dual-licensed under MIT OR Apache-2.0. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
+MIT OR Apache-2.0. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).

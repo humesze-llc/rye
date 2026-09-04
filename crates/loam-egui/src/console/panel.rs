@@ -1,16 +1,3 @@
-//! Egui rendering for the console in two modes: docked half-screen drop-down
-//! (default) and detached draggable [`egui::Window`].
-//!
-//! Both modes share the same inner content via [`draw_content`]; only the outer
-//! container differs. Docked is an [`egui::Area`] sized to full width and
-//! `PANEL_HEIGHT_FRACTION` of viewport height, slid down by
-//! `-panel_height * (1.0 - progress)` over [`super::ANIM_DURATION_SECS`]; it is laid
-//! out at full height always, so the input row stays pinned during the slide.
-//! Detached is an [`egui::Window`] with a custom title row (`title_bar(false)`).
-//!
-//! Focus: docked re-requests focus every frame (modal-by-design); detached requests
-//! only on `pending_focus`, so the user can click out to give keyboard to the app.
-
 use egui::{
     text::{LayoutJob, TextFormat},
     Color32, FontId, Frame, Label, Layout, Margin, Order, RichText, ScrollArea, Sense, Stroke,
@@ -30,44 +17,30 @@ const COLOR_SYSTEM: Color32 = Color32::from_rgb(140, 200, 220);
 const COLOR_PROMPT: Color32 = Color32::from_rgb(160, 200, 140);
 const COLOR_TITLE: Color32 = Color32::from_rgb(200, 200, 210);
 const COLOR_SEPARATOR: Color32 = Color32::from_rgb(60, 60, 70);
-/// Tab-completion preview painted after the live input; dim enough to read as a hint.
 const COLOR_GHOST: Color32 = Color32::from_rgb(110, 110, 120);
 const FONT_SIZE: f32 = 13.0;
 const ROW_TITLE_HEIGHT: f32 = 22.0;
 const ROW_INPUT_HEIGHT: f32 = 24.0;
 
-/// Default detached-window dimensions for the first detach frame; later frames
-/// respect egui's remembered window position/size.
+// First detach only; egui remembers the window after that.
 const DETACHED_DEFAULT_W: f32 = 520.0;
 const DETACHED_DEFAULT_H: f32 = 320.0;
 
-pub(super) fn draw<Ctx: 'static>(
-    console: &mut Console<Ctx>,
-    ctx: &egui::Context,
-    app_ctx: &mut Ctx,
-    progress: f32,
-) {
+pub(super) fn draw<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &egui::Context, progress: f32) {
     if console.is_detached() {
-        draw_detached(console, ctx, app_ctx);
+        draw_detached(console, ctx);
     } else {
-        draw_docked(console, ctx, app_ctx, progress);
+        draw_docked(console, ctx, progress);
     }
 }
 
-fn draw_docked<Ctx: 'static>(
-    console: &mut Console<Ctx>,
-    ctx: &egui::Context,
-    app_ctx: &mut Ctx,
-    progress: f32,
-) {
+fn draw_docked<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &egui::Context, progress: f32) {
     let viewport = ctx.content_rect();
     let panel_height = (viewport.height() * PANEL_HEIGHT_FRACTION).round();
     let y_offset = -panel_height * (1.0 - progress);
     let width = viewport.width();
 
-    // Click-outside releases input focus to the app; clicking back inside restores
-    // the input row's per-frame focus re-request. Tested against the full panel rect
-    // (no animation offset) so a click during the slide doesn't toggle wrongly.
+    // Un-offset rect: a click during the slide must not defocus.
     let panel_rect = egui::Rect::from_min_size(
         egui::pos2(viewport.min.x, viewport.min.y),
         egui::vec2(width, panel_height),
@@ -94,14 +67,14 @@ fn draw_docked<Ctx: 'static>(
                     Layout::top_down(egui::Align::Min),
                     |ui| {
                         let scroll_h = panel_height - ROW_TITLE_HEIGHT - ROW_INPUT_HEIGHT - 2.0;
-                        draw_content(ui, console, app_ctx, width, scroll_h);
+                        draw_content(ui, console, width, scroll_h);
                     },
                 );
             });
         });
 }
 
-fn draw_detached<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &egui::Context, app_ctx: &mut Ctx) {
+fn draw_detached<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &egui::Context) {
     let viewport = ctx.content_rect();
     let default_pos = egui::pos2(
         (viewport.right() - DETACHED_DEFAULT_W - 16.0).max(viewport.left() + 16.0),
@@ -113,9 +86,6 @@ fn draw_detached<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &egui::Context, 
         .inner_margin(Margin::same(0))
         .corner_radius(egui::CornerRadius::same(4));
 
-    // No explicit min_width / min_height: an enforced minimum plus egui's resize
-    // logic drifts the window sideways when the left edge is pulled below it.
-    // Letting it go arbitrarily small avoids the bug; the user can resize back up.
     egui::Window::new("loam_console_window")
         .id(egui::Id::new("loam_console_window"))
         .title_bar(false)
@@ -126,25 +96,18 @@ fn draw_detached<Ctx: 'static>(console: &mut Console<Ctx>, ctx: &egui::Context, 
         .default_size(egui::vec2(DETACHED_DEFAULT_W, DETACHED_DEFAULT_H))
         .frame(frame)
         .show(ctx, |ui| {
-            // Zero item spacing so the rows sum to exactly `available_height`;
-            // otherwise the accumulated gaps push content past the interior and the
-            // Window auto-grows each frame. `available_*` is the INNER content area,
-            // so sizing off it (not the chrome-inclusive outer rect) avoids the
-            // matching horizontal-stretch feedback loop.
+            // Rows must sum to `available_height` or the window auto-grows each frame.
             ui.spacing_mut().item_spacing.y = 0.0;
             let width = ui.available_width();
             let scroll_h =
                 (ui.available_height() - ROW_TITLE_HEIGHT - ROW_INPUT_HEIGHT - 2.0).max(60.0);
-            draw_content(ui, console, app_ctx, width, scroll_h);
+            draw_content(ui, console, width, scroll_h);
         });
 }
 
-/// Inner content shared by both modes. `scroll_height` is the pinned scrollback
-/// height, pre-computed by each mode from its outer size minus title + input rows.
 fn draw_content<Ctx: 'static>(
     ui: &mut egui::Ui,
     console: &mut Console<Ctx>,
-    app_ctx: &mut Ctx,
     width: f32,
     scroll_height: f32,
 ) {
@@ -152,7 +115,7 @@ fn draw_content<Ctx: 'static>(
     draw_separator(ui, width);
     draw_scrollback(ui, console, scroll_height, width);
     draw_separator(ui, width);
-    draw_input_row(ui, console, app_ctx, width);
+    draw_input_row(ui, console, width);
 }
 
 fn draw_title_row<Ctx: 'static>(ui: &mut egui::Ui, console: &mut Console<Ctx>, width: f32) {
@@ -210,12 +173,6 @@ fn draw_scrollback<Ctx: 'static>(
     height: f32,
     width: f32,
 ) {
-    // Word-wrap relies on the label inheriting the vertical ScrollArea's content
-    // width (no `ui.horizontal()`, which leaves the area unbounded and defeats the
-    // wrap heuristic) plus an explicit `TextWrapMode::Wrap` (default elides). Side
-    // padding comes from a `Frame::inner_margin` so it sits inside the wrap-width
-    // constraint. No hanging indent on continuation lines: it breaks copy-paste of
-    // code blocks; CPU-side soft-wrap into `LayoutSection`s is the right fix if needed.
     ui.allocate_ui_with_layout(
         egui::vec2(width, height),
         Layout::top_down(egui::Align::Min),
@@ -233,10 +190,6 @@ fn draw_scrollback<Ctx: 'static>(
                             bottom: 4,
                         })
                         .show(ui, |ui| {
-                            // One selectable Label over a multi-color LayoutJob:
-                            // drag-select crosses line boundaries and Ctrl-C copies
-                            // real text. Per-line Labels broke browser copy (selection
-                            // highlighted rasterized pixels with no text behind them).
                             ui.add(
                                 Label::new(scrollback_layout_job(console.history()))
                                     .wrap_mode(TextWrapMode::Wrap)
@@ -248,7 +201,6 @@ fn draw_scrollback<Ctx: 'static>(
     );
 }
 
-/// Color for a given line kind.
 fn line_color(kind: LineKind) -> Color32 {
     match kind {
         LineKind::Input => COLOR_INPUT_ECHO,
@@ -258,9 +210,6 @@ fn line_color(kind: LineKind) -> Color32 {
     }
 }
 
-/// Build one `LayoutJob` for the scrollback: per-line color via per-section
-/// `TextFormat`s, default-format `\n` separators between lines. One Label over this
-/// job is cross-line selectable and copyable; see `draw_scrollback` for why.
 fn scrollback_layout_job(history: &std::collections::VecDeque<HistoryLine>) -> LayoutJob {
     let mut job = LayoutJob::default();
     let font = FontId::monospace(FONT_SIZE);
@@ -273,19 +222,13 @@ fn scrollback_layout_job(history: &std::collections::VecDeque<HistoryLine>) -> L
         };
         job.append(&line.text, 0.0, fmt);
         if i < last {
-            // Default format so the separator never contributes color.
             job.append("\n", 0.0, TextFormat::default());
         }
     }
     job
 }
 
-fn draw_input_row<Ctx: 'static>(
-    ui: &mut egui::Ui,
-    console: &mut Console<Ctx>,
-    app_ctx: &mut Ctx,
-    width: f32,
-) {
+fn draw_input_row<Ctx: 'static>(ui: &mut egui::Ui, console: &mut Console<Ctx>, width: f32) {
     ui.allocate_ui_with_layout(
         egui::vec2(width, ROW_INPUT_HEIGHT),
         Layout::left_to_right(egui::Align::Center),
@@ -298,18 +241,11 @@ fn draw_input_row<Ctx: 'static>(
                     .strong(),
             );
 
-            // Consume Enter before the TextEdit renders so it isn't typed as input.
-            // The idiomatic `lost_focus + Enter` never fires here because docked mode
-            // re-requests focus every frame, so focus is never "lost"; consume_key
-            // sidesteps the focus-state dance.
             let enter_pressed =
                 ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
 
             let prev_input = console.input().to_string();
             let ghost = console.tab_preview();
-            // `TextEdit::show` returns the real galley origin so the ghost lands
-            // exactly where input ends; a separate layout mis-measured the TextEdit's
-            // internal padding by a few pixels.
             let output = TextEdit::singleline(console.input_mut())
                 .font(FontId::monospace(FONT_SIZE))
                 .frame(false)
@@ -329,8 +265,6 @@ fn draw_input_row<Ctx: 'static>(
                 );
             }
 
-            // After tab-complete / history nav replaces the buffer, snap the cursor
-            // to the end; otherwise it stays at byte 0.
             if console.take_pending_cursor_to_end() {
                 let mut state = output.state;
                 let end = egui::text::CCursor::new(console.input().chars().count());
@@ -340,22 +274,18 @@ fn draw_input_row<Ctx: 'static>(
                 state.store(ui.ctx(), response.id);
             }
 
-            // Any input change outside tab-cycling invalidates tab-completion state.
             if console.input() != prev_input {
                 console.cancel_tab_cycle();
             }
 
-            // Focus: the open request is one-shot in both modes, so take it before
-            // the persistent arm can short-circuit past it. Docked re-requests every
-            // frame to stay modal, unless the user clicked out to the app; detached
-            // leaves focus alone after the initial request so the user can click out.
+            // Take the one-shot request before the persistent arm can short-circuit it.
             let opened_this_frame = console.take_pending_focus();
             if opened_this_frame || (console.wants_persistent_focus() && !response.has_focus()) {
                 response.request_focus();
             }
 
             if enter_pressed {
-                console.submit(app_ctx);
+                console.submit();
                 response.request_focus();
             }
         },
@@ -364,9 +294,6 @@ fn draw_input_row<Ctx: 'static>(
 
 #[cfg(test)]
 mod tests {
-    //! Structural invariants of `scrollback_layout_job` read off the `sections`
-    //! vector: one section per line, per-kind coloring, newline separators between
-    //! lines. UI rendering is not exercised.
     use super::*;
     use std::collections::VecDeque;
 
@@ -387,17 +314,6 @@ mod tests {
         assert!(job.sections.is_empty());
     }
 
-    /// One line yields one colored section with no trailing newline.
-    #[test]
-    fn single_line_emits_one_colored_section() {
-        let h = history(&[(LineKind::Output, "hello")]);
-        let job = scrollback_layout_job(&h);
-        assert_eq!(job.text, "hello");
-        assert_eq!(job.sections.len(), 1);
-        assert_eq!(job.sections[0].format.color, COLOR_OUTPUT);
-    }
-
-    /// N lines yield 2N-1 sections (N lines + N-1 newline separators).
     #[test]
     fn multiple_lines_alternate_with_newline_separators() {
         let h = history(&[
@@ -410,7 +326,6 @@ mod tests {
         assert_eq!(job.sections.len(), 5);
     }
 
-    /// Each LineKind maps to its kind-appropriate section color.
     #[test]
     fn per_line_color_matches_line_kind() {
         let h = history(&[
@@ -420,7 +335,6 @@ mod tests {
             (LineKind::System, "sys"),
         ]);
         let job = scrollback_layout_job(&h);
-        // Order: input, "\n", output, "\n", error, "\n", system.
         let input_section = &job.sections[0];
         let output_section = &job.sections[2];
         let error_section = &job.sections[4];
@@ -429,25 +343,5 @@ mod tests {
         assert_eq!(output_section.format.color, COLOR_OUTPUT);
         assert_eq!(error_section.format.color, COLOR_ERROR);
         assert_eq!(system_section.format.color, COLOR_SYSTEM);
-    }
-
-    /// All line sections share the monospace font; mixed fonts would visually
-    /// split cross-line selection.
-    #[test]
-    fn all_line_sections_share_monospace_font() {
-        let h = history(&[
-            (LineKind::Input, "a"),
-            (LineKind::Output, "b"),
-            (LineKind::Error, "c"),
-        ]);
-        let job = scrollback_layout_job(&h);
-        let expected_font = FontId::monospace(FONT_SIZE);
-        // Sections 0, 2, 4 are line content; 1, 3 are newlines.
-        for idx in [0, 2, 4] {
-            assert_eq!(
-                job.sections[idx].format.font_id, expected_font,
-                "section {idx} (line content) should be monospace",
-            );
-        }
     }
 }

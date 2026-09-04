@@ -1,43 +1,25 @@
-//! Worker-side egui integration.
-//!
-//! Parallel to [`loam_egui::UiIntegration`] but without `egui_winit`
-//! (winit's web backend assumes a `web_sys::Window`, which panics in
-//! `WorkerGlobalScope`). Translates [`super::input_queue::InputMessage`]
-//! directly into `egui::RawInput::events` and mirrors the `begin_frame` +
-//! `paint` lifecycle so `App::ui` works unchanged. No cursor / clipboard
-//! / IME platform-output handling, and no egui pipeline warmup.
+//! Parallel to [`loam_egui::UiIntegration`] but without `egui_winit`: winit's
+//! web backend assumes a `web_sys::Window`, which panics in
+//! `WorkerGlobalScope`.
 
 use loam_egui::egui;
 
 use super::input_queue::InputMessage;
 
-/// Owns the egui-wgpu `Renderer`, `egui::Context`, and a per-frame
-/// `RawInput` accumulator. Constructed once per worker session.
 pub struct WorkerUi {
     ctx: egui::Context,
     renderer: egui_wgpu::Renderer,
-    /// Events accumulated between frames; drained into `begin_pass` by
-    /// [`Self::begin_frame`], populated by [`Self::record_input`].
     raw_events: Vec<egui::Event>,
-    /// Modifier state, updated on each key event so subsequent events
-    /// carry the right `Modifiers`.
     modifiers: egui::Modifiers,
-    /// `pixels_per_point` converts egui points (CSS-pixel equivalents)
-    /// to wgpu pixels.
     width_px: u32,
     height_px: u32,
     pixels_per_point: f32,
-    /// `wants_pointer_input || wants_keyboard_input` from the last frame.
-    /// Fed to the App via `FrameCtx::ui_has_focus` so gameplay code skips
-    /// events egui consumed.
-    pub wants_input: bool,
 }
 
 impl WorkerUi {
     pub fn new(
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
-        sample_count: u32,
         width_px: u32,
         height_px: u32,
         pixels_per_point: f32,
@@ -47,7 +29,7 @@ impl WorkerUi {
             device,
             target_format,
             egui_wgpu::RendererOptions {
-                msaa_samples: sample_count,
+                msaa_samples: crate::UI_PASS_SAMPLE_COUNT,
                 ..Default::default()
             },
         );
@@ -59,12 +41,9 @@ impl WorkerUi {
             width_px,
             height_px,
             pixels_per_point,
-            wants_input: false,
         }
     }
 
-    /// Translate one InputMessage into zero or more egui events.
-    /// Updates `modifiers` as a side effect on key events.
     pub fn record_input(&mut self, msg: &InputMessage) {
         match msg {
             InputMessage::MouseMove { x, y, .. } => {
@@ -111,8 +90,8 @@ impl WorkerUi {
                     mac_cmd: *meta,
                     command: *ctrl || *meta,
                 };
-                // Unknown codes drop here; the App's hotkey routing covers
-                // them via InputState.
+                // Unknown codes drop here; the App's hotkey routing covers them
+                // via InputState.
                 if let Some(egui_key) = crate::keymap::keycode_egui(code) {
                     self.raw_events.push(egui::Event::Key {
                         key: egui_key,
@@ -137,8 +116,7 @@ impl WorkerUi {
             InputMessage::Focus(focused) => {
                 self.raw_events.push(egui::Event::WindowFocused(*focused));
             }
-            // Handled outside egui (runner, cursor mirror, frame-loop
-            // entry).
+            // Handled outside egui: runner, cursor mirror, frame-loop entry.
             InputMessage::Resize { .. }
             | InputMessage::Visibility(_)
             | InputMessage::Start
@@ -146,15 +124,12 @@ impl WorkerUi {
         }
     }
 
-    /// Canvas-relative CSS pixels to egui points. The InputMessage
-    /// already carries CSS pixels, which egui treats as points, so this
-    /// passes through.
+    // The InputMessage already carries CSS pixels, which egui treats as points,
+    // so this passes through.
     fn point(&self, x: f32, y: f32) -> egui::Pos2 {
         egui::pos2(x, y)
     }
 
-    /// Begin a frame from accumulated raw input; returns the Context for
-    /// the App's `ui` method.
     pub fn begin_frame(&mut self) -> &egui::Context {
         let raw_input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -174,19 +149,15 @@ impl WorkerUi {
         &self.ctx
     }
 
-    /// Finish the frame and paint into `view`. Mirrors
-    /// `UiIntegration::paint` without the winit `handle_platform_output`
-    /// step.
+    /// `view` is single-sampled on every path (see `crate::UI_PASS_SAMPLE_COUNT`).
     pub fn paint(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        resolve_target: Option<&wgpu::TextureView>,
     ) {
         let full_output = self.ctx.end_pass();
-        self.wants_input = self.ctx.wants_pointer_input() || self.ctx.wants_keyboard_input();
 
         let primitives = self
             .ctx
@@ -209,7 +180,7 @@ impl WorkerUi {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
                     depth_slice: None,
-                    resolve_target,
+                    resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,

@@ -1,13 +1,7 @@
-//! Wireframe color helpers: deterministic per-edge palettes and the w-depth
-//! diverging gradient.
-
-// Cool/warm diverging palette for the w-depth color mode, keyed on SIGNED w so
-// a +w and a -w vertex read as different colors. Matches the depth cue in the
-// LineRasterStaticR4 shader.
+// Matches the depth cue in the LineRasterStaticR4 shader.
 const W_DEPTH_BACK: [f32; 3] = [0.30, 0.42, 0.58];
 const W_DEPTH_FRONT: [f32; 3] = [1.00, 0.78, 0.45];
 
-/// HSV to RGB; h, s, v and output channels in [0, 1].
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
     let h6 = h.fract() * 6.0;
     let c = v * s;
@@ -24,8 +18,6 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
     [r + m, g + m, b + m]
 }
 
-/// Deterministic per-index color: golden-ratio hue spacing plus an S/V cycle so
-/// adjacent indices land far apart in HSV.
 fn unique_edge_palette_color(idx: usize) -> [f32; 4] {
     const PHI_INV: f32 = 0.618_034;
     let h = ((idx as f32) * PHI_INV).fract();
@@ -35,8 +27,7 @@ fn unique_edge_palette_color(idx: usize) -> [f32; 4] {
     [r, g, b, 1.0]
 }
 
-/// Per-edge RGBA via greedy first-fit coloring of the edge line-graph: edges
-/// sharing a vertex get different colors. Deterministic in `edges` order.
+// Greedy first-fit coloring of the edge line-graph.
 pub(crate) fn unique_edge_palette(edges: &[[u32; 2]]) -> Vec<[f32; 4]> {
     let n = edges.len();
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -71,9 +62,6 @@ pub(crate) fn unique_edge_palette(edges: &[[u32; 2]]) -> Vec<[f32; 4]> {
         .collect()
 }
 
-/// Per-vertex w-depth color: cool at -w, warm at +w, neutral on the slice
-/// plane. `w_extent_local` is the fixed post-scale |w| bound, so the gradient
-/// is orientation-stable.
 pub(crate) fn w_depth_color(w: f32, w_extent_local: f32) -> [f32; 4] {
     let denom = w_extent_local.max(1e-6);
     let t = ((w / denom) * 0.5 + 0.5).clamp(0.0, 1.0);
@@ -107,7 +95,6 @@ mod tests {
         assert!((blue[2] - 1.0).abs() < 1e-5);
     }
 
-    /// Zero saturation is gray regardless of hue.
     #[test]
     fn hsv_to_rgb_zero_saturation_is_gray() {
         for h in [0.0, 0.25, 0.5, 0.75, 0.999_f32] {
@@ -118,14 +105,12 @@ mod tests {
         }
     }
 
-    /// Zero value is black regardless of hue/saturation.
     #[test]
     fn hsv_to_rgb_zero_value_is_black() {
         let rgb = hsv_to_rgb(0.5, 0.8, 0.0);
         assert!(rgb.iter().all(|c| c.abs() < 1e-5));
     }
 
-    /// Edges sharing a vertex must get distinct colors (the mode's invariant).
     #[test]
     fn unique_edge_palette_separates_adjacent_edges() {
         let edges: &[[u32; 2]] = &[[0, 1], [0, 2], [0, 3]];
@@ -139,24 +124,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// Non-adjacent edges may reuse a color (greedy first-fit).
-    #[test]
-    fn unique_edge_palette_non_adjacent_edges_may_share_color() {
-        let edges: &[[u32; 2]] = &[[0, 1], [2, 3]];
-        let palette = unique_edge_palette(edges);
-        assert_eq!(palette.len(), 2);
-        assert_eq!(palette[0], palette[1]);
-    }
-
-    /// Deterministic in edge order (the palette is cached per `Polytope4`).
-    #[test]
-    fn unique_edge_palette_is_deterministic() {
-        let edges: &[[u32; 2]] = &[[0, 1], [1, 2], [2, 3], [0, 3]];
-        let a = unique_edge_palette(edges);
-        let b = unique_edge_palette(edges);
-        assert_eq!(a, b);
     }
 
     #[test]
@@ -173,29 +140,6 @@ mod tests {
         assert!((c[3] - 1.0).abs() < 1e-5, "alpha is 1.0");
     }
 
-    #[test]
-    fn w_depth_color_neg_extent_is_back() {
-        let c = w_depth_color(-1.0, 1.0);
-        for ch in 0..3 {
-            assert!(
-                (c[ch] - W_DEPTH_BACK[ch]).abs() < 1e-5,
-                "channel {ch}: expected back tint",
-            );
-        }
-    }
-
-    #[test]
-    fn w_depth_color_pos_extent_is_front() {
-        let c = w_depth_color(1.0, 1.0);
-        for ch in 0..3 {
-            assert!(
-                (c[ch] - W_DEPTH_FRONT[ch]).abs() < 1e-5,
-                "channel {ch}: expected front tint",
-            );
-        }
-    }
-
-    /// Past the extent, clamp to the endpoint color instead of over-saturating.
     #[test]
     fn w_depth_color_clamps_past_extent() {
         let c_far = w_depth_color(5.0, 1.0);

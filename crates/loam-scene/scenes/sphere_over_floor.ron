@@ -1,0 +1,19 @@
+// A loam_scene::Scene: the 3D SDF tree, read by `Scene::load`.
+(
+    root: Union(
+        SmoothUnion(
+            k: 0.08,
+            left: Leaf(Sphere(
+                center: (0.0, 0.15, 0.0),
+                radius: 0.3,
+            )),
+            right: Leaf(Box3(
+                half_extents: (0.4, 0.1, 0.4),
+            )),
+        ),
+        Leaf(HalfSpace(
+            normal: (0.0, 1.0, 0.0),
+            offset: -0.5,
+        )),
+    ),
+)

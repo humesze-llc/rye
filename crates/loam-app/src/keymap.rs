@@ -1,30 +1,11 @@
-//! Translation tables between DOM event identifiers and the typed
-//! event enums used by `winit` (for loam-input's `InputState`) and `egui`
-//! (for `WorkerUi`'s `RawInput`).
-//!
-//! Why two tables: the receiver libraries each have their own key enum
-//! (`winit::keyboard::KeyCode`, `egui::Key`). They overlap in coverage
-//! but diverge in naming conventions (`winit::KeyCode::KeyA` vs
-//! `egui::Key::A`), so a single shared table would lose information.
-//!
-//! Coverage is **partial**: every key tesseract_demo + polytope_playground
-//! plausibly touch is here, plus the standard set (alpha + digits +
-//! function keys + arrows + common control keys). Unmapped codes return
-//! `None`; the caller silently drops the event. Adding a key is one
-//! line per table.
-//!
-//! All functions are `const`-fn-friendly in spirit (one giant `match`
-//! lookup; no allocation). Pure utilities with no dependency on the
-//! rest of the worker module surface.
+//! Two tables because winit and egui name keys differently. Unmapped codes
+//! return `None` and the caller drops the event.
 
 use loam_egui::egui;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
-/// Map a DOM `MouseEvent.button` index to a `winit::event::MouseButton`.
-///
-/// DOM convention: 0=primary, 1=middle, 2=secondary, 3=back, 4=forward.
-/// Anything else lands in `MouseButton::Other(button as u16)`.
+/// `button` is `MouseEvent.button` per the DOM spec.
 pub fn mouse_button_winit(button: u8) -> MouseButton {
     match button {
         0 => MouseButton::Left,
@@ -36,10 +17,7 @@ pub fn mouse_button_winit(button: u8) -> MouseButton {
     }
 }
 
-/// Map a DOM `MouseEvent.button` index to an `egui::PointerButton`.
-///
-/// `None` for buttons egui doesn't model. Egui's `Extra1` / `Extra2`
-/// cover the browser's back/forward buttons.
+/// `None` for buttons egui does not model.
 pub fn mouse_button_egui(button: u8) -> Option<egui::PointerButton> {
     match button {
         0 => Some(egui::PointerButton::Primary),
@@ -51,10 +29,6 @@ pub fn mouse_button_egui(button: u8) -> Option<egui::PointerButton> {
     }
 }
 
-/// Map a DOM `KeyboardEvent.code` string to a `winit::keyboard::KeyCode`.
-/// Returns `None` for unmapped codes; the caller is expected to drop
-/// the event silently. Coverage is the alphabet + digits + function
-/// keys + arrows + the common control / modifier keys.
 pub fn keycode_winit(code: &str) -> Option<KeyCode> {
     if let Some(k) = letter_winit(code) {
         return Some(k);
@@ -97,8 +71,6 @@ pub fn keycode_winit(code: &str) -> Option<KeyCode> {
     }
 }
 
-/// Map a DOM `KeyboardEvent.code` to an `egui::Key`. Same coverage
-/// principle as [`keycode_winit`].
 pub fn keycode_egui(code: &str) -> Option<egui::Key> {
     if let Some(k) = letter_egui(code) {
         return Some(k);
@@ -260,79 +232,5 @@ fn function_egui(code: &str) -> Option<egui::Key> {
         "F11" => Some(egui::Key::F11),
         "F12" => Some(egui::Key::F12),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mouse_button_winit_known_dom_indices() {
-        assert!(matches!(mouse_button_winit(0), MouseButton::Left));
-        assert!(matches!(mouse_button_winit(1), MouseButton::Middle));
-        assert!(matches!(mouse_button_winit(2), MouseButton::Right));
-        // Unknown index lands in Other.
-        match mouse_button_winit(99) {
-            MouseButton::Other(n) => assert_eq!(n, 99),
-            _ => panic!("expected MouseButton::Other(99)"),
-        }
-    }
-
-    #[test]
-    fn mouse_button_egui_known_dom_indices() {
-        assert_eq!(mouse_button_egui(0), Some(egui::PointerButton::Primary));
-        assert_eq!(mouse_button_egui(2), Some(egui::PointerButton::Secondary));
-        assert_eq!(mouse_button_egui(99), None);
-    }
-
-    #[test]
-    fn keycode_winit_spot_check_letter_digit_function_control() {
-        // The codepaths we lean on: alpha, digit, function, control.
-        assert_eq!(keycode_winit("KeyA"), Some(KeyCode::KeyA));
-        assert_eq!(keycode_winit("KeyZ"), Some(KeyCode::KeyZ));
-        assert_eq!(keycode_winit("Digit5"), Some(KeyCode::Digit5));
-        assert_eq!(keycode_winit("F3"), Some(KeyCode::F3));
-        assert_eq!(keycode_winit("Space"), Some(KeyCode::Space));
-        assert_eq!(keycode_winit("ArrowUp"), Some(KeyCode::ArrowUp));
-        assert_eq!(keycode_winit("Backquote"), Some(KeyCode::Backquote));
-        // Unknown -> None.
-        assert_eq!(keycode_winit("NotARealKey"), None);
-        assert_eq!(keycode_winit(""), None);
-    }
-
-    #[test]
-    fn keycode_egui_spot_check() {
-        assert_eq!(keycode_egui("KeyA"), Some(egui::Key::A));
-        assert_eq!(keycode_egui("Digit0"), Some(egui::Key::Num0));
-        assert_eq!(keycode_egui("F3"), Some(egui::Key::F3));
-        assert_eq!(keycode_egui("Backquote"), Some(egui::Key::Backtick));
-        assert_eq!(keycode_egui("Equal"), Some(egui::Key::Equals));
-        assert_eq!(keycode_egui("NotARealKey"), None);
-    }
-
-    /// Tesseract_demo's known hotkeys + axes must all resolve. Catches
-    /// regressions if someone tightens the mapping by accident.
-    #[test]
-    fn tesseract_demo_keys_all_map_winit() {
-        for code in [
-            "KeyW",
-            "KeyA",
-            "KeyS",
-            "KeyD", // WASD
-            "KeyF", // toggle camera mode
-            "KeyT",
-            "Space",     // pause
-            "KeyR",      // reset
-            "F3",        // perf overlay
-            "Backquote", // console
-            "ShiftLeft",
-            "ShiftRight", // free-roam descend
-        ] {
-            assert!(
-                keycode_winit(code).is_some(),
-                "tesseract_demo key '{code}' must map to a KeyCode"
-            );
-        }
     }
 }

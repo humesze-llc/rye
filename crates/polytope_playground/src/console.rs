@@ -1,17 +1,24 @@
-//! Console command registration (the `scene`, `wireframe`, `pole`,
-//! `section`, `surface`, `camera`, `floor` commands).
-
 use crate::*;
+
+fn handles_arg(arg: Option<&str>, current: bool) -> anyhow::Result<bool> {
+    match arg {
+        None => Ok(!current),
+        Some("on") => Ok(true),
+        Some("off") => Ok(false),
+        Some(other) => Err(anyhow!("handles: unknown arg `{other}` (try on|off)")),
+    }
+}
 
 impl RotateScene {
     pub(crate) fn build_console() -> Console<Demo> {
         let mut c = Console::<Demo>::new();
-        // Shell-provided scene switcher. The only in-app switcher under
-        // `--embed=1` / `?embed=1`, where the menu bar is hidden.
-        shell::register_scene_command(&mut c);
+        loam_app::shell::register_shell_commands::<Demo, shell::Playground>(
+            &mut c,
+            loam_app::build_info!(),
+        );
         c.register(loam_egui::cmd(
             "reset",
-            "full reset (R)",
+            "reset slice, rate, active set, orientation and time in place",
             |_args, demo: &mut Demo, _out| {
                 demo.reset();
                 Ok(())
@@ -22,6 +29,67 @@ impl RotateScene {
             "toggle continuous rotation (Space / T)",
             |_args, demo: &mut Demo, _out| {
                 demo.rotate = !demo.rotate;
+                Ok(())
+            },
+        ));
+        c.register(loam_egui::cmd(
+            "hud",
+            "toggle the top-left loam-text state readout (w, t, rate, planes)",
+            |_args, demo: &mut Demo, out| {
+                demo.show_text_hud = !demo.show_text_hud;
+                out.line(format!(
+                    "hud: {}",
+                    if demo.show_text_hud { "on" } else { "off" }
+                ));
+                Ok(())
+            },
+        ));
+        c.register(loam_egui::cmd(
+            "seek",
+            "set rotation time in seconds",
+            |args, demo: &mut Demo, _out| {
+                let [seconds] = args else {
+                    return Err(anyhow!("usage: seek <seconds>"));
+                };
+                let seconds: f32 = seconds.parse()?;
+                if !(0.0..=1.0e6).contains(&seconds) {
+                    return Err(anyhow!("time must be between 0 and 1000000 seconds"));
+                }
+                demo.rot_time = seconds;
+                demo.t_slider_max = demo.t_slider_max.max(seconds);
+                demo.recompose_spins_at(seconds);
+                demo.rebuild_bodies();
+                Ok(())
+            },
+        ));
+        c.register(loam_egui::cmd(
+            "rate",
+            "set rotation speed from 0.25 to 4",
+            |args, demo: &mut Demo, _out| {
+                let [rate] = args else {
+                    return Err(anyhow!("usage: rate <multiplier>"));
+                };
+                let rate: f32 = rate.parse()?;
+                if !(0.25..=4.0).contains(&rate) {
+                    return Err(anyhow!("rate must be between 0.25 and 4"));
+                }
+                demo.rate_scale = rate;
+                Ok(())
+            },
+        ));
+        c.register(loam_egui::cmd(
+            "slice",
+            "set the w cross-section",
+            |args, demo: &mut Demo, _out| {
+                let [slice] = args else {
+                    return Err(anyhow!("usage: slice <w>"));
+                };
+                let slice: f32 = slice.parse()?;
+                let range = demo.effective_w_range();
+                if !(-range..=range).contains(&slice) {
+                    return Err(anyhow!("slice must be between {} and {range}", -range));
+                }
+                demo.w_slice = slice;
                 Ok(())
             },
         ));
@@ -41,88 +109,8 @@ impl RotateScene {
                 Ok(())
             },
         ));
-        // Cross-section + parent-wireframe overlay. Bare `wireframe` flips
-        // on/off; subcommands each carry their own value choices for context-
-        // aware tab-completion via [`SubcommandSet`].
         c.register(
-            loam_egui::subcommands::<Demo>("wireframe", "wireframe + cross-section overlay")
-                .on_bare(|d| {
-                    d.wireframe_enabled = !d.wireframe_enabled;
-                    Ok(())
-                })
-                .toggle(
-                    "nearest-active",
-                    "per-edge alpha gradient by cell-crossing strength (bare flips)",
-                    |d, v| {
-                        d.wireframe_nearest_active = v.unwrap_or(!d.wireframe_nearest_active);
-                        Ok(())
-                    },
-                )
-                .custom(
-                    "width",
-                    "parent-wireframe edge thickness in pixels (default 1.8)",
-                    &[&[]],
-                    &[],
-                    |d, args, out| {
-                        match args.first().copied() {
-                            None => {
-                                out.line(format!(
-                                    "wireframe width: {:.2} px",
-                                    d.wireframe_width_px
-                                ));
-                            }
-                            Some(s) => match s.parse::<f32>() {
-                                Ok(w) if w > 0.0 && w <= 16.0 => {
-                                    d.wireframe_width_px = w;
-                                    out.line(format!(
-                                        "wireframe width: set to {w:.2} px"
-                                    ));
-                                }
-                                _ => {
-                                    out.line(format!(
-                                        "wireframe width: invalid `{s}` (need a float in (0, 16])"
-                                    ));
-                                }
-                            },
-                        }
-                        Ok(())
-                    },
-                )
-                .custom(
-                    "alpha",
-                    "uniform edge alpha when nearest-active is off (default 1.0)",
-                    &[&[]],
-                    &[],
-                    |d, args, out| {
-                        match args.first().copied() {
-                            None => {
-                                out.line(format!(
-                                    "wireframe alpha: {:.3} ({})",
-                                    d.wireframe_alpha,
-                                    if d.wireframe_nearest_active {
-                                        "overridden by nearest-active gradient; toggle off to apply"
-                                    } else {
-                                        "active"
-                                    }
-                                ));
-                            }
-                            Some(s) => match s.parse::<f32>() {
-                                Ok(a) if a > 0.0 && a <= 1.0 => {
-                                    d.wireframe_alpha = a;
-                                    out.line(format!(
-                                        "wireframe alpha: set to {a:.3}"
-                                    ));
-                                }
-                                _ => {
-                                    out.line(format!(
-                                        "wireframe alpha: invalid `{s}` (need a float in (0, 1])"
-                                    ));
-                                }
-                            },
-                        }
-                        Ok(())
-                    },
-                )
+            crate::verbs::wireframe_subcommands::<Demo>(|d| &mut d.wireframe)
                 .choice(
                     "color",
                     "parent-edge color mode (bare cycles): vertex-gradient|unique-edge|w-depth|active",
@@ -135,7 +123,6 @@ impl RotateScene {
                                 )
                             })?,
                             None => {
-                                // Bare cycles through the canonical order.
                                 let all = WireframeColorMode::ALL;
                                 let i = all
                                     .iter()
@@ -147,41 +134,11 @@ impl RotateScene {
                         Ok(())
                     },
                 )
-                .custom(
-                    "perspective",
-                    "wireframe 4D->R³ projection (bare cycles): shadow | w-pinhole | stereographic | hyperslice",
-                    &[&["shadow", "w-pinhole", "stereographic", "hyperslice"]],
-                    &[],
-                    |d, args, out| {
-                        // Schlegel is omitted here (it wants its own demo): both
-                        // `from_token` and `ALL` exclude it.
-                        let next = match args.first().copied() {
-                            // Bare: cycle through ALL in variant order.
-                            None => {
-                                let all = WireframeProjection::ALL;
-                                let i = all
-                                    .iter()
-                                    .position(|p| p.same_variant(d.wireframe_projection))
-                                    .unwrap_or(0);
-                                all[(i + 1) % all.len()]
-                            }
-                            Some(token) => WireframeProjection::from_token(token).ok_or_else(|| {
-                                anyhow!(
-                                    "unknown projection `{token}` (try shadow|w-pinhole|stereographic|hyperslice)"
-                                )
-                            })?,
-                        };
-                        d.wireframe_projection = next;
-                        state::apply_projection_selection_defaults(
-                            d.wireframe_projection,
-                            &mut d.wireframe_enabled,
-                        );
-                        // No-op for these modes; kept for a future Schlegel re-wire.
-                        d.resolve_schlegel_cache();
-                        out.line(format!(
-                            "wireframe perspective: {}",
-                            d.wireframe_projection.label().to_lowercase()
-                        ));
+                .toggle(
+                    "nearest-active",
+                    "per-edge alpha gradient by cell-crossing strength (bare flips)",
+                    |d, v| {
+                        d.wireframe_nearest_active = v.unwrap_or(!d.wireframe_nearest_active);
                         Ok(())
                     },
                 )
@@ -199,19 +156,14 @@ impl RotateScene {
                                     p.x, p.y, p.z, p.w
                                 ));
                             }
-                            // Cell-center default (see STEREOGRAPHIC_DEFAULT_POLE).
                             Some("reset") | Some("default") => {
                                 d.stereographic_pole = state::STEREOGRAPHIC_DEFAULT_POLE;
                                 out.line("stereographic pole: reset to the cell-center default");
                             }
-                            // The textbook `(x, y, z) / (1 - w)` pole, as a named
-                            // shortcut.
                             Some("+w") => {
                                 d.stereographic_pole = Vec4::W;
                                 out.line("stereographic pole: set to +w (textbook map)");
                             }
-                            // Explicit pole: four floats normalized onto S³ (only
-                            // the direction matters); reject a near-zero vector.
                             Some(_) => {
                                 let coords: Result<Vec<f32>> = args
                                     .iter()
@@ -279,9 +231,6 @@ impl RotateScene {
                                     let t: f32 = token.parse().map_err(|e| {
                                         anyhow!("invalid thickness `{token}`: {e}")
                                     })?;
-                                    // Floor is the predicate's razor band; the
-                                    // `2 * W_RANGE` cap covers every reachable w, so
-                                    // the filter no-ops there (same as "off").
                                     let max = 2.0 * consts::W_RANGE;
                                     if !(HYPERSLICE_MIN_THICKNESS..=max).contains(&t) {
                                         return Err(anyhow!(
@@ -360,9 +309,6 @@ impl RotateScene {
                 ),
         );
 
-        // Polychoral surface renderer: raster (default) / SDF / off. Bare
-        // `surface` is shorthand for "off". `surface scale <N>` rescales the row
-        // by multiplying `BODY_SIZE` (see [`Demo::effective_body_size`]).
         c.register(
             loam_egui::cmd(
                 "surface",
@@ -386,12 +332,7 @@ impl RotateScene {
                                     ));
                                 }
                                 demo.surface_scale = parsed;
-                                // Rebuild SDF body uniforms so the kernel sees the new
-                                // radius immediately; raster paths read effective_body_size()
-                                // every frame and don't need a rebuild.
                                 demo.rebuild_bodies();
-                                // Clamp the current w-slice into the new scaled range so
-                                // a shrink doesn't leave the slider off the visible body.
                                 let w_range = demo.effective_w_range();
                                 demo.w_slice = demo.w_slice.clamp(-w_range, w_range);
                                 out.line(format!(
@@ -416,8 +357,6 @@ impl RotateScene {
                     }
                     if next != demo.surface_mode {
                         demo.surface_mode = next;
-                        // Re-emit the SDF body list: switching INTO Sdf mode makes the
-                        // polychora live in the kernel, switching OUT marks them inert.
                         demo.rebuild_bodies();
                     }
                     Ok(())
@@ -446,17 +385,6 @@ impl RotateScene {
             ),
         );
 
-        // Section layers: the rasterized cross-section is two overlaid layers in
-        // one viewport, each with its own perimeter outline + fill alpha.
-        //   - `cross`: the honest drop-w slice (NEVER reprojected; the geometry the
-        //     SDF raymarch shows). On by default so selecting Schlegel /
-        //     stereographic never silently distorts the slice.
-        //   - `cap`: the same slice reprojected through the active wireframe
-        //     projection, so it can sit on a Schlegel / stereographic wireframe.
-        //     Off by default.
-        // Alpha `0` is the layer's off state; `(0, 1]` sets a visible fill (below 1
-        // composites through the depth-write-disabled pipeline). Side-by-side /
-        // multi-viewport comparison is deferred to the multi-viewport milestone.
         c.register(
             loam_egui::subcommands::<Demo>(
                 "section",
@@ -494,192 +422,36 @@ impl RotateScene {
             ),
         );
 
-        // Framework-provided capture: `capture png [pre|post|both] [dir]`,
-        // `capture frames [pre|post|both] [dir]`, `capture stop`. Bound to F12 (one-shot)
-        // and F9 (sequence start; use `capture stop` to end). Requests push to a global
-        // queue; the runner drains and processes them at the render-loop's two taps.
-        loam_app::capture::register_commands(&mut c);
-        loam_app::capture::bind_default_hotkeys(&mut c);
+        loam_app::camera_rig::register_camera_command(&mut c, |demo| &mut demo.rig);
 
-        // Framework-provided log mirror: `log on|off|toggle` toggles whether
-        // `tracing::*` events show up in the console scrollback.
-        loam_app::log::register_command(&mut c);
-
-        // Framework-provided frame-timing surface: `trace [summary|last|clear|cap N]`.
-        // The runner is already recording per-section scopes on every redraw; this
-        // command lets the user read them. Surfaces the slowest hot-path sections,
-        // which is the data the pipeline-warming + wireframe-cache decisions read
-        // from.
-        loam_app::trace::register_command(&mut c);
-        loam_app::fps::register_command(&mut c);
-        loam_app::vsync::register_command(&mut c);
-        loam_app::version::register_command(
-            &mut c,
-            env!("CARGO_PKG_NAME"),
-            env!("CARGO_PKG_VERSION"),
-            env!("BUILD_HASH"),
-            env!("BUILD_DIRTY"),
-        );
-
-        // Demo-side camera mode toggle. Bare `camera` cycles between Orbit
-        // (the default scroll-zoom/drag camera) and FreeRoam (WASD + mouse-
-        // look). Explicit `camera orbit` resets the orbit controller to its
-        // default distance + pitch so the camera returns to a known framing
-        // around the world origin; `camera freecam` seeds the free-roam
-        // position from the camera's current location.
-        //
-        // Freecam tuning subcommands (do NOT change mode):
-        //   `camera freecam speed=<N>`        WASD/Space/Shift units/sec.
-        //   `camera freecam speed`            Print the current speed.
-        //   `camera freecam cursor_mode <m>`  `toggle` (default, FPS) or `hold` (MMO).
-        //   `camera freecam cursor_mode`      Print the current mode.
         c.register(
             loam_egui::cmd::<Demo, _>(
-                "camera",
-                "camera mode: orbit | freecam; bare cycles. `camera freecam speed=<N>` / `cursor_mode hold|toggle` tune the preset",
+                "handles",
+                "toggle the 4D transform handles (on | off; bare flips)",
                 |args, demo, out| {
-                    // Freecam-tuning forms have a second positional token.
-                    // `speed=<N>` is parsed as one token (matches the user's
-                    // `speed=<N>` spec); `speed` alone queries; `cursor_mode
-                    // <m>` is two tokens.
-                    if matches!(args.first().copied(), Some("freecam")) && args.len() >= 2 {
-                        let second = args[1];
-                        // `speed=<N>` and `speed <N>` and bare `speed`.
-                        if let Some(value) = second.strip_prefix("speed=") {
-                            let parsed: f32 = value
-                                .parse()
-                                .map_err(|e| anyhow!("invalid speed `{value}`: {e}"))?;
-                            if !(0.1..=200.0).contains(&parsed) {
-                                return Err(anyhow!(
-                                    "camera freecam speed {parsed} out of range; expected 0.1..=200.0"
-                                ));
-                            }
-                            demo.freecam.speed = parsed;
-                            out.line(format!("camera freecam speed: set to {parsed:.2} u/sec"));
-                            return Ok(());
-                        }
-                        if second == "speed" {
-                            if let Some(value) = args.get(2) {
-                                let parsed: f32 = value.parse().map_err(|e| {
-                                    anyhow!("invalid speed `{value}`: {e}")
-                                })?;
-                                if !(0.1..=200.0).contains(&parsed) {
-                                    return Err(anyhow!(
-                                        "camera freecam speed {parsed} out of range; expected 0.1..=200.0"
-                                    ));
-                                }
-                                demo.freecam.speed = parsed;
-                                out.line(format!(
-                                    "camera freecam speed: set to {parsed:.2} u/sec"
-                                ));
-                            } else {
-                                out.line(format!(
-                                    "camera freecam speed: {:.2} u/sec",
-                                    demo.freecam.speed
-                                ));
-                            }
-                            return Ok(());
-                        }
-                        if second == "cursor_mode" {
-                            match args.get(2).copied() {
-                                None => {
-                                    out.line(format!(
-                                        "camera freecam cursor_mode: {}",
-                                        demo.freecam.cursor_mode().token()
-                                    ));
-                                }
-                                Some(token) => {
-                                    let mode = CursorMode::from_token(token).ok_or_else(|| {
-                                        anyhow!(
-                                            "unknown cursor_mode `{token}` (try hold|toggle)"
-                                        )
-                                    })?;
-                                    demo.freecam.set_cursor_mode(mode);
-                                    out.line(format!(
-                                        "camera freecam cursor_mode: set to {}",
-                                        mode.token()
-                                    ));
-                                }
-                            }
-                            return Ok(());
-                        }
-                        // Unknown second token under `camera freecam`: fall
-                        // through to the mode-switch path which will yell
-                        // about it.
-                    }
-
-                    let next = match args.first().copied() {
-                        None => match demo.camera_mode {
-                            CameraMode::Orbit => CameraMode::FreeRoam,
-                            CameraMode::FreeRoam => CameraMode::Orbit,
-                        },
-                        Some("orbit") => CameraMode::Orbit,
-                        Some("freecam") => CameraMode::FreeRoam,
-                        Some(other) => {
-                            out.line(format!(
-                                "camera: unknown mode `{other}` (try orbit|freecam)"
-                            ));
-                            return Ok(());
-                        }
-                    };
-                    demo.camera_mode = next;
-                    match next {
-                        CameraMode::Orbit => {
-                            // Reset orbit so the camera returns to a known
-                            // framing around (0, 0, 0) regardless of where
-                            // freecam left it. Freecam's `set_active(false)`
-                            // releases the cursor grab.
-                            demo.orbit = OrbitController::default();
-                            demo.orbit.set_orbit(8.0, -0.25);
-                            demo.freecam.set_active(false, demo.camera.position);
-                            out.line("camera: orbit (reset to world origin)");
-                        }
-                        CameraMode::FreeRoam => {
-                            // Preset grabs cursor + seeds position from the
-                            // camera's current pose so the toggle is
-                            // continuous, not a teleport.
-                            demo.freecam.set_active(true, demo.camera.position);
-                            out.line(
-                                "camera: freecam (WASD + Space/Shift; mouse-look; Alt to free cursor)",
-                            );
-                        }
-                    }
+                    let next = handles_arg(args.first().copied(), demo.gimbal.enabled)?;
+                    demo.gimbal.enabled = next;
+                    out.line(format!("handles: {}", if next { "on" } else { "off" }));
                     Ok(())
                 },
             )
-            .with_args(&[
-                &["orbit", "freecam"],
-                &["speed=", "cursor_mode"],
-                &["hold", "toggle"],
-            ]),
+            .with_args(&[&["on", "off"]])
+            .with_long_help(
+                "Six interlocked rings, one per rotation plane, from the stereographic\n\
+                 projection of the 16-cell, plus four arrows, one per translation axis.\n\
+                 Drag a ring to turn the whole row in its plane; drag an arrowhead to\n\
+                 slide the row along that axis. The violet arrow is w: it moves the bodies\n\
+                 off the 3D slice, so the cross-sections change shape rather than\n\
+                 travelling.\n\
+                 \n\
+                 Off at startup and reachable only from here. The handles are hidden in\n\
+                 Filmstrip view, which composes per-cell viewports with no shared world\n\
+                 origin for the widget to stand on.",
+            ),
         );
 
-        // Floor toggle for the y=0 hyperplane ground. On by default. The
-        // SDF kernel reads `u.params[0]` (set in `Demo::update`); when 0.0
-        // the wrapper around `loam_scene_sdf` (injected into the shader at
-        // setup time) short-circuits to a huge distance, so the marcher
-        // never converges on the floor and the checkerboard never paints.
-        // Bare `floor` flips the flag; `floor on|off` is the explicit form.
-        c.register(
-            loam_egui::cmd::<Demo, _>(
-                "floor",
-                "toggle the y=0 hyperplane ground (on | off; bare flips)",
-                |args, demo, out| {
-                    let next = match args.first().copied() {
-                        None => !demo.floor_enabled,
-                        Some("on") => true,
-                        Some("off") => false,
-                        Some(other) => {
-                            return Err(anyhow!("floor: unknown arg `{other}` (try on|off)"));
-                        }
-                    };
-                    demo.floor_enabled = next;
-                    out.line(format!("floor: {}", if next { "on" } else { "off" }));
-                    Ok(())
-                },
-            )
-            .with_args(&[&["on", "off"]]),
-        );
+        loam_app::environment::register_ground_command(&mut c, |demo| &mut demo.environment);
+        loam_app::environment::register_floor_command(&mut c, |demo| &mut demo.environment);
 
         c
     }
@@ -688,12 +460,74 @@ impl RotateScene {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loam_app::shell::SceneRegistry;
 
-    /// Under `--embed=1` the menu bar is hidden, so the console is the only
-    /// way to reach another scene: losing this registration strands an embed
-    /// on its boot scene.
     #[test]
-    fn console_exposes_the_scene_switcher() {
-        assert!(RotateScene::build_console().has_command("scene"));
+    fn handles_arg_flips_when_bare_and_is_absolute_when_named() {
+        assert!(handles_arg(None, false).unwrap());
+        assert!(!handles_arg(None, true).unwrap());
+        assert!(handles_arg(Some("on"), false).unwrap());
+        assert!(handles_arg(Some("on"), true).unwrap());
+        assert!(!handles_arg(Some("off"), true).unwrap());
+        assert!(!handles_arg(Some("off"), false).unwrap());
+    }
+
+    #[test]
+    fn handles_arg_rejects_an_unknown_token() {
+        assert!(handles_arg(Some("yes"), false).is_err());
+    }
+
+    #[test]
+    fn scene_completion_cycles_every_registered_slug() {
+        let mut console = RotateScene::build_console();
+        *console.input_mut() = "scene ".to_string();
+        let mut completed: Vec<String> = Vec::new();
+        for _ in shell::Playground::SCENES {
+            console.tab_complete();
+            completed.push(
+                console
+                    .input()
+                    .strip_prefix("scene ")
+                    .expect("completion fills the switcher's first argument")
+                    .to_string(),
+            );
+        }
+        completed.sort();
+        let mut slugs: Vec<String> = shell::Playground::SCENES
+            .iter()
+            .map(|entry| entry.slug.to_string())
+            .collect();
+        slugs.sort();
+        assert_eq!(completed, slugs);
+    }
+
+    #[test]
+    fn the_help_listing_describes_the_scene_switcher() {
+        let mut console = Console::<()>::new();
+        loam_app::shell::register_shell_commands::<(), shell::Playground>(
+            &mut console,
+            loam_app::build_info!(),
+        );
+        console.execute("help");
+        let listed = console
+            .history()
+            .iter()
+            .find_map(|line| line.text.trim_start().strip_prefix("scene "))
+            .expect("`help` lists the scene command")
+            .trim()
+            .to_string();
+        assert!(!listed.is_empty(), "the listing carries no description");
+
+        console.clear_history();
+        console.execute("help scene");
+        let long = console
+            .history()
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for param in ["--scene=", "?scene=", "--embed=1"] {
+            assert!(long.contains(param), "`help scene` omits {param}");
+        }
     }
 }

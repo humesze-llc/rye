@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Loam time primitives: deterministic fixed-timestep accumulator and tick counter."
+description = "Loam time: fixed-timestep accumulator, frame trace, job pool, and frame-indexed playback."
 keywords = ["fixed-timestep", "determinism", "timing", "gamedev"]
 categories = ["game-development", "date-and-time"]
 
@@ -30,3 +30,17 @@ web-time = { workspace = true }
 # the feature; the crate itself is tiny so the prebuilt-with-tracing footprint
 # is negligible.
 tracing = { workspace = true }
+# `TapeError` is matched at a real callsite: a loader distinguishes "written by
+# another build, re-record it" from "corrupt" and reports differently.
+thiserror = { workspace = true }
+# The director's three channel types. `Rotor4` brings the geodesic and the
+# isoclinic-half-turn guard the authoring path refuses on; `Vec4` is glam's.
+loam-math = { path = "../loam-math", version = "0.1.0" }
+glam = { workspace = true }
+# Timelines are authored as files, so the channel types round-trip through RON.
+serde = { workspace = true }
+ron = { workspace = true }
+
+[[bench]]
+name = "jobs"
+harness = false

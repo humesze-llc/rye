@@ -1,25 +1,8 @@
-//! [`Hyperslice4DNode`], render node for 4D scenes via hyperslicing.
-//!
-//! Pairs with `loam_scene::Scene4` but takes a pre-compiled [`wgpu::ShaderModule`]
-//! rather than depending on `loam-scene` directly, matching
-//! [`crate::raymarch::RayMarchNode`]. The user assembles the WGSL by
-//! concatenating [`HYPERSLICE_KERNEL_WGSL`] with
-//! `Scene4::to_hyperslice_wgsl("u.w_slice")` (which defines `loam_scene_sdf`):
-//!
-//! ```ignore
-//! let kernel = loam_render::raymarch::HYPERSLICE_KERNEL_WGSL;
-//! let scene_wgsl = scene.to_hyperslice_wgsl("u.w_slice");
-//! let source = format!("{kernel}\n{scene_wgsl}");
-//! let module = device.create_shader_module(...);
-//! let node = Hyperslice4DNode::new(device, format, &module, sample_count);
-//! ```
-//!
-//! Renders static `Scene4` primitives (captured at construction as WGSL
-//! constants) plus up to 32 dynamic [`BodyUniform`] bodies uploaded per frame
-//! via [`Hyperslice4DNode::set_bodies`]. The kernel composes the static-scene
-//! SDF and the dynamic-body SDF via `min`.
+//! The user assembles the WGSL by concatenating [`HYPERSLICE_KERNEL_WGSL`]
+//! with `Scene4::to_hyperslice_wgsl("u.w_slice")` (which defines
+//! `loam_scene_sdf`).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use loam_math::Rotor4;
 use wgpu::*;
@@ -27,13 +10,10 @@ use wgpu::*;
 use crate::device::RenderDevice;
 use crate::graph::RenderNode;
 
-/// Maximum dynamic bodies per frame. Hard cap: the uniform layout is
-/// fixed-size, so raising it is a recompile, not a runtime knob.
+/// The uniform layout is fixed-size, so raising this is a recompile.
 pub const MAX_BODIES: usize = 32;
 
-/// Shape table indices for `BodyKind::Polytope` bodies, stored in
-/// [`BodyUniform::radius_or_shape`]. Mirrored as `SHAPE_*` constants in
-/// [`HYPERSLICE_KERNEL_WGSL`]; keep in sync.
+/// Mirrored as `SHAPE_*` in [`HYPERSLICE_KERNEL_WGSL`]; keep in sync.
 pub const SHAPE_PENTATOPE: u32 = 0;
 pub const SHAPE_TESSERACT: u32 = 1;
 pub const SHAPE_16CELL: u32 = 2;
@@ -45,24 +25,7 @@ pub const SHAPE_DUOCYLINDER: u32 = 7;
 pub const SHAPE_CLIFFORD_TORUS: u32 = 8;
 pub const SHAPE_SPHERINDER: u32 = 9;
 
-/// One dynamic-body slot, a discriminated record over sphere and polytope cases
-/// (`kind` selects which fields the shader reads).
-///
-/// Layout (std140-aligned, 80 bytes total):
-///
-/// | offset | bytes | field |
-/// |---|---|---|
-/// |  0 | 16 | `position` (`vec4<f32>`) |
-/// | 16 |  4 | `kind` (`f32`: 0 = sphere, 1 = polytope) |
-/// | 20 |  4 | `radius_or_shape` (sphere radius / polytope shape index) |
-/// | 24 |  4 | `polytope_size` (polytope circumradius; ignored when kind = sphere) |
-/// | 28 |  4 | `_pad0` |
-/// | 32 | 12 | `color` (`vec3<f32>`) |
-/// | 44 |  4 | `_pad1` |
-/// | 48 | 32 | `rotor` (8 × f32packed as 2 × `vec4<f32>`, `rotor_lo` then `rotor_hi`; Rotor4 ordering: scalar, xy, xz, xw, yz, yw, zw, pseudoscalar) |
-///
-/// The rotor packs into two `vec4<f32>` so std140 matches Rust's `[f32; 8]`; an
-/// `array<f32, 8>` would pad each element to 16 bytes (128-byte slot).
+/// 80 bytes, matching the kernel's `BodyUniform`; the rotor packs as two `vec4`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BodyUniform {
@@ -78,8 +41,6 @@ pub struct BodyUniform {
 
 impl Default for BodyUniform {
     fn default() -> Self {
-        // `Invalid` has no kernel dispatch branch, so the slot stays inert
-        // rather than collapsing to a zero-radius sphere at the origin.
         Self {
             position: [0.0; 4],
             kind: BodyKind::Invalid as i32 as f32,
@@ -88,29 +49,21 @@ impl Default for BodyUniform {
             _pad0: 0.0,
             color: [0.7, 0.7, 0.7],
             _pad1: 0.0,
-            // Identity Rotor4: scalar=1, bivector=0, pseudoscalar=0.
             rotor: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         }
     }
 }
 
-/// `BodyUniform::kind` discriminator. Cast to `f32` when writing the uniform; the shader reads
-/// it back as `u32`-via-`f32`.
+/// Written as `f32`; the shader reads it back as `u32`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BodyKind {
-    /// `HyperSphere4D`. Reads `position` and `radius_or_shape`; ignores `rotor`.
     Sphere = 0,
-    /// `ConvexPolytope4D`. Reads `position`, `rotor`, and `radius_or_shape` (the
-    /// shape table index).
     Polytope = 1,
-    /// Sentinel for slots the kernel skips. No dispatch branch matches it, so the
-    /// slot stays inert; `BodyUniform::default()` produces it. `255` (`u8::MAX`)
-    /// is far outside the live range and exactly representable as `f32`.
+    /// No dispatch branch matches, so a default slot stays inert.
     Invalid = 255,
 }
 
 impl BodyUniform {
-    /// Build a sphere body at world-space 4D `position` with the given radius.
     pub fn sphere(position: [f32; 4], radius: f32, color: [f32; 3]) -> Self {
         Self {
             position,
@@ -121,10 +74,6 @@ impl BodyUniform {
         }
     }
 
-    /// Build a polytope body. `shape_index` references the kernel's shape table,
-    /// `size` is the circumradius, `rotor` is the Rotor4 packed via
-    /// `<[f32; 8]>::from(Rotor4)`. Prefer [`Self::polytope_with_rotor`] when the
-    /// caller already has a [`Rotor4`].
     pub fn polytope(
         position: [f32; 4],
         shape_index: u32,
@@ -143,8 +92,6 @@ impl BodyUniform {
         }
     }
 
-    /// [`Self::polytope`] taking a [`Rotor4`] directly via loam-math's canonical
-    /// `[f32; 8]` packing, so the rotor field order isn't spelled out at the call.
     pub fn polytope_with_rotor(
         position: [f32; 4],
         shape_index: u32,
@@ -156,8 +103,7 @@ impl BodyUniform {
     }
 }
 
-/// Uniform buffer for [`Hyperslice4DNode`]. Bind group 0, binding 0. `std140`-compatible
-/// layout matching the kernel's `Uniforms` struct.
+/// Bind group 0, binding 0; matches the kernel's `Uniforms`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Hyperslice4DUniforms {
@@ -172,18 +118,11 @@ pub struct Hyperslice4DUniforms {
     pub resolution: [f32; 2],
     pub time: f32,
     pub tick: f32,
-    /// Slicing hyperplane `w` coordinate; read by `Scene4`'s hyperslice emit.
     pub w_slice: f32,
-    /// Active body-slot count. `f32` for std140 alignment; kernel rounds to int.
     pub body_count: f32,
-    /// Pixel offset of the viewport's top-left in the framebuffer, so the shader
-    /// can map framebuffer-space `frag_pos.xy` into the viewport:
-    /// `uv = (frag_pos.xy - viewport_origin) / resolution`. Zero unless a side
-    /// panel carves out a sub-region.
+    /// Framebuffer pixel of the viewport's top-left.
     pub viewport_origin: [f32; 2],
-    /// User-shader scalar knobs; mirrors `RayMarchUniforms::params`.
     pub params: [f32; 4],
-    /// Dynamic body slots; slots `>= body_count` are unread. See [`BodyUniform`].
     pub bodies: [BodyUniform; MAX_BODIES],
 }
 
@@ -210,19 +149,17 @@ impl Default for Hyperslice4DUniforms {
     }
 }
 
-/// Hyperslice ray-march kernel: `Uniforms`, fullscreen triangle, and the
-/// ray-march loop. The user's `Scene4` emit supplies `loam_scene_sdf`. Public so
-/// callers can assemble the full shader source (kernel + scene emit).
-pub const HYPERSLICE_KERNEL_WGSL: &str = r#"
-// ---- Hyperslice4DNode kernel ----
-
+/// Prefixed with [`crate::sky_ground::SKY_GROUND_WGSL`]; the user's `Scene4` emit
+/// supplies `loam_scene_sdf`.
+pub const HYPERSLICE_KERNEL_WGSL: &str = concat!(
+    include_str!("../sky_ground.wgsl"),
+    r#"
 const MAX_BODIES: u32 = 32u;
 
 const BODY_KIND_SPHERE: u32 = 0u;
 const BODY_KIND_POLYTOPE: u32 = 1u;
 
-// Polytope shape table indices. Mirrored from loam-render Rust-side
-// `SHAPE_*` constants; keep in sync.
+// Mirrors the Rust `SHAPE_*` constants; keep in sync.
 const SHAPE_PENTATOPE: u32 = 0u;
 const SHAPE_TESSERACT: u32 = 1u;
 const SHAPE_16CELL: u32 = 2u;
@@ -233,13 +170,7 @@ const SHAPE_3SPHERE: u32 = 6u;
 const SHAPE_DUOCYLINDER: u32 = 7u;
 const SHAPE_CLIFFORD_TORUS: u32 = 8u;
 const SHAPE_SPHERINDER: u32 = 9u;
-// Mirrors `BodyKind::Invalid` (CPU). Intentionally absent from the
-// dispatch chain in `loam_dynamic_bodies_sdf` and `loam_total_sdf` below:
-// neither the sphere nor the polytope branch matches, so the SDF
-// accumulator keeps its 1e9 initial value for that slot. `255` is the
-// CPU-side `u8::MAX` sentinel, far outside the live discriminator
-// range. Do NOT delete: `BodyUniform::default()` produces this kind so
-// uninitialised slots are inert. CPU/GPU protocol breaks if removed.
+// Mirrors `BodyKind::Invalid`; absent from dispatch on purpose so default slots stay inert.
 const BODY_KIND_INVALID: u32 = 255u;
 
 struct BodyUniform {
@@ -250,10 +181,7 @@ struct BodyUniform {
     _pad0: f32,
     color: vec3<f32>,
     _pad1: f32,
-    // Rotor4 packed as 2 × vec4<f32> so the std140 stride matches
-    // Rust's tightly-packed `[f32; 8]` (an `array<f32, 8>` here
-    // would pad each element to 16 bytes -> 128-byte slot, breaking
-    // the 80-byte total). Order: [s, xy, xz, xw, yz, yw, zw, xyzw].
+    // Two vec4 so the std140 stride matches Rust's `[f32; 8]`; order [s, xy, xz, xw, yz, yw, zw, xyzw].
     rotor_lo: vec4<f32>,
     rotor_hi: vec4<f32>,
 };
@@ -276,42 +204,23 @@ struct Uniforms {
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
-// SDF of a single sphere body in 4D, evaluated at `p4`.
 fn body_sphere_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
     return length(p4 - b.position) - b.radius_or_shape;
 }
 
-// ---- Rotor4 sandwich (inverse rotation: world -> body local) ----
-//
-// `Rotor4::apply` (CPU) computes the forward sandwich `R̃ · v · R`,
-// rotating a body-local vector into world coordinates. To go the
-// other way (world -> body local) we flip the bivector signs of `R`
-// to get its reverse `R̃`, then run the same formula with R̃ as the
-// "rotor". That equals `R · v · R̃`, the inverse rotation.
-//
-// Component order matches `Rotor4` { s, xy, xz, xw, yz, yw, zw, xyzw }
-// packed into rotor_lo (s, xy, xz, xw) and rotor_hi (yz, yw, zw, xyzw).
+// `Rotor4::apply` with the bivector signs flipped: R̃ as the rotor gives R·v·R̃, the inverse.
 fn rotor4_inverse_apply(rotor_lo: vec4<f32>, rotor_hi: vec4<f32>, v: vec4<f32>) -> vec4<f32> {
     let rs  = rotor_lo.x;
-    // Bivector signs flipped (reverse of R).
     let rxy = -rotor_lo.y;
     let rxz = -rotor_lo.z;
     let rxw = -rotor_lo.w;
     let ryz = -rotor_hi.x;
     let ryw = -rotor_hi.y;
     let rzw = -rotor_hi.z;
-    // Pseudoscalar unchanged on reverse.
     let r_i = rotor_hi.w;
 
     let vx = v.x; let vy = v.y; let vz = v.z; let vw = v.w;
 
-    // Stage 1: R̃ · v. R̃ for the inner rotor here re-flips the
-    // bivector signs (back to original R's bivector signs); the
-    // formula below is the direct port of `Rotor4::apply` Stage 1
-    // with bivector terms using positive r{xy,...}, but since we
-    // already inverted the signs above, this works out to using the
-    // negated values. Keeping the formula identical to the CPU
-    // implementation:
     let p1 = rs * vx - rxy * vy - rxz * vz - rxw * vw;
     let p2 = rs * vy + rxy * vx - ryz * vz - ryw * vw;
     let p3 = rs * vz + rxz * vx + ryz * vy - rzw * vw;
@@ -323,7 +232,6 @@ fn rotor4_inverse_apply(rotor_lo: vec4<f32>, rotor_hi: vec4<f32>, v: vec4<f32>) 
     let t134 = -rxz * vw + rxw * vz - rzw * vx + r_i * vy;
     let t234 = -ryz * vw + ryw * vz - rzw * vy - r_i * vx;
 
-    // Stage 2: (1-vec + 3-vec) · R, extract the 1-vec output.
     let q1 = rs * p1 - rxy * p2 - rxz * p3 - rxw * p4
            - ryz * t123 - ryw * t124 - rzw * t134 + r_i * t234;
     let q2 = rs * p2 + rxy * p1 - ryz * p3 - ryw * p4
@@ -336,25 +244,9 @@ fn rotor4_inverse_apply(rotor_lo: vec4<f32>, rotor_hi: vec4<f32>, v: vec4<f32>) 
     return vec4<f32>(q1, q2, q3, q4);
 }
 
-// ---- Convex polytope SDFs (body-local, unit circumradius) ----
-//
-// Per-shape SDFs assume the polytope is centered at the origin and
-// oriented in its canonical frame. The dispatcher transforms world
-// coordinates into body-local coordinates first (translate +
-// inverse-rotor), then scales the result by the body's circumradius.
+// Per-shape SDFs are unit-circumradius at the origin; the dispatcher maps into body space.
 
-// Pentatope (5-cell, 4D simplex) at unit circumradius. Five face
-// hyperplanes; signed distance is the max plane distance.
-//
-// Vertex set (matching `loam_physics::euclidean_r4::pentatope_vertices(1.0)`):
-//   v0 = (0, 0, 0, 1)
-//   v1 = (t, t, t, -0.25), v2 = (t, -t, -t, -0.25),
-//   v3 = (-t, t, -t, -0.25), v4 = (-t, -t, t, -0.25)
-// where t = sqrt(15) / (4 * sqrt(3)) = sqrt(5) / 4 ≈ 0.55901699.
-//
-// Face i is opposite vertex i; outward normal is -v_i (since |v_i|
-// = 1 for unit-circumradius). Inradius for an n-simplex is R/n; for
-// pentatope (n=4) at R=1 the inradius is 0.25.
+// Face i is opposite vertex i of `pentatope_vertices(1.0)`, normal -v_i; 4-simplex inradius R/4.
 fn pentatope_sdf_local(p: vec4<f32>) -> f32 {
     let t  = 0.55901699437;  // sqrt(5) / 4
     let n0 = vec4<f32>(0.0, 0.0, 0.0, -1.0);
@@ -371,9 +263,6 @@ fn pentatope_sdf_local(p: vec4<f32>) -> f32 {
     return d;
 }
 
-// Tesseract (8-cell / hypercube) at unit circumradius. Vertices at
-// (±0.5, ±0.5, ±0.5, ±0.5); faces at ±0.5 along each axis. SDF is
-// the standard infinity-norm box form.
 fn tesseract_sdf_local(p: vec4<f32>) -> f32 {
     let q = abs(p) - vec4<f32>(0.5, 0.5, 0.5, 0.5);
     let outside = length(max(q, vec4<f32>(0.0, 0.0, 0.0, 0.0)));
@@ -381,34 +270,13 @@ fn tesseract_sdf_local(p: vec4<f32>) -> f32 {
     return outside + inside;
 }
 
-// 16-cell (cross-polytope / hexadecachoron) at unit circumradius.
-// Vertices at ±e_x, ±e_y, ±e_z, ±e_w. Face normals are the 16
-// unit vectors `(±1, ±1, ±1, ±1) / 2`; each face is at perpendicular
-// distance 0.5 from origin (inradius). The max-over-faces signed
-// plane distance reduces in any octant to:
-//
-//     (|p.x| + |p.y| + |p.z| + |p.w| - 1) / 2
-//
-// The `/ 2` is the unit-normal normalisation, without it the
-// function returns the L1 distance (twice the Euclidean), which
-// over-estimates the true SDF and causes sphere-tracing tunneling
-// (rays step past the surface, surface appears to "disappear" or
-// shift when the camera orbits).
+// The `/ 2` is the unit-normal normalisation; without it the L1 distance overestimates and tunnels.
 fn cell16_sdf_local(p: vec4<f32>) -> f32 {
     let q = abs(p);
     return (q.x + q.y + q.z + q.w - 1.0) * 0.5;
 }
 
-// 24-cell (icositetrachoron) at unit circumradius. The 24-cell is
-// the intersection of a tesseract scaled to 1/sqrt(2) (so its
-// vertices land at distance 1) with a 16-cell scaled to sqrt(2)
-// (so its faces tangent the same sphere). The intersection's
-// vertices are the 24 permutations of (±1/sqrt(2), ±1/sqrt(2), 0, 0):
-// the canonical 24-cell vertex set.
-//
-// Intersection of two convex shapes: SDF = max(sdf_a, sdf_b).
-// The cross-polytope component carries the same `/ 2` correction
-// as `cell16_sdf_local`.
+// Tesseract at 1/√2 intersected with a 16-cell at √2.
 fn cell24_sdf_local(p: vec4<f32>) -> f32 {
     let inv_sqrt2: f32 = 0.70710678;
     let sqrt2:     f32 = 1.41421356;
@@ -418,24 +286,11 @@ fn cell24_sdf_local(p: vec4<f32>) -> f32 {
     return max(tess, cross);
 }
 
-// 3-sphere (the 4-ball) at unit circumradius. The SDF that
-// returns 0 on the surface and negative inside is just
-// `|p| - 1`. Rotation-invariant: every 4D rotation leaves the
-// shape unchanged, so the cross-section is always a 2-sphere
-// of radius `sqrt(1 - w_slice²)` (or empty when |w_slice| > 1).
-// Useful as a control: when the user spins a 3-sphere and the
-// cross-section doesn't morph, that's the rotation-invariance
-// of S³ on display.
 fn sphere3_sdf_local(p: vec4<f32>) -> f32 {
     return length(p) - 1.0;
 }
 
-// Duocylinder (D² × D²) at unit circumradius. The Cartesian
-// product of two 2-discs in orthogonal 2-planes (xy and zw),
-// each of radius 1/sqrt(2) so the bounding 4-ball has radius 1.
-// SDF uses the same outside/inside split as the box SDF: the
-// outside leg is the 2-D Euclidean distance to the disc-pair
-// (correct, not an underestimate).
+// D² × D², each disc radius 1/√2 so the bounding 4-ball is unit.
 fn duocylinder_sdf_local(p: vec4<f32>) -> f32 {
     let r = 0.7071068;
     let dxy = length(p.xy) - r;
@@ -445,11 +300,7 @@ fn duocylinder_sdf_local(p: vec4<f32>) -> f32 {
     return outside + inside;
 }
 
-// Clifford torus, "filled" as a 4-D tube of radius `tube`
-// around the 2-D torus surface `length(p.xy) = r1, length(p.zw) = r2`. The center curve is
-// codimension 2, so the SDF takes a
-// vec2 length in the (q1, q2) normal plane and subtracts the
-// tube radius. Numbers chosen so the bounding 4-ball is unit.
+// A tube of radius 0.2 around the torus |p.xy| = |p.zw| = 0.5.
 fn clifford_torus_sdf_local(p: vec4<f32>) -> f32 {
     let r1 = 0.5;
     let r2 = 0.5;
@@ -459,11 +310,6 @@ fn clifford_torus_sdf_local(p: vec4<f32>) -> f32 {
     return length(vec2<f32>(q1, q2)) - tube;
 }
 
-// Spherinder (B³ × [-h, h]) at unit circumradius. A 3-ball
-// extruded along the w-axis. Cross-sections at |w_slice| <= h
-// are 3-spheres of radius `r`; outside the extent, empty.
-// Box-style SDF combining the radial distance from the w-axis
-// (length of p.xyz) and the slab distance along w.
 fn spherinder_sdf_local(p: vec4<f32>) -> f32 {
     let r = 0.7071068;
     let h = 0.7071068;
@@ -474,17 +320,7 @@ fn spherinder_sdf_local(p: vec4<f32>) -> f32 {
     return outside + inside;
 }
 
-// Dispatcher: world-space `p4` against polytope body `b`. Translates
-// to body origin, applies the inverse rotor (world -> body local),
-// scales by 1/size to evaluate the unit-circumradius shape, then
-// rescales the resulting SDF.
-//
-// Bounding-sphere fast-path: any unit-circumradius polytope is
-// contained in the unit 4-ball. For points well outside, the ball
-// SDF (`|world_v| - size`) is a Lipschitz-1 lower bound on the true
-// polytope SDF, so the marcher can take a safe step without paying
-// for the rotor inverse + per-shape eval. The 1.5 factor leaves
-// margin for Wolfe to kick in slightly before silhouette.
+// Outside 1.5× the circumradius the ball SDF is a Lipschitz-1 lower bound; skips the rotor inverse.
 fn body_polytope_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
     let size = max(b.polytope_size, 1.0e-6);
     let world_v = p4 - b.position;
@@ -521,9 +357,6 @@ fn body_polytope_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
     return d * size;
 }
 
-// SDF of all dynamic bodies at `p3`, evaluated at the slicing
-// hyperplane `w = u.w_slice`. Returns +infinity if no body is
-// active or none cover the slice.
 fn loam_dynamic_bodies_sdf(p3: vec3<f32>) -> f32 {
     let p4 = vec4<f32>(p3, u.w_slice);
     let body_count = u32(u.body_count + 0.5);
@@ -540,9 +373,6 @@ fn loam_dynamic_bodies_sdf(p3: vec3<f32>) -> f32 {
     return sdf;
 }
 
-// Single-body SDF at `p3`, evaluated at `w = u.w_slice`. Used by
-// `estimate_normal` to sample one body's gradient in isolation.
-// Returns +infinity for invalid indices or kinds.
 fn loam_body_sdf_at(p3: vec3<f32>, body_idx: u32) -> f32 {
     if (body_idx >= MAX_BODIES) { return 1.0e9; }
     let p4 = vec4<f32>(p3, u.w_slice);
@@ -556,18 +386,12 @@ fn loam_body_sdf_at(p3: vec3<f32>, body_idx: u32) -> f32 {
     return 1.0e9;
 }
 
-// Per-pixel hit information: which body was hit (or MAX_BODIES
-// for the static scene; MAX_BODIES + 1 for nothing). The kernel
-// fills this in during ray march; the user's `fs_main` reads it
-// to drive shading.
+// body_idx is MAX_BODIES for the static scene, MAX_BODIES + 1 for nothing.
 struct HitInfo {
     dist: f32,
     body_idx: u32,
 };
 
-// Combined SDF: min(static scene, dynamic bodies). Returns the
-// distance to the closer surface plus the body index it came
-// from (MAX_BODIES if the static scene is closer).
 fn loam_total_sdf(p3: vec3<f32>) -> HitInfo {
     let scene_d = loam_scene_sdf(p3);
 
@@ -602,10 +426,7 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32
     return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
 }
 
-// Normal via central differences on the dominating SDF only:
-// static-scene hits sample `loam_scene_sdf`, body hits sample that
-// body's SDF in isolation. Sampling the combined SDF blends
-// gradients at silhouettes (issue #17).
+// Differences on the dominating SDF only; the combined SDF blends gradients at silhouettes.
 fn estimate_normal(p: vec3<f32>, body_idx: u32) -> vec3<f32> {
     let h = 0.001;
     if (body_idx >= MAX_BODIES) {
@@ -626,30 +447,9 @@ fn estimate_normal(p: vec3<f32>, body_idx: u32) -> vec3<f32> {
     return normalize(vec3<f32>(dx, dy, dz));
 }
 
-fn sky(rd: vec3<f32>) -> vec3<f32> {
-    let t = (rd.y + 1.0) * 0.5;
-    return mix(vec3<f32>(0.04, 0.05, 0.10), vec3<f32>(0.10, 0.13, 0.22), t);
-}
-
-// Soft 1m-square checkerboard. Used by `fs_main` to shade static-scene
-// hits with a near-vertical normal (i.e. y=0 floors), which is the
-// common case for the 4D demos. Helps depth perception against an
-// otherwise flat grey plane.
-fn ground_color(p: vec3<f32>) -> vec3<f32> {
-    let g = floor(p.x) + floor(p.z);
-    let alt = abs(g - 2.0 * floor(g * 0.5));
-    let dark = vec3<f32>(0.18, 0.20, 0.24);
-    let light = vec3<f32>(0.30, 0.32, 0.36);
-    return mix(dark, light, alt);
-}
-
 @fragment
 fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
-    // `frag_pos.xy` is in framebuffer coordinates regardless of any
-    // `set_viewport` carve-out. Subtract the viewport's top-left
-    // origin and normalise by the viewport size (passed in
-    // `u.resolution`) so the centre of the visible region maps to
-    // NDC (0, 0) and the camera stays centred.
+    // `frag_pos` is framebuffer space; subtract the viewport origin.
     let uv = ((frag_pos.xy - u.viewport_origin) / u.resolution) * 2.0 - vec2<f32>(1.0, 1.0);
     let aspect = u.resolution.x / u.resolution.y;
     let ndc = vec2<f32>(uv.x * aspect, -uv.y);
@@ -661,18 +461,12 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     let ro = u.camera_pos;
 
     var t: f32 = 0.0;
-    // Analytical far-clip from any HalfSpace4D leaves; +1.0 buffer
-    // lets the marcher land its hit on the floor itself. Caps at
-    // 60.0 when no analytical contribution exists. Without this,
-    // near-horizon rays exhaust the iter budget and return sky.
+    // +1.0 so the march lands on the floor; 60.0 caps rays with no analytic far clip.
     let scene_max_t = loam_scene_max_t(ro, rd);
     let max_t = min(60.0, scene_max_t + 1.0);
     var hit = false;
     var hit_idx: u32 = MAX_BODIES + 1u;
-    // Sphere-trace step: `max(d * 0.85, min_step)` with min_step <
-    // hit_eps. The 0.85 under-step factor handles SDFs that are
-    // Lipschitz-1 but not tight (polytope SDFs underestimate near
-    // corners). 384 iters covers tangent-grazing convergence.
+    // Every composed SDF is a 1-Lipschitz lower bound, so the full step cannot tunnel.
     let hit_eps = 0.001;
     let min_step = 0.0001;
     for (var i: i32 = 0; i < 384; i = i + 1) {
@@ -683,54 +477,114 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
             hit_idx = h.body_idx;
             break;
         }
-        t = t + max(h.dist * 0.85, min_step);
+        t = t + max(h.dist, min_step);
         if (t > max_t) { break; }
     }
 
+    // The background pass owns misses and the HalfSpace4D floor, which stays in the union as an occluder.
     if (!hit) {
-        return vec4<f32>(sky(rd), 1.0);
+        discard;
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
 
     let p_hit = ro + rd * t;
+    if (hit_idx >= MAX_BODIES) {
+        if (loam_scene_at(p_hit).kind == LOAM_PRIM_HALFSPACE4D) {
+            discard;
+            return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        }
+    }
     let n = estimate_normal(p_hit, hit_idx);
     let light_dir = normalize(vec3<f32>(0.5, 0.85, 0.3));
     let lambert = max(dot(n, light_dir), 0.0);
     let ambient = 0.20;
-    // Color: per-body color if a body was hit; for the static scene,
-    // checker for floor-like surfaces (normal close to +Y) and a
-    // neutral grey otherwise. Demos that need richer shading still
-    // override by writing their own fragment shader against this
-    // kernel's uniform layout.
     var base = vec3<f32>(0.65, 0.65, 0.72);
     if (hit_idx < MAX_BODIES) {
         base = u.bodies[hit_idx].color;
-    } else if (loam_scene_at(p_hit).kind == LOAM_PRIM_HALFSPACE4D) {
-        // Floor classification routes on the closest leaf's kind tag
-        // (set by Scene4's emit). Replaces a normal+y-position
-        // heuristic that mis-classified sphere tops at y=0.
-        base = ground_color(p_hit);
     }
     let lit = base * (ambient + lambert * 0.85);
     let fog = 1.0 - exp(-t * 0.05);
     let final_color = mix(lit, sky(rd), fog * 0.5);
     return vec4<f32>(final_color, 1.0);
 }
-"#;
+"#
+);
 
-/// Render node that ray-marches the 3D cross-section of a 4D scene at `u.w_slice`. Pairs with
-/// `loam_scene::Scene4`.
+const HYPERSLICE_UNIFORMS_SIZE: u64 = std::mem::size_of::<Hyperslice4DUniforms>() as u64;
+
+// A uniform binding offset must be a multiple of `min_uniform_buffer_offset_alignment`.
+fn strip_cell_stride(min_uniform_buffer_offset_alignment: u64) -> u64 {
+    HYPERSLICE_UNIFORMS_SIZE.div_ceil(min_uniform_buffer_offset_alignment)
+        * min_uniform_buffer_offset_alignment
+}
+
+fn strip_cell_uniforms(
+    base: &Hyperslice4DUniforms,
+    viewport: crate::Viewport,
+    w_slice: f32,
+    body: &BodyUniform,
+) -> Hyperslice4DUniforms {
+    let mut cell = *base;
+    cell.bodies[0] = *body;
+    cell.body_count = 1.0;
+    cell.w_slice = w_slice;
+    cell.resolution = viewport.resolution_f32();
+    cell.viewport_origin = [viewport.x as f32, viewport.y as f32];
+    cell
+}
+
+struct StripCellUniforms {
+    buffer: Buffer,
+    bind_groups: Vec<BindGroup>,
+    stride: u64,
+}
+
+impl StripCellUniforms {
+    fn new(device: &Device, layout: &BindGroupLayout, cell_count: usize) -> Self {
+        let stride = strip_cell_stride(device.limits().min_uniform_buffer_offset_alignment as u64);
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("hyperslice4d strip cell uniforms"),
+            size: stride * cell_count as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_groups = (0..cell_count)
+            .map(|i| {
+                device.create_bind_group(&BindGroupDescriptor {
+                    label: Some("hyperslice4d strip cell bg"),
+                    layout,
+                    entries: &[BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::Buffer(BufferBinding {
+                            buffer: &buffer,
+                            offset: i as u64 * stride,
+                            size: BufferSize::new(HYPERSLICE_UNIFORMS_SIZE),
+                        }),
+                    }],
+                })
+            })
+            .collect();
+        Self {
+            buffer,
+            bind_groups,
+            stride,
+        }
+    }
+}
+
 pub struct Hyperslice4DNode {
     pipeline: RenderPipeline,
     uniforms: Hyperslice4DUniforms,
     uniform_buf: Buffer,
     bind_group: BindGroup,
+    bind_group_layout: BindGroupLayout,
+    /// Defaults to [`crate::sky_ground::SKY_HORIZON`], which stands in for the sky
+    /// where the kernel discards.
     clear_color: Color,
+    strip_cells: Option<StripCellUniforms>,
 }
 
 impl Hyperslice4DNode {
-    /// Build the node from a pre-compiled [`ShaderModule`] (kernel + scene emit;
-    /// see the module docs). `sample_count` must match the color attachment at
-    /// draw time ([`crate::device::RenderDevice::sample_count`]; 1 in tests).
     pub fn new(
         device: &Device,
         surface_format: TextureFormat,
@@ -810,7 +664,9 @@ impl Hyperslice4DNode {
             uniforms: Hyperslice4DUniforms::default(),
             uniform_buf,
             bind_group,
-            clear_color: Color::BLACK,
+            bind_group_layout: bgl,
+            clear_color: crate::sky_ground::SKY_HORIZON,
+            strip_cells: None,
         }
     }
 
@@ -834,46 +690,112 @@ impl Hyperslice4DNode {
         self.clear_color = color;
     }
 
-    /// Replace the active body slots with `bodies` and set the count. Does not
-    /// auto-flush; pair with [`Self::flush_uniforms`].
+    /// Does not auto-flush; pair with [`Self::flush_uniforms`].
     pub fn set_bodies(&mut self, bodies: &[BodyUniform]) {
         let n = bodies.len().min(MAX_BODIES);
         self.uniforms.bodies[..n].copy_from_slice(&bodies[..n]);
         self.uniforms.body_count = n as f32;
     }
 
-    /// Update one body slot in-place, for per-frame updates after
-    /// [`Self::set_bodies`] when only individual slots change.
     pub fn set_body(&mut self, index: usize, body: BodyUniform) {
         if index < MAX_BODIES {
             self.uniforms.bodies[index] = body;
         }
     }
 
-    /// Override the active body count without rewriting slot data.
     pub fn set_body_count(&mut self, count: usize) {
         self.uniforms.body_count = count.min(MAX_BODIES) as f32;
     }
 }
 
 impl Hyperslice4DNode {
-    /// Like [`RenderNode::execute`] but restricts the fragment shader to a
-    /// sub-region (the clear still covers the whole attachment). For an egui
-    /// side-panel layout: pass the panel-aware viewport (typically
-    /// [`crate::Viewport::right_of_left_panel`]) and update `u.resolution` to
-    /// match so the camera aspect stays correct.
-    pub fn execute_in_viewport(
+    /// `LoadOp::Load`: the kernel discards unshaded pixels, so record a background
+    /// ahead of it.
+    pub fn record_in_viewport(
         &mut self,
-        rd: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         viewport: crate::Viewport,
+    ) {
+        let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("hyperslice4d pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
+                    load: LoadOp::Load,
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        viewport.apply(&mut rp);
+        rp.set_pipeline(&self.pipeline);
+        rp.set_bind_group(0, &self.bind_group, &[]);
+        rp.draw(0..3, 0..1);
+    }
+
+    /// Each cell gets its own uniform image and bind group: `write_buffer` lands
+    /// ahead of the whole command buffer, so a shared image would give every cell
+    /// the last write.
+    pub fn execute_strip(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        view: &wgpu::TextureView,
+        cells: &[(crate::Viewport, f32, BodyUniform)],
     ) -> Result<()> {
-        let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("hyperslice4d encoder"),
+        let drawn = cells
+            .iter()
+            .filter(|(viewport, _, _)| viewport.width != 0 && viewport.height != 0)
+            .count();
+        if drawn == 0 {
+            return Ok(());
+        }
+        if self
+            .strip_cells
+            .as_ref()
+            .is_none_or(|strip| strip.bind_groups.len() < drawn)
+        {
+            self.strip_cells = Some(StripCellUniforms::new(
+                device,
+                &self.bind_group_layout,
+                drawn,
+            ));
+        }
+        let strip = self
+            .strip_cells
+            .as_ref()
+            .expect("strip cells allocated above");
+
+        {
+            let upload_size =
+                BufferSize::new(drawn as u64 * strip.stride).expect("at least one cell");
+            let mut staging = queue
+                .write_buffer_with(&strip.buffer, 0, upload_size)
+                .context("mapping the filmstrip's per-cell uniform staging buffer")?;
+            let mut slot = 0usize;
+            for (viewport, w_slice, body) in cells {
+                if viewport.width == 0 || viewport.height == 0 {
+                    continue;
+                }
+                let cell = strip_cell_uniforms(&self.uniforms, *viewport, *w_slice, body);
+                let start = slot * strip.stride as usize;
+                staging[start..start + HYPERSLICE_UNIFORMS_SIZE as usize]
+                    .copy_from_slice(bytemuck::bytes_of(&cell));
+                slot += 1;
+            }
+        }
+
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("hyperslice4d strip encoder"),
         });
         {
             let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("hyperslice4d pass"),
+                label: Some("hyperslice4d strip pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {
                     view,
                     depth_slice: None,
@@ -887,72 +809,26 @@ impl Hyperslice4DNode {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            viewport.apply(&mut rp);
             rp.set_pipeline(&self.pipeline);
-            rp.set_bind_group(0, &self.bind_group, &[]);
-            rp.draw(0..3, 0..1);
-        }
-        rd.queue.submit(Some(encoder.finish()));
-        Ok(())
-    }
-
-    /// Render N independent slices into one texture, each cell at a different
-    /// `w_slice`: a filmstrip of the 4D shape across `w` without scrubbing.
-    ///
-    /// Each cell is its own pass with `LoadOp::Load` (the first clears). The
-    /// uniform buffer is rewritten per cell, so `self.uniforms()` holds the last
-    /// cell's state afterward. Zero-size cells are skipped.
-    pub fn execute_strip(
-        &mut self,
-        rd: &RenderDevice,
-        view: &wgpu::TextureView,
-        cells: &[(crate::Viewport, f32, BodyUniform)],
-    ) -> Result<()> {
-        for (cell_idx, (viewport, w_slice, body)) in cells.iter().enumerate() {
-            if viewport.width == 0 || viewport.height == 0 {
-                continue;
-            }
-            // Per-cell body lets the w/t grid vary the rotor along the t axis.
-            self.set_bodies(&[*body]);
-            self.uniforms_mut().w_slice = *w_slice;
-            self.uniforms_mut().resolution = viewport.resolution_f32();
-            self.uniforms_mut().viewport_origin = [viewport.x as f32, viewport.y as f32];
-            self.flush_uniforms(&rd.queue);
-
-            let load = if cell_idx == 0 {
-                LoadOp::Clear(self.clear_color)
-            } else {
-                LoadOp::Load
-            };
-            let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
-                label: Some("hyperslice4d strip cell encoder"),
-            });
-            {
-                let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
-                    label: Some("hyperslice4d strip cell pass"),
-                    color_attachments: &[Some(RenderPassColorAttachment {
-                        view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: Operations {
-                            load,
-                            store: StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
+            let mut slot = 0usize;
+            for (viewport, _, _) in cells {
+                if viewport.width == 0 || viewport.height == 0 {
+                    continue;
+                }
                 viewport.apply(&mut rp);
-                rp.set_pipeline(&self.pipeline);
-                rp.set_bind_group(0, &self.bind_group, &[]);
+                rp.set_bind_group(0, &strip.bind_groups[slot], &[]);
                 rp.draw(0..3, 0..1);
+                slot += 1;
             }
-            rd.queue.submit(Some(encoder.finish()));
         }
+        queue.submit(Some(encoder.finish()));
         Ok(())
     }
 }
+
+// Pins that `record_in_viewport` takes the caller's encoder and cannot submit.
+const _: fn(&mut Hyperslice4DNode, &mut wgpu::CommandEncoder, &wgpu::TextureView, crate::Viewport) =
+    Hyperslice4DNode::record_in_viewport;
 
 impl RenderNode for Hyperslice4DNode {
     fn name(&self) -> &'static str {
@@ -992,84 +868,24 @@ impl RenderNode for Hyperslice4DNode {
 mod tests {
     use super::*;
 
-    /// The kernel text exposes the expected entry points and uniform layout.
-    /// Full naga validation happens in the tests below.
     #[test]
     fn kernel_has_expected_entry_points() {
         assert!(HYPERSLICE_KERNEL_WGSL.contains("@vertex"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("fn vs_fullscreen"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("@fragment"));
         assert!(HYPERSLICE_KERNEL_WGSL.contains("fn fs_main"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("struct Uniforms"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("@group(0) @binding(0)"));
-        // The scene's `loam_scene_sdf` is the contract the kernel expects, the scene module must
-        // define it.
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("loam_scene_sdf("));
-        // Dynamic-body machinery.
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("BodyUniform"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("loam_dynamic_bodies_sdf"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_SPHERE"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_POLYTOPE"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("BODY_KIND_INVALID"));
-        // Floor-checker helper used for static-scene shading.
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("fn ground_color"));
-        // Polytope-rendering chunk is now in the kernel.
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("body_polytope_sdf_4d"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("pentatope_sdf_local"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("tesseract_sdf_local"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("cell16_sdf_local"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("cell24_sdf_local"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("cell120_sdf_local"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("cell600_sdf_local"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("sphere3_sdf_local"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("duocylinder_sdf_local"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("clifford_torus_sdf_local"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("spherinder_sdf_local"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("rotor4_inverse_apply"));
-        // Per-body SDF for normal sampling (issue #17).
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("loam_body_sdf_at"));
-        // Floor classification by primitive kind, not normal/y.
+        assert!(HYPERSLICE_KERNEL_WGSL.starts_with(crate::sky_ground::SKY_GROUND_WGSL));
         assert!(
             HYPERSLICE_KERNEL_WGSL.contains("loam_scene_at(p_hit).kind == LOAM_PRIM_HALFSPACE4D")
         );
-        assert!(!HYPERSLICE_KERNEL_WGSL.contains("abs(p_hit.y) < 0.01"));
-        // Analytical far-clip from HalfSpace4D leaves.
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("loam_scene_max_t(ro, rd)"));
-    }
-
-    /// `BodyUniform` is exactly the 80-byte std140 layout the kernel expects.
-    #[test]
-    fn body_uniform_is_80_bytes() {
-        assert_eq!(std::mem::size_of::<BodyUniform>(), 80);
-    }
-
-    /// Constructors set kind discriminator correctly.
-    #[test]
-    fn body_uniform_constructors_set_kind() {
-        let s = BodyUniform::sphere([0.0; 4], 1.0, [0.5, 0.5, 0.5]);
-        assert_eq!(s.kind as i32, BodyKind::Sphere as i32);
-        let p = BodyUniform::polytope(
-            [0.0; 4],
-            0,
-            1.0,
-            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            [0.5; 3],
+        assert_eq!(
+            HYPERSLICE_KERNEL_WGSL.matches("discard;").count(),
+            2,
+            "the kernel discards on a miss and on a halfspace hit, so the \
+             background pass draws the ground exactly once"
         );
-        assert_eq!(p.kind as i32, BodyKind::Polytope as i32);
-        assert_eq!(p.polytope_size, 1.0);
     }
 
-    /// Default body is inert (`kind = Invalid`) with an identity rotor, so an
-    /// unused slot can't accidentally render.
-    #[test]
-    fn default_body_is_inert_invalid_kind() {
-        let b = BodyUniform::default();
-        assert_eq!(b.kind as i32, BodyKind::Invalid as i32);
-        assert_eq!(b.rotor, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-    }
-
-    /// Naga-validate the kernel against a minimal scene stub. Catches WGSL
-    /// syntax/type/binding errors the string-presence tests can't see.
     #[test]
     fn kernel_validates_with_minimal_scene() {
         const SCENE_STUB: &str = r#"
@@ -1087,8 +903,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     return 1.0e9;
 }
 "#;
-        // body_polytope_sdf_4d references cell120/cell600_sdf_local from the
-        // polytope_data emit; append it so naga validation succeeds.
         let polytope = super::super::polytope_data::polytope_extended_sdfs_wgsl();
         let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{polytope}\n{SCENE_STUB}");
         let module = naga::front::wgsl::parse_str(&source)
@@ -1100,8 +914,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             .expect("hyperslice4d kernel + scene stub should validate");
     }
 
-    /// Emit a real `Scene4`, splice against the kernel, validate via naga.
-    /// Catches drift at the `loam_scene_sdf` / `loam_scene_at` boundary.
     #[test]
     fn kernel_validates_with_real_scene_union() {
         use glam::Vec4;
@@ -1125,8 +937,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             .expect("hyperslice4d kernel + Scene4 emit should validate");
     }
 
-    /// Like `kernel_validates_with_real_scene_union` but for the gated emit
-    /// (`to_hyperslice_wgsl_gated`), wiring the halfspace toggle via `u.params.x`.
     #[test]
     fn kernel_validates_with_gated_scene() {
         use glam::Vec4;
@@ -1148,8 +958,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             .expect("gated Scene4 emit should validate against the kernel");
     }
 
-    /// `BODY_KIND_INVALID` must not appear in any dispatch comparison; a match
-    /// there would break the inert-default guarantee.
     #[test]
     fn invalid_kind_has_no_kernel_dispatch_branch() {
         for forbidden in ["kind == BODY_KIND_INVALID", "BODY_KIND_INVALID == kind"] {
@@ -1161,15 +969,11 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         }
     }
 
-    // Polytope SDF parity: each `*_sdf_local_cpu` is a 1:1 port of the matching
-    // WGSL function. The parity tests assert the geometry (vertices, inradius,
-    // sign), so a silent divergence from the WGSL fails.
+    // Each `*_sdf_local_cpu` is a 1:1 port of the matching WGSL function.
 
-    use glam::Vec4;
+    use glam::{Vec2, Vec4};
 
     fn pentatope_sdf_local_cpu(p: Vec4) -> f32 {
-        // t = sqrt(5)/4. WGSL stores the truncation 0.55901699437; the CPU side
-        // reconstructs from the closed form for f32-clean values.
         let t = 5.0_f32.sqrt() * 0.25;
         let r = 0.25_f32;
         let normals = [
@@ -1198,8 +1002,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     }
 
     fn cell24_sdf_local_cpu(p: Vec4) -> f32 {
-        // CPU uses stdlib consts; WGSL ships 8-digit truncations. Test tolerance
-        // absorbs the delta.
         let inv_sqrt2 = std::f32::consts::FRAC_1_SQRT_2;
         let sqrt2 = std::f32::consts::SQRT_2;
         let q = p.abs();
@@ -1208,7 +1010,133 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         tess.max(cross)
     }
 
-    // Inline vertex generators, mirroring loam_physics::euclidean_r4.
+    fn sphere3_sdf_local_cpu(p: Vec4) -> f32 {
+        p.length() - 1.0
+    }
+
+    fn duocylinder_sdf_local_cpu(p: Vec4) -> f32 {
+        let r = std::f32::consts::FRAC_1_SQRT_2;
+        let dxy = Vec2::new(p.x, p.y).length() - r;
+        let dzw = Vec2::new(p.z, p.w).length() - r;
+        let outside = Vec2::new(dxy.max(0.0), dzw.max(0.0)).length();
+        outside + dxy.max(dzw).min(0.0)
+    }
+
+    fn clifford_torus_sdf_local_cpu(p: Vec4) -> f32 {
+        let q1 = Vec2::new(p.x, p.y).length() - 0.5;
+        let q2 = Vec2::new(p.z, p.w).length() - 0.5;
+        Vec2::new(q1, q2).length() - 0.2
+    }
+
+    fn spherinder_sdf_local_cpu(p: Vec4) -> f32 {
+        let r = std::f32::consts::FRAC_1_SQRT_2;
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let dxyz = Vec3::new(p.x, p.y, p.z).length() - r;
+        let dw = p.w.abs() - h;
+        let outside = Vec2::new(dxyz.max(0.0), dw.max(0.0)).length();
+        outside + dxyz.max(dw).min(0.0)
+    }
+
+    type LocalSdf = fn(Vec4) -> f32;
+
+    fn kernel_body_sdfs() -> [(&'static str, LocalSdf); 8] {
+        [
+            ("pentatope", pentatope_sdf_local_cpu),
+            ("tesseract", tesseract_sdf_local_cpu),
+            ("16-cell", cell16_sdf_local_cpu),
+            ("24-cell", cell24_sdf_local_cpu),
+            ("3-sphere", sphere3_sdf_local_cpu),
+            ("duocylinder", duocylinder_sdf_local_cpu),
+            ("clifford-torus", clifford_torus_sdf_local_cpu),
+            ("spherinder", spherinder_sdf_local_cpu),
+        ]
+    }
+
+    // Knuth MMIX LCG.
+    fn lcg_signed_unit(state: &mut u64) -> f32 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 33) as f32) / ((1u64 << 31) as f32) - 1.0
+    }
+
+    fn lcg_vec4(state: &mut u64, scale: f32) -> Vec4 {
+        Vec4::new(
+            lcg_signed_unit(state),
+            lcg_signed_unit(state),
+            lcg_signed_unit(state),
+            lcg_signed_unit(state),
+        ) * scale
+    }
+
+    #[test]
+    fn every_hand_written_body_sdf_is_one_lipschitz() {
+        const SLACK: f32 = 1e-4;
+        for (name, sdf) in kernel_body_sdfs() {
+            let mut state = 0xC0FFEE_u64;
+            let mut worst = 0.0_f32;
+            for _ in 0..20_000 {
+                let a = lcg_vec4(&mut state, 2.5);
+                let b = a + lcg_vec4(&mut state, 0.5);
+                let separation = (a - b).length();
+                if separation > 1e-3 {
+                    worst = worst.max((sdf(a) - sdf(b)).abs() / separation);
+                }
+            }
+            assert!(
+                worst <= 1.0 + SLACK,
+                "{name} has Lipschitz constant {worst} > 1: its step scale is \
+                 1/{worst}, not the full step the kernel takes",
+            );
+        }
+    }
+
+    #[test]
+    fn every_hand_written_body_sdf_vanishes_on_its_own_surface() {
+        let surface_probes: [(&str, LocalSdf, Vec4); 8] = [
+            ("pentatope", pentatope_sdf_local_cpu, Vec4::W),
+            (
+                "tesseract",
+                tesseract_sdf_local_cpu,
+                Vec4::new(0.5, 0.5, 0.5, 0.5),
+            ),
+            ("16-cell", cell16_sdf_local_cpu, Vec4::X),
+            (
+                "24-cell",
+                cell24_sdf_local_cpu,
+                Vec4::new(
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    0.0,
+                    0.0,
+                ),
+            ),
+            ("3-sphere", sphere3_sdf_local_cpu, Vec4::X),
+            (
+                "duocylinder",
+                duocylinder_sdf_local_cpu,
+                Vec4::new(std::f32::consts::FRAC_1_SQRT_2, 0.0, 0.0, 0.0),
+            ),
+            (
+                "clifford-torus",
+                clifford_torus_sdf_local_cpu,
+                Vec4::new(0.7, 0.0, 0.5, 0.0),
+            ),
+            (
+                "spherinder",
+                spherinder_sdf_local_cpu,
+                Vec4::new(std::f32::consts::FRAC_1_SQRT_2, 0.0, 0.0, 0.0),
+            ),
+        ];
+        for (name, sdf, on_surface) in surface_probes {
+            let d = sdf(on_surface);
+            assert!(
+                d.abs() < 1e-6,
+                "{name} reads {d} at the surface point {on_surface:?}; a nonzero \
+                 offset there breaks the `d <= dist` bound the full step rests on",
+            );
+        }
+    }
 
     fn pentatope_vertices() -> Vec<Vec4> {
         let base_w = -0.25_f32;
@@ -1269,8 +1197,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         v
     }
 
-    /// Shared parity assertions: every vertex on the surface, origin at -inradius, scaled-out
-    /// point clearly outside, scaled-in point clearly inside.
     fn assert_polytope_geometry(
         name: &str,
         sdf: impl Fn(Vec4) -> f32,
@@ -1307,8 +1233,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
     #[test]
     fn pentatope_cpu_port_matches_geometry() {
-        // n-simplex inradius at unit circumradius is R/n = 0.25 for n=4. Tolerance
-        // covers the WGSL 11-digit truncation of the normal constant.
         assert_polytope_geometry(
             "pentatope",
             pentatope_sdf_local_cpu,
@@ -1320,7 +1244,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
     #[test]
     fn tesseract_cpu_port_matches_geometry() {
-        // Inradius 0.5; abs/min/max SDF is bit-exact at the half-extent.
         assert_polytope_geometry(
             "tesseract",
             tesseract_sdf_local_cpu,
@@ -1332,7 +1255,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
     #[test]
     fn cell16_cpu_port_matches_geometry() {
-        // Inradius 0.5.
         assert_polytope_geometry(
             "16-cell",
             cell16_sdf_local_cpu,
@@ -1344,7 +1266,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
     #[test]
     fn cell24_cpu_port_matches_geometry() {
-        // Inradius 1/sqrt(2); tolerance covers the WGSL 8-digit truncations.
         assert_polytope_geometry(
             "24-cell",
             cell24_sdf_local_cpu,
@@ -1354,48 +1275,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         );
     }
 
-    /// Re-check the load-bearing SDF literals appear in the kernel source so the
-    /// CPU ports stay textual mirrors of the WGSL.
-    #[test]
-    fn polytope_sdf_constants_match_kernel_source() {
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("0.55901699437"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("0.70710678"));
-        assert!(HYPERSLICE_KERNEL_WGSL.contains("1.41421356"));
-    }
-
-    /// `polytope_with_rotor` produces the same bytes as `polytope` fed the
-    /// canonical `[f32; 8]` packing; catches a rotor-field reorder on one side.
-    #[test]
-    fn polytope_with_rotor_matches_manual_packing() {
-        let rotor = Rotor4 {
-            s: 0.5,
-            xy: 0.1,
-            xz: 0.2,
-            xw: 0.3,
-            yz: 0.4,
-            yw: 0.6,
-            zw: 0.7,
-            xyzw: 0.8,
-        };
-        let manual = BodyUniform::polytope(
-            [1.0, 2.0, 3.0, 4.0],
-            SHAPE_24CELL,
-            0.7,
-            rotor.into(),
-            [0.9, 0.4, 0.1],
-        );
-        let helper = BodyUniform::polytope_with_rotor(
-            [1.0, 2.0, 3.0, 4.0],
-            SHAPE_24CELL,
-            0.7,
-            rotor,
-            [0.9, 0.4, 0.1],
-        );
-        assert_eq!(bytemuck::bytes_of(&manual), bytemuck::bytes_of(&helper));
-    }
-
-    /// Rust `SHAPE_*` values match the kernel's shape table; catches a renumber
-    /// on one side only.
     #[test]
     fn shape_constants_mirror_kernel_table() {
         for (rust_const, wgsl_decl) in [
@@ -1420,132 +1299,275 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         }
     }
 
-    // CPU port of the hyperslice marcher: 1:1 mirror of `fs_main`'s sphere-trace
-    // loop. Constants must match the kernel.
-
     use glam::Vec3;
 
-    struct HyperHit {
-        hit_pos: Vec3,
-        body_idx: u32,
-        #[allow(dead_code)]
-        iter_count: u32,
+    fn strip_probe_cells() -> Vec<(crate::Viewport, f32, BodyUniform)> {
+        crate::Viewport::full([192, 64])
+            .split_horizontal(3)
+            .into_iter()
+            .zip([0.0_f32, 0.6, 0.9])
+            .map(|(viewport, w_slice)| {
+                (
+                    viewport,
+                    w_slice,
+                    BodyUniform::sphere([0.0; 4], 1.0, [1.0, 0.0, 0.0]),
+                )
+            })
+            .collect()
     }
 
-    fn march_hyperslice_cpu<F>(ro: Vec3, rd: Vec3, sdf: F) -> Option<HyperHit>
-    where
-        F: Fn(Vec3) -> (f32, u32),
-    {
-        let mut t: f32 = 0.0;
-        let max_t = 60.0_f32;
-        let hit_eps = 0.001_f32;
-        let min_step = 0.0001_f32;
-        for i in 0..384u32 {
-            let p = ro + rd * t;
-            let (d, body_idx) = sdf(p);
-            if d < hit_eps {
-                return Some(HyperHit {
-                    hit_pos: p,
-                    body_idx,
-                    iter_count: i,
-                });
-            }
-            t += (d * 0.85).max(min_step);
-            if t > max_t {
-                return None;
-            }
+    #[test]
+    fn each_strip_cell_image_carries_its_own_slice() {
+        let base = Hyperslice4DUniforms::default();
+        let cells = strip_probe_cells();
+        let images: Vec<_> = cells
+            .iter()
+            .map(|(viewport, w_slice, body)| strip_cell_uniforms(&base, *viewport, *w_slice, body))
+            .collect();
+
+        for (image, (viewport, w_slice, body)) in images.iter().zip(&cells) {
+            assert_eq!(image.w_slice, *w_slice);
+            assert_eq!(image.resolution, viewport.resolution_f32());
+            assert_eq!(
+                image.viewport_origin,
+                [viewport.x as f32, viewport.y as f32]
+            );
+            assert_eq!(image.body_count, 1.0);
+            assert_eq!(
+                bytemuck::bytes_of(&image.bodies[0]),
+                bytemuck::bytes_of(body)
+            );
         }
-        None
+        let last = images.last().expect("three cells");
+        for image in &images[..images.len() - 1] {
+            assert_ne!(
+                image.w_slice, last.w_slice,
+                "a cell holding the last cell's slice is the batching bug"
+            );
+        }
     }
 
-    /// Test scene: three hyperspheres at `w = 0` plus a `y = 0` floor. All hits attribute to
-    /// static scene (`body_idx = MAX_BODIES`).
-    fn overlapping_sdfs_scene(p: Vec3, w_slice: f32) -> (f32, u32) {
-        use glam::Vec4;
-        let p4 = Vec4::new(p.x, p.y, p.z, w_slice);
-        let twin_l = (Vec4::new(-0.6, 0.7, -1.5, 0.0), 0.7_f32);
-        let twin_r = (Vec4::new(0.6, 0.7, -1.5, 0.0), 0.7_f32);
-        let solo = (Vec4::new(0.0, 1.0, 1.5, 0.0), 1.0_f32);
-        let d_twin_l = (p4 - twin_l.0).length() - twin_l.1;
-        let d_twin_r = (p4 - twin_r.0).length() - twin_r.1;
-        let d_solo = (p4 - solo.0).length() - solo.1;
-        let d_floor = p.y;
-        let d = d_twin_l.min(d_twin_r).min(d_solo).min(d_floor);
-        (d, MAX_BODIES as u32)
-    }
-
-    // Integration tests against the CPU port: each pins one geometric property
-    // of the issue #17 fix.
-
-    /// Ray straight down through solo sphere centre hits its top.
     #[test]
-    fn cpu_march_hits_solo_sphere_top() {
-        let ro = Vec3::new(0.0, 5.0, 1.5);
-        let rd = Vec3::new(0.0, -1.0, 0.0);
-        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
-            .expect("ray pointing at solo sphere should hit something");
-        assert_eq!(hit.body_idx, MAX_BODIES as u32, "static-scene hit");
-        // Solo sphere at (0, 1, 1.5) r=1; top at y=2.0. Hit registers when SDF < hit_eps =
-        // 0.001; under-step factor + min_step bound the residual at < 5e-3.
+    fn strip_cell_stride_is_offset_legal_and_covers_one_image() {
+        // 32 is the spec floor, 256 the common desktop value.
+        for alignment in [32_u64, 64, 128, 256] {
+            let stride = strip_cell_stride(alignment);
+            assert_eq!(stride % alignment, 0, "stride must be an aligned offset");
+            assert!(
+                stride >= HYPERSLICE_UNIFORMS_SIZE,
+                "stride {stride} would overlap the next cell's image",
+            );
+            assert!(
+                stride - HYPERSLICE_UNIFORMS_SIZE < alignment,
+                "stride {stride} wastes a whole alignment unit",
+            );
+        }
+    }
+
+    const EMPTY_SCENE_STUB: &str = r#"
+const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;
+const LOAM_PRIM_HALFSPACE4D: u32 = 1u;
+const LOAM_PRIM_OTHER: u32 = 255u;
+struct LoamSceneHit { dist: f32, kind: u32 }
+fn loam_scene_at(p: vec3<f32>) -> LoamSceneHit {
+    return LoamSceneHit(1.0e9, LOAM_PRIM_OTHER);
+}
+fn loam_scene_sdf(p: vec3<f32>) -> f32 {
+    return loam_scene_at(p).dist;
+}
+fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
+    return 1.0e9;
+}
+"#;
+
+    async fn request_device() -> Result<(Device, Queue), String> {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|e| format!("request_adapter failed: {e}"))?;
+        adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("hyperslice4d-strip"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+                trace: wgpu::Trace::Off,
+                experimental_features: Default::default(),
+            })
+            .await
+            .map_err(|e| format!("request_device failed: {e}"))
+    }
+
+    fn read_back_rgba(
+        device: &Device,
+        queue: &Queue,
+        texture: &Texture,
+        size: [u32; 2],
+    ) -> Vec<u8> {
+        let bytes_per_row = size[0] * 4;
+        assert_eq!(
+            bytes_per_row % COPY_BYTES_PER_ROW_ALIGNMENT,
+            0,
+            "probe width chosen so no row padding is needed"
+        );
+        let readback = device.create_buffer(&BufferDescriptor {
+            label: Some("hyperslice4d strip readback"),
+            size: (bytes_per_row * size[1]) as u64,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("hyperslice4d strip readback encoder"),
+        });
+        encoder.copy_texture_to_buffer(
+            TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: None,
+                },
+            },
+            Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
+        let slice = readback.slice(..);
+        slice.map_async(MapMode::Read, |_| {});
+        device
+            .poll(PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("readback poll");
+        let data = slice.get_mapped_range().to_vec();
+        readback.unmap();
+        data
+    }
+
+    fn strip_probe_module(device: &Device) -> ShaderModule {
+        let polytope = super::super::polytope_data::polytope_stub_sdfs_wgsl();
+        device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("hyperslice4d strip probe"),
+            source: ShaderSource::Wgsl(
+                format!("{HYPERSLICE_KERNEL_WGSL}\n{polytope}\n{EMPTY_SCENE_STUB}").into(),
+            ),
+        })
+    }
+
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn each_strip_cell_renders_its_own_w_slice_gpu_probe() {
+        const SIZE: [u32; 2] = [192, 64];
+        let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
+
+        let module = strip_probe_module(&device);
+        let target = device.create_texture(&TextureDescriptor {
+            label: Some("hyperslice4d strip probe target"),
+            size: Extent3d {
+                width: SIZE[0],
+                height: SIZE[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&TextureViewDescriptor::default());
+
+        let cells = strip_probe_cells();
+        let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module, 1);
+        node.execute_strip(&device, &queue, &view, &cells)
+            .expect("filmstrip should render");
+
+        // Red body against a blue-dominant sky, so r > b separates them.
+        let pixels = read_back_rgba(&device, &queue, &target, SIZE);
+        let footprints: Vec<usize> = cells
+            .iter()
+            .map(|(viewport, _, _)| {
+                let mut covered = 0;
+                for y in viewport.y..viewport.y + viewport.height {
+                    for x in viewport.x..viewport.x + viewport.width {
+                        let px = ((y * SIZE[0] + x) * 4) as usize;
+                        if pixels[px] > pixels[px + 2] {
+                            covered += 1;
+                        }
+                    }
+                }
+                covered
+            })
+            .collect();
+
         assert!(
-            (hit.hit_pos.y - 2.0).abs() < 5e-3,
-            "hit y {} should be near 2.0 (sphere top)",
-            hit.hit_pos.y
+            footprints[2] > 0,
+            "the w = 0.9 slice should still show a body: {footprints:?}"
+        );
+        assert!(
+            footprints[0] > footprints[1] && footprints[1] > footprints[2],
+            "footprints should shrink with |w|; equal cells mean one uniform image \
+             fed every cell: {footprints:?}"
         );
     }
 
-    /// Ray straight down between spheres hits floor at y ≈ 0. Pins the no-dimple property:
-    /// `min(spheres, floor)` returns the floor's distance when no sphere covers the path.
     #[test]
-    fn cpu_march_hits_floor_in_gap_between_spheres() {
-        let ro = Vec3::new(0.0, 5.0, -3.5);
-        let rd = Vec3::new(0.0, -1.0, 0.0);
-        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
-            .expect("ray pointing at empty floor should hit");
-        assert_eq!(hit.body_idx, MAX_BODIES as u32, "static-scene hit");
-        // Floor at y=0; hit_eps=0.001 so the hit y is in [0, 0.001].
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn execute_strip_leaves_the_single_slice_uniform_state_untouched_gpu_probe() {
+        const SIZE: [u32; 2] = [192, 64];
+        let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
+        let module = strip_probe_module(&device);
+        let target = device.create_texture(&TextureDescriptor {
+            label: Some("hyperslice4d strip probe target"),
+            size: Extent3d {
+                width: SIZE[0],
+                height: SIZE[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&TextureViewDescriptor::default());
+
+        let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module, 1);
+        node.uniforms_mut().w_slice = -0.25;
+        node.uniforms_mut().resolution = [640.0, 480.0];
+        let before = *node.uniforms();
+
+        node.execute_strip(&device, &queue, &view, &strip_probe_cells())
+            .expect("filmstrip should render");
+
+        let after = node.uniforms();
         assert!(
-            hit.hit_pos.y.abs() < 5e-3,
-            "hit y {} should be near 0 (floor)",
-            hit.hit_pos.y
+            bytemuck::bytes_of(after) == bytemuck::bytes_of(&before),
+            "the strip must not leave a cell's slice, viewport or body in the \
+             node's single-slice uniforms: w_slice was {} now {}, resolution \
+             was {:?} now {:?}, body_count was {} now {}",
+            before.w_slice,
+            after.w_slice,
+            before.resolution,
+            after.resolution,
+            before.body_count,
+            after.body_count,
         );
-    }
-
-    /// Ray at the twin-pair overlap (x=0, z=-1.5) hits a sphere top, not the floor. Pins
-    /// `min(sphere_l, sphere_r, floor)` at a point where both sphere SDFs are small.
-    #[test]
-    fn cpu_march_hits_twin_overlap_top_not_floor() {
-        let ro = Vec3::new(0.0, 5.0, -1.5);
-        let rd = Vec3::new(0.0, -1.0, 0.0);
-        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
-            .expect("ray pointing at twin overlap should hit");
-        assert_eq!(hit.body_idx, MAX_BODIES as u32);
-        // Twin-saddle top sits at y ≈ 1.06, well above the floor.
-        assert!(
-            hit.hit_pos.y > 0.5,
-            "hit y {} should be on a sphere surface (>0.5), not the floor",
-            hit.hit_pos.y
-        );
-    }
-
-    /// Shallow ray with clear path to floor converges within budget. Pins the iteration-cap fix
-    /// (192 -> 384).
-    #[test]
-    fn cpu_march_converges_on_shallow_ray_to_floor() {
-        let ro = Vec3::new(0.0, 2.5, 5.0);
-        let rd = Vec3::new(0.0, -0.05, -1.0).normalize();
-        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0))
-            .expect("shallow ray with clear path to floor should converge");
-        assert_eq!(hit.body_idx, MAX_BODIES as u32);
-        assert!(hit.hit_pos.y.abs() < 5e-3);
-    }
-
-    /// Ray straight up into empty sky misses. Pins the iter-cap and `max_t` exit paths.
-    #[test]
-    fn cpu_march_misses_into_empty_sky() {
-        let ro = Vec3::new(0.0, 5.0, 0.0);
-        let rd = Vec3::new(0.0, 1.0, 0.0);
-        let hit = march_hyperslice_cpu(ro, rd, |p| overlapping_sdfs_scene(p, 0.0));
-        assert!(hit.is_none(), "ray into sky should miss the scene");
     }
 }

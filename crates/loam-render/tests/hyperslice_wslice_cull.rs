@@ -3,7 +3,7 @@
 //! probes stay so the trade can be re-priced. Both need an adapter.
 use loam_math::Rotor4;
 use loam_render::raymarch::{
-    polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
+    polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
     SHAPE_24CELL, SHAPE_PENTATOPE, SHAPE_TESSERACT,
 };
 use loam_render::Viewport;
@@ -76,7 +76,7 @@ fn culled_kernel() -> String {
 }
 
 fn module_for(device: &Device, kernel: &str, label: &str) -> ShaderModule {
-    let polytope = polytope_extended_sdfs_wgsl();
+    let polytope = polytope_stub_sdfs_wgsl();
     device.create_shader_module(ShaderModuleDescriptor {
         label: Some(label),
         source: ShaderSource::Wgsl(format!("{kernel}\n{polytope}\n{FLOOR_SCENE_WGSL}").into()),

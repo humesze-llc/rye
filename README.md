@@ -5,7 +5,7 @@ Loam is an engine for exploring geometry beyond ordinary 3D space!
 
 ## Goals
 
-I'm building Loam for games where the shape of space is part of play: higher dimensions, curved worlds, and spaces that connect in unusual ways.
+I'm building Loam to provide tooling to build games where space is a gimmick. Higher dimensions, curved space, portals, weird topology, and compelling visual effects.
 
 ## Polytope Playground
 

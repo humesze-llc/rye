@@ -26,10 +26,12 @@ pub fn fnv1a64(words: &[u32]) -> u64 {
     hash.finish()
 }
 
-/// FNV-1a of [`ScenarioRun::trajectory`] under the default schedule, recorded
-/// on x86_64 and scoped to that architecture family: glam's SIMD dot reduces
-/// in a different order than its scalar fallback.
+// Contact anchors carry platform libm rounding from orientation into the solve.
+#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
 pub const GOLDEN_TRAJECTORY_HASH: u64 = 0xbc70_273d_6c03_b6da;
+
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+pub const GOLDEN_TRAJECTORY_HASH: u64 = 0x922b_fa3d_97bf_fc7a;
 
 pub struct ScenarioRun {
     /// Every step, every body, linear and angular state as raw f32 bits.
@@ -193,10 +195,6 @@ where
     }
 }
 
-// Orientation is deliberately not sampled. `Bivector::exp` routes through libm
-// `sin`/`cos`, whose last-ULP results differ between platform libms, and for
-// sphere colliders orientation never feeds back into the dynamics. Everything
-// sampled comes from +, -, *, / and sqrt, which IEEE-754 rounds exactly.
 fn sample_body_r4(body: &RigidBody<EuclideanR4>, words: &mut Vec<u32>) {
     let p = body.position;
     let v = body.velocity;
@@ -330,7 +328,7 @@ pub fn multi_island_scenario_run(schedule: Schedule) -> ScenarioRun {
     )
 }
 
-/// Recorded on x86_64 on the same terms as [`GOLDEN_TRAJECTORY_HASH`].
+/// Recorded on x86_64 with Windows MSVC and Linux GNU.
 pub const GOLDEN_MULTI_ISLAND_HASH: u64 = 0x56fd_21a0_2e4f_76e2;
 
 // The target handle as `(slot, generation)`, then the impulse. A handle rather

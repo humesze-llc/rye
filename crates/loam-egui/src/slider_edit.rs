@@ -1,6 +1,4 @@
-use egui::{
-    vec2, Align, Button, CursorIcon, DragValue, Layout, RichText, Slider, SliderClamping, Ui,
-};
+use egui::{vec2, Button, CursorIcon, DragValue, RichText, Slider, SliderClamping, Ui};
 
 /// `dragged` is user-on-the-slider this frame; `changed` also covers the popup.
 #[derive(Copy, Clone, Debug, Default)]
@@ -26,31 +24,27 @@ pub fn slider_with_edit(
             .clamping(SliderClamping::Always),
     );
     let mut popup_changed = false;
-    ui.allocate_ui_with_layout(
+    let label_resp = ui.add_sized(
         vec2(value_cell_w, 14.0),
-        Layout::left_to_right(Align::Center),
-        |ui| {
-            let label_resp = ui.add(
-                Button::new(RichText::new(formatted).monospace())
-                    .frame(false)
-                    .small(),
-            );
-            label_resp
-                .on_hover_cursor(CursorIcon::ContextMenu)
-                .on_hover_text("Right-click to edit value")
-                .context_menu(|ui| {
-                    let drag_resp = ui.add(
-                        DragValue::new(value)
-                            .range(range)
-                            .suffix(edit_suffix)
-                            .fixed_decimals(edit_decimals),
-                    );
-                    if drag_resp.changed() {
-                        popup_changed = true;
-                    }
-                });
-        },
+        Button::new(RichText::new(formatted).monospace())
+            .frame(false)
+            .small()
+            .truncate(),
     );
+    label_resp
+        .on_hover_cursor(CursorIcon::ContextMenu)
+        .on_hover_text("Right-click to edit value")
+        .context_menu(|ui| {
+            let drag_resp = ui.add(
+                DragValue::new(value)
+                    .range(range)
+                    .suffix(edit_suffix)
+                    .fixed_decimals(edit_decimals),
+            );
+            if drag_resp.changed() {
+                popup_changed = true;
+            }
+        });
     SliderInteraction {
         changed: slider_resp.changed() || popup_changed,
         dragged: slider_resp.dragged(),
@@ -97,7 +91,7 @@ mod tests {
             time: Some(0.0),
             ..Default::default()
         };
-        for formatted in ["0", "+999.99"] {
+        for formatted in ["0", "+999.99", "+123456789.00"] {
             let mut value = 0.5_f32;
             let mut total = 0.0_f32;
             let _ = ctx.run(layout_input.clone(), |ctx| {
@@ -112,13 +106,15 @@ mod tests {
             assert!(total > 60.0, "slider width was not measured: {total}");
             total_widths.push(total);
         }
-        let drift = (total_widths[0] - total_widths[1]).abs();
+        let drift = total_widths
+            .iter()
+            .map(|width| (width - total_widths[0]).abs())
+            .fold(0.0_f32, f32::max);
         assert!(
             drift < 1.0,
             "slider total width must be invariant across formatted-string lengths; \
-             got {} vs {} (drift {:.2})",
-            total_widths[0],
-            total_widths[1],
+             got {:?} (drift {:.2})",
+            total_widths,
             drift,
         );
     }

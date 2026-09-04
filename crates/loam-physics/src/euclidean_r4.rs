@@ -432,7 +432,6 @@ mod tests {
     use super::*;
     use crate::determinism_fixture::{
         assert_scenario_stays_physical, determinism_scenario_run, determinism_scenario_trajectory,
-        fnv1a64, GOLDEN_TRAJECTORY_HASH,
     };
     use crate::field::Gravity;
     use crate::world::{Schedule, World};
@@ -1337,17 +1336,25 @@ mod tests {
         assert_scenario_stays_physical(&determinism_scenario_run(Schedule::default()));
     }
 
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(
+            all(target_os = "windows", target_env = "msvc"),
+            all(target_os = "linux", target_env = "gnu")
+        )
+    ))]
     #[test]
     fn fixed_scenario_trajectory_matches_golden_determinism_hash() {
+        use crate::determinism_fixture::{fnv1a64, GOLDEN_TRAJECTORY_HASH};
+
         let run = determinism_scenario_run(Schedule::default());
         assert_scenario_stays_physical(&run);
         let hash = fnv1a64(&run.trajectory);
         assert_eq!(
             hash, GOLDEN_TRAJECTORY_HASH,
             "trajectory hash {hash:#018x} does not match the committed golden \
-             {GOLDEN_TRAJECTORY_HASH:#018x}; the sanity pin above passed, so \
-             this is an intended simulation change and the constant should be \
-             re-recorded to {hash:#018x}"
+             {GOLDEN_TRAJECTORY_HASH:#018x} on this target; inspect solver changes \
+             before updating the baseline"
         );
     }
 }

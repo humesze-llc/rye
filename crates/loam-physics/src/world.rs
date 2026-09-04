@@ -805,8 +805,7 @@ mod tests {
         assert_scenario_stays_physical, determinism_scenario_run, first_divergent_step, fnv1a64,
         multi_island_groups, multi_island_scenario_run, multi_island_world,
         record_flick_chamber_tape, replay_flick_chamber_tape, sample_body_r3, ScenarioRun,
-        GOLDEN_MULTI_ISLAND_HASH, GOLDEN_TRAJECTORY_HASH, MULTI_ISLAND_DT, MULTI_ISLAND_STEPS,
-        REPLAY_SEED, REPLAY_TICKS,
+        GOLDEN_MULTI_ISLAND_HASH, MULTI_ISLAND_DT, MULTI_ISLAND_STEPS, REPLAY_SEED, REPLAY_TICKS,
     };
     use crate::euclidean_r3::{
         box_body, halfspace_body_r3, register_default_narrowphase, sphere_body_r3,
@@ -894,14 +893,6 @@ mod tests {
     fn assert_phase_order_does_not_reach_the_state_hash(phase: SchedulePhase) {
         let canonical = run_with(OrderPolicy::Canonical);
         assert_scenario_stays_physical(&canonical);
-        let canonical_hash = fnv1a64(&canonical.trajectory);
-        assert_eq!(
-            canonical_hash, GOLDEN_TRAJECTORY_HASH,
-            "canonical run hashed {canonical_hash:#018x} against the committed \
-             {GOLDEN_TRAJECTORY_HASH:#018x}; the sanity pin above passed, so \
-             this is an intended simulation change and GOLDEN_TRAJECTORY_HASH \
-             should be re-recorded to {canonical_hash:#018x}"
-        );
 
         for order in order_variants(phase) {
             let permuted = run_with(order);
@@ -916,12 +907,6 @@ mod tests {
             assert!(
                 word_gap.is_none() && permuted.trajectory.len() == canonical.trajectory.len(),
                 "{order:?} moved trajectory word {word_gap:?}"
-            );
-            let hash = fnv1a64(&permuted.trajectory);
-            assert_eq!(
-                hash, GOLDEN_TRAJECTORY_HASH,
-                "{order:?} produced {hash:#018x} against the committed golden \
-                 {GOLDEN_TRAJECTORY_HASH:#018x}"
             );
         }
     }

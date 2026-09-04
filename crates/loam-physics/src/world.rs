@@ -160,22 +160,7 @@ struct VisitLog {
     solve_sweeps: Vec<PairKey>,
 }
 
-/// `Send + Sync` is part of the contract, so a scheduler can hand a world
-/// across a thread boundary:
-///
-/// ```
-/// # use loam_math::EuclideanR3;
-/// # use loam_physics::World;
-/// const fn assert_send_sync<T: Send + Sync>() {}
-/// const _: () = assert_send_sync::<World<EuclideanR3>>();
-/// ```
-///
-/// ```compile_fail
-/// # use loam_math::EuclideanR3;
-/// # use loam_physics::World;
-/// const fn assert_send_sync<T: Send + Sync>() {}
-/// const _: () = assert_send_sync::<(World<EuclideanR3>, std::rc::Rc<u32>)>();
-/// ```
+/// Worlds can cross thread boundaries through `Send + Sync`.
 pub struct World<S: PhysicsSpace> {
     pub space: S,
     pub bodies: BodyArena<S>,

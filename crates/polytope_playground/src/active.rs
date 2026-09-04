@@ -51,8 +51,7 @@ pub(crate) fn combo_name(active: &[bool; 6]) -> Option<&'static str> {
 
 impl Demo {
     pub(crate) fn render_active_mode(&mut self, ui: &mut egui::Ui) {
-        const TOP_ROW: [usize; 3] = [0, 1, 3];
-        const BOTTOM_ROW: [usize; 3] = [2, 4, 5];
+        const PLANES: [usize; 6] = [0, 1, 3, 2, 4, 5];
 
         const CELL_INNER_SPACING: f32 = 4.0;
         const CHECKBOX_W: f32 = 18.0;
@@ -61,14 +60,16 @@ impl Demo {
         const ROW_GAP: f32 = 6.0;
 
         let total_w = ui.available_width();
-        let cell_w = ((total_w - 2.0 * ROW_GAP) / 3.0).floor();
+        let min_cell_w = CHECKBOX_W + LABEL_W + VALUE_W + 3.0 * CELL_INNER_SPACING + 40.0;
+        let columns = (((total_w + ROW_GAP) / (min_cell_w + ROW_GAP)) as usize).clamp(1, 3);
+        let cell_w = ((total_w - (columns - 1) as f32 * ROW_GAP) / columns as f32).floor();
         let slider_w =
             (cell_w - CHECKBOX_W - LABEL_W - VALUE_W - 3.0 * CELL_INNER_SPACING).max(40.0);
 
-        for plane_indices in [TOP_ROW, BOTTOM_ROW] {
+        for plane_indices in PLANES.chunks(columns) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = ROW_GAP;
-                for &i in &plane_indices {
+                for &i in plane_indices {
                     ui.allocate_ui_with_layout(
                         egui::vec2(cell_w, CONTROL_H),
                         egui::Layout::left_to_right(egui::Align::Center),

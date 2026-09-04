@@ -102,12 +102,14 @@ mod tests {
             let mut total = 0.0_f32;
             let _ = ctx.run(layout_input.clone(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    let before = ui.next_widget_position().x;
-                    let _ = slider_with_edit(ui, &mut value, 0.0..=1.0, formatted, "", 2, 60.0);
-                    let after = ui.next_widget_position().x;
-                    total = after - before;
+                    ui.horizontal(|ui| {
+                        let before = ui.next_widget_position().x;
+                        slider_with_edit(ui, &mut value, 0.0..=1.0, formatted, "", 2, 60.0);
+                        total = ui.next_widget_position().x - before;
+                    });
                 });
             });
+            assert!(total > 60.0, "slider width was not measured: {total}");
             total_widths.push(total);
         }
         let drift = (total_widths[0] - total_widths[1]).abs();

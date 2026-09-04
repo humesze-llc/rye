@@ -45,6 +45,55 @@ impl RotateScene {
             },
         ));
         c.register(loam_egui::cmd(
+            "seek",
+            "set rotation time in seconds",
+            |args, demo: &mut Demo, _out| {
+                let [seconds] = args else {
+                    return Err(anyhow!("usage: seek <seconds>"));
+                };
+                let seconds: f32 = seconds.parse()?;
+                if !(0.0..=1.0e6).contains(&seconds) {
+                    return Err(anyhow!("time must be between 0 and 1000000 seconds"));
+                }
+                demo.rot_time = seconds;
+                demo.t_slider_max = demo.t_slider_max.max(seconds);
+                demo.recompose_spins_at(seconds);
+                demo.rebuild_bodies();
+                Ok(())
+            },
+        ));
+        c.register(loam_egui::cmd(
+            "rate",
+            "set rotation speed from 0.25 to 4",
+            |args, demo: &mut Demo, _out| {
+                let [rate] = args else {
+                    return Err(anyhow!("usage: rate <multiplier>"));
+                };
+                let rate: f32 = rate.parse()?;
+                if !(0.25..=4.0).contains(&rate) {
+                    return Err(anyhow!("rate must be between 0.25 and 4"));
+                }
+                demo.rate_scale = rate;
+                Ok(())
+            },
+        ));
+        c.register(loam_egui::cmd(
+            "slice",
+            "set the w cross-section",
+            |args, demo: &mut Demo, _out| {
+                let [slice] = args else {
+                    return Err(anyhow!("usage: slice <w>"));
+                };
+                let slice: f32 = slice.parse()?;
+                let range = demo.effective_w_range();
+                if !(-range..=range).contains(&slice) {
+                    return Err(anyhow!("slice must be between {} and {range}", -range));
+                }
+                demo.w_slice = slice;
+                Ok(())
+            },
+        ));
+        c.register(loam_egui::cmd(
             "controls",
             "toggle the bottom controls overlay (H)",
             |_args, demo: &mut Demo, _out| {

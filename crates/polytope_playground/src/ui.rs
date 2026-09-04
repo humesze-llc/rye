@@ -2,7 +2,7 @@ use crate::verbs::WireframeControls;
 use loam_app::egui;
 use loam_app::shell::SceneRegistry;
 use loam_egui::{
-    media::{chevron_button, play_pause_button, rate_toggle, refresh_button},
+    media::{chevron_button, play_pause_button, refresh_button},
     slider_with_edit,
 };
 
@@ -14,14 +14,6 @@ use crate::state::{
 };
 
 const OVERLAY_PAD: f32 = 16.0;
-
-fn scene_roster() -> String {
-    crate::shell::Playground::SCENES
-        .iter()
-        .map(|entry| format!("{} ({})", entry.slug, entry.label))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
 
 // The window pivots at `CENTER_BOTTOM`, so this is its bottom edge.
 pub(crate) fn overlay_seat(ctx: &egui::Context) -> egui::Pos2 {
@@ -73,24 +65,15 @@ impl Demo {
 
     pub(crate) fn render_view_tab_row(&mut self, ui: &mut egui::Ui) {
         let mut staged = self.view_mode;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut staged, ViewMode::Shapes, "Shapes")
-                .on_hover_text("Side-by-side row of shapes at one w-slice");
+                .on_hover_text("Compare shapes at the same w slice");
             ui.selectable_value(&mut staged, ViewMode::Single, "Single")
-                .on_hover_text(
-                    "One subject (the picker below) at one w-slice with the full \
-                     surface / wireframe / projection stack. Schlegel's boundary-cell \
-                     selection needs this unambiguous single shape.",
-                );
+                .on_hover_text("Explore one shape and choose its projection");
             ui.selectable_value(&mut staged, ViewMode::Filmstrip, "Filmstrip")
-                .on_hover_text(
-                    "One shape rendered N times across w-slices fanning out by \
-                     ±BODY_SIZE around the w slider's value",
-                );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.checkbox(&mut self.show_formula, "Show formula")
-                    .on_hover_text("Top-right popup with the live exp(...) form of the rotor");
-            });
+                .on_hover_text("Compare one shape across slices and rotation times");
+            ui.checkbox(&mut self.show_formula, "Formula")
+                .on_hover_text("Show the current rotation formula");
         });
         if staged != self.view_mode {
             self.pending_view_mode = Some(staged);
@@ -99,7 +82,7 @@ impl Demo {
 
     pub(crate) fn render_rotation_tab_row(&mut self, ui: &mut egui::Ui) {
         let mut staged = self.rotation_mode;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut staged, RotationMode::Active, "Active set")
                 .on_hover_text("Six checkbox-toggled bivectors (xy, xz, ...)");
             ui.selectable_value(&mut staged, RotationMode::Composer, "Composer")
@@ -209,13 +192,13 @@ impl Demo {
                 ui.checkbox(wireframe_enabled, "Enabled");
                 ui.add_enabled_ui(*wireframe_enabled, |ui| {
                     ui.checkbox(wireframe_nearest_active, "Nearest-active gradient");
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("Color");
                         for mode in WireframeColorMode::ALL {
                             ui.radio_value(wireframe_color_mode, mode, mode.label());
                         }
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("Projection");
                         for mode in WireframeProjection::ALL {
                             let selected = wireframe_projection.same_variant(mode);
@@ -309,142 +292,70 @@ impl Demo {
         .default_pos(egui::pos2(80.0, 80.0))
         .show(|ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("What this program shows");
-                ui.label(
-                    "You're looking at 3D cross-sections of four-dimensional \
-                         polytopes. As they rotate through 4D space their cross-\
-                         sections morph in characteristic ways; the point of the \
-                         demo is to make 4D shape intuition reachable from 3D.",
-                );
+                ui.heading("Polytope Playground");
+                ui.label("Rotate 4D shapes and explore their 3D cross-sections.");
                 ui.add_space(8.0);
-
-                ui.heading("3D cross-sections, briefly");
-                ui.label(
-                    "A cross-section is what you get when a higher-\
-                         dimensional object passes through a lower-dimensional \
-                         space. A 3D apple intersecting a 2D table gives a 2D \
-                         shape (a circle, an oval) that changes as the apple \
-                         moves. One dimension up: a 4D polytope passing through \
-                         3D gives a 3D shape that changes with the slicing w. \
-                         That's what the w slider scrubs.",
-                );
+                egui::Grid::new("playground-shortcuts")
+                    .num_columns(2)
+                    .spacing([24.0, 8.0])
+                    .show(ui, |ui| {
+                        for (key, action) in [
+                            ("Space / T", "Play or pause rotation"),
+                            ("Up / Down", "Move the w slice"),
+                            ("Left / Right", "Scrub rotation time"),
+                            ("1 to 6", "Toggle rotation planes"),
+                            ("H", "Expand or collapse controls"),
+                            ("R", "Restart the scene"),
+                            ("Backtick", "Open the console"),
+                            ("Esc", "Exit"),
+                        ] {
+                            ui.monospace(key);
+                            ui.label(action);
+                            ui.end_row();
+                        }
+                    });
                 ui.add_space(8.0);
-
-                ui.heading("The shapes");
-                ui.label("All six convex regular 4-polytopes (\"polychora\") ship:");
-                ui.label("• 5-cell (pentachoron); 5 tetrahedra; the 4D simplex.");
-                ui.label("• 8-cell (tesseract); 8 cubes; the 4D cube.");
-                ui.label(
-                    "• 16-cell (hexadecachoron); 16 tetrahedra; the 4D analog \
-                         of the octahedron.",
-                );
-                ui.label(
-                    "• 24-cell (icositetrachoron); 24 octahedra; uniquely 4D, \
-                         no 3D analog.",
-                );
-                ui.label("• 120-cell (hecatonicosachoron); 120 dodecahedra.");
-                ui.label(
-                    "• 600-cell (hexacosichoron); 600 tetrahedra; the 4D \
-                         analog of the icosahedron.",
-                );
-                ui.add_space(8.0);
-
-                ui.heading("Rotation");
-                ui.label(
-                    "4D rotations are generated by bivectors (2-planes), not \
-                         axes. There are six independent planes: xy, xz, xw, yz, \
-                         yw, zw. The three w-involving planes pull a visible \
-                         axis through the hidden 4th dimension and produce the \
-                         interesting cross-section morphs; the three pure-3D \
-                         planes rotate the cross-section as a rigid 3D shape.",
-                );
-                ui.label(
-                    "Active-set mode: each plane has a checkbox (include in \
-                         spin) and a -180..=180° slider (the rotor's component \
-                         in that plane). Composer mode: build a sequence of \
-                         exp(scalar · planes) terms via chips or the typed \
-                         formula bar.",
-                );
-                ui.label(
-                    "One rotation drives the whole row: the controls, the \
-                         rings and the 1..6 keys write it and every body \
-                         reads it, so the row turns as one. A timeline is \
-                         the only thing that poses a single body, and it \
-                         holds that pose for the rest of the run.",
-                );
-                ui.add_space(8.0);
-
-                ui.heading("Views");
-                ui.label(
-                    "Shapes view: a row of polytopes side-by-side at one \
-                         w-slice. Drag-and-drop to reorder. Filmstrip view: one \
-                         polytope rendered N times across w-slices fanning out \
-                         by ±BODY_SIZE around the slider's value, so the centre \
-                         cell tracks w.",
-                );
-                ui.add_space(8.0);
-
-                ui.heading("Keyboard");
-                ui.label("• Space / T: toggle continuous spin.");
-                ui.label("• Up / Down arrows: scrub w with the keyboard.");
-                ui.label("• 1..6: toggle a plane in the row's Active set.");
-                ui.label("• H: expand / collapse the controls panel.");
-                ui.label("• R: restart the scene at its boot state.");
-                ui.label("• Esc: exit.");
-                ui.add_space(8.0);
-
-                ui.heading("Mouse");
-                ui.label(
-                    "• This scene is a rotation study and has no grab: \
-                         every rotation control writes the whole row, and \
-                         the Toybox scene is where a shape is picked up \
-                         and thrown.",
-                );
-                ui.label(
-                    "• Drag a hypergimbal ring: turn the whole row in that \
-                         ring's plane. The six rings stand at the row's \
-                         centre and are the six rotation planes, drawn as \
-                         the \
-                         stereographic projection of a 16-cell; the ring under \
-                         the cursor lights up. Rings sharing a hue are a \
-                         plane and its orthogonal complement, so xy and zw \
-                         face each other. They are off unless the console \
-                         verb `handles` turns them on.",
-                );
-                ui.label(
-                    "• Drag an arrowhead: slide the row along that axis. \
-                         Red, green and blue are x, y and z. Violet is w, \
-                         the axis with no direction on screen: it points \
-                         away from all three, and dragging it moves the \
-                         bodies off the 3D slice, so what changes is the \
-                         shape of the cross-sections, not where the bodies \
-                         sit.",
-                );
-                ui.label("• Drag in the viewport: orbit camera.");
-                ui.label(
-                    "• Right-click on any value label (w, t, plane angle, \
-                         scalar): typed-edit popup.",
-                );
-                ui.label(
-                    "• Drag the controls panel by its frame to move it; \
-                         drag the formula popup the same way.",
-                );
-                ui.add_space(8.0);
-
-                ui.heading("Scenes and the console");
-                ui.label(
-                    "Backtick opens the console. `help` lists every command, \
-                         `help <name>` describes one, and Tab completes command \
-                         names and their arguments.",
-                );
-                ui.label(format!(
-                    "Scenes: {}. `scene` lists them and marks the active one; \
-                     `scene <slug>` switches. The same slugs boot one directly: \
-                     `--scene=<slug>` natively, `?scene=<slug>` in the browser. \
-                     `--embed=1` / `?embed=1` hides the menu bar, which leaves \
-                     the console as the only switcher.",
-                    scene_roster()
-                ));
+                ui.label("Drag in the viewport to orbit. Right-click a slider value to type it.");
+                ui.label("Drag the controls panel or formula window to move it.");
+                ui.separator();
+                ui.collapsing("Views and rotation", |ui| {
+                    ui.label("Shapes shows a row. Drag the shape cards to reorder them.");
+                    ui.label("Single shows one shape. Filmstrip compares slices and rotation times.");
+                    ui.label("Active set selects rotation planes. Composer builds a sequence of terms.");
+                    ui.label("The xy, xz, and yz planes rotate within 3D. The xw, yw, and zw planes turn through the fourth dimension.");
+                    ui.label("Rotation controls affect the whole row. A timeline can hold a separate pose for one body.");
+                });
+                ui.collapsing("Shapes", |ui| {
+                    ui.label("All six convex regular 4-polytopes are available:");
+                    for label in [
+                        "5-cell: 5 tetrahedra",
+                        "8-cell (tesseract): 8 cubes",
+                        "16-cell: 16 tetrahedra",
+                        "24-cell: 24 octahedra",
+                        "120-cell: 120 dodecahedra",
+                        "600-cell: 600 tetrahedra",
+                    ] {
+                        ui.label(label);
+                    }
+                });
+                ui.collapsing("Rotation handles", |ui| {
+                    ui.label("Enter handles in the console to show the rings and axis handles.");
+                    ui.label("Drag a ring to rotate the row in its plane. Drag an axis handle to move the row.");
+                    ui.label("Red, green, and blue mark x, y, and z. Violet marks w and moves bodies through the slice.");
+                    ui.label("Use Toybox to pick up and throw individual shapes.");
+                });
+                ui.collapsing("Scenes and console", |ui| {
+                    for entry in crate::shell::Playground::SCENES {
+                        ui.horizontal(|ui| {
+                            ui.monospace(entry.slug);
+                            ui.label(entry.label);
+                        });
+                    }
+                    ui.label("Use the Demo menu or scene <slug> to switch scenes.");
+                    ui.label("help lists commands. help <name> explains one. Tab completes commands and arguments.");
+                    ui.label("Start a scene with --scene=<slug> natively or ?scene=<slug> in the browser.");
+                    ui.label("--embed=1 or ?embed=1 hides the menu bar. The console stays available.");
+                });
             });
         });
     }
@@ -452,8 +363,8 @@ impl Demo {
     pub(crate) fn render_overlay(&mut self, ctx: &egui::Context) {
         let screen = ctx.content_rect();
         const OVERLAY_MAX_WIDTH: f32 = 768.0;
-        const OVERLAY_MIN_WIDTH: f32 = 280.0;
-        let natural_w = screen.width() - 2.0 * OVERLAY_PAD;
+        const OVERLAY_MIN_WIDTH: f32 = 220.0;
+        let natural_w = screen.width() - 2.0 * (OVERLAY_PAD + 10.0);
         let area_w = natural_w.clamp(OVERLAY_MIN_WIDTH, OVERLAY_MAX_WIDTH);
 
         let visuals = &ctx.style().visuals;
@@ -481,10 +392,12 @@ impl Demo {
             .show(ctx, |ui| {
                 ui.set_width(area_w);
                 if self.expanded {
-                    self.render_expanded_body(ui);
+                    egui::ScrollArea::vertical()
+                        .max_height((screen.height() - 190.0).max(80.0))
+                        .show(ui, |ui| self.render_expanded_body(ui));
                     ui.separator();
                 }
-                self.render_slider_strip(ui, area_w);
+                self.render_slider_strip(ui);
                 self.render_rate_row(ui);
             });
 
@@ -519,7 +432,7 @@ impl Demo {
         }
     }
 
-    pub(crate) fn render_slider_strip(&mut self, ui: &mut egui::Ui, _area_w: f32) {
+    pub(crate) fn render_slider_strip(&mut self, ui: &mut egui::Ui) {
         const VALUE_CELL_W: f32 = 72.0;
         let avail = ui.available_width();
         let spacing = ui.spacing().item_spacing.x;
@@ -530,65 +443,80 @@ impl Demo {
         let row_layout = egui::Layout::left_to_right(egui::Align::Center);
         let w_range = self.effective_w_range();
         ui.allocate_ui_with_layout(row_size, row_layout, |ui| {
-            let formatted = format!("w {:>+.3}", self.w_slice);
-            slider_with_edit(
+            let mut slice = self.w_slice;
+            let formatted = format!("w {:>+.3}", slice);
+            let interaction = slider_with_edit(
                 ui,
-                &mut self.w_slice,
+                &mut slice,
                 -w_range..=w_range,
                 &formatted,
                 "",
                 3,
                 VALUE_CELL_W,
             );
+            if interaction.changed {
+                loam_app::command::submit_line(&format!("slice {slice}"));
+            }
         });
         let t_max = self.t_slider_max;
-        let mut t_dragged = false;
         ui.allocate_ui_with_layout(row_size, row_layout, |ui| {
-            let formatted = format!("t {:>5.2}s", self.rot_time);
-            // `dragged`, not `changed`: the spin's own `rot_time` advance would re-fire this.
+            let mut seconds = self.rot_time;
+            let formatted = format!("t {:>5.2}s", seconds);
             let interaction = slider_with_edit(
                 ui,
-                &mut self.rot_time,
+                &mut seconds,
                 0.0..=t_max,
                 &formatted,
                 "s",
                 2,
                 VALUE_CELL_W,
             );
-            t_dragged = interaction.dragged;
+            if interaction.changed {
+                loam_app::command::submit_line(&format!("seek {seconds}"));
+            }
         });
-        if t_dragged {
-            self.recompose_spins_at(self.rot_time);
-            self.rebuild_bodies();
-        }
     }
 
     pub(crate) fn render_rate_row(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            const PLAY_GROUP_W: f32 = 215.0;
-            let total_w = ui.available_width();
-            let leading = ((total_w - PLAY_GROUP_W) / 2.0).max(8.0);
-
-            ui.add_space(leading);
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
             let ctrl_size = egui::vec2(CONTROL_W, CONTROL_H);
             let play_size = egui::vec2(PLAY_PAUSE_W, CONTROL_H);
-            rate_toggle(ui, ctrl_size, &mut self.rate_scale, 0.25, true, false);
-            rate_toggle(ui, ctrl_size, &mut self.rate_scale, 0.5, false, false);
             if play_pause_button(ui, play_size, self.rotate)
-                .on_hover_text("Toggle continuous rotation (Space)")
+                .on_hover_text("Play or pause rotation (Space)")
                 .clicked()
             {
-                self.rotate = !self.rotate;
+                loam_app::command::submit_line("spin");
             }
-            rate_toggle(ui, ctrl_size, &mut self.rate_scale, 2.0, false, true);
-            rate_toggle(ui, ctrl_size, &mut self.rate_scale, 4.0, true, true);
             if refresh_button(ui, ctrl_size)
-                .on_hover_text("Reset slice, rate, active set, orientation, time")
+                .on_hover_text("Reset rotation and slice")
                 .clicked()
             {
-                self.reset();
+                loam_app::command::submit_line("reset");
             }
-
+            ui.label("Speed");
+            for (rate, label, command) in [
+                (0.25, "0.25x", "rate 0.25"),
+                (0.5, "0.5x", "rate 0.5"),
+                (1.0, "1x", "rate 1"),
+                (2.0, "2x", "rate 2"),
+                (4.0, "4x", "rate 4"),
+            ] {
+                if ui
+                    .selectable_label(self.rate_scale == rate, label)
+                    .clicked()
+                {
+                    loam_app::command::submit_line(command);
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Help").clicked() {
+                self.show_help = true;
+            }
+            if ui.button("Render settings").clicked() {
+                self.show_render_panel = !self.show_render_panel;
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if chevron_button(
                     ui,
@@ -604,43 +532,7 @@ impl Demo {
                 {
                     self.expanded = !self.expanded;
                 }
-                let util_size = egui::vec2(CONTROL_W, CONTROL_H);
-                if ui
-                    .add(egui::Button::new(egui::RichText::new("⚙").strong()).min_size(util_size))
-                    .on_hover_text("Render settings")
-                    .clicked()
-                {
-                    self.show_render_panel = !self.show_render_panel;
-                }
-                if ui
-                    .add(egui::Button::new(egui::RichText::new("?").strong()).min_size(util_size))
-                    .on_hover_text("About this program")
-                    .clicked()
-                {
-                    self.show_help = true;
-                }
             });
         });
-    }
-}
-
-#[cfg(test)]
-mod about_panel_tests {
-    use super::*;
-    #[test]
-    fn the_about_roster_names_every_registered_scene() {
-        let roster = scene_roster();
-        for entry in crate::shell::Playground::SCENES {
-            assert!(
-                roster.contains(entry.slug),
-                "roster '{roster}' omits slug '{}'",
-                entry.slug
-            );
-            assert!(
-                roster.contains(entry.label),
-                "roster '{roster}' omits label '{}'",
-                entry.label
-            );
-        }
     }
 }

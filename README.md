@@ -1,53 +1,63 @@
 # Loam
 
-![The LOAM wordmark](assets/readme/hero.webp)
+Loam is an engine for exploring geometry beyond ordinary 3D space.
+Scenes choose their geometry, including Euclidean, spherical, and hyperbolic spaces.
 
-A game engine where the geometry of the world is a parameter the game picks. A scene names its space, and rendering, physics, and input run in that space. The demos use flat 4D today; the same trait covers curved and glued spaces.
-
-The animation above is a simulation. The letters are 4D solids, the shapes that knock them over are rigid bodies under 4D gravity, and the ending is the 3D slice sweeping along the fourth axis. The `hero` crate in this repo records it.
+![Letters tumbling into the Loam wordmark](assets/readme/hero.webp)
 
 [![CI](https://github.com/throgsoft/loam/actions/workflows/ci.yml/badge.svg)](https://github.com/throgsoft/loam/actions/workflows/ci.yml)
 
-## Run it
-
-```
-cargo run --release -p polytope_playground                    # native
-cargo run --release -p polytope_playground -- --scene=toybox  # straight into the toybox
-trunk serve --release crates/polytope_playground/index.html   # browser, from the repo root
-```
-
-Rust 1.95, pinned in `rust-toolchain.toml`. Native runs through wgpu (Vulkan on my Windows machine); the browser build runs on WebGPU and needs [trunk](https://trunkrs.dev/). The backtick key opens a console in either build, and `help` lists its commands.
-
 ## Polytope Playground
+
+Rotate 4D shapes and watch their 3D cross-sections change.
 
 ![Regular 4-polytopes turning through a rotation plane while their 3D cross-sections change](assets/readme/rotate.webp)
 
-The six regular 4-polytopes, 5-cell through 600-cell, turn through any of the six rotation planes of 4D space. What you see is the exact 3D cross-section of each solid at the current w, recomputed every frame, with the full 4D edge graph drawn over it if you want it. Slide along w and the sections grow, split, and vanish. Turn in a plane that includes w and the section changes shape as the solid passes through your slice.
+Or pick them up and throw them around the 4D Toybox, directly inspired by [Marc ten Bosch](https://marctenbosch.com/)'s [4D Toys](https://4dtoys.com/).
 
 ![Polychora dropped into a box under 4D gravity, picked up and thrown](assets/readme/toybox.webp)
 
-The toybox drops the same solids onto a floor under 4D gravity. Click a shape to pick it up by the section you can see, drag it, and let go to throw it; an off-centre grab spins it. Hold Shift and a vertical drag becomes motion through w, so you can push a shape out of your slice, where it keeps falling and colliding until you scrub the slice after it. Stacking and settling come from the rigid-body solver, which runs in four dimensions.
+## Build and run
 
-## What the engine does
+Install Rust with [rustup](https://rust-lang.org/tools/install/). On Windows, run the installer and accept the C++ build tools prompt. On macOS or Linux:
 
-- One `Space` trait, nine geometries: Euclidean R², R³, R⁴; hyperbolic H³; spherical S³ in two charts; a flat 3-torus and a lens space that carry their own gluings; and a variable-curvature blend kept for tests.
-- 4D rigid bodies: rotors and bivectors for orientation and spin, GJK and EPA collision in R⁴, persistent contacts, an impulse solver.
-- Two ways to draw the same 4D scene: exact cross-sections and edge graphs through a rasterizer, or signed-distance fields through a raymarcher.
-- An app shell for native and browser builds: a scene registry, a console, per-section frame timing, and on native a capture path to PNG, GIF, or APNG.
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
 
-Rustdoc for every crate: [throgsoft.github.io/loam](https://throgsoft.github.io/loam/). Start with the `loam` crate for how the pieces fit.
+Open a new terminal after installation. On macOS, install the command line tools with `xcode-select --install`.
 
-## Where it is going
+<details>
+<summary>Ubuntu / Debian build dependencies</summary>
 
-Scripting comes next, so a scene can be a file rather than Rust. Then a first-party UI and multi-core simulation. After that I want 4D versions of the classic simulations (fluids, boids, cellular automata) on GPU compute, and then games, with the engine growing as they need it. I have no dates for any of it.
+```sh
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config libwayland-dev \
+  libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxi-dev \
+  libxcursor-dev libxrandr-dev
+```
 
-## Lineage
+</details>
 
-Marc ten Bosch's *4D Toys* is the direct ancestor of the playground: four-dimensional objects living in a 4D space whose 3D slices you inspect. Zeno Rogue's *HyperRogue*, CodeParade's HyperEngine and *Hyperbolica*, and Michael Walczyk's `polychora` shaped the non-Euclidean and 4D rendering choices. The textbook citations sit in the rustdoc at each use: Coxeter for the polytopes, Hestenes and Sobczyk for the geometric algebra, do Carmo for the Riemannian geometry.
+Clone the repository, then build and run the playground. Rustup installs the toolchain pinned by the project:
 
-## Getting involved
+```sh
+git clone https://github.com/throgsoft/loam.git
+cd loam
+cargo run --release --locked -p polytope_playground
+```
 
-I build this alone, in the open, and I lean on AI coding tools. Invariant tests cover every primitive, and what ships is my responsibility. Reach out before starting anything: [humesze@proton.me](mailto:humesze@proton.me).
+Use the Demo menu to switch scenes. Space pauses rotation. Backtick opens the console.
+
+For the browser build:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install --locked trunk
+trunk serve crates/polytope_playground/index.html
+```
+
+[API documentation](https://throgsoft.github.io/loam/)
 
 ## License
 

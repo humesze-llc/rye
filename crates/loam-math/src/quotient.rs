@@ -173,16 +173,12 @@ const LOAM_MAX_ARC: f32 = 1e9;
 const LOAM_TORUS_CELL: vec3<f32> = vec3<f32>({cx:?}, {cy:?}, {cz:?});
 const LOAM_TORUS_HALF: vec3<f32> = vec3<f32>({hx:?}, {hy:?}, {hz:?});
 
-fn loam_torus_index(p: vec3<f32>) -> vec3<f32> {{
+fn loam_torus_wrap(p: vec3<f32>) -> vec3<f32> {{
     let index = floor(p / LOAM_TORUS_CELL + vec3<f32>(0.5));
     let residual = p - LOAM_TORUS_CELL * index;
-    let below = select(vec3<f32>(0.0), vec3<f32>(1.0), residual < -LOAM_TORUS_HALF);
-    let above = select(vec3<f32>(0.0), vec3<f32>(1.0), residual >= LOAM_TORUS_HALF);
-    return index - below + above;
-}}
-
-fn loam_torus_wrap(p: vec3<f32>) -> vec3<f32> {{
-    return p - LOAM_TORUS_CELL * loam_torus_index(p);
+    let below = select(vec3<f32>(0.0), LOAM_TORUS_CELL, residual < -LOAM_TORUS_HALF);
+    let above = select(vec3<f32>(0.0), LOAM_TORUS_CELL, residual >= LOAM_TORUS_HALF);
+    return residual + below - above;
 }}
 
 fn loam_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {{ return length(loam_torus_wrap(a - b)); }}

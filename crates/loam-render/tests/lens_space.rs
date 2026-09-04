@@ -3,7 +3,7 @@
 //! arithmetic, or the sim and the shader walk different manifolds.
 
 use glam::Vec4;
-use loam_math::{IsometryGroup, LensSpace, QuotientSpace, Space};
+use loam_math::{IsometryGroup, LensSpace, QuotientSpace, Space, SphericalS3Embedded};
 use loam_shader::validate_wgsl;
 use wgpu::util::DeviceExt;
 
@@ -118,7 +118,11 @@ fn the_emitted_prelude_wraps_and_measures_as_the_rust_impl_does_gpu_probe() {
             lens.distance(gpu_wrapped, cpu_wrapped) < 1e-4,
             "the GPU wrapped {lift:?} to a different point of the quotient"
         );
-        if (lift.y.atan2(lift.x).abs() - half_wedge).abs() > wall_band {
+        assert!(
+            gpu_wrapped.y.atan2(gpu_wrapped.x).abs() <= half_wedge + wall_band,
+            "the GPU wrapped {lift:?} outside the fundamental wedge: {gpu_wrapped:?}"
+        );
+        if (cpu_wrapped.y.atan2(cpu_wrapped.x).abs() - half_wedge).abs() > wall_band {
             assert!(
                 (gpu_wrapped - cpu_wrapped).length() < 1e-4,
                 "the GPU wrapped {lift:?} to a different lift: {gpu_wrapped:?} against \
@@ -135,7 +139,7 @@ fn the_emitted_prelude_wraps_and_measures_as_the_rust_impl_does_gpu_probe() {
         let power = result[1][1] as i32;
         let selected = lens.iso_apply(lens.deck(power), centre);
         assert!(
-            (lens.distance(*lift, selected) - cpu_distance).abs() < 1e-5,
+            (SphericalS3Embedded.distance(*lift, selected) - cpu_distance).abs() < 1e-5,
             "the GPU picked deck power {power}, which is not the nearest lift"
         );
     }

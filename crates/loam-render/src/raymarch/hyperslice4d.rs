@@ -1460,7 +1460,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     }
 
     fn strip_probe_module(device: &Device) -> ShaderModule {
-        let polytope = super::super::polytope_data::polytope_extended_sdfs_wgsl();
+        let polytope = super::super::polytope_data::polytope_stub_sdfs_wgsl();
         device.create_shader_module(ShaderModuleDescriptor {
             label: Some("hyperslice4d strip probe"),
             source: ShaderSource::Wgsl(
